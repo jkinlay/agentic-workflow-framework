@@ -95,6 +95,85 @@ def planning_resource_inputs(capacity, *, resource_capacity=None, operator_capac
 
 class ContinuousControllerPlanningTests(unittest.TestCase):
 
+	def test_controller_persists_before_return_and_rejects_replay_after_restart(self):
+		from agentic.store import Store
+		from test_planning import NOW as plan_now, config, capacity_kwargs
+		cfg = config()
+		with tempfile.TemporaryDirectory(prefix='awf50c-controller-') as scratch:
+			path = Path(scratch)
+			controller = ContinuousControllerStore(path / 'controller.sqlite3', ['A'])
+			state_store = Store(path / 'state.sqlite3', '00000000-0000-0000-0000-000000000050')
+			result = controller.recompute_durable_plan(state_store, [], cfg, now=plan_now,
+				trigger='project_start', **capacity_kwargs(cfg))
+			self.assertEqual([result['record']], state_store.planning_history())
+			restarted = ContinuousControllerStore(path / 'controller.sqlite3', ['A'])
+			with self.assertRaises(ValidationError):
+				restarted.recompute_durable_plan(state_store, [], cfg, now=plan_now,
+					trigger='project_start', **capacity_kwargs(cfg))
+			self.assertEqual([result['record']], state_store.planning_history())
+			with self.assertRaises(ValidationError):
+				restarted.recompute_durable_plan(state_store, [], cfg, now=plan_now,
+					trigger='files_changed', legacy_state={}, migration_version=2,
+					**capacity_kwargs(cfg))
+			self.assertEqual([result['record']], state_store.planning_history())
+
+	def test_plan_record_round_trips_immutably_through_awf91_state_store(self):
+		from agentic import planning
+		from agentic.store import Store
+		from test_planning import NOW as plan_now, config, capacity_kwargs
+
+		cfg = config()
+		record = planning.recompute_plan([], cfg, {}, now=plan_now,
+			trigger='project_start', **capacity_kwargs(cfg))['record']
+		self.assertTrue(planning.verify_plan_record(record))
+		with tempfile.TemporaryDirectory(prefix='awf50c-plan-history-') as scratch:
+			path = Path(scratch) / 'state.sqlite3'
+			project = '00000000-0000-0000-0000-000000000050'
+			store = Store(path, project)
+			# Exercise the existing planning API, rather than introducing a
+			# controller-private namespace or bypassing it with direct SQL.
+			self.assertEqual(record, planning.append_plan_record(store, record))
+			restarted = Store(path, project)
+			with self.assertRaises(ValidationError):
+				planning.append_plan_record(restarted, record)
+			replacement = deepcopy(record)
+			replacement['trigger'] = 'files_changed'
+			replacement['plan_sha256'] = fingerprint('planning_audit_record',
+				{key: value for key, value in replacement.items() if key != 'plan_sha256'})
+			with self.assertRaises(ValidationError):
+				planning.append_plan_record(restarted, replacement)
+
+	def test_controller_migrates_history_once_and_refuses_tampering_before_planning(self):
+		from agentic import planning
+		from agentic.store import Store
+		from test_planning import NOW as plan_now, config, capacity_kwargs
+		cfg = config()
+		record = planning.recompute_plan([], cfg, {}, now=plan_now,
+			trigger='project_start', **capacity_kwargs(cfg))['record']
+		legacy = {'planning_history': [record], 'current_plan': record}
+		with tempfile.TemporaryDirectory(prefix='awf50c-migrate-') as scratch:
+			path = Path(scratch)
+			controller = ContinuousControllerStore(path / 'controller.sqlite3', ['A'])
+			state_store = Store(path / 'state.sqlite3', '00000000-0000-0000-0000-000000000050')
+			result = controller.recompute_durable_plan(state_store, [], cfg, legacy_state=legacy,
+				migration_version=1, now=plan_now, trigger='files_changed', **capacity_kwargs(cfg))
+			self.assertEqual([record, result['record']], state_store.planning_history())
+			self.assertEqual([record], legacy['planning_history'])
+			state_store.migrate_planning_history(legacy, version=1)
+			with patch('agentic.planning.recompute_plan') as recompute:
+				with self.assertRaises(ValidationError):
+					controller.recompute_durable_plan(state_store, [], cfg, legacy_state={},
+						now=plan_now, trigger='ticket_added', **capacity_kwargs(cfg))
+				recompute.assert_not_called()
+			with state_store.connection() as db:
+				db.execute('DROP TRIGGER planning_history_no_update')
+				db.execute("UPDATE planning_history SET record_json='{}'")
+			with patch('agentic.planning.recompute_plan') as recompute:
+				with self.assertRaises(ValidationError):
+					controller.recompute_durable_plan(state_store, [], cfg,
+						now=plan_now, trigger='ticket_added', **capacity_kwargs(cfg))
+				recompute.assert_not_called()
+
 	def test_managed_source_payload_preserves_install_journal_headroom(self):
 		root = Path(__file__).resolve().parents[2]
 		captured = {}

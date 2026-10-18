@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 import uuid
+import weakref
 
 # Keep this test module bound to the checkout under test when a parent
 # validation harness has another AWF checkout on PYTHONPATH.
@@ -282,12 +284,16 @@ def bind_production_posting_fixture(config, bundle):
 class RuntimeAssignedGateConfig(dict):
     """Test config whose hidden runtime assignment follows the mutable bundle."""
 
-    def __init__(self, values, fixture):
+    def __init__(self, values, fixture, *, commit_provenance=None, repository=None):
         super().__init__(values)
         self.fixture = fixture
+        self.commit_provenance = commit_provenance
+        self.repository = repository
 
     def __deepcopy__(self, memo):
-        return type(self)(copy.deepcopy(dict(self), memo), self.fixture)
+        return type(self)(copy.deepcopy(dict(self), memo), self.fixture,
+                          commit_provenance=copy.deepcopy(self.commit_provenance, memo),
+                          repository=self.repository)
 
     def get(self, key, default=None):
         if key != "_awf_runtime":
@@ -302,8 +308,105 @@ class RuntimeAssignedGateConfig(dict):
         record["assignment_sha256"] = fingerprint(
             "intake_assignment_record", record
         )
-        return {"active_ticket_key": ticket,
-                "intake_assignments": {ticket: record}}
+        runtime = {"active_ticket_key": ticket,
+                   "intake_assignments": {ticket: record}}
+        if self.commit_provenance is not None:
+            runtime["commit_provenance"] = self.commit_provenance
+            runtime["repository"] = self.repository
+        return runtime
+
+
+def bind_commit_provenance_fixture(fixture):
+    """Explicitly opt a readiness fixture into a real, isolated local Git range."""
+    folder = tempfile.TemporaryDirectory(prefix="awf-gate-provenance-")
+    repository = Path(folder.name)
+    cleanup = weakref.finalize(fixture, folder.cleanup)
+    fixture.addCleanup(cleanup)
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_AUTHOR_NAME="AWF Fixture", GIT_COMMITTER_NAME="AWF Fixture",
+        GIT_AUTHOR_EMAIL="fixture@example.invalid",
+        GIT_COMMITTER_EMAIL="fixture@example.invalid",
+        GIT_AUTHOR_DATE="2026-09-09T11:00:00Z",
+        GIT_COMMITTER_DATE="2026-09-09T11:00:00Z")
+
+    def git(*args):
+        command = ["git", *args]
+        # File capture also bounds failure when the host refuses tree termination:
+        # no inherited pipe or reader thread can keep timeout cleanup blocked.
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout, \
+                tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr:
+            process = subprocess.Popen(command, cwd=repository, env=environment,
+                stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                   if os.name == "nt" else {"start_new_session": True}))
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, check=True, timeout=10)
+                    else:
+                        import signal
+                        os.killpg(process.pid, signal.SIGKILL)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+                raise
+            stdout.seek(0)
+            stderr.seek(0)
+            output, error = stdout.read(), stderr.read()
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command,
+                                                output=output, stderr=error)
+        return output.strip()
+
+    git("init", "--quiet", "--initial-branch=main", "--template=")
+    tree = git("mktree")
+    base = git("commit-tree", tree, "-m", "Fixture base")
+    path = "src/example.py"
+    (repository / "src").mkdir()
+    (repository / path).write_bytes(b"value = 1\n")
+    git("add", "--", path)
+    tree = git("write-tree")
+    head = git("commit-tree", tree, "-p", base, "-m",
+        "Fixture implementation\n\nWriter: codex/00000000-0000-4000-8000-000000000001")
+    bundle = fixture.bundle
+    candidate = bundle["candidate"]
+    candidate.update(head_sha=head, target_base_sha=base, merge_base_sha=base,
+        head_tree_sha=tree, integration_tree_sha=tree, tested_merge_sha=head)
+    bundle["contract"]["branch_origin_sha"] = base
+    bundle["worker"]["tested_tree"] = tree
+    bundle["worker"]["validation"][0]["tested_tree_sha"] = tree
+    bundle["pr"]["file_manifest"][0]["blob_sha"] = git("rev-parse", tree + ":" + path)
+    bundle["critic"]["coverage"]["file_manifest_sha256"] = fingerprint(
+        "file-manifest", bundle["pr"]["file_manifest"])
+    bundle["ci"]["checks"][0].update(tested_tree_sha=tree, tested_commit_sha=head)
+    bundle["publication_scan"].update(base_sha=base, head_sha=head, commits_scanned=[head])
+    for verdict in bundle["review_verdicts"]:
+        verdict["head_sha"] = head
+        verdict["candidate_binding"].update(base_sha=base, head_sha=head)
+
+    def absent_run_log(run_id, commit_sha, entries):
+        return {"version": 1, "status": "ABSENT", "run_id": run_id,
+                "commit_sha": commit_sha, "entries": entries,
+                "evidence_sha256": None, "reason_code": "FIXTURE_LOG_ABSENT"}
+
+    context = {
+        "reviewed_policy": {"require_run_logs": False, "default_ref": "refs/heads/main",
+                            "generated_paths": [], "generators": {}},
+        "provider_observation": {"version": 1, "repository_id": candidate["repository_id"],
+            "pr": candidate["pr_number"], "base_ref": candidate["target_base_branch"],
+            "base": base, "head": head, "labels": [], "trusted_owner_ids": [], "comments": []},
+        "runtime_registry": {"run_log_verifier": absent_run_log},
+    }
+    fixture.config = RuntimeAssignedGateConfig(fixture.config, fixture,
+        commit_provenance=context, repository=repository)
+    fixture.rebind()
 
 
 class Fixture(unittest.TestCase):
@@ -318,6 +421,7 @@ class Fixture(unittest.TestCase):
         self.config = RuntimeAssignedGateConfig(
             copy.deepcopy(self.config0), self
         )
+        bind_commit_provenance_fixture(self)
 
     def test_shipped_example_config_and_evidence_bundle_share_policy_binding(self):
         """The generated bundle must directly bind the generated reviewed config."""
@@ -999,6 +1103,11 @@ class ClosureAndParityTests(Fixture):
 
 
 class DigestTests(Fixture):
+    def setUp(self):
+        # Match the generated digest's offline example, which has no commit context.
+        self.bundle = copy.deepcopy(self.bundle0)
+        self.config = RuntimeAssignedGateConfig(copy.deepcopy(self.config0), self)
+
     def state(self):
         return {"ticket": "EX-1", "awf_state": "MERGED", "pr_number": 7, "head_sha": "b" * 40, "base_sha": "c" * 40, "tree_sha": "e" * 40, "risk_tier": 2}
 

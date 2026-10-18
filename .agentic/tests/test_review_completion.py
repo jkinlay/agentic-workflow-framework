@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import test_review_policy as provenance_fixtures
 import uuid
 from pathlib import Path
 
@@ -864,7 +865,11 @@ class ReviewCompletionTests(unittest.TestCase):
         contracts = Contracts(ROOT / ".agentic/schemas")
         config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
-        config = RuntimeAssignedGateConfig(config, self)
+        provenance_fixture = provenance_fixtures.Fixture()
+        self.addCleanup(provenance_fixture.doCleanups)
+        provenance_fixture.bundle, provenance_fixture.config = self.bundle, config
+        provenance_fixtures.bind_commit_provenance_fixture(provenance_fixture)
+        config = provenance_fixture.config
         bind_review_admission(self.bundle)
         registry = bind_production_posting_fixture(config, self.bundle)
         gate = evaluate(config, definition(), self.bundle, contracts, "2026-09-09T12:00:00Z",
