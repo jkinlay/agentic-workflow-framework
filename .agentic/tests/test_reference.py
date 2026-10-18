@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import unittest
+import test_review_policy as provenance_fixtures
 import uuid
 
 # Keep this test module bound to the checkout under test when a parent
@@ -49,6 +50,11 @@ class Fixture(unittest.TestCase):
     def setUp(self):
         self.bundle = copy.deepcopy(self.bundle0)
         self.config = RuntimeAssignedGateConfig(copy.deepcopy(self.config0), self)
+        provenance_fixture = provenance_fixtures.Fixture()
+        self.addCleanup(provenance_fixture.doCleanups)
+        provenance_fixture.bundle, provenance_fixture.config = self.bundle, self.config
+        provenance_fixtures.bind_commit_provenance_fixture(provenance_fixture)
+        self.config = provenance_fixture.config
 
     def gate(self):
         bind_review_admission(self.bundle)
@@ -411,7 +417,11 @@ class LifecycleTests(unittest.TestCase):
                     config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
                     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
                     self.bundle = bundle
-                    config = RuntimeAssignedGateConfig(config, self)
+                    provenance_fixture = provenance_fixtures.Fixture()
+                    self.addCleanup(provenance_fixture.doCleanups)
+                    provenance_fixture.bundle, provenance_fixture.config = bundle, config
+                    provenance_fixtures.bind_commit_provenance_fixture(provenance_fixture)
+                    config = provenance_fixture.config
                     bind_review_admission(bundle)
                     registry = bind_production_posting_fixture(config, bundle)
                     facts["final_gate"] = evaluate(config, definition(), bundle,

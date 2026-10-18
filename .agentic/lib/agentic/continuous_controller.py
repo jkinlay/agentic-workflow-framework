@@ -498,6 +498,29 @@ def _validated_overlap_sync_receipt(gate, payload, receipt, not_before):
 	return deepcopy(receipt)
 
 class ContinuousControllerStore:
+	def recompute_durable_plan(self, state_store, tickets, config, *, legacy_state=None,
+			migration_version=1, **planning_inputs):
+		"""Seal through planning.py, then durably append before returning a plan.
+
+		The AWF-91 store owns plan history; controller-private tables never hold
+		copies. Explicit legacy input is migrated once, even when it is empty.
+		A restart without legacy input reads the durable history directly.
+		"""
+		from .store import Store
+		from .planning import recompute_plan, append_plan_record
+		_require(isinstance(state_store, Store), 'Durable planning requires the AWF-91 state store')
+		if legacy_state is not None:
+			state_store.migrate_planning_history(legacy_state, version=migration_version)
+		else:
+			_require(type(migration_version) is int and migration_version == 1,
+				'Planning history migration version mismatch')
+		state = deepcopy(legacy_state) if legacy_state is not None else {}
+		state['planning_history'] = state_store.planning_history()
+		state['current_plan'] = state_store.current_plan()
+		result = recompute_plan(tickets, config, state, **planning_inputs)
+		if result['status'] == 'PLANNED':
+			append_plan_record(state_store, result['record'])
+		return result
 
 	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False):
 		self.worktree_roots = tuple((Path(root).resolve(strict=False) for root in worktree_roots))

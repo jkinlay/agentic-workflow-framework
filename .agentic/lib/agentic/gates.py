@@ -7,6 +7,7 @@ from datetime import timedelta
 import fnmatch
 from pathlib import Path
 import re
+import subprocess
 import uuid
 
 from . import ValidationError
@@ -19,6 +20,7 @@ from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_pa
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
 from .review_tiers import classify
+from . import provenance
 
 
 def validate_batch_candidate(generation, candidate, config):
@@ -1264,7 +1266,42 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     unique(ci["checks"], "name", "CI check name")
     checks = {check["name"]: check for check in ci["checks"]}
     ci_ok = bool(config["validation"]["required_ci_checks"]) and ci["retrieval_complete"] and candidate["tested_merge_sha"] is not None
-    repository = repository or Path(__file__).resolve().parents[3]
+    runtime = config.get("_awf_runtime", {})
+    runtime_repository = runtime.get("repository") if isinstance(runtime, dict) else None
+    repository = repository or runtime_repository or Path(__file__).resolve().parents[3]
+    # Recompute from local Git objects; candidate-supplied summaries cannot
+    # establish commit provenance. Runtime inputs only narrow the checker and
+    # register reviewed reproducers, never fallback/override authority.
+    commit_provenance = None
+    try:
+        runtime = config.get("_awf_runtime", {})
+        context = runtime.get("commit_provenance") if isinstance(runtime, dict) else None
+        if not isinstance(context, dict) or set(context) != {
+                "reviewed_policy", "provider_observation", "runtime_registry"}:
+            raise ValidationError("Commit provenance runtime inputs are missing or invalid")
+        observation = context["provider_observation"]
+        if not isinstance(context["reviewed_policy"], dict) or not isinstance(observation, dict):
+            raise ValidationError("Commit provenance policy/provider inputs are invalid")
+        if (observation.get("repository_id") != candidate["repository_id"]
+                or observation.get("pr") != candidate["pr_number"]
+                or observation.get("base_ref") != candidate["target_base_branch"]
+                or observation.get("base") != candidate["target_base_sha"]
+                or observation.get("head") != candidate["head_sha"]):
+            raise ValidationError("Commit provenance provider observation differs from candidate")
+        commit_provenance = provenance.check_commit_range(
+            repository, candidate["merge_base_sha"], candidate["head_sha"],
+            reviewed_policy=context["reviewed_policy"],
+            provider_observation=observation,
+            runtime_registry=context["runtime_registry"],
+        )
+        if commit_provenance["status"] != "PASS":
+            provenance_problems.extend(
+                f"{item['sha']}: {item['reason']}"
+                for item in commit_provenance["refusals"])
+            if not commit_provenance["refusals"]:
+                provenance_problems.append("Commit provenance did not pass")
+    except (ValidationError, OSError, subprocess.SubprocessError) as exc:
+        provenance_problems.append(f"Commit provenance unavailable: {exc}")
     for required in config["validation"]["required_ci_checks"]:
         check = checks.get(required["name"])
         if not check:
@@ -1346,6 +1383,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         inputs["verdict_posting"].append("owner_review")
     refs = {name: ["urn:awf:input:" + key + ":" + fingerprint("gate-input", bundle[key]) for key in keys]
             for name, keys in inputs.items()}
+    if commit_provenance is not None:
+        refs["provenance"].append(
+            "urn:awf:input:commit_provenance:" + fingerprint("gate-input", commit_provenance))
     refs["critic_current_tuple"].append(
         "urn:awf:input:overcap_approvals:"
         + fingerprint("gate-input", overcap_approvals)
