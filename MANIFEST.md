@@ -409,7 +409,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
 | `.agentic/tests/test_ready_authorization.py` | `fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d` |
 | `.agentic/tests/test_reference.py` | `434afbc094afa6ade75424895581c1eebb13ab82565b19c93a99b3d51adc9058` |
-| `.agentic/tests/test_reference_controller_adapter.py` | `efee2b567c18b5b6263e12410e4b76a435eea8f411985ef4eb52129a863c3877` |
+| `.agentic/tests/test_reference_controller_adapter.py` | `67f7d6a80ed1588c0f687a65ce26e04b45ca4f676ff727f17695edd1135f7a9d` |
 | `.agentic/tests/test_release_trust.py` | `5ee524663da11f15a04ed83c19ffcc7a951f5d89715784610799ce4709c0eed4` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
 | `.agentic/tests/test_retry_authority.py` | `139ac0066214be7dbd8d468ae016f7f116b756621ee295d03d646ef94eaae3bf` |
