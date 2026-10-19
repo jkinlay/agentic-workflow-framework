@@ -285,6 +285,7 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 	def cycle(self, items, *, capacity=2, dispatch=None, **resources):
 		calls = []
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
+		resources = {**resources, **planning_fixture_inputs(items, self.store, capacity)}
 		result = production_controller_cycle(self.store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, **resources, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
 
@@ -441,6 +442,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			'controller_clock': controller_clock or (lambda: now),
 		}
 		arguments.update(planning_resource_inputs(capacity))
+		arguments.update(planning_fixture_inputs(items, store, capacity, now=now))
 		arguments.update(operations)
 		return production_controller_cycle(store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=now, host_capacity=capacity,
 			inventory_binding=BINDING, **REPOSITORY, **arguments)
@@ -810,6 +812,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			return value
 
 		result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
+			**{key: value for key, value in planning_fixture_inputs(drifted, self.store, 2).items() if key != 'cycle_id'},
 			dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
 			cycle_id='cycle-17', overlap_allowance_requests=[allowance_request()],
 			observe_overlap_allowance=observe_allowance)
@@ -848,6 +851,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 
 		with patch('agentic.continuous_controller.canonical_reservation_sources', side_effect=lambda raw, *_args, **_kwargs: raw['sources']):
 			result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
+			**{key: value for key, value in planning_fixture_inputs(refreshed, self.store, 2).items() if key != 'cycle_id'},
 				dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
 				observe_reservations=observe_reservations, cycle_id='cycle-17',
 				overlap_allowance_requests=[allowance_request()], observe_overlap_allowance=observe_allowance)
@@ -1128,3 +1132,68 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         with self.store.connection() as db:
             self.assertEqual(0, db.execute('SELECT count(*) FROM controller_dispatch').fetchone()[0])
         self.assertFalse(any(row['state'] == 'WORKING' for row in self.store.snapshot()))
+
+
+    def test_authenticated_overlap_evidence_is_sealed_before_two_dispatches(self):
+        self.items = allowance_inventory()
+        cfg = publication_config()
+        cfg['github']['repository_id'] = 101
+        cfg.setdefault('merge_gate', {})['trusted_owner_ids'] = [7002]
+        phases = []
+        def observe(request, phase):
+            phases.append(phase)
+            value = allowance_observation(request)
+            for pr in value['pull_requests']:
+                pr['head_ref'] = 'codex/' + pr['ticket'] + '-' + pr['ticket'].lower()
+            return value
+        with patch('test_continuous_controller_planning.publication_config', return_value=cfg):
+            result = self.cycle(cycle_id='cycle-17', controller_clock=lambda: NOW,
+                overlap_allowance_requests=[allowance_request()], observe_overlap_allowance=observe)
+        record = self.history.current_plan()
+        self.assertEqual(['PLAN', 'LANE_START'], phases, result)
+        self.assertEqual(2, record['lane_count'])
+        self.assertEqual(2, len(self.calls))
+        self.assertEqual(1, len(record['inputs']['overlap_allowances']))
+        self.assertEqual(['src/shared.py'], record['inputs']['overlaps'][0]['paths'])
+        self.assertTrue(all('src/shared.py' in lane['write_paths'] for lane in record['lanes']))
+
+    def test_unapproved_overlap_keeps_sealed_capacity_serial(self):
+        self.items = allowance_inventory()
+        self.cycle()
+        record = self.history.current_plan()
+        self.assertEqual(1, record['lane_count'])
+        self.assertEqual(1, len(self.calls))
+        self.assertNotIn('overlap_allowances', record['inputs'])
+
+    def test_forged_event_evidence_refuses_before_dispatch_intent(self):
+        def forged(request):
+            value = self.observe_events(request)
+            value['events'][0]['trigger'] = 'ticket_closed'
+            return value
+        with self.assertRaises(ValidationError):
+            self.cycle(observe_planning_events=forged)
+        self.assertEqual([], self.calls)
+        self.assertEqual([], self.history.planning_history())
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT count(*) FROM controller_dispatch').fetchone()[0])
+
+
+    def test_live_nonterminal_round_retains_assignments_and_pending_trigger(self):
+        dispatch = self.dispatch
+        def launched(payload):
+            return {**dispatch(payload), 'dispatch_state': 'LAUNCHED', 'terminal': False}
+        self.dispatch = launched
+        self.cycle()
+        self.assertEqual(2, len(self.calls))
+        before = self.store.snapshot()
+        with self.store.connection() as db:
+            intents = [tuple(row) for row in db.execute('SELECT dispatch_id,stream_id,ticket,exact_tuple,status FROM controller_dispatch ORDER BY dispatch_id')]
+        self.items[0]['exact_tuple'] += '/successor'
+        self.events = [{'source_id': 'live-round-event', 'trigger': 'files_changed', 'override': None}]
+        self.cycle()
+        self.assertEqual(before, self.store.snapshot())
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.assertEqual(2, len(self.calls))
+        self.assertEqual('live-round-event', self.store.production_planning_state()['pending'][0]['source_id'])
+        with self.store.connection() as db:
+            self.assertEqual(intents, [tuple(row) for row in db.execute('SELECT dispatch_id,stream_id,ticket,exact_tuple,status FROM controller_dispatch ORDER BY dispatch_id')])

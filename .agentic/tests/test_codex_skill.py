@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
-from test_continuous_controller_planning import planning_resource_inputs
+from test_continuous_controller_planning import planning_resource_inputs, planning_fixture_inputs
 from agentic import ValidationError
 from agentic.canonical import fingerprint
 from agentic.codex_skill import enforce_pinned_awf_skill, observe_codex_awf_skills
@@ -265,7 +265,7 @@ class CodexSkillTests(unittest.TestCase):
             "repository_id": "repository",
             "scope_sha256": "a" * 64,
         }
-        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE"}
+        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE", "paths": ["src/a.py"], "priority": 1}
         observation = {
             "source": "host_observation",
             "observed_at": now,
@@ -291,6 +291,8 @@ class CodexSkillTests(unittest.TestCase):
         for role in ("writer", "critic"):
             with self.subTest(role=role):
                 store = MagicMock(spec=ContinuousControllerStore)
+                store.path = self.project.parent / 'planning-controller.sqlite3'
+                store.plan_production_cycle.return_value = {'lane_count': 1, 'lanes': [{'ticket_keys': ['AWF-33']}], 'ranking': {'AWF-33': 1}}
                 store.worktree_roots = (self.checkout,)
                 store.pending_dispatches.return_value = []
                 store.schedule.return_value = [
@@ -345,7 +347,7 @@ class CodexSkillTests(unittest.TestCase):
                         controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True},
                         now=now,
                         host_capacity=1,
-                        **planning_resource_inputs(1),
+                        **{**planning_resource_inputs(1), **planning_fixture_inputs([ticket], store, 1, binding=binding, now=now)},
                         inventory_binding=binding,
                         repository_root=self.project,
                         repository_head_sha="a" * 40,
@@ -374,7 +376,7 @@ class CodexSkillTests(unittest.TestCase):
             "repository_id": "repository",
             "scope_sha256": "a" * 64,
         }
-        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE"}
+        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE", "paths": ["src/a.py"], "priority": 1}
         observation = {
             "source": "host_observation",
             "observed_at": now,
@@ -397,6 +399,8 @@ class CodexSkillTests(unittest.TestCase):
             "next_action": "amend",
         }
         store = MagicMock(spec=ContinuousControllerStore)
+        store.path = self.project.parent / 'stale-planning-controller.sqlite3'
+        store.plan_production_cycle.return_value = {'lane_count': 1, 'lanes': [{'ticket_keys': ['AWF-33']}], 'ranking': {'AWF-33': 1}}
         store.worktree_roots = (self.checkout,)
         store.pending_dispatches.return_value = []
         store.schedule.return_value = [{
@@ -427,7 +431,7 @@ class CodexSkillTests(unittest.TestCase):
                 controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True},
                 now=now,
                 host_capacity=1,
-                **planning_resource_inputs(1),
+                **{**planning_resource_inputs(1), **planning_fixture_inputs([ticket], store, 1, binding=binding, now=now)},
                 inventory_binding=binding,
                 repository_root=self.project,
                 repository_head_sha="a" * 40,
