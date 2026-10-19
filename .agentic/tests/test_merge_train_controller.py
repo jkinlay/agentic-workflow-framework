@@ -116,6 +116,7 @@ class MergeTrainControllerTests(unittest.TestCase):
                     now=NOW, read_current_status=spy.read_current_status,
                     write_transition=spy.write_transition,
                     read_transition=spy.read_transition,
+                    observe_issue_identity=lambda key: {"issue_key": key, "observed_at": NOW},
                 )
 
             # Disabled Jira forbids all issue access through every role.
@@ -199,7 +200,8 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         inputs = dict(config=self.config, role="controller", batch=self.batch,
             observed_merge=self.merge, now=NOW,
             read_current_status=spy.read_current_status,
-            write_transition=spy.write_transition, read_transition=spy.read_transition)
+            write_transition=spy.write_transition, read_transition=spy.read_transition,
+            observe_issue_identity=lambda key: {"issue_key": key, "observed_at": inputs["now"]})
         inputs.update(overrides)
         return self.controller.production_batch_jira_reconciliation(self.store, **inputs)
 
@@ -472,7 +474,8 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
             return {'issue_id': record['binding']['issue_id'], 'status': 'Done',
                     'actor': 'controller-1', 'observed_at': inputs['now']}
         result = production_batch_jira_reconciliation(store, role='controller', **inputs,
-            read_current_status=before, write_transition=write, read_transition=after)
+            read_current_status=before, write_transition=write, read_transition=after,
+            observe_issue_identity=lambda key: {"issue_key": key, "observed_at": inputs["now"]})
         print(json.dumps(result), flush=True)
         """)
         process = subprocess.Popen([sys.executable, "-B", "-c", source,
@@ -830,6 +833,51 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.run_batch(spy)
         self.assertEqual([], spy.calls)
+
+
+class MissingCanonicalObserverTests(unittest.TestCase):
+    setUp = BatchReconciliationSafetyTests.setUp
+
+    def test_ordinary_missing_issue_observer_records_refusal_without_transition(self):
+        spy = JiraSpy()
+        result = self.controller.production_jira_lifecycle(self.store,
+            config=self.config, contract={}, event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True},
+            binding={"issue_id": "AWF-1"}, issue_type="LEAF", state="DISPATCHED",
+            producer_id="controller-1", run_id="fixture", now=NOW, evidence=[],
+            transition_id="31", observe_issue_identity=None,
+            observe_provider_identity=lambda: self.fail("provider lookup before refusal"),
+            read_current_status=spy.read_current_status,
+            write_transition=spy.write_transition, read_transition=spy.read_transition)
+        self.assertEqual("REFUSED", result["status"])
+        self.assertIn("canonical issue observer", result["reason"])
+        self.assertTrue(result["writes_stopped"])
+        self.assertFalse(result["planned"])
+        self.assertFalse(result["execution_authority"])
+        self.assertEqual([], spy.calls)
+        self.assertEqual([], self.store.jira_operations("AWF-1"))
+
+    def test_batch_missing_issue_observer_records_refusal_without_t11_intent(self):
+        spy = JiraSpy()
+        with self.store.transaction() as db:
+            db.execute(self.controller.BATCH_JIRA_DDL)
+        result = self.controller.production_batch_jira_reconciliation(self.store,
+            config=self.config, role="controller", batch=self.batch,
+            observed_merge=self.merge, now=NOW, observe_issue_identity=None,
+            read_current_status=spy.read_current_status,
+            write_transition=spy.write_transition, read_transition=spy.read_transition)
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute(
+                "SELECT count(*) FROM controller_batch_jira_operation").fetchone()[0])
+            self.assertEqual(0, db.execute(
+                "SELECT count(*) FROM controller_meta WHERE key='t11-batch:batch-1'").fetchone()[0])
+        self.assertEqual([], spy.calls)
+        self.assertEqual("REFUSED", result["status"])
+        self.assertIn("canonical issue observer", result["reason"])
+        self.assertTrue(result["writes_stopped"])
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["count_allowed"])
+        self.assertFalse(result["execution_authority"])
 
 
 class RetainedCoordinatorFixture:
