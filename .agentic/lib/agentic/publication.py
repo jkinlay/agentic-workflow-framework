@@ -783,9 +783,18 @@ def _project_declarations(root, config_path=None):
         path = Path(root) / path
     if not path.is_file():
         return {}, None
-    config = _config_file(path)
+    from .canonical import load_yaml
+    raw = _bounded_regular_file(path, 8 * 1024 * 1024, "Supplemental project configuration")
+    config = load_yaml(raw)
+    return _validated_project_declarations(config), hashlib.sha256(raw).hexdigest()
+
+
+def _validated_project_declarations(config):
+    from .configuration import validate_publication_project_config
+    from .contracts import Contracts
+    validate_publication_project_config(config, Contracts(Path(__file__).resolve().parents[2] / "schemas"))
     publication = config.get("publication", {})
-    if not isinstance(publication, dict) or set(publication) - {"deny_literals", "deny_regexes", "internal_hostnames"}:
+    if not isinstance(publication, dict) or set(publication) - {"deny_literals", "deny_regexes", "internal_hostnames", "large_file_allowances"}:
         raise ValidationError("Project publication declarations have unsupported fields")
     for key in ("deny_literals", "internal_hostnames"):
         if not isinstance(publication.get(key, []), list) or not all(isinstance(x, str) and x for x in publication.get(key, [])):
@@ -801,7 +810,23 @@ def _project_declarations(root, config_path=None):
             raise ValidationError("Project publication regex entries need unique ids")
         identifiers.add(item["id"])
         _validate_safe_regex(item["pattern"], "Project publication declarations")
-    return publication, hashlib.sha256(path.read_bytes()).hexdigest()
+    return publication
+
+
+def _head_project_declarations(root, head, extra_env):
+    """Tracked head bytes alone grant configuration allowance authority."""
+    entry = _tree(root, head, extra_env).get(".agentic/PROJECT_CONFIG.yaml")
+    if entry is None:
+        return {}, None
+    if entry[0] not in {"100644", "100755"} or entry[1] != "blob":
+        raise ValidationError("Tracked project configuration must be a regular file")
+    text, reason = _blob(root, entry[2], extra_env)
+    if reason:
+        raise ValidationError("Tracked project configuration is unscannable: " + reason)
+    from .canonical import load_yaml
+    raw = text.encode("utf-8")
+    config = load_yaml(raw)
+    return _validated_project_declarations(config), hashlib.sha256(raw).hexdigest()
 
 
 def _detectors(mapping, declarations):
@@ -937,7 +962,8 @@ def _validate_large_file_allowances(value):
             raise ValidationError("Publication large-file allowances require path, sha256, reason, and approver")
         path = item["path"]
         if (not isinstance(path, str) or not path or len(path) > 4096 or "\\" in path
-                or path.startswith("/") or PurePosixPath(path).as_posix() != path
+                or path.startswith("/") or any(c in path for c in ":*?[]")
+                or PurePosixPath(path).as_posix() != path
                 or any(part in {"", ".", ".."} for part in path.split("/"))
                 or any(ord(character) < 32 or ord(character) == 127 for character in path)):
             raise ValidationError("Publication large-file allowance paths must be canonical repository-relative POSIX paths")
@@ -1095,7 +1121,19 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     if ancestor.returncode != 0:
         raise ValidationError("Publication base must be an ancestor of head")
     mapping, mapping_sha, mapping_file = load_mapping(root, mapping_path)
-    declarations, config_sha = _project_declarations(root, config_path)
+    declarations, config_sha = _head_project_declarations(root, head_sha, extra_env)
+    configured_allowances = _validate_large_file_allowances(declarations.get("large_file_allowances", []))
+    for path, allowance in configured_allowances.items():
+        if path in large_allowances and large_allowances[path] != allowance:
+            raise ValidationError("Conflicting publication large-file allowances")
+        large_allowances[path] = allowance
+    supplemental_sha = None
+    if config_path is not None:
+        supplemental, supplemental_sha = _project_declarations(root, config_path)
+        if supplemental_sha is None:
+            raise ValidationError("Supplemental project configuration is unavailable")
+        declarations = {key: list(declarations.get(key, [])) + list(supplemental.get(key, []))
+                        for key in ("deny_literals", "deny_regexes", "internal_hostnames")}
     detectors, allows = _detectors(mapping, declarations)
     commits = [item.decode("ascii") for item in _git(root, "rev-list", "--reverse", "--topo-order", base_sha + ".." + head_sha,
                                                        extra_env=extra_env).stdout.splitlines()]
@@ -1351,7 +1389,7 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     blocking_count = sum(item["classification"] == "BLOCKING" for item in findings)
     pre_existing_count = sum(item["classification"] == "PRE_EXISTING" for item in findings)
     status = "BLOCKED" if blocking_count or unscanned else "PASS"
-    return {"schema_version": 3, "status": status, "base_sha": base_sha, "head_sha": head_sha,
+    result = {"schema_version": 3, "status": status, "base_sha": base_sha, "head_sha": head_sha,
             "pr_body_sha256": body_hashes[0] if len(body_hashes) == 1 else None,
             "additional_pr_body_sha256": body_hashes[1:], "comment_sha256": comment_hashes,
             "mapping_sha256": mapping_sha, "project_config_sha256": config_sha,
@@ -1366,6 +1404,9 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                          "strict_utf8": True, "pr_bodies": bool(body_entries),
                          "pr_comments": bool(comment_entries)},
             "execution_authority": False}
+    if supplemental_sha is not None:
+        result["supplemental_project_config_sha256"] = supplemental_sha
+    return result
 
 
 def render_scan(result):

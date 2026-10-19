@@ -368,5 +368,11 @@
   "portfolio": {
     "read_only": true,
     "cross_project_dispatch": false
+  },
+  "publication": {
+    "deny_literals": [],
+    "deny_regexes": [],
+    "internal_hostnames": [],
+    "large_file_allowances": []
   }
 }

@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 import generate_contracts  # noqa: E402
-from agentic.publication import UNC  # noqa: E402
+from agentic.publication import UNC, _detectors, _scan_text  # noqa: E402
 
 
 class TicketPlanGenerationTests(unittest.TestCase):
@@ -89,6 +89,52 @@ class TicketPlanGenerationTests(unittest.TestCase):
                 "urn:awf:1.2:ticket-plan",
                 json.loads(actual.read_text(encoding="utf-8"))["$id"],
             )
+
+
+# Original patterns are retained literally so equivalence is checked against
+# the previous contract rather than a second implementation of the new regex.
+OLD_PATH = r"^(?!/)(?!.*[\\:*?\[\]\x00-\x1f\x7f])(?!.*(?:^|/)\.{1,2}(?:/|$))[^/]+(?:/[^/]+)*$"
+OLD_TEXT = r"^\S(?:[^\x00-\x1f\x7f]*\S)?$"
+
+
+class LargeFileAllowancePatternTests(unittest.TestCase):
+    def setUp(self):
+        self.fields = generate_contracts.catalog()["project-config"]["properties"]["publication"]["properties"]["large_file_allowances"]["items"]["properties"]
+
+    def assert_equivalent(self, field, old):
+        previous = re.compile(old)
+        current = re.compile(self.fields[field]["pattern"])
+        cases = ["", ".", "..", "...", "/", "/data/blob", "data/blob",
+                 "data//blob", "data/./blob", "data/../blob", "../blob",
+                 "data/", " data/blob", "data/blob ", "reason with spaces",
+                 " reviewer", "reviewer ", "reviewer\n", "a\nb", "a\tb",
+                 "a\x00b", "a\x7fb", "a\\b", "\\", "[blob]", "a*b", "a?b",
+                 "a:b", "a\u00a0b", "\u00a0a", "a\u00a0", "\u2003", "a\u2003b"]
+        # Include each byte alone and at endpoints/interiors of multi-char
+        # values: negated classes and the legacy dollar anchor both matter.
+        for number in range(256):
+            char = chr(number)
+            cases.extend((char, "a" + char, char + "a", "a" + char + "b",
+                          "data/" + char + "/blob"))
+        for value in cases:
+            with self.subTest(field=field, value=repr(value)):
+                self.assertEqual(bool(previous.search(value)), bool(current.search(value)))
+
+    def test_path_pattern_is_equivalent(self):
+        self.assert_equivalent("path", OLD_PATH)
+
+    def test_reason_pattern_is_equivalent(self):
+        self.assert_equivalent("reason", OLD_TEXT)
+
+    def test_approver_pattern_is_equivalent(self):
+        self.assert_equivalent("approver", OLD_TEXT)
+
+    def test_generated_schema_has_no_blocking_publication_findings(self):
+        detectors, allows = _detectors({}, {})
+        rendered = generate_contracts.render_catalog()["project-config"].decode("utf-8")
+        findings = _scan_text(rendered, commit="candidate", path=".agentic/schemas/project-config.schema.json",
+                              source="head", detectors=detectors, allows=allows)
+        self.assertEqual([], findings)
 
 
 if __name__ == "__main__":

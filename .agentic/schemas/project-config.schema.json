@@ -1427,6 +1427,46 @@
           },
           "minItems": 0,
           "uniqueItems": true
+        },
+        "large_file_allowances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "reason",
+              "approver"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "^(?!/)(?!.*[\\x5c:*?\\[\\]\u0000-\u001f\u007f])(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/]+(?:/[^/]+)*$"
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": "^[^\\s](?:[^\u0000-\u001f\u007f]*[^\\s])?$"
+              },
+              "approver": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255,
+                "pattern": "^[^\\s](?:[^\u0000-\u001f\u007f]*[^\\s])?$"
+              }
+            }
+          },
+          "minItems": 0,
+          "maxItems": 256
         }
       }
     }
