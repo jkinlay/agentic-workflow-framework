@@ -313,6 +313,136 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
     def test_failed_batch_stops_ordinary_lifecycle_for_same_issue(self):
         self.assert_batch_stop_blocks_ordinary_lifecycle("FAILED")
 
+    def interleaving_lifecycle(self, issue="AWF-1", writes=None, during_write=None):
+        import uuid
+        writes = [] if writes is None else writes
+        provider = {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                    "project_id": "project-1", "project_key": "AWF",
+                    "controller_actor_id": "controller-1"}
+        def write(record):
+            writes.append(issue)
+            if during_write is not None:
+                during_write()
+            return {"operation_id": record["operation_id"], "issue_id": issue,
+                    "status": "ATTEMPTED", "observed_at": NOW, "jira_provider": provider}
+        return self.controller.production_jira_lifecycle(self.store,
+            config=self.config, contract={}, event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True},
+            binding={"issue_id": issue, "project_id": "local-project",
+                     "repository_id": "101", "requirements_hash": "a" * 64},
+            issue_type="LEAF", state="DISPATCHED", producer_id="controller-1",
+            run_id=str(uuid.uuid4()), now=NOW, evidence=["urn:fixture:interleaving"],
+            transition_id="31", observe_provider_identity=lambda: provider,
+            read_current_status=lambda b: {"issue_id": issue, "status_id": "Ready",
+                "observed_at": NOW, "jira_provider": provider}, write_transition=write,
+            read_transition=lambda r, o: {"issue_id": issue, "status": "In Progress",
+                "actor": "controller-1", "observed_at": NOW, "jira_provider": provider})
+
+    def assert_stop_after_ordinary_claim(self, outcome):
+        from unittest.mock import patch
+        writes = []
+        begin = self.store.begin_jira_operation
+        def claimed(operation_id, now):
+            result = begin(operation_id, now)
+            spy = JiraSpy()
+            self.run_batch(spy)
+            # T11 observes the live ordinary claim and durably fails without
+            # calling Jira. Also exercise the unresolved stop representation.
+            self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"),
+                              ("read_back", "AWF-2")], spy.calls)
+            with self.store.transaction() as db:
+                row = db.execute("SELECT status FROM controller_batch_jira_operation "
+                                 "WHERE issue_id='AWF-1'").fetchone()
+                self.assertEqual("FAILED", row["status"])
+                if outcome == "UNKNOWN":
+                    db.execute("UPDATE controller_batch_jira_operation SET status='UNKNOWN' "
+                               "WHERE issue_id='AWF-1'")
+            return result
+        with patch.object(self.store, "begin_jira_operation", side_effect=claimed):
+            result = self.interleaving_lifecycle(writes=writes)
+        self.assertEqual([], writes, "ordinary writer ran after a durable T11 stop")
+        self.assertTrue(result["writes_stopped"])
+        row = self.store.jira_operations("AWF-1")[0]
+        self.assertEqual("FAILED", row["status"])
+        self.assertIsNone(row["operation_json"])
+        self.store = self.controller.ContinuousControllerStore(self.path, ["B"])
+        self.store.recover_jira_operations(NOW)
+        self.assertEqual("FAILED", self.store.jira_operations("AWF-1")[0]["status"])
+        self.assertTrue(self.interleaving_lifecycle(writes=writes)["writes_stopped"])
+        self.assertEqual([], writes)
+        self.assertEqual("SUCCEEDED", self.interleaving_lifecycle("AWF-3", writes)["record"]["status"])
+        self.assertEqual(["AWF-3"], writes)
+
+    def test_failed_t11_stop_between_ordinary_claim_and_writer(self):
+        self.assert_stop_after_ordinary_claim("FAILED")
+
+    def test_unknown_t11_stop_between_ordinary_claim_and_writer(self):
+        self.assert_stop_after_ordinary_claim("UNKNOWN")
+
+    def test_t11_claim_blocks_ordinary_before_t11_completes(self):
+        writes = []
+        spy = JiraSpy()
+        def before(binding):
+            if binding["issue_id"] == "AWF-1":
+                self.assertTrue(self.interleaving_lifecycle(writes=writes)["writes_stopped"])
+                self.assertEqual([], self.store.jira_operations("AWF-1"))
+                self.assertEqual("SUCCEEDED", self.interleaving_lifecycle("AWF-3", writes)["record"]["status"])
+            return spy.read_current_status(binding)
+        self.assertTrue(self.run_batch(spy, read_current_status=before)["complete"])
+        self.assertEqual(["AWF-3"], writes)
+
+    def test_t11_cannot_stop_issue_during_ordinary_writer(self):
+        from unittest.mock import patch
+        finish = self.store.finish_jira_operation
+        # The batch competes while the ordinary callback interval is owned;
+        # it must defer this issue, while continuing the unrelated constituent.
+        def writing(operation_id, status, observation, now, operation=None):
+            spy = JiraSpy()
+            result = self.run_batch(spy)
+            self.assertIn("AWF-1", result["remaining"])
+            self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"),
+                              ("read_back", "AWF-2")], spy.calls)
+            return finish(operation_id, status, observation, now, operation)
+        with patch.object(self.store, "finish_jira_operation", side_effect=writing):
+            self.assertEqual("SUCCEEDED", self.interleaving_lifecycle()["record"]["status"])
+        self.assertTrue(self.run_batch()["complete"])
+
+    def test_ordinary_writer_owns_issue_across_callback(self):
+        observations = []
+        def compete():
+            # A second connection can commit while the external callback runs.
+            # This would fail if the implementation held a DB write transaction.
+            with self.store.transaction() as db:
+                db.execute("INSERT INTO controller_meta VALUES('callback-probe','committed')")
+            spy = JiraSpy()
+            observations.append((self.run_batch(spy), spy.calls))
+        result = self.interleaving_lifecycle(during_write=compete)
+        self.assertEqual("SUCCEEDED", result["record"]["status"])
+        batch_result, calls = observations[0]
+        self.assertEqual(["AWF-1"], batch_result["remaining"])
+        self.assertIsNone(batch_result["conflict"])
+        self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"),
+                          ("read_back", "AWF-2")], calls)
+        self.assertTrue(self.run_batch()["complete"])
+
+    def test_other_process_t11_claim_blocks_ordinary_only_for_same_issue(self):
+        import concurrent.futures
+        process = self.start_batch_process("active")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            line = pool.submit(process.stdout.readline)
+            try:
+                self.assertEqual("CLAIMED", line.result(timeout=20).strip())
+                writes = []
+                self.assertTrue(self.interleaving_lifecycle(writes=writes)["writes_stopped"])
+                self.assertEqual([], writes)
+                self.assertEqual([], self.store.jira_operations("AWF-1"))
+                self.assertEqual("SUCCEEDED", self.interleaving_lifecycle("AWF-3", writes)["record"]["status"])
+                self.assertEqual(["AWF-3"], writes)
+            finally:
+                output, errors = process.communicate("resume\n", timeout=20)
+        self.assertEqual(0, process.returncode, errors)
+        self.assertTrue(json.loads(output)["complete"])
+
     def start_batch_process(self, mode):
         import subprocess
         import textwrap
