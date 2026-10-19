@@ -670,6 +670,8 @@ def catalog(*, include_ticket_plan=True):
             "generated_reports": text(), "captured_command_output": text(), "strict_utf8": TRUE,
             "pr_bodies": BOOL, "pr_comments": BOOL}),
         "execution_authority": FALSE})
+    schemas["publication-scan"]["properties"]["supplemental_project_config_sha256"] = {
+        "type": "string", "pattern": DIGEST["pattern"]}
     schemas["rules-activation-decision"] = obj({
         "format": const("awf-rules-activation-decision-1"),
         "status": enum("BLOCKED", "RULES_OBSERVED"),
@@ -967,7 +969,15 @@ def catalog(*, include_ticket_plan=True):
     schemas["project-config"]["properties"]["publication"] = obj({
         "deny_literals": arr(text(), uniqueItems=True),
         "deny_regexes": arr(obj({"id": text(pattern="^[a-z][a-z0-9_]*$"), "pattern": text(format="regex")}), uniqueItems=True),
-        "internal_hostnames": arr(text(pattern="^[A-Za-z0-9][A-Za-z0-9.-]*$"), uniqueItems=True)})
+        "internal_hostnames": arr(text(pattern="^[A-Za-z0-9][A-Za-z0-9.-]*$"), uniqueItems=True),
+        "large_file_allowances": arr(obj({
+            # Literal control characters serialize as JSON escapes, avoiding
+            # network-share-shaped runs of JSON-escaped regex backslashes.
+            "path": text(maxLength=4096, pattern=r"^(?!/)(?!.*[\x5c:*?\[\]" + "\x00-\x1f\x7f" + r"])(?!.*(?:^|/)\.{1,2}(?:/|$))[^/]+(?:/[^/]+)*$"),
+            "sha256": DIGEST,
+            "reason": text(maxLength=1024, pattern=r"^[^\s](?:[^" + "\x00-\x1f\x7f" + r"]*[^\s])?$"),
+            "approver": text(maxLength=255, pattern=r"^[^\s](?:[^" + "\x00-\x1f\x7f" + r"]*[^\s])?$")}), maxItems=256)})
+    schemas["project-config"]["properties"]["publication"]["required"].remove("large_file_allowances")
     resource_alias = {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}
     resource_digest = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     resource_state = enum(

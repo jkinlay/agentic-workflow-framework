@@ -29,9 +29,20 @@ built-in false positives; tracked config cannot. Regexes are limited to 256
 characters and a bounded linear grammar; lookaround, backreferences, empty
 matches, nested repeats and other unsafe forms are refused.
 
-Projects may add a tracked `publication` object containing `deny_literals`,
-named `deny_regexes`, and `internal_hostnames`. These only add detectors. Keep
-machine paths and network mappings operator-local.
+Tracked `publication` may declare `deny_literals`, named `deny_regexes` and
+`internal_hostnames`. These add detectors; keep machine paths/network mappings
+operator-local.
+
+## Baseline allowances
+
+Optional `publication.large_file_allowances` entries require exact POSIX `path`,
+lowercase `sha256`, `reason` and `approver` (maximum 256 entries; duplicate paths
+and wildcards refused). Matching base blobs over 32 MiB are
+`PRE_EXISTING`; unrecorded, changed or mismatched blobs block.
+
+Tracked head bytes bind `project_config_sha256`. Supplemental bytes bind
+`supplemental_project_config_sha256` only when supplied; they add detectors,
+never allowance authority. Working-tree edits cannot grant allowances.
 
 ## Scan and receipt
 
@@ -47,10 +58,9 @@ are `BLOCKING`. Unknown base coverage, binary, invalid-UTF-8 or oversize content
 blocks a pass. Renames cover both paths; reads and hashes are bounded.
 
 Built-ins detect network shares, absolute drive/home paths, private IPv4 and
-unique-local IPv6. Local and project declarations add detectors. Findings name
-the commit, path/channel, line when available, detector ID, and only a full
-SHA-256 match digest. Published-history exceptions are exact code-owned line
-hashes scoped to path and detector; mappings cannot broaden them or apply them
+unique-local IPv6. Findings name the commit, path/channel, line, detector ID
+and SHA-256 match digest. Published-history exceptions are exact code-owned
+line hashes scoped to path and detector; mappings cannot broaden them or apply them
 to provider text.
 
 Preserve the JSON receipt. Its base, head and `pr_body_sha256` must match the
@@ -62,12 +72,11 @@ change invalidates it. Scan prospective comments with `--comment FILE`.
 
 A publication-scan PASS, current validation or green CI never authorizes a
 draft-state change. Mark-ready requires an explicit owner/manager authorization
-record bound to the exact PR and head. Render a pre-issued request identifier,
-issue time and expiry before creating the owner comment; provider-assigned comment
-time is observation, not signed input. Require an authenticated immutable provider observation
-through the trusted host, binding accepted configuration and trusted current time. Persist
-the lifecycle's authorized transition record before mutation and observe
-`draft_cleared` afterward. If authorization is absent, invalid, mismatched or only
+record bound to the exact PR and head. Render the pre-issued request ID, issue
+time and expiry before creating the owner comment. Require authenticated
+immutable provider observation binding accepted configuration and trusted time;
+comment time is observation, not signed input. Persist authorization before mutation and observe `draft_cleared`.
+If authorization is absent, invalid, mismatched or only
 offline-consistent, persist the refusal record, leave the PR draft and do not
 dispatch review.
 
@@ -98,11 +107,9 @@ the claimant (for example `ORIG_HEAD` or `FETCH_HEAD`) and leaves the branch
 unchanged. Inspect it, clear it only if disposable, and rerun. No tip is
 implicitly acknowledged or deleted.
 
-For a race-window claimant, `POST_CAS_STALE_TIP_RECOVERY_REQUIRED` distinguishes
-old-commit reachability from other proof failures. Verify the target equals
-`old_head`; inspect and, if disposable, clear the named tip; run the reported
-non-destructive object check; then rerun. Never manually delete retained
-objects/fanouts: they are recovery evidence.
+`POST_CAS_STALE_TIP_RECOVERY_REQUIRED` identifies race-window claimants.
+Verify `old_head`, inspect the claimant, clear only disposable state, run the
+reported non-destructive object check, then retry. Retain recovery objects/fanouts.
 
 The locked snapshot controls object/fanout provenance. New loose objects use
 atomic create-if-absent hard links. Before CAS, AWF records bounded type,
