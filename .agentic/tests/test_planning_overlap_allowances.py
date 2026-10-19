@@ -67,6 +67,49 @@ class PlanningOverlapAllowanceTests(unittest.TestCase):
         self.assertEqual(self.record['allowance_id'], result['overlap_allowances'][0]['allowance_id'])
         self.assertEqual(self.record['allowance_sha256'], result['overlap_allowances'][0]['allowance_sha256'])
 
+    def test_same_allowance_id_selects_smallest_digest_in_both_orders(self):
+        records = []
+        for etag in ['"first"', '"second"']:
+            records.append(validate_overlap_allowance_observation(
+                OWNER_CONFIG, allowance_request(),
+                allowance_observation(observation_etag=etag), allowance_inventory(),
+                now=APPROVED_AT, expected_repository_id='101',
+                expected_cycle_id='cycle-17'))
+        smaller, larger = sorted(records, key=lambda record: record['allowance_sha256'])
+        self.assertEqual(smaller['allowance_id'], larger['allowance_id'])
+        self.assertLess(smaller['allowance_sha256'], larger['allowance_sha256'])
+        authenticated = {record['allowance_sha256']: deepcopy(record) for record in records}
+        def verify(record, expected):
+            self.assertEqual(self.context, expected)
+            return deepcopy(authenticated[record['allowance_sha256']])
+        for ordered in [records, list(reversed(records))]:
+            with self.subTest(digests=[record['allowance_sha256'] for record in ordered]):
+                result = self.plan(records=ordered, verify_overlap_allowance=verify)
+                self.assertEqual(2, result['lane_count'])
+                self.assertEqual([smaller], result['overlap_allowances'])
+
+    def test_different_allowance_ids_select_smallest_id_before_digest_in_both_orders(self):
+        records = []
+        for expires_at in ['2026-10-15T08:30:00Z', '2026-10-15T08:29:00Z']:
+            request = allowance_request(expires_at=expires_at)
+            records.append(validate_overlap_allowance_observation(
+                OWNER_CONFIG, request,
+                allowance_observation(request, observation_etag='"second"'),
+                allowance_inventory(), now=APPROVED_AT,
+                expected_repository_id='101', expected_cycle_id='cycle-17'))
+        smaller, larger = sorted(records, key=lambda record: record['allowance_id'])
+        self.assertLess(smaller['allowance_id'], larger['allowance_id'])
+        self.assertGreater(smaller['allowance_sha256'], larger['allowance_sha256'])
+        authenticated = {record['allowance_sha256']: deepcopy(record) for record in records}
+        def verify(record, expected):
+            self.assertEqual(self.context, expected)
+            return deepcopy(authenticated[record['allowance_sha256']])
+        for ordered in [records, list(reversed(records))]:
+            with self.subTest(ids=[record['allowance_id'] for record in ordered]):
+                result = self.plan(records=ordered, verify_overlap_allowance=verify)
+                self.assertEqual(2, result['lane_count'])
+                self.assertEqual([smaller], result['overlap_allowances'])
+
     def test_different_path_fails_closed(self):
         self.items[0]['write_paths'] = ['src/other.py']
         self.items[1]['write_paths'] = ['src/other.py']
