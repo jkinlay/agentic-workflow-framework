@@ -11,6 +11,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 NOW = "2026-10-17T16:00:00Z"
+PROVIDER = dict(cloud_id="cloud-1", site="https://jira.example.invalid",
+    project_id="project-1", project_key="AWF", controller_actor_id="controller-1")
 
 
 class JiraSpy:
@@ -24,13 +26,15 @@ class JiraSpy:
     def read_current_status(self, binding):
         ticket = binding["issue_id"]
         self.calls.append(("read", ticket))
-        return {"issue_id": ticket, "status_id": "In Review", "observed_at": NOW}
+        return {"issue_id": ticket, "status_id": "In Review", "observed_at": NOW,
+                "jira_provider": deepcopy(PROVIDER)}
 
     def write_transition(self, record):
         ticket = record["binding"]["issue_id"]
         self.calls.append(("write", ticket))
         self.writes[ticket] = deepcopy(record)
-        return {"issue_id": ticket, "status": "ATTEMPTED", "observed_at": NOW}
+        return {"issue_id": ticket, "status": "ATTEMPTED", "observed_at": NOW,
+                "operation_id": record["operation_id"], "jira_provider": deepcopy(PROVIDER)}
 
     def read_transition(self, record, operation):
         ticket = record["binding"]["issue_id"]
@@ -40,6 +44,7 @@ class JiraSpy:
             "status": "In Progress" if ticket == self.mismatch else "Done",
             "actor": "external-automation" if ticket == self.mismatch else "controller-1",
             "observed_at": NOW,
+            "jira_provider": deepcopy(PROVIDER),
         }
 
 
@@ -461,18 +466,21 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         from agentic.continuous_controller import ContinuousControllerStore, production_batch_jira_reconciliation
         inputs = json.loads(Path(sys.argv[3]).read_text('utf-8'))
         store = ContinuousControllerStore(Path(sys.argv[2]), ['B'])
+        provider = {key: inputs['config']['jira'][source] for key, source in (
+            ('cloud_id', 'cloud_id'), ('site', 'site'), ('project_id', 'provider_project_id'),
+            ('project_key', 'project_key'), ('controller_actor_id', 'controller_actor_id'))}
         def before(binding):
-            return {'issue_id': binding['issue_id'], 'status_id': 'In Review', 'observed_at': inputs['now']}
+            return {'issue_id': binding['issue_id'], 'status_id': 'In Review', 'observed_at': inputs['now'], 'jira_provider': provider}
         def write(record):
             if sys.argv[4] == 'crash':
                 os._exit(19)
             if record['binding']['issue_id'] == 'AWF-1':
                 print('CLAIMED', flush=True)
                 sys.stdin.readline()
-            return {'issue_id': record['binding']['issue_id'], 'status': 'ATTEMPTED', 'observed_at': inputs['now']}
+            return {'issue_id': record['binding']['issue_id'], 'status': 'ATTEMPTED', 'observed_at': inputs['now'], 'jira_provider': provider, 'operation_id': record['operation_id']}
         def after(record, operation):
             return {'issue_id': record['binding']['issue_id'], 'status': 'Done',
-                    'actor': 'controller-1', 'observed_at': inputs['now']}
+                    'actor': 'controller-1', 'observed_at': inputs['now'], 'jira_provider': provider}
         result = production_batch_jira_reconciliation(store, role='controller', **inputs,
             read_current_status=before, write_transition=write, read_transition=after,
             observe_issue_identity=lambda key: {"issue_key": key, "observed_at": inputs["now"]})
@@ -658,7 +666,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         config["jira"]["status_map"]["done"] = "Closed"
         spy = JiraSpy()
         def current(binding):
-            return {"issue_id": binding["issue_id"], "status_id": "Closed", "observed_at": NOW}
+            return {"issue_id": binding["issue_id"], "status_id": "Closed", "observed_at": NOW, "jira_provider": deepcopy(PROVIDER)}
         result = self.run_batch(spy, config=config, read_current_status=current)
         self.assertEqual([], spy.calls)
         self.assertTrue(result["complete"])
@@ -767,7 +775,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         spy = JiraSpy()
         def after(record, operation):
             return {"issue_id": record["binding"]["issue_id"], "status": "Closed",
-                    "actor": "controller-1", "observed_at": NOW}
+                    "actor": "controller-1", "observed_at": NOW, "jira_provider": deepcopy(PROVIDER)}
         result = self.run_batch(spy, config=config, read_transition=after,
             policy_context={"AWF-2": {"snapshot": {"summary": "Release acceptance", "labels": []}}})
         self.assertEqual("Closed", spy.writes["AWF-1"]["to_status_id"])
@@ -1032,6 +1040,139 @@ class OperationalControllerTests(unittest.TestCase):
     setUp = BatchReconciliationSafetyTests.setUp
     run_batch = BatchReconciliationSafetyTests.run_batch
 
+    def test_operational_restart_with_fresh_merge_observation_resumes_remaining_only(self):
+        from unittest.mock import patch
+        spy = JiraSpy()
+        inputs = self.operational_inputs(spy)
+        def lost(record):
+            spy.write_transition(record)
+            raise OSError('lost response')
+        inputs['write_transition'] = lost
+        first = self.controller.production_batch_closeout(self.store, **inputs)
+        with self.store.connection() as db:
+            original = [dict(row) for row in db.execute(
+                'SELECT operation_id,intent_sha256,record_json,status FROM controller_batch_jira_operation ORDER BY issue_id')]
+        self.store = self.controller.ContinuousControllerStore(self.path, ['B'])
+        replay = JiraSpy()
+        later = '2026-10-17T16:01:00Z'
+        # Fresh authenticated merge/policy/identity observations on restart.
+        with patch.dict(globals(), NOW=later):
+            result = self.controller.production_batch_closeout(self.store, **self.operational_inputs(replay))
+        self.assertEqual([('read','AWF-2'),('write','AWF-2'),('read_back','AWF-2')], replay.calls)
+        self.assertEqual(first['jira']['conflict'], result['jira']['conflict'])
+        self.assertFalse(result['count_allowed'])
+        with self.store.connection() as db:
+            retained = [dict(row) for row in db.execute(
+                'SELECT operation_id,intent_sha256,record_json,status FROM controller_batch_jira_operation ORDER BY issue_id')]
+        self.assertEqual(original[0], retained[0])
+        self.assertEqual('UNKNOWN', retained[0]['status'])
+        self.assertEqual('SUCCEEDED', retained[1].pop('status'))
+        original[1].pop('status')
+        self.assertEqual(original[1], retained[1])
+
+    def test_jira_lifecycle_provider_admission_precedes_all_issue_callbacks(self):
+        for mode in ['unbound', 'unavailable', 'failing', 'mismatch', 'accepted']:
+            with self.subTest(mode=mode):
+                config = deepcopy(self.config)
+                calls = []
+                def provider():
+                    calls.append('provider')
+                    if mode == 'failing':
+                        raise OSError('unavailable')
+                    return dict(PROVIDER, cloud_id='foreign') if mode == 'mismatch' else deepcopy(PROVIDER)
+                def canonical(key):
+                    calls.append('canonical')
+                    return {'issue_key': key, 'observed_at': NOW}
+                def current(binding):
+                    calls.append('status')
+                    raise OSError('stop after admission')
+                if mode == 'unbound':
+                    config['jira']['cloud_id'] = None
+                result = self.controller.production_jira_lifecycle(self.store,
+                    config=config, contract={}, event='WORKER_STARTED', facts={},
+                    binding={'issue_id':'AWF-1'}, issue_type='LEAF', state='DISPATCHED',
+                    producer_id='controller-1', run_id='fixture', now=NOW,
+                    evidence=[], transition_id='31', observe_issue_identity=canonical,
+                    observe_provider_identity=None if mode == 'unavailable' else provider,
+                    read_current_status=current,
+                    write_transition=lambda r: calls.append('write'),
+                    read_transition=lambda r,o: calls.append('readback'))
+                self.assertTrue(result['writes_stopped'])
+                self.assertEqual(['provider','canonical','status'] if mode == 'accepted'
+                    else ['provider'] if mode in ['failing','mismatch'] else [], calls)
+                if mode != 'accepted':
+                    self.assertEqual(0, result['issue_lookups'])
+
+    def test_batch_jira_receipts_reject_foreign_provider_and_operation(self):
+        for mode in ['before', 'write', 'write-provider', 'after']:
+            with self.subTest(mode=mode):
+                self.store = self.controller.ContinuousControllerStore(
+                    Path(self.temporary.name) / f'receipt-{mode}.sqlite', ['B'])
+                spy = JiraSpy()
+                def before(binding):
+                    value = spy.read_current_status(binding)
+                    if mode == 'before':
+                        value.update(status_id='Done', jira_provider=dict(PROVIDER, cloud_id='foreign'))
+                    return value
+                def write(record):
+                    value = spy.write_transition(record)
+                    if mode == 'write':
+                        value['operation_id'] = 'foreign-operation'
+                    if mode == 'write-provider':
+                        value['jira_provider'] = dict(PROVIDER, cloud_id='foreign')
+                    return value
+                def after(record, operation):
+                    value = spy.read_transition(record, operation)
+                    if mode == 'after':
+                        value['jira_provider'] = dict(PROVIDER, project_id='foreign')
+                    return value
+                result = self.run_batch(spy, read_current_status=before,
+                    write_transition=write, read_transition=after)
+                self.assertFalse(result['complete'])
+                self.assertFalse(result['count_allowed'])
+                self.assertEqual([], result['reconciled'])
+                self.assertEqual([('read','AWF-1')] +
+                    ([('write','AWF-1')] if mode != 'before' else []) +
+                    ([('read_back','AWF-1')] if mode == 'after' else []), spy.calls)
+                with self.store.connection() as db:
+                    self.assertEqual('UNKNOWN', db.execute(
+                        "SELECT status FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()[0])
+
+    def test_restart_retains_legacy_timestamp_pin_and_intents(self):
+        from unittest.mock import patch
+        from agentic.canonical import canonical, fingerprint, sha256
+        spy = JiraSpy()
+        inputs = self.operational_inputs(spy)
+        def lost(record):
+            spy.write_transition(record)
+            raise OSError('lost response')
+        inputs['write_transition'] = lost
+        self.controller.production_batch_closeout(self.store, **inputs)
+        # Reconstruct the exact pre-fix timestamp-bearing pin and fingerprints.
+        with self.store.transaction() as db:
+            pin = json.loads(db.execute("SELECT value FROM controller_meta WHERE key='t11-batch:batch-1'").fetchone()[0])
+            pin['observed_merge']['observed_at'] = NOW
+            encoded = canonical(pin)
+            db.execute("UPDATE controller_meta SET value=? WHERE key='t11-batch:batch-1'", (encoded.decode(),))
+            for row in db.execute('SELECT * FROM controller_batch_jira_operation').fetchall():
+                record = json.loads(row['record_json'])
+                record['batch_input_sha256'] = sha256(encoded)
+                intent = fingerprint('controller-jira-operation', {k:v for k,v in record.items() if k != 'created_at'})
+                db.execute('UPDATE controller_batch_jira_operation SET record_json=?,intent_sha256=? WHERE operation_id=?',
+                    (canonical(record).decode(), intent, row['operation_id']))
+            original = [tuple(row) for row in db.execute(
+                'SELECT operation_id,intent_sha256,record_json FROM controller_batch_jira_operation ORDER BY issue_id')]
+        replay = JiraSpy()
+        with patch.dict(globals(), NOW='2026-10-17T16:01:00Z'):
+            result = self.controller.production_batch_closeout(self.store, **self.operational_inputs(replay))
+        self.assertEqual(['AWF-2'], result['jira']['reconciled'])
+        self.assertEqual([('read','AWF-2'),('write','AWF-2'),('read_back','AWF-2')], replay.calls)
+        self.assertFalse(result['count_allowed'])
+        with self.store.connection() as db:
+            self.assertEqual(encoded.decode(), db.execute("SELECT value FROM controller_meta WHERE key='t11-batch:batch-1'").fetchone()[0])
+            self.assertEqual(original, [tuple(row) for row in db.execute(
+                'SELECT operation_id,intent_sha256,record_json FROM controller_batch_jira_operation ORDER BY issue_id')])
+
     def operational_inputs(self, spy=None):
         spy = spy or JiraSpy()
         self.config['github'].update(repository_id=101, repository='example/project')
@@ -1080,6 +1221,7 @@ class OperationalControllerTests(unittest.TestCase):
                     issue_type='LEAF', state='DISPATCHED', producer_id='controller-1', run_id='fixture',
                     now=NOW, evidence=[], transition_id='31', read_current_status=spy.read_current_status,
                     write_transition=spy.write_transition, read_transition=spy.read_transition,
+                    observe_provider_identity=lambda: deepcopy(PROVIDER),
                     observe_issue_identity=lambda key: {'issue_key':'AWF-1','observed_at':NOW})
             self.assertEqual([], spy.calls)
 
