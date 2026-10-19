@@ -236,32 +236,33 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
 
     def start_batch_process(self, mode):
         import subprocess
+        import textwrap
         fixture = Path(self.temporary.name) / "process-input.json"
         fixture.write_text(json.dumps({"config": self.config, "batch": self.batch,
             "observed_merge": self.merge, "now": NOW}), encoding="utf-8")
-        source = """
-import json, os, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from agentic.continuous_controller import ContinuousControllerStore, production_batch_jira_reconciliation
-inputs = json.loads(Path(sys.argv[3]).read_text('utf-8'))
-store = ContinuousControllerStore(Path(sys.argv[2]), ['B'])
-def before(binding):
-    return {'issue_id': binding['issue_id'], 'status_id': 'In Review', 'observed_at': inputs['now']}
-def write(record):
-    if sys.argv[4] == 'crash':
-        os._exit(19)
-    if record['binding']['issue_id'] == 'AWF-1':
-        print('CLAIMED', flush=True)
-        sys.stdin.readline()
-    return {'issue_id': record['binding']['issue_id'], 'status': 'ATTEMPTED', 'observed_at': inputs['now']}
-def after(record, operation):
-    return {'issue_id': record['binding']['issue_id'], 'status': 'Done',
-            'actor': 'controller-1', 'observed_at': inputs['now']}
-result = production_batch_jira_reconciliation(store, role='controller', **inputs,
-    read_current_status=before, write_transition=write, read_transition=after)
-print(json.dumps(result), flush=True)
-"""
+        source = textwrap.dedent("""
+        import json, os, sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        from agentic.continuous_controller import ContinuousControllerStore, production_batch_jira_reconciliation
+        inputs = json.loads(Path(sys.argv[3]).read_text('utf-8'))
+        store = ContinuousControllerStore(Path(sys.argv[2]), ['B'])
+        def before(binding):
+            return {'issue_id': binding['issue_id'], 'status_id': 'In Review', 'observed_at': inputs['now']}
+        def write(record):
+            if sys.argv[4] == 'crash':
+                os._exit(19)
+            if record['binding']['issue_id'] == 'AWF-1':
+                print('CLAIMED', flush=True)
+                sys.stdin.readline()
+            return {'issue_id': record['binding']['issue_id'], 'status': 'ATTEMPTED', 'observed_at': inputs['now']}
+        def after(record, operation):
+            return {'issue_id': record['binding']['issue_id'], 'status': 'Done',
+                    'actor': 'controller-1', 'observed_at': inputs['now']}
+        result = production_batch_jira_reconciliation(store, role='controller', **inputs,
+            read_current_status=before, write_transition=write, read_transition=after)
+        print(json.dumps(result), flush=True)
+        """)
         process = subprocess.Popen([sys.executable, "-B", "-c", source,
             str(ROOT / ".agentic/lib"), str(self.path), str(fixture), mode],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
