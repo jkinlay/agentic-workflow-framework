@@ -1812,8 +1812,20 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 	config, batch, policy_context = inputs['config'], inputs['batch'], inputs['policy_context']
 	from .canonical import fingerprint
 	from .jira_lifecycle import owner_closure_required, planned_write
+	# Freshness is validated above on every invocation. Only immutable merge
+	# identity belongs in the durable input pin and intent fingerprint.
+	del inputs['observed_merge']['observed_at']
 	encoded = canonical(inputs).decode()
 	pin = 't11-batch:' + batch['batch_id']
+	with store.connection() as db:
+		prior = db.execute('SELECT value FROM controller_meta WHERE key=?', (pin,)).fetchone()
+	if prior is not None:
+		retained = loads(prior['value'])
+		if isinstance(retained, dict) and isinstance(retained.get('observed_merge'), dict):
+			retained['observed_merge'].pop('observed_at', None)
+		_require(canonical(retained).decode() == encoded, 'Batch reconciliation input substitution refused')
+		# Keep pre-fix pins and their exact intent digests readable on recovery.
+		encoded = prior['value']
 	records = []
 	for member in batch['constituents']:
 		issue = member['binding']['issue_id']
@@ -1854,13 +1866,19 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 		return {'issue_id': issue, 'observed_status': observation.get('status', observation.get('status_id')),
 			'observed_actor': observation.get('actor'), 'observed_at': observation.get('observed_at'), 'reason': reason}
 
-	def receipt(value, issue, time_floor, kind):
+	provider = {key: config['jira'][source] for key, source in (
+		('cloud_id', 'cloud_id'), ('site', 'site'), ('project_id', 'provider_project_id'),
+		('project_key', 'project_key'), ('controller_actor_id', 'controller_actor_id'))}
+	def receipt(value, issue, time_floor, kind, expected_operation_id=None):
 		_require(isinstance(value, dict) and value.get('issue_id') == issue, 'Batch Jira receipt names a foreign issue')
+		fields = {'issue_id', 'observed_at', 'jira_provider'} | (
+			{'status_id'} if kind == 'before' else {'status', 'operation_id'} if kind == 'write' else {'status', 'actor'})
+		_require(set(value) == fields and value.get('jira_provider') == provider, 'Batch Jira receipt provider or shape is mismatched')
 		status = value.get('status_id' if kind == 'before' else 'status')
 		_require(isinstance(status, str) and status.strip(), 'Batch Jira receipt status is missing')
 		_require(timestamp(value.get('observed_at')) >= time_floor, 'Batch Jira receipt is stale')
 		if kind == 'write':
-			_require(status == 'ATTEMPTED', 'Batch Jira write outcome is unknown')
+			_require(status == 'ATTEMPTED' and value['operation_id'] == expected_operation_id, 'Batch Jira write outcome or operation identity is unknown')
 		if kind == 'after':
 			_require(isinstance(value.get('actor'), str) and value['actor'], 'Batch Jira readback actor is missing')
 		return status, timestamp(value['observed_at'])
@@ -1915,7 +1933,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 					store.finish_batch_jira_operation(operation_id, 'SUCCEEDED', observation, now)
 					continue
 				operation = write_transition(deepcopy(record))
-				_, operation_time = receipt(operation, issue, current_time, 'write')
+				_, operation_time = receipt(operation, issue, current_time, 'write', operation_id)
 				observation = read_transition(deepcopy(record), deepcopy(operation))
 				observed, _ = receipt(observation, issue, operation_time, 'after')
 				status = 'SUCCEEDED' if observed == record['to_status_id'] and observation['actor'] == config['jira']['controller_actor_id'] else 'FAILED'
@@ -2401,7 +2419,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 			'writes_stopped': True, 'execution_authority': False}
 	# Keep caller mutation out of intent, stop, ownership and callback identity.
 	binding = deepcopy(binding)
-	issue = _require_canonical_issue(binding.get('issue_id'), observe_issue_identity=observe_issue_identity, now=now)
+	issue = _require_canonical_issue(binding.get('issue_id'), now=now)
 	from .provider_identity import ProviderIdentityError, expected_jira_identity, require_jira_write_identity
 	expected = {'cloud_id': config.get('jira', {}).get('cloud_id'), 'site': config.get('jira', {}).get('site'), 'project_id': config.get('jira', {}).get('provider_project_id'), 'project_key': config.get('jira', {}).get('project_key'), 'account_id': config.get('jira', {}).get('controller_actor_id')}
 	observed_identity = None
@@ -2418,6 +2436,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 		return {'planned': False, 'status': exc.code, 'reason': str(exc), 'expected_identity': exc.expected or expected, 'observed_identity': exc.observed if exc.observed is not None else observed_identity, 'issue_lookups': 0, 'writes_stopped': True, 'reads_allowed': True, 'execution_authority': False}
 	except Exception as exc:
 		return {'planned': False, 'status': 'IDENTITY_UNOBSERVED', 'reason': 'Jira provider identity observation failed: ' + type(exc).__name__, 'expected_identity': expected, 'observed_identity': None, 'issue_lookups': 0, 'writes_stopped': True, 'reads_allowed': True, 'execution_authority': False}
+	_require_canonical_issue(issue, observe_issue_identity=observe_issue_identity, now=now)
 	adapter_binding = {'issue_id': issue, 'jira_provider': provider}
 	# Check before ordinary recovery/replay: a batch stop belongs to the issue,
 	# and an ordinary readback cannot resolve or replace that batch intent.
