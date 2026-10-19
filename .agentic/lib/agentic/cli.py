@@ -13,6 +13,10 @@ from .gates import evaluate
 from .installer import verify_installed
 from .policy import inspect_config, validate_config
 from .output import configure_streams, emit_json, json_text, require_ascii_line
+from .safeio import snapshot_file
+from .child_process import render_bounded_diagnostic
+
+RENDER_INPUT_MAXIMUM = 1_048_576
 
 
 def local_semantics(name, value):
@@ -294,7 +298,10 @@ def main(argv=None, default_root=None):
         elif args.command == "publication-render":
             from .publication import load_mapping, render_aliases
             mapping, _digest, _path = load_mapping(root, args.mapping)
-            print(render_aliases(args.input.read_text(encoding="utf-8", errors="replace"), mapping), end="")
+            data = snapshot_file(args.input, maximum=RENDER_INPUT_MAXIMUM).data
+            # Preserve the replacement decoding and universal newlines of read_text.
+            text = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+            print(render_aliases(text, mapping), end="")
             return 0
         elif args.command == "capabilities":
             output = {"version": VERSION, "profile": "manual_reference", "live_dispatch": False, "live_jira_mutations": False,
@@ -591,6 +598,7 @@ def main(argv=None, default_root=None):
                       "diagnostic": access_diagnostic(exc, ".agentic project paths (" + str(safe_name) + ")"),
                       "execution_authority": False}
         else:
-            output = {"status": "REJECTED", "reason": str(exc), "execution_authority": False}
+            output = {"status": "REJECTED", "reason": render_bounded_diagnostic(
+                str(exc), code="DIAGNOSTIC_INVALID"), "execution_authority": False}
         emit_json(output, stream=sys.stderr)
         return 2

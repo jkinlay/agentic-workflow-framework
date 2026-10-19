@@ -945,9 +945,31 @@ class HostDriver:
             'gh', ['api', '--hostname', 'github.com', '--method', 'POST',
                    endpoint, '--input', '-'], stdin=raw, binary=False))
 
+    def _provider_read(self, suffix, *, operation_budget=None):
+        """Preserve bounded replay for collectors recorded before budget keywords."""
+        parameters = inspect.signature(self.api).parameters.values()
+        if any(item.name == 'operation_budget'
+               or item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters):
+            return self.api(suffix, operation_budget=operation_budget)
+        value = self.api(suffix)
+        try:
+            raw = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        except (TypeError, ValueError) as exc:
+            raise ValidationError('Provider response is not valid JSON') from exc
+        require(len(raw) <= HOST_PROVIDER_RUNNER_POLICY.stdout_limit,
+                'HOST_STDOUT_LIMIT: host provider output exceeded its cap')
+        if operation_budget is not None:
+            try:
+                operation_budget.start_operation()
+                operation_budget.consume(len(raw))
+            except ChildProcessPolicyError as exc:
+                raise ValidationError(
+                    'SUBPROCESS_OPERATION_BUDGET: shared operation budget exceeded') from exc
+        return value
+
     def require_repository_identity(self, *, operation_budget=None):
         """Bind the configured slug to its reviewed numeric repository before writes."""
-        value = self.api('', operation_budget=operation_budget)
+        value = self._provider_read('', operation_budget=operation_budget)
         require(isinstance(value, dict)
                 and type(value.get('id')) is int
                 and value['id'] == self.c['repository_id'],
@@ -960,7 +982,7 @@ class HostDriver:
         seen = set()
         for page in range(1, maximum // 100 + 2):
             separator = '&' if '?' in suffix else '?'
-            value = self.api(
+            value = self._provider_read(
                 f'{suffix}{separator}per_page=100&page={page}',
                 operation_budget=operation_budget)
             require(isinstance(value, list), 'Provider page is not a JSON array')
@@ -984,16 +1006,23 @@ class HostDriver:
         provider_budget = HOST_PROVIDER_RUNNER_POLICY.make_budget(
             'provider-provenance-observation')
         self.require_repository_identity(operation_budget=provider_budget)
-        before = self.api(
+        before = self._provider_read(
             f'pulls/{self.c["pr"]}', operation_budget=provider_budget)
-        require(isinstance(before, dict) and before.get('number') == self.c['pr'],
+        require(isinstance(before, dict) and type(before.get('number')) is int
+                and before['number'] > 0 and before['number'] == self.c['pr'],
                 'Provider PR identity mismatch')
-        body = before.get('body') or ''
+        body = before.get('body')
         require(isinstance(body, str) and len(body.encode('utf-8')) <= 1024 * 1024,
                 'Provider PR body exceeds 1 MiB')
-        labels = before.get('labels') or []
+        labels = before.get('labels')
         require(isinstance(labels, list) and len(labels) <= 100,
                 'Provider label inventory exceeds 100')
+        if len(labels) == 100:
+            paged_labels = self._paged_provider_rows(
+                f'issues/{self.c["pr"]}/labels', maximum=100,
+                operation_budget=provider_budget)
+            require(paged_labels == labels,
+                    'Provider label inventory changed or is incomplete')
         label_names = []
         for label in labels:
             require(isinstance(label, dict) and isinstance(label.get('name'), str)
@@ -1009,8 +1038,9 @@ class HostDriver:
             for item in self._paged_provider_rows(
                     suffix, maximum=1000 - len(comments),
                     operation_budget=provider_budget):
-                text = item.get('body') or ''
-                actor = (item.get('user') or {}).get('id')
+                text = item.get('body')
+                user = item.get('user')
+                actor = user.get('id') if isinstance(user, dict) else None
                 url = item.get('html_url')
                 require(isinstance(text, str) and len(text.encode('utf-8')) <= 1024 * 1024,
                         'Provider comment exceeds 1 MiB')
@@ -1027,13 +1057,31 @@ class HostDriver:
                           separators=(',', ':')).encode('utf-8')
         require(len(wire) <= 8 * 1024 * 1024,
                 'Provider observation exceeds 8 MiB')
-        after = self.api(
+        after = self._provider_read(
             f'pulls/{self.c["pr"]}', operation_budget=provider_budget)
-        keys = lambda value: (value.get('number'), value.get('updated_at'),
+        def keys(value):
+            require(isinstance(value, dict) and type(value.get('number')) is int,
+                    'Provider PR identity is malformed')
+            for side in ('head', 'base'):
+                entry = value.get(side)
+                require(isinstance(entry, dict)
+                        and isinstance(entry.get('sha'), str)
+                        and re.fullmatch(r'[0-9a-f]{40}', entry['sha'])
+                        and safe_path(entry.get('ref'))
+                        and not any(c in entry['ref'] for c in '~^:?*[ ')
+                        and '..' not in entry['ref'] and '@{' not in entry['ref']
+                        and not entry['ref'].endswith(('.', '.lock')),
+                        'Provider PR commit or ref is invalid')
+                repo = entry.get('repo')
+                require(isinstance(repo, dict) and type(repo.get('id')) is int
+                        and repo['id'] == self.c['repository_id'],
+                        'Provider repository identity changed')
+            return (value.get('number'), value.get('updated_at'),
             (value.get('head') or {}).get('sha'), (value.get('head') or {}).get('ref'),
             ((value.get('head') or {}).get('repo') or {}).get('id'),
             (value.get('base') or {}).get('sha'), (value.get('base') or {}).get('ref'),
-            ((value.get('base') or {}).get('repo') or {}).get('id'), value.get('body'))
+            ((value.get('base') or {}).get('repo') or {}).get('id'),
+            value.get('body'), value.get('labels'))
         require(keys(before) == keys(after),
                 'Provider PR changed during paged provenance observation')
         head = (before.get('head') or {})
@@ -1099,7 +1147,8 @@ class HostDriver:
                 'provider_actor_id': created['user']['id'],
                 'provider_body_sha256': matches[0]['body_sha256']}
 
-    def validate_local_provenance(self, base, head, *, observation=None):
+    def validate_local_provenance(self, base, head, *, observation=None,
+                                  unpublished_parent=None):
         """Run the reviewed fail-closed provenance gate on immutable OIDs."""
         require(isinstance(self.c.get('provenance'), dict),
                 'Reviewed provenance policy is not configured')
@@ -1107,6 +1156,36 @@ class HostDriver:
         require(observation.get('repository_id') == self.c['repository_id']
                 and observation.get('pr') == self.c['pr'],
                 'Provenance observation belongs to another repository or PR')
+        if unpublished_parent is not None:
+            # Only an immediate, locally created amendment can extend the
+            # freshly observed remote head before its normal push.
+            require(self.git(self.worker, 'rev-parse', head + '^') == unpublished_parent,
+                    'Unpublished amendment parent mismatch')
+        require(observation.get('base') == base
+                and observation.get('base_ref') == self.c['base_branch'],
+                'Provenance observation differs from the requested candidate tuple')
+        if 'head' not in observation and 'head_ref' not in observation:
+            # Before PR creation the provider can observe only the default
+            # branch. Bind the local publisher child without inventing a
+            # remotely observed head; the same range gate still runs below.
+            require(self.c.get('first_draft') is True
+                    and type(self.c.get('pr')) is int and self.c['pr'] == 0
+                    and type(observation.get('pr')) is int
+                    and observation['pr'] == 0
+                    and observation.get('repository') == self.c['repository']
+                    and unpublished_parent is None,
+                    'Headless provenance requires an unbound first draft')
+            require(self.git(self.worker, 'rev-parse', 'HEAD') == head
+                    and self.git(self.worker, 'symbolic-ref', '--short', 'HEAD')
+                    == self.c['head_branch']
+                    and self.git(self.worker, 'rev-list', '--parents', '-n', '1', head)
+                    .split() == [head, base],
+                    'First-draft provenance requires the local publisher child and branch')
+        else:
+            require(type(self.c.get('pr')) is int and self.c['pr'] > 0
+                    and observation.get('head') == (unpublished_parent or head)
+                    and observation.get('head_ref') == self.c['head_branch'],
+                    'Provenance observation differs from the requested candidate tuple')
         result = check_commit_range(
             self.worker, base, head,
             reviewed_policy=self.c.get('provenance'),
@@ -1631,7 +1710,8 @@ class HostDriver:
                 and observation.get('base') == candidate['base'],
                 'Provider candidate moved before amendment provenance proof')
         self.validate_local_provenance(candidate['base'], new_head,
-                                       observation=observation)
+                                       observation=observation,
+                                       unpublished_parent=candidate['head'])
         require(self.git(self.worker,'rev-parse','HEAD^') == candidate['head'], 'Amendment parent mismatch')
         require(not self.git(self.worker,'status','--porcelain','--untracked-files=all'), 'Uncommitted changes remain after amendment')
         require(self.snapshot() == candidate, 'PR moved before push; local commit retained for reconciliation')

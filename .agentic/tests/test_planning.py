@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -122,6 +123,176 @@ def capacity_kwargs(cfg, host_capacity=12, resources=None, stream_capacity=None)
 def plan(tickets, cfg, **capacity):
     return planning.plan_lanes(
         planning.build_backlog_graph(tickets, cfg), cfg, **capacity_kwargs(cfg, **capacity))
+
+
+class ProviderSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = config()
+        self.binding = {
+            "project_id": "project-1", "repository_id": "123",
+            "scope_sha256": "b" * 64, "repository_head_sha": "c" * 40,
+            "project_config_sha256": fingerprint("accepted-project-config", self.cfg),
+            "cycle_id": "cycle-1",
+        }
+        self.provider = {
+            "provider_id": "reviewed-backlog-provider",
+            "implementation_sha256": "a" * 64,
+            "verifier_implementation_sha256": "d" * 64,
+        }
+        self.snapshot = {
+            "format": "awf-backlog-provider-snapshot-1", "complete": True,
+            "provider": deepcopy(self.provider), "binding": deepcopy(self.binding),
+            "observed_at": NOW,
+            "tickets": [{"ticket": {"key": "AWF-1", "status": "open"},
+                         "components": [
+                             {"kind": kind, "ticket_key": "AWF-1",
+                              "binding": deepcopy(self.binding), "observed_at": NOW,
+                              "files": [path]}
+                             for kind, path in [("brief", "src/brief.py"),
+                                                ("open_pr", "src/pr.py"),
+                                                ("worktree_diff", "src/dirty.py")]]}],
+            "authentication": {"evidence_id": "trusted-observation-1"},
+        }
+        self.trusted = self.body(self.snapshot)
+
+    @staticmethod
+    def body(snapshot):
+        return {key: deepcopy(value) for key, value in snapshot.items()
+                if key != "authentication"}
+
+    def verify(self, authentication, request):
+        # Independent host evidence, never a reflection of the supplied payload.
+        self.assertEqual(self.provider, request["provider"])
+        self.assertEqual(self.binding, request["binding"])
+        self.assertEqual(NOW, request["observed_at"])
+        if authentication != {"evidence_id": "trusted-observation-1"}:
+            return {"status": "UNVERIFIED"}
+        return {"status": "VERIFIED", "evidence_id": "trusted-observation-1",
+                "snapshot": deepcopy(self.trusted)}
+
+    def read(self, snapshot=None, verifier=None, **overrides):
+        kwargs = {"expected_binding": self.binding,
+                  "expected_provider": self.provider, "now": NOW,
+                  "verify_provider_snapshot": verifier or self.verify}
+        kwargs.update(overrides)
+        return planning.tickets_from_provider_snapshot(
+            self.snapshot if snapshot is None else snapshot, self.cfg, **kwargs)
+
+    def test_authenticated_backlog_snapshot_collects_brief_pr_and_diff_paths(self):
+        original = deepcopy(self.snapshot)
+        tickets = self.read()
+        graph = planning.build_backlog_graph(tickets, self.cfg)
+        self.assertEqual({"src/brief.py": ["brief"], "src/pr.py": ["open_pr"],
+                          "src/dirty.py": ["worktree_diff"]},
+                         graph["tickets"]["AWF-1"]["path_sources"])
+        self.assertEqual(original, self.snapshot)
+        tickets[0]["write_paths"].append("src/later.py")
+        self.assertEqual(original, self.snapshot)
+
+    def test_unauthenticated_backlog_snapshot_fails_before_graph_build(self):
+        for case in ("unsigned", "stale", "foreign-repository", "foreign-project",
+                     "foreign-scope", "foreign-head", "old-cycle", "partial",
+                     "wrong-attribution", "foreign-component", "stale-component",
+                     "duplicate-component", "ticket-authored-pr", "forged-paths",
+                     "unpinned-provider", "unpinned-verifier", "wrong-config"):
+            with self.subTest(case=case):
+                snapshot = deepcopy(self.snapshot)
+                component = snapshot["tickets"][0]["components"][1]
+                if case == "unsigned":
+                    del snapshot["authentication"]
+                elif case == "stale":
+                    snapshot["observed_at"] = "2026-10-11T12:00:00Z"
+                elif case.startswith("foreign-") and case != "foreign-component":
+                    field = {"foreign-repository": "repository_id",
+                             "foreign-project": "project_id", "foreign-scope": "scope_sha256",
+                             "foreign-head": "repository_head_sha"}[case]
+                    snapshot["binding"][field] = "e" * 64
+                elif case == "old-cycle":
+                    snapshot["binding"]["cycle_id"] = "cycle-0"
+                elif case == "partial":
+                    snapshot["tickets"][0]["components"].pop()
+                elif case == "wrong-attribution":
+                    component["ticket_key"] = "AWF-2"
+                elif case == "foreign-component":
+                    component["binding"]["repository_id"] = "456"
+                elif case == "stale-component":
+                    component["observed_at"] = "2026-10-11T12:00:00Z"
+                elif case == "duplicate-component":
+                    snapshot["tickets"][0]["components"].append(deepcopy(component))
+                elif case == "ticket-authored-pr":
+                    snapshot["tickets"][0]["ticket"]["open_pr_files"] = ["src/injected.py"]
+                elif case == "forged-paths":
+                    component["files"] = ["src/forged.py"]
+                elif case.startswith("unpinned-"):
+                    field = ("implementation_sha256" if case == "unpinned-provider"
+                             else "verifier_implementation_sha256")
+                    snapshot["provider"][field] = "f" * 64
+                elif case == "wrong-config":
+                    snapshot["binding"]["project_config_sha256"] = "f" * 64
+                # Even authenticated malformed components must be refused.
+                self.trusted = (self.body(self.snapshot) if case == "forged-paths"
+                                else self.body(snapshot))
+                with patch.object(planning, "build_backlog_graph") as build:
+                    with self.assertRaises(ValidationError):
+                        planning.build_backlog_graph(self.read(snapshot), self.cfg)
+                    build.assert_not_called()
+
+    def test_snapshot_requires_independent_complete_verification(self):
+        for verifier in (None, lambda *_: True,
+                         lambda *_: {"status": "VERIFIED"},
+                         lambda *_: {"status": "VERIFIED", "snapshot_sha256":
+                                     fingerprint("snapshot", self.trusted)}):
+            with self.subTest(verifier=verifier), self.assertRaises(ValidationError):
+                self.read(verify_provider_snapshot=verifier)
+
+    def test_snapshot_rejects_unsafe_paths_and_duplicate_tickets(self):
+        for files in (["../outside.py"], ["src/*.py"], ["src/"], "src/file.py"):
+            with self.subTest(files=files):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["components"][0]["files"] = files
+                self.trusted = self.body(snapshot)
+                with self.assertRaises(ValidationError):
+                    self.read(snapshot)
+        snapshot = deepcopy(self.snapshot)
+        snapshot["tickets"].append(deepcopy(snapshot["tickets"][0]))
+        self.trusted = self.body(snapshot)
+        with self.assertRaises(ValidationError):
+            self.read(snapshot)
+
+    def test_snapshot_preserves_risk_metadata_and_empty_observed_sources(self):
+        snapshot = deepcopy(self.snapshot)
+        snapshot["tickets"][0]["ticket"].update(
+            summary="security change", description="reviewed scope", change_kind="release_pr")
+        snapshot["tickets"][0]["components"][1]["files"] = []
+        snapshot["tickets"][0]["components"][2]["files"] = ["MANIFEST.md"]
+        self.trusted = self.body(snapshot)
+        tickets = self.read(snapshot)
+        self.assertEqual("security change", tickets[0]["summary"])
+        graph = planning.build_backlog_graph(tickets, self.cfg)
+        self.assertEqual(3, graph["tickets"]["AWF-1"]["risk_tier"])
+        self.assertEqual({"src/brief.py": ["brief"]},
+                         graph["tickets"]["AWF-1"]["path_sources"])
+
+    def test_snapshot_rejects_verifier_errors_and_wrong_evidence_identity(self):
+        def unavailable(*_):
+            raise RuntimeError("provider unavailable")
+
+        def wrong_identity(*_):
+            return {"status": "VERIFIED", "evidence_id": "other-evidence",
+                    "snapshot": deepcopy(self.trusted)}
+
+        for verifier in (unavailable, wrong_identity):
+            with self.subTest(verifier=verifier), self.assertRaises(ValidationError):
+                self.read(verifier=verifier)
+
+    def test_operating_doc_covers_max_lanes_overrides_and_migration(self):
+        doc = (ROOT / ".agentic/docs/29-OPERATING-CONFIGURATION.md").read_text(encoding="utf-8")
+        for text in ("execution.max_lanes", "fixed", "max", "sealed safe capacity",
+                     "round boundaries", "omitted", "six", "AWF-50 item 1",
+                     "generated-schema limitation"):
+            with self.subTest(text=text):
+                self.assertIn(text, doc)
+        self.assertLessEqual(len(doc.split()), 800)
 
 
 class GraphTests(unittest.TestCase):
