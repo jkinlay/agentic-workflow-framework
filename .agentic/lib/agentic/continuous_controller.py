@@ -30,6 +30,12 @@ BATCH_JIRA_DDL = '''CREATE TABLE IF NOT EXISTS controller_batch_jira_operation(
  intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,
  operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL)'''
 
+def _stopped_batch_jira_operation(db, issue_id):
+	# Older controller stores need not have run T11 or created its separate table.
+	if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='controller_batch_jira_operation'").fetchone() is None:
+		return None
+	return db.execute("SELECT * FROM controller_batch_jira_operation WHERE issue_id=? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') ORDER BY rowid LIMIT 1", (issue_id,)).fetchone()
+
 # Complete statements: trigger bodies must never enter the semicolon-split DDL.
 BATCH_AUDIT_DDL = (
 	'''CREATE TABLE IF NOT EXISTS controller_batch_audit(
@@ -1531,6 +1537,7 @@ class ContinuousControllerStore:
 		intent_sha256 = fingerprint('controller-jira-operation', immutable_intent)
 		encoded = canonical(record).decode()
 		with self.transaction() as db:
+			_require(_stopped_batch_jira_operation(db, record['binding']['issue_id']) is None, 'A durable batch Jira operation is unresolved or failed; writes remain stopped')
 			prior = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
 			if prior is None:
 				db.execute('INSERT INTO controller_jira_operation VALUES(?,?,?,?,?,?,NULL,NULL,?)', (record['operation_id'], record['binding']['issue_id'], record['lifecycle_event'], intent_sha256, 'PENDING', encoded, now))
@@ -1544,6 +1551,7 @@ class ContinuousControllerStore:
 		with self.transaction() as db:
 			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
 			_require(row is not None and row['status'] == 'PENDING', 'Jira operation is not pending')
+			_require(_stopped_batch_jira_operation(db, row['issue_id']) is None, 'A durable batch Jira operation is unresolved or failed; writes remain stopped')
 			db.execute("UPDATE controller_jira_operation SET status='IN_FLIGHT',updated_at=? WHERE operation_id=?", (now, operation_id))
 			return loads(row['record_json'])
 
@@ -2293,6 +2301,12 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	except Exception as exc:
 		return {'planned': False, 'status': 'IDENTITY_UNOBSERVED', 'reason': 'Jira provider identity observation failed: ' + type(exc).__name__, 'expected_identity': expected, 'observed_identity': None, 'issue_lookups': 0, 'writes_stopped': True, 'reads_allowed': True, 'execution_authority': False}
 	adapter_binding = {'issue_id': binding['issue_id'], 'jira_provider': provider}
+	# Check before ordinary recovery/replay: a batch stop belongs to the issue,
+	# and an ordinary readback cannot resolve or replace that batch intent.
+	with store.connection() as db:
+		batch_stop = _stopped_batch_jira_operation(db, binding['issue_id'])
+	if batch_stop is not None:
+		return {'planned': False, 'reason': 'A durable batch Jira operation is unresolved or failed; writes remain stopped', 'writes_stopped': True, 'operation_id': batch_stop['operation_id'], 'execution_authority': False}
 	store.recover_jira_operations(now)
 	start_time = timestamp(now)
 	try:
