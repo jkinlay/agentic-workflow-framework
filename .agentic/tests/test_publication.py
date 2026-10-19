@@ -15,6 +15,7 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
+from source_only import skip_unless_source_repo
 
 from agentic import ValidationError
 from agentic import publication
@@ -2587,6 +2588,7 @@ class ConfigAllowanceAuthorityTests(unittest.TestCase):
                 configuration.validate_publication_project_config(
                     fixtures.project_config([fixtures.allowance(path)]), contracts)
 
+    @skip_unless_source_repo("needs the source-only contract generator", "scripts/generate_contracts.py")
     def test_receipt_schema_accepts_only_digest_for_optional_supplemental_binding(self):
         from generate_contracts import catalog
         schema = catalog()['publication-scan']
@@ -2595,6 +2597,7 @@ class ConfigAllowanceAuthorityTests(unittest.TestCase):
         self.assertNotIn('supplemental_project_config_sha256', schema['required'])
         self.assertFalse(schema['additionalProperties'])
 
+    @skip_unless_source_repo("needs the source-only example generator", "scripts/generate_examples.py")
     def test_generated_example_exposes_allowances(self):
         from generate_examples import config
         self.assertIn('large_file_allowances', config(True)['publication'])
