@@ -335,6 +335,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf134_recovery_lifecycle.py` | `5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a` |
 | `.agentic/tests/test_awf140_marker_validation.py` | `0bf5131678c191b2fc2313db23105656aac8f73e86bb57d8ee034d1f238aea61` |
 | `.agentic/tests/test_awf154_large_file_allowances.py` | `f1633d7a2a3d7ffd339cfb7c0ce60b50b9cc18ca879bfd66af2aa7573f54c546` |
+| `.agentic/tests/test_awf34_configured_allowance_closure.py` | `c49812d20e3c8165c1c092403be1c873885d0fbd6316666bc49e641f84f9281b` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `ee23dbe52a6c87818a7837d717442e50a5555d05fdbabecc463c74150e4ce024` |
 | `.agentic/tests/test_awf36_controller_automation.py` | `b2998bdd4ed4cb084a0640700cf8cd99247c42f26cbf483c3ba1c63c8c531c94` |
 | `.agentic/tests/test_awf59_review_tier_yaml.py` | `dce123fbd47c3ebc7c744c83fdbe7cfa4a2488c8b2c0dd294b948ba417e5f666` |
