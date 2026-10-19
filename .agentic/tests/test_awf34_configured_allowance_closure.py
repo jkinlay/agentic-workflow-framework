@@ -1,7 +1,12 @@
 """AWF-34 combined coverage for committed, digest-bound baseline allowances."""
 import hashlib
 import json
+from pathlib import Path
+import sys
 import unittest
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_awf154_large_file_allowances as fixtures
 
