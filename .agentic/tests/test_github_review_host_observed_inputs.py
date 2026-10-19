@@ -82,9 +82,19 @@ class ObservedInputTests(unittest.TestCase):
                 changed['labels'] = labels
                 host, _, _ = self.host(before=changed, pages=pages)
                 fresh = host.collect_provenance_observation()
-                with self.assertRaises(ValidationError):
-                    verify_provider_owner_override(
-                        record, fresh, repository_id=12, config_sha256='f' * 64)
+                self.assertEqual(fresh['labels'],
+                                 [label['name'] for label in labels])
+                fresh_verified = verify_provider_owner_override(
+                    record, fresh, repository_id=12, config_sha256='f' * 64)
+                baseline_host, _, _ = self.host(
+                    before=dict(pr, labels=[]), pages=pages)
+                baseline = baseline_host.collect_provenance_observation()
+                self.assertEqual(baseline['labels'], [])
+                baseline_verified = verify_provider_owner_override(
+                    record, baseline, repository_id=12, config_sha256='f' * 64)
+                self.assertEqual(fresh_verified['provider_comment_id'], 91)
+                self.assertEqual(fresh_verified, baseline_verified)
+                self.assertEqual(fresh_verified, verified)
 
         with self.subTest(label_removed_during_collection=True):
             after = deepcopy(pr)
@@ -154,6 +164,107 @@ class ObservedInputTests(unittest.TestCase):
                 host, _, _ = self.host(before=changed)
                 with self.assertRaises(ValidationError):
                     host.collect_provenance_observation()
+
+    def first_draft_host(self, directory):
+        driver, _, _ = self.host()
+        driver.c.update(pr=0, first_draft=True)
+        driver.worker = Path(directory)
+        driver.api = lambda suffix: ({'id': 12} if suffix == '' else
+                                    {'commit': {'sha': 'b' * 40}})
+        driver.git = lambda root, *args: {
+            ('rev-parse', 'HEAD'): 'a' * 40,
+            ('symbolic-ref', '--short', 'HEAD'): 'codex/test',
+            ('rev-list', '--parents', '-n', '1', 'a' * 40):
+                'a' * 40 + ' ' + 'b' * 40,
+        }[args]
+        return driver
+
+    def test_unbound_first_draft_checks_local_range_with_default_observation(self):
+        from agentic.providers import github_review_host
+
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self.first_draft_host(directory)
+            observed = driver.collect_default_branch_observation()
+            self.assertNotIn('head', observed)
+            self.assertNotIn('head_ref', observed)
+            with patch.object(github_review_host, 'check_commit_range',
+                              return_value={'status': 'PASS', 'refusals': []}) as gate:
+                driver.validate_local_provenance('b' * 40, 'a' * 40,
+                                                 observation=observed)
+                self.assertEqual(gate.call_count, 1)
+                self.assertEqual(gate.call_args.args,
+                                 (driver.worker, 'b' * 40, 'a' * 40))
+                self.assertIs(gate.call_args.kwargs['provider_observation'], observed)
+
+    def test_unbound_first_draft_rejects_invalid_default_context_before_gate(self):
+        from agentic import ValidationError
+        from agentic.providers import github_review_host
+
+        cases = [({'first_draft': value}, {}) for value in (False, None, 1)]
+        cases += [({'pr': value}, {'pr': value}) for value in (False, '0', 7)]
+        cases += [({}, {field: value}) for field, value in (
+            ('repository_id', 13), ('repository', 'fixture/other'),
+            ('pr', False), ('pr', 7), ('base', 'c' * 40), ('base_ref', 'other'),
+            ('head', 'c' * 40), ('head_ref', 'codex/other'),
+            ('head', None), ('head_ref', None))]
+        with tempfile.TemporaryDirectory() as directory:
+            for config, changes in cases:
+                with self.subTest(config=config, observation=changes):
+                    driver = self.first_draft_host(directory)
+                    observed = driver.collect_default_branch_observation()
+                    driver.c.update(config)
+                    observed.update(changes)
+                    with patch.object(github_review_host, 'check_commit_range') as gate:
+                        with self.assertRaises(ValidationError):
+                            driver.validate_local_provenance(
+                                'b' * 40, 'a' * 40, observation=observed)
+                        gate.assert_not_called()
+
+    def test_unbound_first_draft_requires_local_publisher_child_and_branch(self):
+        from agentic import ValidationError
+        from agentic.providers import github_review_host
+
+        with tempfile.TemporaryDirectory() as directory:
+            for command, wrong in (
+                (('rev-parse', 'HEAD'), 'c' * 40),
+                (('symbolic-ref', '--short', 'HEAD'), 'codex/other'),
+                (('rev-list', '--parents', '-n', '1', 'a' * 40),
+                 'a' * 40 + ' ' + 'c' * 40),
+                (('rev-list', '--parents', '-n', '1', 'a' * 40),
+                 'a' * 40 + ' ' + 'b' * 40 + ' ' + 'c' * 40),
+            ):
+                with self.subTest(command=command, wrong=wrong):
+                    driver = self.first_draft_host(directory)
+                    observed = driver.collect_default_branch_observation()
+                    original = driver.git
+                    driver.git = lambda root, *args: (
+                        wrong if args == command else original(root, *args))
+                    with patch.object(github_review_host, 'check_commit_range') as gate:
+                        with self.assertRaises(ValidationError):
+                            driver.validate_local_provenance(
+                                'b' * 40, 'a' * 40, observation=observed)
+                        gate.assert_not_called()
+
+    def test_bound_pr_cannot_use_default_observation_context(self):
+        from agentic import ValidationError
+        from agentic.providers import github_review_host
+
+        driver, _, _ = self.host()
+        driver.c['first_draft'] = True  # This remains configured after binding.
+        observed = driver.collect_provenance_observation()
+        for field in ('head', 'head_ref'):
+            for missing in (True, False):
+                with self.subTest(field=field, missing=missing):
+                    changed = dict(observed)
+                    if missing:
+                        del changed[field]
+                    else:
+                        changed[field] = 'c' * 40 if field == 'head' else 'codex/other'
+                    with patch.object(github_review_host, 'check_commit_range') as gate:
+                        with self.assertRaises(ValidationError):
+                            driver.validate_local_provenance(
+                                'b' * 40, 'a' * 40, observation=changed)
+                        gate.assert_not_called()
 
     def test_provider_body_is_bounded_re_read_and_digest_bound(self):
         from agentic import ValidationError
