@@ -234,6 +234,85 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         self.assertTrue(self.run_batch(replay)["complete"])
         self.assertEqual([], replay.calls)
 
+    def assert_batch_stop_blocks_ordinary_lifecycle(self, outcome):
+        import uuid
+        provider = {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                    "project_id": "project-1", "project_key": "AWF",
+                    "controller_actor_id": "controller-1"}
+        writes = []
+
+        def lifecycle(issue, run_id, current="Ready"):
+            def write(record):
+                writes.append(record)
+                return {"operation_id": record["operation_id"], "issue_id": issue,
+                        "status": "ATTEMPTED", "observed_at": NOW, "jira_provider": provider}
+            return self.controller.production_jira_lifecycle(self.store,
+                config=self.config, contract={}, event="WORKER_STARTED",
+                facts={"run_registered": True, "worktree_verified": True},
+                binding={"issue_id": issue, "project_id": "local-project",
+                         "repository_id": "101", "requirements_hash": "a" * 64},
+                issue_type="LEAF", state="DISPATCHED", producer_id="controller-1",
+                run_id=str(uuid.UUID(int=run_id)), now=NOW, evidence=["urn:fixture:test"],
+                transition_id="31", observe_provider_identity=lambda: provider,
+                read_current_status=lambda b: {"issue_id": issue, "status_id": current,
+                    "observed_at": NOW, "jira_provider": provider}, write_transition=write,
+                read_transition=lambda r, o: {"issue_id": issue, "status": "In Progress",
+                    "actor": "controller-1", "observed_at": NOW, "jira_provider": provider})
+
+        # Retain ordinary intents to exercise recovery and completed-operation replay.
+        self.assertEqual("SUCCEEDED", lifecycle("AWF-1", 1)["record"]["status"])
+        self.assertEqual("SUCCEEDED", lifecycle("AWF-1", 2)["record"]["status"])
+        pending_id = self.store.jira_operations("AWF-1")[1]["operation_id"]
+        with self.store.transaction() as db:
+            db.execute("UPDATE controller_jira_operation SET status='PENDING' WHERE operation_id=?",
+                       (pending_id,))
+        spy = JiraSpy(mismatch="AWF-1" if outcome == "FAILED" else None)
+        if outcome == "UNKNOWN":
+            def unknown(record, operation):
+                raise TimeoutError("Provider outcome unknown")
+            self.run_batch(spy, read_transition=unknown)
+        else:
+            self.run_batch(spy)
+        with self.store.connection() as db:
+            row = db.execute("SELECT status FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()
+        self.assertEqual(outcome, row["status"])
+        # Reopen durable state, as a restarted controller would.
+        self.store = self.controller.ContinuousControllerStore(self.path, ["B"])
+        writes.clear()
+        for ordinary_status in ("PENDING", "IN_FLIGHT", "UNKNOWN", "SUCCEEDED"):
+            with self.store.transaction() as db:
+                db.execute("UPDATE controller_jira_operation SET status=? WHERE operation_id=?",
+                           (ordinary_status, pending_id))
+            before = self.store.jira_operations("AWF-1")
+            for run_id in (3, 2, 1):
+                for current in ("Ready", "Done"):
+                    with self.subTest(outcome=outcome, ordinary_status=ordinary_status,
+                                      run_id=run_id, current=current):
+                        result = lifecycle("AWF-1", run_id, current)
+                        self.assertEqual([], writes)
+                        self.assertEqual(before, self.store.jira_operations("AWF-1"))
+                        self.assertFalse(result["planned"])
+                        self.assertTrue(result["writes_stopped"])
+        # Preparation and claiming must also enforce the stop transactionally.
+        from agentic import ValidationError
+        with self.assertRaisesRegex(ValidationError, "batch Jira operation"):
+            self.store.prepare_jira_operation(before[0]["record"], NOW)
+        with self.store.transaction() as db:
+            db.execute("UPDATE controller_jira_operation SET status='PENDING' WHERE operation_id=?",
+                       (pending_id,))
+        before = self.store.jira_operations("AWF-1")
+        with self.assertRaisesRegex(ValidationError, "batch Jira operation"):
+            self.store.begin_jira_operation(pending_id, NOW)
+        self.assertEqual(before, self.store.jira_operations("AWF-1"))
+        self.assertEqual("SUCCEEDED", lifecycle("AWF-3", 4)["record"]["status"])
+        self.assertEqual(["AWF-3"], [record["binding"]["issue_id"] for record in writes])
+
+    def test_unknown_batch_stops_ordinary_lifecycle_for_same_issue(self):
+        self.assert_batch_stop_blocks_ordinary_lifecycle("UNKNOWN")
+
+    def test_failed_batch_stops_ordinary_lifecycle_for_same_issue(self):
+        self.assert_batch_stop_blocks_ordinary_lifecycle("FAILED")
+
     def start_batch_process(self, mode):
         import subprocess
         import textwrap
