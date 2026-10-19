@@ -399,10 +399,7 @@ def sample(schema, schemas, document=None):
     if kind == "object":
         # Draft forms expose optional evidence bindings as well as required
         # fields; nullable bindings remain explicitly unobserved until filled.
-        # Supplemental config has no fixture input: omit its optional digest
-        # instead of inventing evidence for a file that was never supplied.
-        return {key: sample(child, schemas, document) for key, child in schema.get("properties", {}).items()
-                if key != "supplemental_project_config_sha256"}
+        return {key: sample(child, schemas, document) for key, child in schema.get("properties", {}).items()}
     if kind == "array":
         return [sample(schema["items"], schemas, document) for _ in range(schema.get("minItems", 0))]
     if kind == "boolean":
