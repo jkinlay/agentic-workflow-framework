@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import tempfile
 
 from . import ValidationError
 from .child_process import child_env
@@ -79,11 +81,9 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
         "-C", str(root),
     ]
     try:
-        # Archive applies .gitattributes conversion, including named filters.
-        # Git has no wildcard filter-disable switch: enumerate the configured
-        # driver keys without invoking them, then override every smudge/process
-        # driver and its required flag in command scope. Bound this discovery
-        # just like the object read; malformed/unreadable config fails closed.
+        # Retain fail-closed validation of existing filter keys. These overrides
+        # alone are NOT an isolation boundary: source configuration can change
+        # after discovery. Archive execution below uses private metadata instead.
         environment = isolated_git_environment()
         filters = subprocess.run(
             [*command, "config", "--null", "--name-only", "--get-regexp",
@@ -107,10 +107,55 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
             # Pin both execution routes even if only one was configured.
             command[2:2] = ["-c", f"{driver}.smudge=", "-c", f"{driver}.process=",
                             "-c", f"{driver}.required=false"]
-        done = subprocess.run(
-            [*command, *args], cwd=str(root), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-            env=child_env(environment), timeout=timeout, check=False)
+        if args and args[0] == "archive":
+            def discover(arguments: list[str]) -> str:
+                result = subprocess.run(
+                    [*command, "rev-parse", *arguments], cwd=str(root),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, shell=False, env=child_env(environment),
+                    timeout=timeout, check=False)
+                if result.returncode or len(result.stdout) > 65536:
+                    raise ValidationError(f"{label} object discovery failed")
+                return result.stdout.decode("utf-8").rstrip("\n")
+
+            # Resolve names once, then read only that immutable object ID. The
+            # discovery commands perform no archive/checkout conversion.
+            object_id = discover(["--verify", "--end-of-options", args[2]])
+            object_format = discover(["--show-object-format"])
+            if (object_format not in {"sha1", "sha256"} or not re.fullmatch(
+                    r"[0-9a-f]{40}" if object_format == "sha1" else r"[0-9a-f]{64}",
+                    object_id)):
+                raise ValidationError(f"{label} object identity is invalid")
+            objects = Path(discover(["--path-format=absolute", "--git-path", "objects"]))
+            if not objects.is_absolute() or not objects.is_dir():
+                raise ValidationError(f"{label} object directory is unavailable")
+            # Never import source config/includes, refs, worktree config, hooks
+            # or info/attributes. Only the object database is shared. In
+            # particular, newly introduced filter names have no executable
+            # definition here, even if source config changes at exec time.
+            with tempfile.TemporaryDirectory(prefix="awf-git-read-") as temporary:
+                metadata = Path(temporary)
+                (metadata / "objects").mkdir()
+                (metadata / "refs").mkdir()
+                (metadata / "HEAD").write_text("ref: refs/heads/unused\n", encoding="ascii")
+                config = "[core]\n\tbare = true\n\trepositoryformatversion = "
+                config += "0\n" if object_format == "sha1" else "1\n[extensions]\n\tobjectformat = sha256\n"
+                (metadata / "config").write_text(config, encoding="ascii")
+                archive_environment = dict(environment)
+                archive_environment["GIT_OBJECT_DIRECTORY"] = str(objects)
+                # Replace the source -C with explicit private Git metadata;
+                # cwd also stays private, so no source repository is discovered.
+                done = subprocess.run(
+                    [*command[:-2], f"--git-dir={metadata}",
+                     "archive", "--format=tar", object_id, *args[3:]],
+                    cwd=str(metadata), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+                    env=child_env(archive_environment), timeout=timeout, check=False)
+        else:
+            done = subprocess.run(
+                [*command, *args], cwd=str(root), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+                env=child_env(environment), timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ValidationError(f"{label} is unavailable") from exc
     if done.returncode or len(done.stdout) > maximum:
