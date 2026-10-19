@@ -115,20 +115,25 @@ provider labels remain compatibility inventory only.
 
 ## Publication and compatibility
 
-First draft validates its shared-grammar 4 KiB title. Before reservation it
-validates trusted contract Markdown and untrusted model/effort/branch scalars,
-then escapes the scalars. Rendering validates the tree and 1 MiB LF body.
-Receipt/tree/paths precede Git mutation; local proof precedes push/create and
-immediate readback. Uncertain publication is recovered, not replayed; pre-PR
-overrides do not exist. Amendments prove before push.
+Canonical UTF-8 `record.json` caps at 1,048,576 bytes inclusive, including
+key/digest/framing/escaped payload. Writes check before reservation;
+bounded reads/recovery refuse oversize unchanged/unsealed. Exact-limit
+write/read/recovery, append-only retries, crash/digest semantics, separate
+1,024-byte seal cap and global document limit remain.
 
-Before `commit-tree`, rewrite pinned-reads a ≤1 MiB canonical message and
-requires integer-one count (not Boolean). Safe branch/base refs precede
-repository reads. Exact-ref remote readback caps at 32 MiB. Invalid readback
-yields `REMOTE_READBACK_INVALID`; message-file/grammar failure yields
+First drafts validate shared-grammar 4 KiB titles, trusted contract Markdown
+and untrusted model/effort/branch scalars before reservation; escape scalars.
+Rendering validates tree/1 MiB LF body. Receipt/tree/paths precede Git mutation;
+Local proof precedes push/create/immediate readback. Recover uncertain publication;
+never replay. No pre-PR overrides. Amendments prove before push.
+
+Before `commit-tree`, rewrite pinned-reads canonical messages (1 MiB maximum),
+requiring integer-one count, never Boolean. Safe branch/base refs precede reads.
+Exact-ref readback: 32 MiB; invalidity yields
+`REMOTE_READBACK_INVALID`. Message-file/grammar:
 `REWRITE_MESSAGE_INVALID`. Reachability/exact-tree/quarantine/CAS/rollback/
 recovery protections remain.
 
-V2 retains 1.9.4 `changed_files`, adds ordered `changed_entries`, and uses stable
+V2 retains 1.9.4 `changed_files`, adds ordered `changed_entries`, with stable
 ASCII refusal codes. Fake-provider/Git/subprocess tests are offline; live-network
 qualification is host evidence. CI covers supported Windows/Linux Python.
