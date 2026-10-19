@@ -222,6 +222,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
                 issue_type="LEAF", state="DISPATCHED", producer_id="controller-1",
                 run_id=str(uuid.UUID(int=run_id)), now=NOW, evidence=["urn:fixture:test"],
                 transition_id="31", observe_provider_identity=lambda: provider,
+                observe_issue_identity=lambda key: {"issue_key": key, "observed_at": NOW},
                 read_current_status=lambda b: {"issue_id": "AWF-1", "status_id": "Ready",
                     "observed_at": NOW, "jira_provider": provider}, write_transition=write,
                 read_transition=lambda r, o: {"issue_id": "AWF-1", "status": "In Progress",
@@ -254,6 +255,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
                 issue_type="LEAF", state="DISPATCHED", producer_id="controller-1",
                 run_id=str(uuid.UUID(int=run_id)), now=NOW, evidence=["urn:fixture:test"],
                 transition_id="31", observe_provider_identity=lambda: provider,
+                observe_issue_identity=lambda key: {"issue_key": key, "observed_at": NOW},
                 read_current_status=lambda b: {"issue_id": issue, "status_id": current,
                     "observed_at": NOW, "jira_provider": provider}, write_transition=write,
                 read_transition=lambda r, o: {"issue_id": issue, "status": "In Progress",
@@ -333,6 +335,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
             issue_type="LEAF", state="DISPATCHED", producer_id="controller-1",
             run_id=str(uuid.uuid4()), now=NOW, evidence=["urn:fixture:interleaving"],
             transition_id="31", observe_provider_identity=lambda: provider,
+                observe_issue_identity=lambda key: {"issue_key": key, "observed_at": NOW},
             read_current_status=lambda b: {"issue_id": issue, "status_id": "Ready",
                 "observed_at": NOW, "jira_provider": provider}, write_transition=write,
             read_transition=lambda r, o: {"issue_id": issue, "status": "In Progress",
@@ -827,6 +830,205 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.run_batch(spy)
         self.assertEqual([], spy.calls)
+
+
+class RetainedCoordinatorFixture:
+    """Doc 49 items 2-4: reviewed coordinator; retained bytes, no caller evidence.
+
+    Audit reads check namespace/key/identity/bytes/digest. Identical append is
+    idempotent; conflicting append is refused; no replace or purge operation.
+    W1 replaces this fixture after merge; operational assertions stay.
+    """
+    def __init__(self, candidate):
+        self.candidate = deepcopy(candidate)
+        self.events = {}
+        self.append_audit(self.candidate)
+
+    def append_audit(self, candidate):
+        from agentic.canonical import canonical, sha256
+        from agentic import ValidationError
+        key = (candidate['repository_id'], candidate['batch_id'])
+        raw = canonical({k:v for k,v in candidate.items() if k != 'audit_sha256'})
+        candidate['audit_sha256'] = sha256(raw)
+        event = ('awf-merge-train-audit-1', key, raw, sha256(raw))
+        if key in self.events and self.events[key] != event:
+            raise ValidationError('immutable audit conflict')
+        self.events[key] = event
+        return deepcopy(event)
+
+    def __call__(self, request):
+        from agentic import ValidationError
+        from agentic.canonical import canonical, sha256
+        if set(request) != {'operation', 'repository_id', 'batch_id'} or request['operation'] != 'load':
+            raise ValidationError('fixture accepts explicit retained load only')
+        key = (request['repository_id'], request['batch_id'])
+        event = self.events[key]
+        raw = canonical({k:v for k,v in self.candidate.items() if k != 'audit_sha256'})
+        if (event != ('awf-merge-train-audit-1', key, raw, sha256(raw))
+                or self.candidate['audit_sha256'] != sha256(raw)):
+            raise ValidationError('invalid retained audit')
+        from agentic.closeout import validate_retained_batch_candidate
+        validate_retained_batch_candidate(self.candidate, repository_id=key[0], batch_id=key[1])
+        return deepcopy(self.candidate)
+
+
+def reviewed_script():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('awf_controller_cli_fixture', ROOT / '.agentic/scripts/continuous_controller.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class OperationalControllerTests(unittest.TestCase):
+    setUp = BatchReconciliationSafetyTests.setUp
+    run_batch = BatchReconciliationSafetyTests.run_batch
+
+    def operational_inputs(self, spy=None):
+        spy = spy or JiraSpy()
+        self.config['github'].update(repository_id=101, repository='example/project')
+        candidate = dict(repository_id=101, batch_id='batch-1', generation=1,
+            pr=44, head='d'*40, tree='e'*40, base='f'*40,
+            state='MERGED_OBSERVED', audit_sha256='a'*64,
+            sources=[dict(pr=m['pr_number'], head=m['reviewed_head_sha'],
+                issue_key=m['binding']['issue_id'], paths=m['paths']) for m in self.batch['constituents']])
+        self.coordinator = RetainedCoordinatorFixture(candidate)
+        script = reviewed_script()
+        provider = {'host': self.config['github']['host'], 'repository': 'example/project', 'repository_id': 101}
+        repository = {'repository': 'example/project', 'repository_id': 101}
+        self.merge_response = dict(repository_id=101, batch_id='batch-1', generation=1,
+            pr=44, head='d'*40, tree='e'*40, base='f'*40,
+            target_branch='main', merge_commit_sha='d'*40, observed_at=NOW)
+        registry = script._adapter_observer_registration('merge-fixture', 'BATCH_MERGE',
+            lambda request: {'observed_at': NOW, 'result': deepcopy(self.merge_response)},
+            'a'*64, provider_identity=provider, repository_identity=repository)
+        return dict(config=self.config, request={'operation':'load','repository_id':101,'batch_id':'batch-1'},
+            coordinator=self.coordinator, merge_observer_id='merge-fixture', merge_observer_registry=registry,
+            observe_issue_identity=lambda key: {'issue_key': key, 'observed_at': NOW},
+            observe_issue_policy=lambda key: {'issue_key':key, 'issue_type':'LEAF',
+                'snapshot':{'summary':'Routine work', 'labels':[]}, 'observed_at':NOW},
+            observe_provider_identity=lambda: {'cloud_id':'cloud-1','site':'https://jira.example.invalid',
+                'project_id':'project-1','project_key':'AWF','controller_actor_id':'controller-1'},
+            now=NOW, read_current_status=spy.read_current_status,
+            write_transition=spy.write_transition, read_transition=spy.read_transition)
+
+    def test_jira_alias_input_rejected_before_dispatch(self):
+        from agentic import ValidationError
+        with self.store.transaction() as db:
+            db.execute(self.controller.BATCH_JIRA_DDL)
+        for alias in ['10001', 'awf-1', 'OLD-1']:
+            spy = JiraSpy()
+            bad = deepcopy(self.batch)
+            bad['constituents'][0]['binding']['issue_id'] = alias
+            with self.assertRaisesRegex(ValidationError, 'canonical'):
+                self.run_batch(spy, batch=bad,
+                    observe_issue_identity=lambda key: {'issue_key':'AWF-1','observed_at':NOW})
+            self.assertEqual([], spy.calls)
+            with self.store.connection() as db:
+                self.assertEqual(0, db.execute('SELECT count(*) FROM controller_batch_jira_operation').fetchone()[0])
+            with self.assertRaisesRegex(ValidationError, 'canonical'):
+                self.controller.production_jira_lifecycle(self.store, config=self.config,
+                    contract={}, event='WORKER_STARTED', facts={}, binding={'issue_id':alias},
+                    issue_type='LEAF', state='DISPATCHED', producer_id='controller-1', run_id='fixture',
+                    now=NOW, evidence=[], transition_id='31', read_current_status=spy.read_current_status,
+                    write_transition=spy.write_transition, read_transition=spy.read_transition,
+                    observe_issue_identity=lambda key: {'issue_key':'AWF-1','observed_at':NOW})
+            self.assertEqual([], spy.calls)
+
+    def test_numeric_2001_rejected_before_any_callback_or_intent(self):
+        from agentic import ValidationError
+        calls = []
+        def forbidden(*args):
+            calls.append(args)
+            self.fail('numeric issue dispatched a callback')
+        with self.store.transaction() as db:
+            db.execute(self.controller.BATCH_JIRA_DDL)
+        bad = deepcopy(self.batch)
+        bad['constituents'][0]['binding']['issue_id'] = '2001'
+        with self.assertRaisesRegex(ValidationError, 'canonical'):
+            self.run_batch(batch=bad,
+                read_current_status=forbidden, write_transition=forbidden,
+                read_transition=forbidden)
+        with self.assertRaisesRegex(ValidationError, 'canonical'):
+            self.controller.production_jira_lifecycle(self.store, config=self.config,
+                contract={}, event='WORKER_STARTED', facts={}, binding={'issue_id':'2001'},
+                issue_type='LEAF', state='DISPATCHED', producer_id='controller-1', run_id='fixture',
+                now=NOW, evidence=[], transition_id='31', observe_provider_identity=forbidden,
+                observe_issue_identity=forbidden,
+                read_current_status=forbidden,
+                write_transition=forbidden, read_transition=forbidden)
+        self.assertEqual([], calls)
+        self.assertEqual([], self.store.jira_operations('2001'))
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT count(*) FROM controller_batch_jira_operation').fetchone()[0])
+
+    def test_provider_issue_alias_cannot_bypass_batch_stop_or_issue_lock(self):
+        from agentic import ValidationError
+        self.run_batch(JiraSpy(mismatch='AWF-1'))
+        spy = JiraSpy()
+        inputs = self.operational_inputs(spy)
+        self.coordinator.candidate['sources'][0]['issue_key'] = 'OLD-1'
+        self.coordinator.events.clear()
+        self.coordinator.append_audit(self.coordinator.candidate)
+        inputs['observe_issue_identity'] = lambda key: {'issue_key':'AWF-1','observed_at':NOW}
+        for locked in [False, True]:
+            with self.controller._batch_jira_ownership(self.store, issue_id='AWF-1'):
+                with self.assertRaisesRegex(ValidationError, 'canonical'):
+                    self.controller.production_batch_closeout(self.store, **inputs)
+            self.assertEqual([], spy.calls)
+
+    def test_operational_restart_preserves_unknown_and_resumes_remaining_only(self):
+        spy = JiraSpy()
+        inputs = self.operational_inputs(spy)
+        def lost(record):
+            spy.write_transition(record)
+            raise OSError('lost response')
+        inputs['write_transition'] = lost
+        first = self.controller.production_batch_closeout(self.store, **inputs)
+        self.store = self.controller.ContinuousControllerStore(self.path, ['B'])
+        replay = JiraSpy()
+        result = self.controller.production_batch_closeout(self.store, **self.operational_inputs(replay))
+        self.assertEqual([('read','AWF-2'),('write','AWF-2'),('read_back','AWF-2')], replay.calls)
+        self.assertEqual(first['jira']['conflict'], result['jira']['conflict'])
+        self.assertFalse(result['count_allowed'])
+        with self.store.connection() as db:
+            self.assertEqual('UNKNOWN', db.execute("SELECT status FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()[0])
+
+    def test_operational_provider_policy_holds_and_disabled_jira(self):
+        for issue_type, summary in [('EPIC','Routine work'), ('LEAF','Release acceptance')]:
+            self.store = self.controller.ContinuousControllerStore(
+                Path(self.temporary.name) / f'policy-{issue_type}.sqlite', ['B'])
+            spy = JiraSpy()
+            inputs = self.operational_inputs(spy)
+            inputs['observe_issue_policy'] = lambda key: {'issue_key':key,
+                'issue_type':issue_type, 'snapshot':{'summary':summary,'labels':[]},'observed_at':NOW}
+            result = self.controller.production_batch_closeout(self.store, **inputs)
+            self.assertEqual(['AWF-1','AWF-2'], result['jira']['held'])
+            self.assertFalse(result['count_allowed'])
+            self.assertEqual([], spy.calls)
+        inputs = self.operational_inputs()
+        inputs['config']['jira']['enabled'] = False
+        for name in ['observe_issue_identity','observe_provider_identity','observe_issue_policy',
+                'read_current_status','write_transition','read_transition']:
+            inputs[name] = lambda *args: self.fail('disabled Jira callback')
+        result = self.controller.production_batch_closeout(self.store, **inputs)
+        self.assertFalse(result['count_allowed'])
+
+    def test_batch_command_rejects_unpinned_adapters_and_caller_asserted_evidence(self):
+        from agentic import ValidationError
+        script = reviewed_script()
+        for pin in [None, '0'*64]:
+            with self.assertRaises(ValidationError):
+                script._load_reviewed_adapters(Path(script.__file__).resolve(), pin, None)
+        for extra in ['authenticated', 'observed_merge', 'candidate', 'audit_sha256']:
+            spy = JiraSpy()
+            inputs = self.operational_inputs(spy)
+            inputs['request'][extra] = True
+            with self.assertRaises(ValidationError):
+                self.controller.production_batch_closeout(self.store, **inputs)
+            self.assertEqual([], spy.calls)
+        with self.assertRaises(ValidationError):
+            script._batch_operation_request({'operation':'merge','repository_id':101,'batch_id':'batch-1'})
 
 
 if __name__ == "__main__":

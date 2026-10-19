@@ -177,5 +177,81 @@ class MergeTrainCloseoutTests(unittest.TestCase):
         self.assertEqual(1, writes["count"])
 
 
+class OperationalCloseoutTests(unittest.TestCase):
+    def fixture(self):
+        from test_merge_train_controller import OperationalControllerTests
+        fixture = OperationalControllerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        return fixture
+
+    def test_operational_closeout_requires_authenticated_exact_main_commit(self):
+        from unittest.mock import patch
+        fixture = self.fixture()
+        from agentic.continuous_controller import production_batch_closeout
+        from test_merge_train_controller import JiraSpy
+        for field, value in [('target_branch','other'), ('head','0'*40), ('tree','0'*40),
+                ('base','0'*40), ('generation',2), ('repository_id',202), ('pr',99),
+                ('merge_commit_sha','0'*40), ('observed_at','2020-01-01T00:00:00Z')]:
+            spy = JiraSpy()
+            inputs = fixture.operational_inputs(spy)
+            fixture.merge_response[field] = value
+            with self.assertRaises(ValidationError):
+                production_batch_closeout(fixture.store, **inputs)
+            self.assertEqual([], spy.calls)
+        spy = JiraSpy()
+        inputs = fixture.operational_inputs(spy)
+        inputs['merge_observer_registry'] = {}
+        with self.assertRaises(ValidationError):
+            production_batch_closeout(fixture.store, **inputs)
+        self.assertEqual([], spy.calls)
+        for state in ['ABANDONED', 'DRAFT', 'READY_AUTHORIZED', 'CI_GREEN']:
+            inputs = fixture.operational_inputs(spy)
+            fixture.coordinator.candidate['state'] = state
+            fixture.coordinator.events.clear()
+            fixture.coordinator.append_audit(fixture.coordinator.candidate)
+            with self.assertRaises(ValidationError):
+                production_batch_closeout(fixture.store, **inputs)
+            self.assertEqual([], spy.calls)
+
+    def test_operational_closeout_uses_single_t11_writer_and_preserves_order(self):
+        from unittest.mock import patch
+        from agentic.continuous_controller import production_batch_closeout
+        from test_merge_train_controller import JiraSpy
+        fixture = self.fixture()
+        spy = JiraSpy()
+        inputs = fixture.operational_inputs(spy)
+        fixture.coordinator.candidate['sources'].reverse()
+        fixture.coordinator.events.clear()
+        fixture.coordinator.append_audit(fixture.coordinator.candidate)
+        with patch('agentic.closeout.close_batch_constituents', side_effect=AssertionError('independent writer')):
+            result = production_batch_closeout(fixture.store, **inputs)
+        self.assertEqual([('read','AWF-2'),('write','AWF-2'),('read_back','AWF-2'),
+                          ('read','AWF-1'),('write','AWF-1'),('read_back','AWF-1')], spy.calls)
+        self.assertEqual(['AWF-2','AWF-1'], [x['binding']['issue_id'] for x in result['constituents']])
+        self.assertTrue(all(x['closeout_kind']=='merged-via-batch' for x in result['constituents']))
+        self.assertTrue(result['jira']['complete'])
+        self.assertFalse(result['count_allowed'])
+        replay = JiraSpy()
+        inputs.update(read_current_status=replay.read_current_status,
+            write_transition=replay.write_transition, read_transition=replay.read_transition)
+        production_batch_closeout(fixture.store, **inputs)
+        self.assertEqual([], replay.calls)
+
+    def test_batch_counting_refused_for_held_or_unknown_constituents(self):
+        from agentic.closeout import require_jira_reconciliation_before_counts
+        for status in ['HELD','UNKNOWN','PENDING','SUCCEEDED']:
+            with self.assertRaisesRegex(ValidationError, 'batch'):
+                require_jira_reconciliation_before_counts(
+                    {'batch_id':'batch-1','closeout_kind':'merged-via-batch',
+                     'status':status,'complete':status=='SUCCEEDED'},
+                    repository=Path('.'),project_config={},contracts=None)
+        # An assembled batch envelope is not an ordinary count record either.
+        with self.assertRaisesRegex(ValidationError, 'batch'):
+            require_jira_reconciliation_before_counts(
+                {'batch_id':'batch-1','constituents':[], 'complete':True},
+                repository=Path('.'),project_config={},contracts=None)
+
+
 if __name__ == "__main__":
     unittest.main()
