@@ -371,12 +371,92 @@ def _ready_keys(graph, blockers):
     return ready, blocked
 
 
-def _lane_components(graph, ready):
+def _planning_overlap_allowances(graph, config, records, binding, now, authenticate):
+    """Consume controller-validated records, never authenticate owner approvals.
+
+    The trusted controller callback returns the already validated record from
+    validate_overlap_allowance_observation (not a candidate-authored status).
+    Its expected context supplies current PR identities/files, repository and
+    cycle. Integrity/closed-shape checks here only protect that handoff; provider
+    and owner validation remain exclusively in the controller.
+    """
+    if not isinstance(records, (list, tuple)) or not records or not callable(authenticate):
+        return {}
+    try:
+        if (not isinstance(binding, dict)
+                or set(binding) != {"repository_id", "cycle_id", "pull_requests"}
+                or binding["repository_id"] != str(config["github"]["repository_id"])
+                or not isinstance(binding["cycle_id"], str) or not binding["cycle_id"]):
+            return {}
+        prs = binding["pull_requests"]
+        pr_fields = {"number", "ticket", "head_sha", "changed_files"}
+        if (not isinstance(prs, list)
+                or any(not isinstance(pr, dict) or set(pr) != pr_fields for pr in prs)):
+            return {}
+        by_ticket = {pr["ticket"]: pr for pr in prs}
+        if len(by_ticket) != len(prs) or len({pr["number"] for pr in prs}) != len(prs):
+            return {}
+        current = timestamp(now)
+    except (KeyError, TypeError, ValueError, ValidationError):
+        return {}
+    accepted = {}
+    record_fields = {"schema_version", "allowance_id", "source_id", "binding",
+                     "approval", "expires_at", "provider_binding_sha256", "allowance_sha256"}
+    binding_fields = {"repository_id", "cycle_id", "path", "tickets",
+                      "pull_requests", "heads", "changed_files"}
+    approval_fields = {"actor_id", "actor_login", "comment_id", "comment_node_id",
+                       "created_at", "body", "body_sha256"}
+    for record in records:
+        try:
+            if (not isinstance(record, dict) or set(record) != record_fields
+                    or type(record["schema_version"]) is not int or record["schema_version"] != 1
+                    or not isinstance(record["binding"], dict)
+                    or set(record["binding"]) != binding_fields
+                    or not isinstance(record["approval"], dict)
+                    or set(record["approval"]) != approval_fields):
+                continue
+            if record["allowance_sha256"] != fingerprint(
+                    "controller-overlap-allowance-record",
+                    {key: value for key, value in record.items() if key != "allowance_sha256"}):
+                continue
+            if not timestamp(record["approval"]["created_at"]) <= current < timestamp(record["expires_at"]):
+                continue
+            path = record["binding"]["path"]
+            owners = sorted(key for key, node in graph["tickets"].items()
+                            if path in node["write_paths"])
+            if len(owners) != 2 or any(key not in by_ticket for key in owners):
+                continue
+            pair = sorted((by_ticket[key] for key in owners), key=lambda pr: pr["number"])
+            expected = {"repository_id": binding["repository_id"], "cycle_id": binding["cycle_id"],
+                        "path": path, "tickets": [pr["ticket"] for pr in pair],
+                        "pull_requests": [pr["number"] for pr in pair],
+                        "heads": [pr["head_sha"] for pr in pair],
+                        "changed_files": [pr["changed_files"] for pr in pair]}
+            if record["binding"] != expected:
+                continue
+            validated = authenticate(copy.deepcopy(record), copy.deepcopy(binding))
+            if validated != record:
+                continue
+            key = (*owners, path)
+            # Deterministic selection when independently validated approvals
+            # cover the same pair/path; input order must not alter a sealed plan.
+            if key not in accepted or record["allowance_id"] < accepted[key]["allowance_id"]:
+                accepted[key] = copy.deepcopy(record)
+        except Exception:
+            # Malformed or unavailable allowance evidence grants no exception
+            # to normal file-overlap serialization, including verifier failures.
+            continue
+    return accepted
+
+
+def _lane_components(graph, ready, allowances=None):
     ready_set = set(ready)
     adjacent = {key: set() for key in ready}
     for edge in graph["overlaps"]:
         left, right = edge["left"], edge["right"]
         if left in ready_set and right in ready_set:
+            if allowances and all((left, right, path) in allowances for path in edge["paths"]):
+                continue
             adjacent[left].add(right)
             adjacent[right].add(left)
     result, seen = [], set()
@@ -794,7 +874,8 @@ def plan_lanes(graph, config, *, resource_observation=None,
                expected_resource_producer_sha256=None,
                operating_snapshot=None, observed_at=None, resources=None,
                verify_host_observation=None, controller_state=None,
-               verify_owner_source=None, override=None):
+               verify_owner_source=None, override=None, overlap_allowances=(),
+               expected_overlap_binding=None, verify_overlap_allowance=None):
     """Return conflict-free ready lanes ranked by downstream critical path."""
     if not isinstance(graph, dict) or not isinstance(graph.get("tickets"), dict):
         raise ValidationError("Planning requires a backlog graph")
@@ -808,7 +889,10 @@ def plan_lanes(graph, config, *, resource_observation=None,
     blockers, dependents = _dependency_maps(graph)
     scores = _critical_scores(graph, dependents)
     ready, blocked = _ready_keys(graph, blockers)
-    components = _lane_components(graph, ready)
+    allowances = _planning_overlap_allowances(
+        graph, config, overlap_allowances, expected_overlap_binding,
+        observed_at, verify_overlap_allowance)
+    components = _lane_components(graph, ready, allowances)
     lanes = []
     for component in components:
         ordered = sorted(component, key=lambda key: (-scores[key], key))
@@ -845,10 +929,18 @@ def plan_lanes(graph, config, *, resource_observation=None,
                     "value": selected_override["value"], "override_id": selected_override["override_id"],
                     "capacity_binding_sha256": estimate["capacity"]["capacity_binding_sha256"],
                     "applied_after_capacity_binding": True}
-    return {"lanes": lanes, "blocked": blocked, "critical_path_minutes": scores,
+    result = {"lanes": lanes, "blocked": blocked, "critical_path_minutes": scores,
             "estimate": estimate, "owner_decision": decision,
             "capacity": copy.deepcopy(estimate["capacity"]),
             "lane_count": lane_count, "warnings": warnings}
+    # Seal only evidence actually used to separate ready lanes. Preserve the
+    # historical result bytes when no allowance changes a lane component.
+    labels = {key: lane["label"] for lane in lanes for key in lane["ticket_keys"]}
+    used = {record["allowance_id"]: record for (left, right, _path), record in allowances.items()
+            if left in labels and right in labels and labels[left] != labels[right]}
+    if used:
+        result["overlap_allowances"] = [used[key] for key in sorted(used)]
+    return result
 
 
 def owner_override_command(current_override_id, mode, value, reason):
@@ -987,7 +1079,8 @@ def recompute_plan(tickets, config, state, *, now, trigger,
                    expected_resource_producer_sha256=None,
                    operating_snapshot=None, observed_at=None, resources=None,
                    verify_host_observation=None, round_active=False,
-                   verify_owner_source=None, override=None):
+                   verify_owner_source=None, override=None, overlap_allowances=(),
+                   expected_overlap_binding=None, verify_overlap_allowance=None):
     """Re-plan at named boundaries, deferring any in-round reassignment."""
     if trigger not in RECOMPUTE_TRIGGERS:
         raise ValidationError("Unknown planning recompute trigger")
@@ -1012,7 +1105,9 @@ def recompute_plan(tickets, config, state, *, now, trigger,
         operating_snapshot=operating_snapshot, observed_at=observed_at,
         resources=resources, verify_host_observation=verify_host_observation,
         controller_state=state,
-        verify_owner_source=verify_owner_source)
+        verify_owner_source=verify_owner_source, overlap_allowances=overlap_allowances,
+        expected_overlap_binding=expected_overlap_binding,
+        verify_overlap_allowance=verify_overlap_allowance)
     body = {"schema_version": 2, "created_at": now, "trigger": trigger,
             "inputs": {"jira_snapshot_sha256": fingerprint("planning_ticket_snapshot", tickets),
                        "tickets": copy.deepcopy(graph["tickets"]),
@@ -1026,6 +1121,8 @@ def recompute_plan(tickets, config, state, *, now, trigger,
             "owner_decision": copy.deepcopy(result["owner_decision"]),
             "lane_count": result["lane_count"], "warnings": copy.deepcopy(result["warnings"]),
             "no_mid_round_reassignment": True}
+    if "overlap_allowances" in result:
+        body["inputs"]["overlap_allowances"] = copy.deepcopy(result["overlap_allowances"])
     body["plan_id"] = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                      "awf-planning-record:" + fingerprint("planning_audit_seed", body)))
     body["plan_sha256"] = fingerprint("planning_audit_record", body)
