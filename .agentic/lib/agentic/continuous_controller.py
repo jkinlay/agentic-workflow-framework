@@ -612,6 +612,97 @@ class ContinuousControllerStore:
 			return [self._batch_audit_from_row(row) for row in
 				db.execute('SELECT * FROM controller_batch_audit ORDER BY sequence')]
 
+	def production_planning_state(self):
+		with self.connection() as db:
+			row = db.execute("SELECT value FROM controller_meta WHERE key='production_planning'").fetchone()
+		return loads(row[0]) if row else {'pending': [], 'seen': {}, 'overrides': {}, 'candidate': None, 'observation': None}
+
+	def _save_production_planning(self, state):
+		with self.transaction() as db:
+			db.execute("INSERT OR REPLACE INTO controller_meta VALUES('production_planning',?)", (canonical(state).decode(),))
+
+	def plan_production_cycle(self, state_store, tickets, config, *, backlog, events,
+			verify_owner_source, resource_observation, expected_resource_binding,
+			expected_resource_producer_sha256, operating_snapshot, verify_host_observation,
+			now, boundary_ready, overlap_allowances=(),
+			expected_overlap_binding=None, verify_overlap_allowance=None):
+		"""Journal authenticated observations and recover the two-store append window."""
+		from . import planning
+		from .canonical import fingerprint
+		state = self.production_planning_state()
+		planning.verify_override_state(config, state['overrides'], verify_owner_source)
+		for event in events:
+			_require(isinstance(event, dict) and set(event) == {'source_id', 'trigger', 'override'}, 'Planning event must be a closed observation')
+			_require(isinstance(event['source_id'], str) and 0 < len(event['source_id']) <= 256, 'Planning event source identity is required')
+			_require(event['trigger'] in planning.RECOMPUTE_TRIGGERS, 'Unknown planning event trigger')
+			digest = fingerprint('controller-planning-event', event)
+			prior = state['seen'].get(event['source_id'])
+			_require(prior is None or prior == digest, 'Planning event source identity was reused with changed bytes')
+			if prior is not None:
+				continue
+			if event['override'] is not None:
+				_require(event['trigger'] == 'override_changed', 'Only an override event may carry an owner chain')
+				incoming = event['override']
+				planning.verify_override_state(config, incoming, verify_owner_source)
+				old = state['overrides'].get('planning_override_history', [])
+				new = incoming.get('planning_override_history', [])
+				_require(len(new) > len(old) and new[:len(old)] == old, 'Planning owner chain replay or rollback')
+				state['overrides'] = deepcopy(incoming)
+			state['seen'][event['source_id']] = digest
+			state['pending'].append(deepcopy(event))
+		# Content changes are controller-derived only after independent authentication.
+		observed = fingerprint('controller-planning-input', {'backlog': backlog,
+			'resources': {k: resource_observation[k] for k in ('binding', 'host_capacity', 'resources')},
+			'operating': operating_snapshot.operating_hash,
+			'overlap_allowances': overlap_allowances})
+		if state['observation'] != observed and not state['pending']:
+			trigger = 'project_start' if state['observation'] is None else 'files_changed'
+			state['pending'].append({'source_id': observed, 'trigger': trigger, 'override': None})
+		self._save_production_planning(state)
+		if not boundary_ready:
+			return None
+		# Verify the retained candidate against the durable history before any retry.
+		candidate = state['candidate']
+		if candidate is not None:
+			planning.verify_plan_record(candidate)
+			history = state_store.planning_history()
+			matches = [record for record in history if record['plan_id'] == candidate['plan_id']]
+			_require(not matches or matches == [candidate], 'Durable plan conflicts with the retained append candidate')
+			if not matches:
+				planning.append_plan_record(state_store, candidate)
+			state['candidate'] = None
+			state['pending'] = state['pending'][1:]
+			self._save_production_planning(state)
+		while state['pending']:
+			working = deepcopy(state['overrides'])
+			working['planning_history'] = state_store.planning_history()
+			working['current_plan'] = state_store.current_plan()
+			result = planning.recompute_plan(backlog, config, working, now=now,
+				trigger=state['pending'][0]['trigger'], resource_observation=resource_observation,
+				expected_resource_binding=expected_resource_binding,
+				expected_resource_producer_sha256=expected_resource_producer_sha256,
+				operating_snapshot=operating_snapshot, observed_at=now,
+				verify_host_observation=verify_host_observation, verify_owner_source=verify_owner_source,
+				overlap_allowances=overlap_allowances, expected_overlap_binding=expected_overlap_binding,
+				verify_overlap_allowance=verify_overlap_allowance)
+			candidate = result['record']
+			state['candidate'] = candidate
+			self._save_production_planning(state)
+			history = state_store.planning_history()
+			matches = [record for record in history if record['plan_id'] == candidate['plan_id']]
+			_require(not matches or matches == [candidate], 'Planning append candidate conflicts with immutable history')
+			if not matches:
+				planning.append_plan_record(state_store, candidate)
+			state['candidate'] = None
+			state['pending'].pop(0)
+			self._save_production_planning(state)
+		state['observation'] = observed
+		self._save_production_planning(state)
+		record = state_store.current_plan()
+		_require(record is not None, 'Production dispatch requires a durable verified plan')
+		planning.verify_plan_record(record)
+		return record
+
 	def recompute_durable_plan(self, state_store, tickets, config, *, legacy_state=None,
 			migration_version=1, **planning_inputs):
 		"""Seal through planning.py, then durably append before returning a plan.
@@ -2060,9 +2151,9 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	from .canonical import fingerprint
 	_require(observation['binding'] == inventory_binding and observation['inventory_sha256'] == fingerprint('controller-inventory', {'binding': inventory_binding, 'tickets': observation['tickets']}), 'Production inventory identity or digest differs from the configured scope')
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
-	return (tickets, repository_binding, observation)
+	return (deepcopy(tickets), repository_binding, observation)
 
-def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None):
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')
 	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
@@ -2098,6 +2189,29 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(host_capacity is None or (type(host_capacity) is int and host_capacity == resources['host_capacity']),
 		'Operator capacity differs from authenticated host capacity')
 	host_capacity = min(resources['host_capacity'], *(item['capacity'] for item in resources['resources']))
+	from .store import Store
+	from .planning import tickets_from_provider_snapshot
+	from .operating import validate_snapshot
+	from .canonical import fingerprint
+	_require(isinstance(planning_state_store, Store) and isinstance(planning_config, dict), 'Production requires authenticated planning inputs and a durable planning store')
+	_require(all(callable(callback) for callback in (observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events)), 'Production requires authenticated planning backlog and event callbacks')
+	validate_snapshot(planning_operating_snapshot, planning_config)
+	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
+	_require(isinstance(cycle_id, str) and cycle_id, 'Production planning requires a bound cycle identity')
+	planning_binding = {**inventory_binding, 'repository_head_sha': repository_head_sha,
+		'project_config_sha256': project_config_sha256, 'cycle_id': cycle_id}
+	planning_request = {'provider': deepcopy(planning_provider), 'binding': deepcopy(planning_binding), 'observed_at': now}
+	planning_snapshot = observe_planning_backlog(deepcopy(planning_request))
+	backlog = tickets_from_provider_snapshot(planning_snapshot, planning_config,
+		expected_binding=planning_binding, expected_provider=planning_provider, now=now,
+		verify_provider_snapshot=verify_planning_backlog)
+	event_snapshot = observe_planning_events(deepcopy(planning_request))
+	_require(isinstance(event_snapshot, dict) and set(event_snapshot) == {'binding', 'observed_at', 'events', 'authentication'}, 'Planning event observation must be closed')
+	_require(event_snapshot['binding'] == planning_binding and event_snapshot['observed_at'] == now and isinstance(event_snapshot['events'], list), 'Planning events are foreign, stale or incomplete')
+	auth = event_snapshot['authentication']
+	_require(isinstance(auth, dict) and set(auth) == {'evidence_id'} and isinstance(auth['evidence_id'], str) and auth['evidence_id'], 'Planning events require independent evidence identity')
+	verified = verify_planning_events(deepcopy(auth), deepcopy(planning_request))
+	_require(verified == {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': {k: deepcopy(v) for k, v in event_snapshot.items() if k != 'authentication'}}, 'Planning events differ from independent authenticated evidence')
 	store.recover_dispatches(now)
 
 	def observe_current_reservations(observed_at, current_inventory_sha256):
@@ -2297,7 +2411,46 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(isinstance(reservations, list), 'Authenticated reservations were not refreshed for the inventory being scheduled')
 	ticket_by_id = {item['ticket']: item for item in tickets}
 	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
-	streams = store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
+	_require({item['key'] for item in backlog} == {item['ticket'] for item in tickets}, 'Authenticated backlog ticket keys differ from dispatch inventory')
+	backlog_by_key = {item['key']: item for item in backlog}
+	for item in tickets:
+		paths = set(backlog_by_key[item['ticket']]['write_paths']) | set(backlog_by_key[item['ticket']]['open_pr_files']) | set(backlog_by_key[item['ticket']]['worktree_diff'])
+		_require(paths == set(item['paths']) - {'MANIFEST.json', 'MANIFEST.md'}, 'Dispatch paths differ from authenticated planning attribution')
+	# Only provider-authenticated records that survived the fresh lane-start
+	# recheck may influence sealed capacity. Candidate inventory never grants
+	# an exception and the planner cannot select its own verifier or context.
+	planning_allowances = [deepcopy(item['record']) for item in active_allowances]
+	bound_prs = {}
+	for request, _record in lane_allowance_plans:
+		for pr in request['pull_requests']:
+			prior = bound_prs.get(pr['ticket'])
+			_require(prior is None or prior == pr, 'Overlap planning PR identities disagree')
+			bound_prs[pr['ticket']] = deepcopy(pr)
+	overlap_binding = {'repository_id': inventory_binding['repository_id'], 'cycle_id': cycle_id,
+		'pull_requests': sorted(bound_prs.values(), key=lambda pr: pr['number'])}
+	def verify_planning_allowance(record, binding):
+		_require(binding == overlap_binding and record in planning_allowances,
+			'Planning allowance was not authenticated by this controller cycle')
+		return deepcopy(record)
+	plan = store.plan_production_cycle(planning_state_store, tickets, planning_config,
+		backlog=backlog, events=event_snapshot['events'], verify_owner_source=verify_planning_owner,
+		resource_observation=resources, expected_resource_binding=resource_binding,
+		expected_resource_producer_sha256=planning_resource_producer_sha256,
+		operating_snapshot=planning_operating_snapshot, verify_host_observation=verify_host_observation,
+		now=now, boundary_ready=round_boundary_ready, overlap_allowances=planning_allowances,
+		expected_overlap_binding=overlap_binding, verify_overlap_allowance=verify_planning_allowance)
+	if plan is not None:
+		host_capacity = min(host_capacity, plan['lane_count'])
+		admitted = {key for lane in plan['lanes'] for key in lane['ticket_keys']}
+		ranked = sorted(admitted, key=lambda key: (-plan['ranking'][key], ticket_by_id[key]['priority'], key))
+		priority = {key: index for index, key in enumerate(ranked)}
+		for index, item in enumerate(tickets):
+			if item['ticket'] in priority:
+				tickets[index] = {**item, 'priority': priority[item['ticket']]}
+			elif item['disposition'] == 'ELIGIBLE':
+				tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': 'Authenticated durable plan did not admit this ticket'}
+	streams = (store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
+		if plan is not None else store.snapshot())
 	# Evaluate and consume any authenticated boundary seal before cancellation.
 	# A closed boundary retains pending intents across restarts.
 	if cancellation_boundary_ready:
