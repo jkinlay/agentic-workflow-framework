@@ -256,5 +256,144 @@ class PublicationRecordRecoveryTests(unittest.TestCase):
             self.assertEqual(store.read("publication/race"), result)
 
 
+class PublicationRecordEnvelopeTests(unittest.TestCase):
+    LIMIT = 1_048_576
+    KEY = "publication/" + "record" * 20
+    CONTENT = ("plain", '"\\\n' * 1000, "\u00e9\U0001f642" * 1000)
+
+    def envelope(self, payload):
+        return canonical({"version": 1, "key": self.KEY,
+                          "payload": payload.decode("utf-8"),
+                          "sha256": hashlib.sha256(payload).hexdigest()})
+
+    def fixture(self, size, content):
+        # ASCII padding contributes exactly one byte at both serialization
+        # levels. Measure the full envelope, including key, digest and framing.
+        payload = canonical(content)
+        padding = size - len(self.envelope(payload))
+        self.assertGreaterEqual(padding, 0)
+        payload = canonical(content + "x" * padding)
+        raw = self.envelope(payload)
+        self.assertEqual(len(raw), size)
+        self.assertLess(len(payload), self.LIMIT)
+        self.assertGreater(len(raw), len(payload))
+        # Independently validate schema, canonical bytes and digest so a
+        # malformed fixture cannot masquerade as a size-boundary refusal.
+        import json
+        record = json.loads(raw)
+        self.assertEqual(set(record), {"version", "key", "payload", "sha256"})
+        self.assertEqual(record["version"], 1)
+        self.assertEqual(record["key"], self.KEY)
+        self.assertEqual(canonical(record), raw)
+        self.assertEqual(canonical(json.loads(payload)), payload)
+        self.assertEqual(record["payload"].encode("utf-8"), payload)
+        self.assertEqual(record["sha256"], hashlib.sha256(payload).hexdigest())
+        return payload, raw
+
+    def test_exact_limit_envelopes_write_read_and_retry(self):
+        from agentic.publication import PublicationRecordStore
+
+        for content in self.CONTENT:
+            with self.subTest(content=content[:8]), tempfile.TemporaryDirectory() as directory:
+                store = PublicationRecordStore(Path(directory))
+                payload, raw = self.fixture(self.LIMIT, content)
+                result = store.write(self.KEY, payload)
+                self.assertEqual(result["canonical_bytes"], payload)
+                self.assertEqual(store.path_for(self.KEY).read_bytes(), raw)
+                retained = snapshot(Path(directory))
+                restarted = PublicationRecordStore(Path(directory))
+                self.assertEqual(restarted.read(self.KEY), result)
+                self.assertEqual(restarted.write(self.KEY, payload), result)
+                self.assertEqual(restarted.recover(self.KEY), result)
+                self.assertEqual(snapshot(Path(directory)), retained)
+
+    def test_exact_limit_pending_envelopes_recover(self):
+        from agentic.publication import PublicationRecordStore
+
+        class Crash(BaseException):
+            pass
+
+        def crash(pending):
+            raise Crash()
+
+        for content in self.CONTENT:
+            with self.subTest(content=content[:8]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = PublicationRecordStore(root)
+                payload, raw = self.fixture(self.LIMIT, content)
+                with self.assertRaises(Crash):
+                    store.write(self.KEY, payload, before_commit=crash)
+                self.assertEqual(store.path_for(self.KEY).read_bytes(), raw)
+                self.assertFalse(store.path_for(self.KEY).with_name("commit.json").exists())
+                with self.assertRaises(ValidationError):
+                    store.read(self.KEY)
+                restarted = PublicationRecordStore(root)
+                recovered = restarted.recover(self.KEY)
+                self.assertEqual(recovered["canonical_bytes"], payload)
+                self.assertEqual(restarted.read(self.KEY), recovered)
+                retained = snapshot(root)
+                self.assertEqual(restarted.recover(self.KEY), recovered)
+                self.assertEqual(restarted.write(self.KEY, payload), recovered)
+                self.assertEqual(snapshot(root), retained)
+
+    def test_cap_plus_one_writes_leave_no_slot_reservation(self):
+        from agentic.publication import PublicationRecordStore
+
+        for content in self.CONTENT:
+            with self.subTest(content=content[:8]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = PublicationRecordStore(root)
+                payload, _ = self.fixture(self.LIMIT + 1, content)
+                callbacks = []
+                with self.assertRaises(ValidationError):
+                    store.write(self.KEY, payload, before_commit=callbacks.append)
+                self.assertEqual(callbacks, [])
+                self.assertEqual(list(root.iterdir()), [])
+                # Refusal must leave the key available for an exact-limit write.
+                valid, _ = self.fixture(self.LIMIT, content)
+                self.assertEqual(store.write(self.KEY, valid)["canonical_bytes"], valid)
+
+    def test_cap_plus_one_committed_envelopes_refuse_read(self):
+        from agentic.publication import PublicationRecordStore
+
+        for content in self.CONTENT:
+            with self.subTest(content=content[:8]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = PublicationRecordStore(root)
+                _, raw = self.fixture(self.LIMIT + 1, content)
+                record = store.path_for(self.KEY)
+                record.parent.mkdir()
+                record.write_bytes(raw)
+                record.with_name("commit.json").write_bytes(canonical({
+                    "version": 1, "record_sha256": hashlib.sha256(raw).hexdigest()}))
+                retained = snapshot(root)
+                restarted = PublicationRecordStore(root)
+                with self.assertRaises(ValidationError):
+                    restarted.read(self.KEY)
+                with self.assertRaises(ValidationError):
+                    restarted.recover(self.KEY)
+                self.assertEqual(snapshot(root), retained)
+
+    def test_cap_plus_one_pending_envelopes_refuse_recovery_without_changes(self):
+        from agentic.publication import PublicationRecordStore
+
+        for content in self.CONTENT:
+            with self.subTest(content=content[:8]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = PublicationRecordStore(root)
+                _, raw = self.fixture(self.LIMIT + 1, content)
+                record = store.path_for(self.KEY)
+                record.parent.mkdir()
+                record.write_bytes(raw)
+                retained = snapshot(root)
+                for _ in range(2):
+                    restarted = PublicationRecordStore(root)
+                    with self.assertRaises(ValidationError):
+                        restarted.recover(self.KEY)
+                    self.assertFalse(record.with_name("commit.json").exists())
+                    self.assertEqual(snapshot(root), retained)
+                    self.assertEqual(record.read_bytes(), raw)
+
+
 if __name__ == "__main__":
     unittest.main()

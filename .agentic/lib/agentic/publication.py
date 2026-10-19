@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - exercised on older Python runtimes
     _re_parser = None
 
 from . import ValidationError
-from .canonical import MAX_DOCUMENT_BYTES, canonical, loads
+from .canonical import canonical, loads
 from .child_process import (GIT_RUNNER_POLICY, child_env,
                             render_diagnostic)
 from .gittree import verify_publisher_tree
@@ -41,6 +41,10 @@ from .interaction import writer_commit_message
 from .provenance import (parse_writer_trailer, validate_commit_message,
                          validate_ref_locator)
 from .safeio import Tree, relative_parts, run_bounded
+
+
+# Complete canonical record.json envelope, including escaped payload and key.
+MAX_PUBLICATION_RECORD_BYTES = 1024 * 1024
 
 
 class PublicationRecordStore:
@@ -74,7 +78,7 @@ class PublicationRecordStore:
 
     @staticmethod
     def _document(raw):
-        if not isinstance(raw, bytes) or len(raw) > MAX_DOCUMENT_BYTES:
+        if not isinstance(raw, bytes) or len(raw) > MAX_PUBLICATION_RECORD_BYTES:
             raise ValidationError("Publication record requires bounded canonical bytes")
         try:
             value = loads(raw.decode("utf-8", "strict"))
@@ -85,7 +89,7 @@ class PublicationRecordStore:
             raise ValidationError("Publication record is not UTF-8") from exc
 
     def _record(self, tree, key, slot):
-        raw = tree.read(slot + "/record.json", maximum=MAX_DOCUMENT_BYTES)
+        raw = tree.read(slot + "/record.json", maximum=MAX_PUBLICATION_RECORD_BYTES)
         record = self._document(raw)
         if (not isinstance(record, dict)
                 or set(record) != {"version", "key", "payload", "sha256"}
