@@ -123,6 +123,42 @@ class SafeDirectoryTests(unittest.TestCase):
         self.hostile_config()
         self.assertEqual(self.read(["archive", "--format=tar", "HEAD"]), baseline)
 
+    def late_filter_archive(self, route):
+        baseline = self.read(["archive", "--format=tar", "HEAD"])
+        marker = self.base / "executed"
+        installed = False
+
+        def child(command, **kwargs):
+            nonlocal installed
+            # The source has no filter configuration during discovery. Install
+            # a new driver at the final archive boundary, after all discovery.
+            if "archive" in command and not installed:
+                installed = True
+                self.hostile_config()
+                other = "smudge" if route == "process" else "process"
+                self.git_run(self.root, "config", "--unset", f"filter.hostile.{other}")
+            return self.other_owner_child(command, **kwargs)
+
+        archived = None
+        with mock.patch.object(isolation.subprocess, "run", side_effect=child):
+            try:
+                archived = self.read(["archive", "--format=tar", "HEAD"])
+            except ValidationError:
+                pass  # Refusal cannot undo a helper that has already executed.
+        self.assertTrue(installed, "archive execution boundary was not exercised")
+        self.assertFalse(marker.exists(), f"late {route} filter executed")
+        if archived is not None:
+            self.assertEqual(archived, baseline)
+            with tarfile.open(fileobj=io.BytesIO(archived)) as archive:
+                self.assertEqual(archive.extractfile("payload").read(), b"first\nsecond\n")
+                self.assertEqual(archive.getmember("payload").mode, 0o664)
+
+    def test_process_filter_introduced_after_discovery_never_executes(self):
+        self.late_filter_archive("process")
+
+    def test_smudge_filter_introduced_after_discovery_never_executes(self):
+        self.late_filter_archive("smudge")
+
     def test_missing_promisor_blob_never_executes_other_owner_remote_helper(self):
         marker = self.hostile_config()
         script = self.base / "hostile.py"
