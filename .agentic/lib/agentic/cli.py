@@ -14,6 +14,7 @@ from .installer import verify_installed
 from .policy import inspect_config, validate_config
 from .output import configure_streams, emit_json, json_text, require_ascii_line
 from .safeio import snapshot_file
+from .child_process import render_bounded_diagnostic
 
 RENDER_INPUT_MAXIMUM = 1_048_576
 
@@ -597,6 +598,7 @@ def main(argv=None, default_root=None):
                       "diagnostic": access_diagnostic(exc, ".agentic project paths (" + str(safe_name) + ")"),
                       "execution_authority": False}
         else:
-            output = {"status": "REJECTED", "reason": str(exc), "execution_authority": False}
+            output = {"status": "REJECTED", "reason": render_bounded_diagnostic(
+                str(exc), code="DIAGNOSTIC_INVALID"), "execution_authority": False}
         emit_json(output, stream=sys.stderr)
         return 2
