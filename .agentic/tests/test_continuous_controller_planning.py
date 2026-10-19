@@ -93,6 +93,48 @@ def planning_resource_inputs(capacity, *, resource_capacity=None, operator_capac
 		'planning_resource_producer_sha256': 'c' * 64,
 		'project_config_sha256': 'd' * 64, 'operating_config_sha256': 'e' * 64}
 
+def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now=NOW,
+                            config=None, cycle_id='fixture-cycle', repository=REPOSITORY):
+    """Independent fixture backlog, built from explicitly supplied fixture records.
+
+    No production inventory callback is invoked or inspected by this helper.
+    """
+    import uuid
+    from agentic.store import Store
+    from test_planning import config as project_fixture, operating_snapshot
+    cfg = deepcopy(config) if config is not None else project_fixture(min(max(capacity, 1), 6))
+    cfg['project']['id'] = binding['project_id']
+    cfg['github']['repository_id'] = binding['repository_id']
+    operating = operating_snapshot(cfg, min(max(capacity, 1), 6))
+    history = Store(Path(controller.path).with_suffix('.planning.sqlite3'),
+                    str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-planning:' + binding['project_id'])))
+    owned = deepcopy(items)
+    evidence = {}
+    def observe_backlog(request):
+        body = {'format': 'awf-backlog-provider-snapshot-1', 'complete': True,
+                'provider': request['provider'], 'binding': request['binding'],
+                'observed_at': request['observed_at'], 'tickets': []}
+        for item in owned:
+            body['tickets'].append({'ticket': {'key': item['ticket'], 'status': 'open', 'risk_tier': 3},
+                'components': [{'kind': kind, 'ticket_key': item['ticket'], 'binding': request['binding'],
+                    'observed_at': request['observed_at'], 'files': item['paths'] if kind == 'brief' else []}
+                    for kind in ('brief', 'open_pr', 'worktree_diff')]})
+        evidence['backlog'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'fixture-backlog'}}
+    def observe_events(request):
+        body = {'binding': request['binding'], 'observed_at': request['observed_at'], 'events': []}
+        evidence['events'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'fixture-events'}}
+    return dict(planning_config=cfg, planning_state_store=history,
+        planning_operating_snapshot=operating,
+        planning_provider={'provider_id': 'fixture-backlog', 'implementation_sha256': '1'*64, 'verifier_implementation_sha256': '2'*64},
+        observe_planning_backlog=observe_backlog,
+        verify_planning_backlog=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(evidence['backlog'])},
+        observe_planning_events=observe_events,
+        verify_planning_events=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(evidence['events'])},
+        verify_planning_owner=lambda *_: {}, cycle_id=cycle_id,
+        project_config_sha256=fingerprint('accepted-project-config', cfg), operating_config_sha256=operating.operating_hash)
+
 class ContinuousControllerPlanningTests(unittest.TestCase):
 
 	def test_controller_persists_before_return_and_rejects_replay_after_restart(self):
@@ -865,3 +907,224 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		self.assertEqual(diff, dispatched[0]['overlap_sync_evidence'][0]['diff'])
 if __name__ == '__main__':
 	unittest.main()
+
+
+class ProductionPlanningTriggerTests(unittest.TestCase):
+    """Production planning must precede every newly admitted dispatch."""
+
+    def setUp(self):
+        from agentic.store import Store
+        from test_planning import config, operating_snapshot
+        self.temp = tempfile.TemporaryDirectory(prefix='awf50-production-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.store = ContinuousControllerStore(self.root / 'controller.sqlite3', ['A', 'B'])
+        self.history = Store(self.root / 'history.sqlite3', '00000000-0000-0000-0000-000000000050')
+        self.config = config(2)
+        self.config['github']['repository_id'] = '101'
+        self.operating = operating_snapshot(self.config, 2)
+        self.items = [ticket('AWF-101', 1), ticket('AWF-102', 2)]
+        self.events = [{'source_id': 'event-1', 'trigger': 'project_start', 'override': None}]
+        self.calls = []
+        self.evidence = {}
+        for target, value in (
+            ('agentic.continuous_controller.canonical_repository_paths', lambda items, *_: (items, {'repository_root': '/fixture', 'head_sha': 'a'*40, 'tree_sha': 'b'*40, 'git_path_count': 0})),
+            ('agentic.continuous_controller.canonical_reservation_sources', lambda *_args, **_kwargs: [])):
+            mock = patch(target, side_effect=value)
+            mock.start()
+            self.addCleanup(mock.stop)
+        mock = patch('agentic.codex_skill.observe_codex_awf_skills', return_value={'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.4', 'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill', 'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})
+        mock.start()
+        self.addCleanup(mock.stop)
+
+    def backlog(self, request):
+        body = {'format': 'awf-backlog-provider-snapshot-1', 'complete': True,
+                'provider': request['provider'], 'binding': request['binding'],
+                'observed_at': request['observed_at'], 'tickets': []}
+        for item in self.items:
+            body['tickets'].append({'ticket': {'key': item['ticket'], 'status': 'open', 'risk_tier': 3},
+                'components': [{'kind': kind, 'ticket_key': item['ticket'],
+                    'binding': request['binding'], 'observed_at': request['observed_at'],
+                    'files': item['paths'] if kind == 'brief' else []}
+                    for kind in ('brief', 'open_pr', 'worktree_diff')]})
+        self.evidence['backlog'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'backlog'}}
+
+    def observe_events(self, request):
+        body = {'binding': request['binding'], 'observed_at': request['observed_at'],
+                'events': deepcopy(self.events)}
+        self.evidence['events'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'events'}}
+
+    def dispatch(self, payload):
+        from agentic.planning import verify_plan_record
+        record = self.history.current_plan()
+        self.assertIsNotNone(record, 'dispatch preceded durable plan append')
+        self.assertTrue(verify_plan_record(record))
+        self.assertIn(payload['ticket'], record['inputs']['tickets'])
+        self.calls.append(payload)
+        return receipt(payload)
+
+    def inputs(self):
+        return dict(planning_state_store=self.history, planning_config=self.config,
+            planning_operating_snapshot=self.operating,
+            planning_provider={'provider_id': 'fixture-backlog', 'implementation_sha256': '1'*64, 'verifier_implementation_sha256': '2'*64},
+            observe_planning_backlog=self.backlog,
+            verify_planning_backlog=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(self.evidence['backlog'])},
+            observe_planning_events=self.observe_events,
+            verify_planning_events=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(self.evidence['events'])},
+            project_config_sha256=fingerprint('accepted-project-config', self.config),
+            operating_config_sha256=self.operating.operating_hash,
+            cycle_id='cycle-production')
+
+    def cycle(self, **changes):
+        args = planning_resource_inputs(2)
+        args.update(self.inputs())
+        args.update(changes)
+        return production_controller_cycle(self.store,
+            controller_config=dict.fromkeys(('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'), True),
+            now=NOW, host_capacity=2, inventory_binding=BINDING, **REPOSITORY,
+            observe_inventory=lambda: observation(self.items), observe_reservations=lambda request: {},
+            dispatch_ticket=self.dispatch, observe_dispatch=lambda payload: receipt(payload),
+            deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW},
+            publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW), **args)
+
+    def test_project_start_and_intake_plan_before_dispatch(self):
+        for trigger in ('project_start', 'intake'):
+            with self.subTest(trigger=trigger):
+                self.events = [{'source_id': trigger, 'trigger': trigger, 'override': None}]
+                self.cycle()
+                self.assertEqual(trigger, self.history.current_plan()['trigger'])
+        self.assertTrue(self.calls)
+
+    def test_controller_recomputes_for_merge_files_ticket_and_override_without_mid_round_reassignment(self):
+        self.cycle()
+        for trigger in ('pr_merged', 'files_changed', 'ticket_added', 'ticket_closed', 'override_changed'):
+            with self.subTest(trigger=trigger):
+                self.events = [{'source_id': trigger, 'trigger': trigger, 'override': None}]
+                self.cycle()
+                self.assertEqual(trigger, self.history.current_plan()['trigger'])
+        # An unresolved dispatch closes the boundary; observations remain pending.
+        self.items[0]['exact_tuple'] += '/next'
+        prior = self.store.snapshot()
+        self.events = [{'source_id': 'during-round', 'trigger': 'intake', 'override': None}]
+        with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.cycle()
+        self.assertEqual(prior, self.store.snapshot())
+        self.assertTrue(self.store.production_planning_state()['pending'])
+
+    def test_pending_planning_trigger_survives_restart_and_is_consumed_once(self):
+        with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.cycle()
+        self.assertEqual([], self.history.planning_history())
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = []
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.events = [{'source_id': 'event-1', 'trigger': 'project_start', 'override': None}]
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.events[0]['trigger'] = 'intake'
+        with self.assertRaises(ValidationError):
+            self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+
+    def test_plan_append_failure_blocks_dispatch_and_retains_trigger(self):
+        with patch('agentic.planning.append_plan_record', side_effect=ValidationError('injected append failure')):
+            with self.assertRaises(ValidationError):
+                self.cycle()
+        self.assertEqual([], self.calls)
+        self.assertTrue(self.store.production_planning_state()['pending'])
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.assertFalse(self.store.production_planning_state()['pending'])
+
+    def test_restart_after_plan_append_does_not_duplicate_plan(self):
+        from agentic import planning
+        append = planning.append_plan_record
+        def crash(store, record):
+            result = append(store, record)
+            if store is self.history:
+                raise RuntimeError('crash after append before acknowledgement')
+            return result
+        with patch('agentic.planning.append_plan_record', side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.assertFalse(self.store.production_planning_state()['pending'])
+
+    def test_override_trigger_reauthenticates_persisted_owner_chain(self):
+        from agentic import planning
+        from test_planning import owner_source, verify_owner
+        state = {}
+        first = planning.change_owner_override(self.config, state, mode='fixed', value=1,
+            reason='fixture fixed', owner_source=owner_source(None, 'fixed', 1, 'fixture fixed'),
+            verify_owner_source=verify_owner, now=NOW)
+        second = planning.change_owner_override(self.config, state, mode='max', value=1,
+            reason='fixture maximum', owner_source=owner_source(first['override_id'], 'max', 1, 'fixture maximum', source_id='comment-2'),
+            verify_owner_source=verify_owner, now=NOW)
+        self.events[0] = {'source_id': 'override-chain', 'trigger': 'override_changed', 'override': state}
+        self.cycle(verify_planning_owner=verify_owner)
+        self.assertEqual(1, self.history.current_plan()['lane_count'])
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = []
+        with self.assertRaises(ValidationError):
+            self.cycle(verify_planning_owner=lambda *_: {})
+        self.cycle(verify_planning_owner=verify_owner)
+        self.assertEqual(second, self.store.production_planning_state()['overrides']['planning_override'])
+        self.events = [{'source_id': 'forged-tip', 'trigger': 'override_changed', 'override': {'planning_override': second, 'planning_override_history': [second]}}]
+        with self.assertRaises(ValidationError):
+            self.cycle(verify_planning_owner=verify_owner)
+
+    def test_invalid_planning_observation_blocks_new_dispatch(self):
+        original = self.backlog
+        for mutation in (lambda value: value.update(complete=False),
+                         lambda value: value['binding'].update(repository_id='foreign'),
+                         lambda value: value.update(observed_at='2026-01-01T00:00:00Z'),
+                         lambda value: value['tickets'][0]['ticket'].update(summary='forged')):
+            def forged(request, mutation=mutation):
+                value = original(request)
+                mutation(value)
+                return value
+            with self.subTest(mutation=mutation), self.assertRaises(ValidationError):
+                self.cycle(observe_planning_backlog=forged)
+            self.assertEqual([], self.calls)
+        with self.assertRaises(ValidationError):
+            self.cycle(observe_planning_backlog=None)
+
+    def test_cli_wires_reviewed_planning_inputs_without_trust_override_flags(self):
+        import ast
+        source = (Path(__file__).resolve().parents[2] / '.agentic/scripts/continuous_controller.py').read_text()
+        tree = ast.parse(source)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'production_controller_cycle']
+        self.assertEqual(1, len(calls))
+        self.assertTrue({'planning_state_store', 'planning_config', 'planning_operating_snapshot', 'planning_provider'} <= {kw.arg for kw in calls[0].keywords})
+        for name in ('observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events'):
+            self.assertIn(name, source)
+        for flag in ('--planning-provider', '--verify-planning', '--trusted-planning-owner'):
+            self.assertNotIn(flag, source)
+
+    def test_dispatch_without_authenticated_planning_inputs_fails_closed(self):
+        # Existing authenticated resources and eligible inventory are insufficient.
+        # Omit only the new planning inputs; a baseline dispatch is observable.
+        args = planning_resource_inputs(2)
+        refused = False
+        try:
+            production_controller_cycle(self.store,
+                controller_config=dict.fromkeys(('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'), True),
+                now=NOW, host_capacity=2, inventory_binding=BINDING, **REPOSITORY,
+                observe_inventory=lambda: observation(self.items), observe_reservations=lambda request: {},
+                dispatch_ticket=lambda payload: self.calls.append(payload) or receipt(payload),
+                observe_dispatch=lambda payload: receipt(payload),
+                deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW},
+                publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW), **args)
+        except ValidationError:
+            refused = True
+        self.assertTrue(refused, 'missing authenticated planning inputs admitted dispatch')
+        self.assertEqual([], self.calls)
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT count(*) FROM controller_dispatch').fetchone()[0])
+        self.assertFalse(any(row['state'] == 'WORKING' for row in self.store.snapshot()))
