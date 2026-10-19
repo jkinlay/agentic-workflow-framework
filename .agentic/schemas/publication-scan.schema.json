@@ -297,6 +297,10 @@
     },
     "execution_authority": {
       "const": false
+    },
+    "supplemental_project_config_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

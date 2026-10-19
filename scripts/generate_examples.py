@@ -188,6 +188,9 @@ def config(example=True, routing_policy=None):
         result["execution"]["roles"][name].update(
             model=model, reasoning_effort=effort,
             approved_model_ids=routing["role_allowed_models"][name])
+    if example:
+        result["publication"] = {"deny_literals": [], "deny_regexes": [], "internal_hostnames": [],
+                                 "large_file_allowances": []}
     return result
 
 
@@ -444,6 +447,10 @@ def generate(output_root, source_root=ROOT):
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})
     cfg = config(True, generation_policy)
     reviewed_example_config = copy.deepcopy(cfg)
+    # Preserve the shared reference fixture's policy binding for independent
+    # generators. Optional publication settings live in the content-binding
+    # example, which is generated from the complete configured form.
+    reviewed_example_config.pop("publication", None)
     reviewed_example_config["github"]["expected_actor_id"] = 1002
     write(output_root / ".agentic/examples/PROJECT_CONFIG.yaml",
           reviewed_example_config)
