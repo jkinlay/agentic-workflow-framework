@@ -1641,14 +1641,16 @@ def _batch_jira_inputs(config, batch, observed_merge, policy_context, now):
 
 
 @contextmanager
-def _batch_jira_ownership(store):
+def _batch_jira_ownership(store, *, issue_id=None):
 	"""Nonblocking, process-owned lock on protected controller storage.
 
 	Never unlink the lock file: contenders must always lock the same inode.
 	OS closure releases ownership even if a callback terminates the process.
 	"""
 	import errno
-	path = store.path.with_name(store.path.name + '.t11.lock')
+	# Hash the exact stored identity only; key canonicalisation is deferred.
+	suffix = '.t11.lock' if issue_id is None else '.jira-issue-' + hashlib.sha256(issue_id.encode('utf-8')).hexdigest() + '.lock'
+	path = store.path.with_name(store.path.name + suffix)
 	_require(not path.is_symlink(), 'Batch Jira ownership path must not be a symlink')
 	descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
 	locked = False
@@ -1764,60 +1766,65 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 	# death; no elapsed-time guess can steal an active provider call.
 	for record in records if ownership else ():
 		issue, operation_id = record['binding']['issue_id'], record['operation_id']
-		with store.transaction() as db:
-			row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
-			status = row['status']
-			if status == 'IN_FLIGHT':
-				db.execute("UPDATE controller_batch_jira_operation SET status='UNKNOWN',updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (now, operation_id))
-				status = 'UNKNOWN'
-			if status == 'PENDING':
-				prior_stop = db.execute("SELECT readback_json FROM controller_batch_jira_operation WHERE issue_id=? AND operation_id<>? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') UNION ALL SELECT readback_json FROM controller_jira_operation WHERE issue_id=? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') LIMIT 1", (issue, operation_id, issue)).fetchone()
-				if prior_stop is not None:
-					observation = loads(prior_stop['readback_json']) if prior_stop['readback_json'] else None
-					db.execute("UPDATE controller_batch_jira_operation SET status='FAILED',readback_json=?,updated_at=? WHERE operation_id=?", (canonical(observation).decode(), now, operation_id))
-					status = 'FAILED'
-				else:
-					db.execute("UPDATE controller_batch_jira_operation SET status='IN_FLIGHT',updated_at=? WHERE operation_id=? AND status='PENDING'", (now, operation_id))
-		if status != 'PENDING':
-			if status == 'SUCCEEDED':
+		# Shared with the ordinary pre-writer check through durable completion.
+		# A live owner is deferred, never converted into a stop by a contender.
+		with _batch_jira_ownership(store, issue_id=issue) as issue_owned:
+			if not issue_owned:
 				continue
-			_require(status in {'FAILED', 'UNKNOWN', 'HELD'}, 'Invalid durable batch Jira status')
-			continue
-		observation, operation = None, None
-		try:
-			facts = policy_context.get(issue, {})
-			owner_hold = facts.get('owner_closure_required', False)
-			if 'snapshot' in facts:
-				owner_hold = owner_hold or owner_closure_required(config, facts['snapshot'])
-			if facts.get('issue_type') == 'EPIC':
-				key, reason = None, 'Epics are never transitioned'
-			else:
-				key, reason = planned_write(config, {'owner_closure_required': owner_hold}, 'JIRA_RECONCILED',
-					{'merge_confirmed': True, 'closeout_valid': True})
-			if key is None:
-				with store.transaction() as db:
-					db.execute("UPDATE controller_batch_jira_operation SET status='HELD',readback_json=?,updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical({'reason': reason}).decode(), now, operation_id))
+			with store.transaction() as db:
+				row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
+				status = row['status']
+				if status == 'IN_FLIGHT':
+					db.execute("UPDATE controller_batch_jira_operation SET status='UNKNOWN',updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (now, operation_id))
+					status = 'UNKNOWN'
+				if status == 'PENDING':
+					prior_stop = db.execute("SELECT readback_json FROM controller_batch_jira_operation WHERE issue_id=? AND operation_id<>? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') UNION ALL SELECT readback_json FROM controller_jira_operation WHERE issue_id=? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') LIMIT 1", (issue, operation_id, issue)).fetchone()
+					if prior_stop is not None:
+						observation = loads(prior_stop['readback_json']) if prior_stop['readback_json'] else None
+						db.execute("UPDATE controller_batch_jira_operation SET status='FAILED',readback_json=?,updated_at=? WHERE operation_id=?", (canonical(observation).decode(), now, operation_id))
+						status = 'FAILED'
+					else:
+						db.execute("UPDATE controller_batch_jira_operation SET status='IN_FLIGHT',updated_at=? WHERE operation_id=? AND status='PENDING'", (now, operation_id))
+			if status != 'PENDING':
+				if status == 'SUCCEEDED':
+					continue
+				_require(status in {'FAILED', 'UNKNOWN', 'HELD'}, 'Invalid durable batch Jira status')
 				continue
-			observation = read_current_status(deepcopy(record['binding']))
-			current, current_time = receipt(observation, issue, timestamp(now), 'before')
-			if current == record['to_status_id']:
-				store.finish_batch_jira_operation(operation_id, 'SUCCEEDED', observation, now)
-				continue
-			operation = write_transition(deepcopy(record))
-			_, operation_time = receipt(operation, issue, current_time, 'write')
-			observation = read_transition(deepcopy(record), deepcopy(operation))
-			observed, _ = receipt(observation, issue, operation_time, 'after')
-			status = 'SUCCEEDED' if observed == record['to_status_id'] and observation['actor'] == config['jira']['controller_actor_id'] else 'FAILED'
-			store.finish_batch_jira_operation(operation_id, status, observation, now, operation)
-			if status == 'FAILED':
-				break
-		except Exception:
-			# Persistence failure also leaves a durable claim. Do not retry any call.
+			observation, operation = None, None
 			try:
-				store.finish_batch_jira_operation(operation_id, 'UNKNOWN', observation, now, operation)
+				facts = policy_context.get(issue, {})
+				owner_hold = facts.get('owner_closure_required', False)
+				if 'snapshot' in facts:
+					owner_hold = owner_hold or owner_closure_required(config, facts['snapshot'])
+				if facts.get('issue_type') == 'EPIC':
+					key, reason = None, 'Epics are never transitioned'
+				else:
+					key, reason = planned_write(config, {'owner_closure_required': owner_hold}, 'JIRA_RECONCILED',
+						{'merge_confirmed': True, 'closeout_valid': True})
+				if key is None:
+					with store.transaction() as db:
+						db.execute("UPDATE controller_batch_jira_operation SET status='HELD',readback_json=?,updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical({'reason': reason}).decode(), now, operation_id))
+					continue
+				observation = read_current_status(deepcopy(record['binding']))
+				current, current_time = receipt(observation, issue, timestamp(now), 'before')
+				if current == record['to_status_id']:
+					store.finish_batch_jira_operation(operation_id, 'SUCCEEDED', observation, now)
+					continue
+				operation = write_transition(deepcopy(record))
+				_, operation_time = receipt(operation, issue, current_time, 'write')
+				observation = read_transition(deepcopy(record), deepcopy(operation))
+				observed, _ = receipt(observation, issue, operation_time, 'after')
+				status = 'SUCCEEDED' if observed == record['to_status_id'] and observation['actor'] == config['jira']['controller_actor_id'] else 'FAILED'
+				store.finish_batch_jira_operation(operation_id, status, observation, now, operation)
+				if status == 'FAILED':
+					break
 			except Exception:
-				pass
-			break
+				# Persistence failure also leaves a durable claim. Do not retry any call.
+				try:
+					store.finish_batch_jira_operation(operation_id, 'UNKNOWN', observation, now, operation)
+				except Exception:
+					pass
+				break
 	result = deepcopy(base)
 	with store.connection() as db:
 		for record in records:
@@ -2358,24 +2365,34 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	except Exception as exc:
 		return {'planned': False, 'status': 'IDENTITY_UNOBSERVED', 'reason': 'Jira provider identity recheck failed: ' + type(exc).__name__, 'expected_identity': expected, 'observed_identity': None, 'current_observation': current, 'writes_stopped': True, 'execution_authority': False}
 	store.begin_jira_operation(record['operation_id'], now)
-	try:
-		operation = write_transition(record)
-		_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'} and (operation['operation_id'] == record['operation_id']) and (operation['issue_id'] == binding['issue_id']) and (operation['jira_provider'] == provider) and (operation['status'] == 'ATTEMPTED'), 'Jira write receipt is missing or mismatched')
-		operation_time = timestamp(operation['observed_at'])
-		_require(operation_time >= current_time, 'Jira write receipt predates the pre-write observation')
-		observation = read_transition(record, operation)
-		_require(isinstance(observation, dict) and set(observation) == {'issue_id', 'status', 'actor', 'observed_at', 'jira_provider'} and (observation['issue_id'] == binding['issue_id']) and (observation['jira_provider'] == provider) and (observation['actor'] == provider['controller_actor_id']), 'Jira readback has an invalid or mismatched shape')
-		readback_time = timestamp(observation['observed_at'])
-		_require(readback_time >= operation_time, 'Jira readback predates the write receipt')
-		result = apply_read_back(record, observation['status'], observation['actor'], observation['observed_at'])
-		store.finish_jira_operation(record['operation_id'], result['record']['status'], observation, observation['observed_at'], operation)
-		return {'planned': True, 'current_observation': current, **result, 'execution_authority': False}
-	except Exception as exc:
+	# Claim commit deliberately precedes ownership: T11 may have stopped this
+	# issue in that interval. Recheck under the lock T11 needs to create a stop,
+	# and retain it through write/readback and durable completion. No SQLite
+	# transaction spans any provider callback.
+	with _batch_jira_ownership(store, issue_id=binding['issue_id']) as issue_owned:
+		with store.connection() as db:
+			batch_stop = _stopped_batch_jira_operation(db, binding['issue_id'])
+		if not issue_owned or batch_stop is not None:
+			store.finish_jira_operation(record['operation_id'], 'FAILED', None, now)
+			return {'planned': False, 'reason': 'Jira issue is owned or durably stopped; no write attempted', 'writes_stopped': True, 'operation_id': record['operation_id'], 'execution_authority': False}
 		try:
-			store.mark_jira_unknown(record['operation_id'], now)
-		except Exception:
-			pass
-		return {'planned': True, 'current_observation': current, **apply_read_back(record, None), 'reason': type(exc).__name__, 'execution_authority': False}
+			operation = write_transition(record)
+			_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'} and (operation['operation_id'] == record['operation_id']) and (operation['issue_id'] == binding['issue_id']) and (operation['jira_provider'] == provider) and (operation['status'] == 'ATTEMPTED'), 'Jira write receipt is missing or mismatched')
+			operation_time = timestamp(operation['observed_at'])
+			_require(operation_time >= current_time, 'Jira write receipt predates the pre-write observation')
+			observation = read_transition(record, operation)
+			_require(isinstance(observation, dict) and set(observation) == {'issue_id', 'status', 'actor', 'observed_at', 'jira_provider'} and (observation['issue_id'] == binding['issue_id']) and (observation['jira_provider'] == provider) and (observation['actor'] == provider['controller_actor_id']), 'Jira readback has an invalid or mismatched shape')
+			readback_time = timestamp(observation['observed_at'])
+			_require(readback_time >= operation_time, 'Jira readback predates the write receipt')
+			result = apply_read_back(record, observation['status'], observation['actor'], observation['observed_at'])
+			store.finish_jira_operation(record['operation_id'], result['record']['status'], observation, observation['observed_at'], operation)
+			return {'planned': True, 'current_observation': current, **result, 'execution_authority': False}
+		except Exception as exc:
+			try:
+				store.mark_jira_unknown(record['operation_id'], now)
+			except Exception:
+				pass
+			return {'planned': True, 'current_observation': current, **apply_read_back(record, None), 'reason': type(exc).__name__, 'execution_authority': False}
 
 def production_post_merge_progress(**adapters):
 	_require(isinstance(adapters.get('count_gate'), dict), 'Production post-merge counting requires validated closeout gate inputs')
