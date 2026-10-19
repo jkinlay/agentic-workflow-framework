@@ -1778,6 +1778,10 @@ def production_batch_jira_reconciliation(store, *, config, role, batch, observed
 	if config.get('jira', {}).get('enabled') is False or role != 'controller':
 		return _production_batch_jira_reconciliation(store, **arguments)
 	_require(isinstance(store, ContinuousControllerStore), 'Batch Jira needs protected controller storage')
+	if not callable(observe_issue_identity):
+		return {'status': 'REFUSED', 'reason': 'Jira canonical issue observer is unavailable',
+			'writes_stopped': True, 'complete': False, 'count_allowed': False,
+			'reconciled': [], 'remaining': [], 'conflict': None, 'held': [], 'execution_authority': False}
 	validated = _batch_jira_inputs(deepcopy(config), deepcopy(batch), deepcopy(observed_merge),
 		deepcopy(policy_context) if policy_context is not None else {}, now)
 	for member in validated['batch']['constituents']:
@@ -2390,7 +2394,9 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	if config.get('jira', {}).get('enabled', True) is False:
 		return {'planned': False, 'reason': 'Jira is disabled; no reads or writes', 'execution_authority': False}
 	_require(isinstance(binding, dict), 'Jira input must bind a canonical issue key')
-	_require(callable(observe_issue_identity), 'Jira canonical issue observer is unavailable')
+	if not callable(observe_issue_identity):
+		return {'planned': False, 'status': 'REFUSED', 'reason': 'Jira canonical issue observer is unavailable',
+			'writes_stopped': True, 'execution_authority': False}
 	_require_canonical_issue(binding.get('issue_id'), observe_issue_identity=observe_issue_identity, now=now)
 	from .provider_identity import ProviderIdentityError, expected_jira_identity, require_jira_write_identity
 	expected = {'cloud_id': config.get('jira', {}).get('cloud_id'), 'site': config.get('jira', {}).get('site'), 'project_id': config.get('jira', {}).get('provider_project_id'), 'project_key': config.get('jira', {}).get('project_key'), 'account_id': config.get('jira', {}).get('controller_actor_id')}
