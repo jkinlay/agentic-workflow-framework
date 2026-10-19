@@ -1590,6 +1590,100 @@ class ContinuousControllerStore:
 			db.execute('UPDATE controller_batch_jira_operation SET status=?,operation_json=?,readback_json=?,updated_at=? WHERE operation_id=?', (status, canonical(operation).decode() if operation is not None else row['operation_json'], canonical(observation).decode() if observation is not None else None, now, operation_id))
 
 
+def _require_canonical_issue(issue, *, observe_issue_identity=None, now):
+	"""Reject aliases; never translate an input into another lock/stop identity.
+
+	The historical T11 fixture accepts canonical keys syntactically. Reviewed
+	production entrypoints additionally resolve each key through the provider.
+	"""
+	_require(isinstance(issue, str) and re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', issue) is not None,
+		'Jira input must be a canonical issue key')
+	if observe_issue_identity is not None:
+		_require(callable(observe_issue_identity), 'Canonical issue observer is unavailable')
+		observed = observe_issue_identity(issue)
+		_require(isinstance(observed, dict) and set(observed) == {'issue_key', 'observed_at'} and
+			observed['issue_key'] == issue, 'Jira input differs from the provider canonical issue key')
+		from .canonical import fresh
+		fresh(observed['observed_at'], now, 1800)
+	return issue
+
+
+def batch_operation_request(request):
+	"""A locator/operation only; evidence and registrations never come from JSON."""
+	_require(isinstance(request, dict) and set(request) == {'operation', 'repository_id', 'batch_id'},
+		'Batch command accepts only a retained candidate locator and operation')
+	_require(request['operation'] in {'load', 'schedule', 'publish', 'ready', 'ci', 'eject'},
+		'Unsupported batch operation; no merge or target push authority')
+	_require(type(request['repository_id']) is int and request['repository_id'] > 0 and
+		isinstance(request['batch_id'], str) and request['batch_id'].strip() == request['batch_id'] and
+		bool(request['batch_id']) and len(request['batch_id']) <= 256,
+		'Invalid retained batch locator')
+	return deepcopy(request)
+
+
+def production_batch_operation(*, config, request, coordinator):
+	"""Delegate explicit operations to W1's reviewed retained coordinator only."""
+	request = batch_operation_request(request)
+	_require(request['repository_id'] == config.get('github', {}).get('repository_id'),
+		'Batch repository differs from accepted configuration')
+	_require(callable(coordinator), 'Batch command requires the reviewed W1 coordinator')
+	candidate = coordinator(deepcopy(request))
+	from .closeout import validate_retained_batch_candidate
+	validate_retained_batch_candidate(candidate, repository_id=request['repository_id'], batch_id=request['batch_id'])
+	return deepcopy(candidate)
+
+
+def production_batch_closeout(store, *, config, request, coordinator,
+		merge_observer_id, merge_observer_registry, observe_issue_identity,
+		observe_provider_identity, observe_issue_policy, now, read_current_status, write_transition,
+		read_transition):
+	"""Observe a retained W1 candidate on exact main, then use only T11.
+
+	No publication/audit journal is created here. Coordinator registrations and
+	observer registries are runtime objects supplied by reviewed adapter code.
+	Caller-supplied JSON cannot authenticate a merge or a candidate.
+	"""
+	request = batch_operation_request(request)
+	_require(request['operation'] == 'load', 'Batch closeout requires a retained load')
+	candidate = production_batch_operation(config=config, request=request, coordinator=coordinator)
+	from .closeout import assemble_retained_batch_closeout
+	batch, observed_merge = assemble_retained_batch_closeout(candidate, config=config,
+		merge_observer_id=merge_observer_id, merge_observer_registry=merge_observer_registry, now=now)
+	# Disabled Jira forbids even identity lookups. Counting still requires the
+	# independent closeout gate; a T11 complete result never grants authority.
+	policy_context = {}
+	if config.get('jira', {}).get('enabled') is True:
+		from .provider_identity import require_jira_write_identity
+		from .canonical import fresh
+		from .integration_queue import _evidence_max_age
+		_require(all(callable(adapter) for adapter in (observe_provider_identity, observe_issue_identity, observe_issue_policy)),
+			'Batch Jira needs reviewed provider, canonical issue and policy observers')
+		require_jira_write_identity(config, observe_provider_identity())
+		for member in batch['constituents']:
+			issue = member['binding']['issue_id']
+			_require_canonical_issue(issue, observe_issue_identity=observe_issue_identity, now=now)
+			policy = observe_issue_policy(issue)
+			_require(isinstance(policy, dict) and set(policy) == {'issue_key', 'issue_type', 'snapshot', 'observed_at'} and
+				policy['issue_key'] == issue, 'Batch Jira policy observation differs from canonical issue')
+			fresh(policy['observed_at'], now, _evidence_max_age(config))
+			policy_context[issue] = deepcopy({key: policy[key] for key in ('issue_type', 'snapshot')})
+	# Check retained identity again after external observations, before T11 can
+	# prepare any intents; W1 remains the sole authority for retained bytes.
+	_require(production_batch_operation(config=config, request=request, coordinator=coordinator) == candidate,
+		'Retained batch changed during closeout observation')
+	def guarded_write(record):
+		require_jira_write_identity(config, observe_provider_identity())
+		_require_canonical_issue(record['binding']['issue_id'], observe_issue_identity=observe_issue_identity, now=now)
+		return write_transition(record)
+	result = production_batch_jira_reconciliation(store, config=config, role='controller',
+		batch=batch, observed_merge=observed_merge, now=now, read_current_status=read_current_status,
+		write_transition=guarded_write, read_transition=read_transition, policy_context=policy_context,
+		observe_issue_identity=observe_issue_identity)
+	return {'batch_id': candidate['batch_id'], 'generation': candidate['generation'],
+		'constituents': deepcopy(batch['constituents']), 'jira': result,
+		'count_allowed': False, 'execution_authority': False}
+
+
 def _batch_jira_inputs(config, batch, observed_merge, policy_context, now):
 	"""Validate the complete fixture envelope before persisting or calling out."""
 	def text(value):
@@ -1648,7 +1742,7 @@ def _batch_jira_ownership(store, *, issue_id=None):
 	OS closure releases ownership even if a callback terminates the process.
 	"""
 	import errno
-	# Hash the exact stored identity only; key canonicalisation is deferred.
+	# Hash the validated exact canonical issue key; aliases never reach this lock.
 	suffix = '.t11.lock' if issue_id is None else '.jira-issue-' + hashlib.sha256(issue_id.encode('utf-8')).hexdigest() + '.lock'
 	path = store.path.with_name(store.path.name + suffix)
 	_require(not path.is_symlink(), 'Batch Jira ownership path must not be a symlink')
@@ -1676,14 +1770,18 @@ def _batch_jira_ownership(store, *, issue_id=None):
 
 
 def production_batch_jira_reconciliation(store, *, config, role, batch, observed_merge, now,
-		read_current_status, write_transition, read_transition, policy_context=None):
-	"""Unwired fixture seam; serialize invocations without a provider transaction."""
+		read_current_status, write_transition, read_transition, policy_context=None, observe_issue_identity=None):
+	"""Serialize T11 invocations; reject aliases before any durable intent."""
 	arguments = dict(config=config, role=role, batch=batch, observed_merge=observed_merge,
 		now=now, read_current_status=read_current_status, write_transition=write_transition,
 		read_transition=read_transition, policy_context=policy_context)
 	if config.get('jira', {}).get('enabled') is False or role != 'controller':
 		return _production_batch_jira_reconciliation(store, **arguments)
 	_require(isinstance(store, ContinuousControllerStore), 'Batch Jira needs protected controller storage')
+	validated = _batch_jira_inputs(deepcopy(config), deepcopy(batch), deepcopy(observed_merge),
+		deepcopy(policy_context) if policy_context is not None else {}, now)
+	for member in validated['batch']['constituents']:
+		_require_canonical_issue(member['binding']['issue_id'], observe_issue_identity=observe_issue_identity, now=now)
 	with _batch_jira_ownership(store) as ownership:
 		return _production_batch_jira_reconciliation(store, **arguments, ownership=ownership)
 
@@ -2286,11 +2384,14 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	streams = store.snapshot()
 	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'errors': errors, 'execution_authority': False}
 
-def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None):
+def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None):
 	_require(isinstance(store, ContinuousControllerStore), 'Jira lifecycle production needs the protected controller store')
 	_require(all((callable(adapter) for adapter in (read_current_status, write_transition, read_transition))), 'Jira lifecycle read/write/readback adapters must be callable')
 	if config.get('jira', {}).get('enabled', True) is False:
 		return {'planned': False, 'reason': 'Jira is disabled; no reads or writes', 'execution_authority': False}
+	_require(isinstance(binding, dict), 'Jira input must bind a canonical issue key')
+	_require(callable(observe_issue_identity), 'Jira canonical issue observer is unavailable')
+	_require_canonical_issue(binding.get('issue_id'), observe_issue_identity=observe_issue_identity, now=now)
 	from .provider_identity import ProviderIdentityError, expected_jira_identity, require_jira_write_identity
 	expected = {'cloud_id': config.get('jira', {}).get('cloud_id'), 'site': config.get('jira', {}).get('site'), 'project_id': config.get('jira', {}).get('provider_project_id'), 'project_key': config.get('jira', {}).get('project_key'), 'account_id': config.get('jira', {}).get('controller_actor_id')}
 	observed_identity = None

@@ -15,7 +15,7 @@ from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.contracts import Contracts
 from agentic.integration_queue import provider_observation_receipt_sha256
 from agentic.safeio import Tree
-from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle, production_jira_lifecycle, production_merge_observed
+from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle, production_jira_lifecycle, production_merge_observed, production_batch_operation, production_batch_closeout, batch_operation_request
 from agentic.owner_publication import OwnerPublicationStore, prepare_owner_publication, resume_owner_publication
 
 def _load_reviewed_adapters(path, expected_sha256, config_path):
@@ -48,6 +48,26 @@ def _require_adapters(adapters, names):
 	if missing:
 		raise ValidationError('Reviewed adapter is missing callable operations: ' + ', '.join(missing))
 	return {name: adapters[name] for name in names}
+
+def _batch_operation_request(value):
+	return batch_operation_request(value)
+
+
+def _batch_closeout_inputs(adapters, adapter_sha256, config):
+	"""Construct runtime registrations from reviewed code, never request files."""
+	calls = _require_adapters(adapters, {'batch_coordinator', 'observe_batch_merge',
+		'observe_issue_identity', 'observe_issue_policy', 'observe_provider_identity', 'read_current_status',
+		'write_transition', 'read_transition'})
+	github = config['github']
+	provider = {key: github[key] for key in ('host', 'repository', 'repository_id')}
+	provider['host'] = provider['host'].rstrip('/')
+	repository = {key: github[key] for key in ('repository', 'repository_id')}
+	producer = 'awf-controller-batch-merge'
+	registry = _adapter_observer_registration(producer, 'BATCH_MERGE', calls.pop('observe_batch_merge'),
+		adapter_sha256, provider_identity=provider, repository_identity=repository)
+	return {'coordinator': calls.pop('batch_coordinator'), 'merge_observer_id': producer,
+		'merge_observer_registry': registry, **calls}
+
 
 def _jira_progress_request(path):
 	value = load(path)
@@ -158,6 +178,10 @@ def main(argv=None, default_root=ROOT):
 	owner_resume.add_argument('--now', required=True)
 	owner_status = sub.add_parser('owner-publication-status', help='Read the retained handoff without a provider call')
 	owner_status.add_argument('--batch', required=True)
+	for command in ('batch-operation', 'batch-closeout'):
+		batch = sub.add_parser(command, help='Use the reviewed retained W1 coordinator')
+		batch.add_argument('--request', type=Path, required=True)
+		batch.add_argument('--now', required=True)
 	sub.add_parser('snapshot')
 	args = parser.parse_args(argv)
 	config_path = args.project_config or default_root / '.agentic/PROJECT_CONFIG.yaml'
@@ -171,9 +195,17 @@ def main(argv=None, default_root=ROOT):
 	else:
 		store = ContinuousControllerStore(args.state, args.streams, cadence_seconds, worktree_roots=args.worktree_root, periodic_status_enabled=not args.disable_periodic_status, migrate_cadence=args.migrate_status_cadence)
 	adapters = None
-	if args.command in {'cycle', 'jira-lifecycle', 'merge-observed', 'owner-publication-prepare', 'owner-publication-resume'}:
+	if args.command in {'cycle', 'jira-lifecycle', 'merge-observed', 'owner-publication-prepare', 'owner-publication-resume', 'batch-operation', 'batch-closeout'}:
 		adapters = _load_reviewed_adapters(args.adapter_module, args.adapter_sha256, args.adapter_config)
-	if args.command == 'owner-publication-prepare':
+	if args.command == 'batch-operation':
+		request = _batch_operation_request(load(args.request))
+		calls = _require_adapters(adapters, {'batch_coordinator'})
+		output = production_batch_operation(config=config, request=request, coordinator=calls['batch_coordinator'])
+	elif args.command == 'batch-closeout':
+		request = _batch_operation_request(load(args.request))
+		calls = _batch_closeout_inputs(adapters, args.adapter_sha256, config)
+		output = production_batch_closeout(store, config=config, request=request, now=args.now, **calls)
+	elif args.command == 'owner-publication-prepare':
 		calls = _require_adapters(adapters, {'authorize_owner_publication'})
 		output = prepare_owner_publication(store, config, load(args.request), now=args.now, **calls)
 	elif args.command == 'owner-publication-resume':
@@ -197,7 +229,7 @@ def main(argv=None, default_root=ROOT):
 		operating = read_operating(args.repository_root, config)
 		output = production_controller_cycle(store, planning_resource_producer_sha256=args.adapter_sha256, project_config_sha256=fingerprint('accepted-project-config', config), operating_config_sha256=operating.operating_hash, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id, overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
 	elif args.command == 'jira-lifecycle':
-		calls = _require_adapters(adapters, {'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition'})
+		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'})
 		output = production_jira_lifecycle(store, config=config, contract=load(args.contract), event=args.event, facts=load(args.facts), binding=load(args.binding), issue_type=args.issue_type, state=args.lifecycle_state, producer_id=args.producer_id, run_id=args.run_id, now=args.now, evidence=args.evidence, transition_id=args.transition_id, merge_result_id=args.merge_result_id, **calls)
 	elif args.command == 'merge-observed':
 		calls = _require_adapters(adapters, {'reconcile_merged_ticket', 'fetch_scope_page'})
