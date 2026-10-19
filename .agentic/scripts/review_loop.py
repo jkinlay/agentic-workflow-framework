@@ -5,12 +5,13 @@ import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT / '.agentic/lib'))
-from agentic.child_process import scrub_process_env
+from agentic.child_process import scrub_process_env, render_bounded_diagnostic
 scrub_process_env()
 
 import argparse
 import json
 from agentic.installer import verify_installed
+from agentic.safeio import read_bounded_json
 from agentic.review_loop import (LoopStore, complete_first_draft,
     confirm_first_draft_publication, enroll, pause, record_first_draft_publication,
     record_first_draft_publication_plan, require_first_draft_config_binding,
@@ -22,6 +23,8 @@ from agentic.review_first_draft import (publish_codex_tested_tree,
 from agentic.review_qualification import collect_qualification
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
+
+DISPOSITION_INPUT_MAXIMUM = 65_536
 
 
 def main(argv=None):
@@ -217,7 +220,9 @@ def main(argv=None):
             else:
                 candidate = driver.snapshot()
                 driver.preflight(candidate)
-                disposition = json.loads(args.disposition.read_text(encoding='utf-8')) if args.disposition else None
+                disposition = read_bounded_json(
+                    args.disposition, maximum=DISPOSITION_INPUT_MAXIMUM,
+                    expected_type=dict) if args.disposition else None
                 value = resume(store,config,candidate,args.reconciled_run,disposition)
         if 'phase' in value:
             value['next_step']=loop_next_step(value)
@@ -225,7 +230,7 @@ def main(argv=None):
         return 2 if (value.get('phase') == 'PAUSED'
                      or value.get('result') == 'FAIL') else 0
     except Exception as exc:
-        reason=f'{type(exc).__name__}: {exc}'
+        reason=render_bounded_diagnostic(f'{type(exc).__name__}: {exc}', code='DIAGNOSTIC_INVALID')
         value={'status':'REJECTED','reason':reason,'merge_authorized':False,'next_step':rejected_next_step(reason)}
         print(json.dumps(value,indent=2) if args.format=='json' else render_markdown(value),file=sys.stderr)
         return 2

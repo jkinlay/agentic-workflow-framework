@@ -490,11 +490,15 @@ if os.name == "nt":
         flags = 0x00200000 | (0x02000000 if directory else 0)
         handle = kernel.CreateFileW(str(path), access, share, None, 4 if lock else 3, flags, None)
         if handle == INVALID_HANDLE:
-            raise OSError(ctypes.get_last_error(), f"Cannot pin {path}")
+            error = ctypes.WinError(ctypes.get_last_error())
+            error.filename = str(path)
+            raise error
         info = FileInformation()
         if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            error = ctypes.WinError(ctypes.get_last_error())
+            error.filename = str(path)
             kernel.CloseHandle(handle)
-            raise OSError(ctypes.get_last_error(), f"Cannot inspect {path}")
+            raise error
         if (info.attributes & 0x400 or bool(info.attributes & 0x10) != directory
                 or (not directory and not allow_hardlinks and info.links != 1)):
             kernel.CloseHandle(handle)
