@@ -440,7 +440,7 @@ def _planning_overlap_allowances(graph, config, records, binding, now, authentic
             key = (*owners, path)
             # Deterministic selection when independently validated approvals
             # cover the same pair/path; input order must not alter a sealed plan.
-            if key not in accepted or record["allowance_id"] < accepted[key]["allowance_id"]:
+            if key not in accepted or (record["allowance_id"], record["allowance_sha256"]) < (accepted[key]["allowance_id"], accepted[key]["allowance_sha256"]):
                 accepted[key] = copy.deepcopy(record)
         except Exception:
             # Malformed or unavailable allowance evidence grants no exception
