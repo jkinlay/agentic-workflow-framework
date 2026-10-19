@@ -835,6 +835,106 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         self.assertEqual([], spy.calls)
 
 
+class CanonicalIdentitySnapshotTests(unittest.TestCase):
+    setUp = BatchReconciliationSafetyTests.setUp
+    run_batch = BatchReconciliationSafetyTests.run_batch
+
+    def test_batch_observer_mutation_cannot_replace_validated_inputs(self):
+        spy = JiraSpy()
+        observed = []
+
+        def observe(key):
+            observed.append(key)
+            self.batch["constituents"][0]["binding"]["issue_id"] = "2001"
+            self.batch["constituents"][1]["binding"]["issue_id"] = "2002"
+            self.config["jira"]["status_map"]["done"] = "Wrong status"
+            return {"issue_key": key, "observed_at": NOW}
+
+        result = self.run_batch(spy, observe_issue_identity=observe)
+        self.assertEqual(["AWF-1", "AWF-2"], observed)
+        self.assertEqual([(operation, issue) for issue in ("AWF-1", "AWF-2")
+                          for operation in ("read", "write", "read_back")], spy.calls)
+        self.assertTrue(result["complete"])
+        with self.store.connection() as db:
+            rows = db.execute("SELECT issue_id, status, record_json FROM "
+                              "controller_batch_jira_operation ORDER BY issue_id").fetchall()
+        self.assertEqual([("AWF-1", "SUCCEEDED"), ("AWF-2", "SUCCEEDED")],
+                         [(row["issue_id"], row["status"]) for row in rows])
+        for row in rows:
+            self.assertEqual("Done", json.loads(row["record_json"])["to_status_id"])
+
+    def test_ordinary_callbacks_cannot_replace_observed_binding(self):
+        import uuid
+        from unittest.mock import patch
+        provider = {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                    "project_id": "project-1", "project_key": "AWF",
+                    "controller_actor_id": "controller-1"}
+        for stage in ("issue_observer", "provider_observer", "pre_read", "provider_recheck"):
+            with self.subTest(stage=stage):
+                store = self.controller.ContinuousControllerStore(
+                    self.path.with_name(stage + ".sqlite"), ["B"])
+                binding = {"issue_id": "AWF-1", "project_id": "local-project",
+                           "repository_id": "101", "requirements_hash": "a" * 64}
+                original = deepcopy(binding)
+                calls, observed, locks = [], [], []
+                provider_calls = []
+
+                def mutate(point):
+                    if stage == point:
+                        binding["issue_id"] = "2001"
+                        binding["requirements_hash"] = "b" * 64
+
+                def observe(key):
+                    observed.append(key)
+                    mutate("issue_observer")
+                    return {"issue_key": key, "observed_at": NOW}
+
+                def identity():
+                    provider_calls.append(True)
+                    mutate("provider_observer" if len(provider_calls) == 1 else "provider_recheck")
+                    return provider
+
+                def read(selected):
+                    calls.append(("read", selected["issue_id"]))
+                    mutate("pre_read")
+                    return {"issue_id": selected["issue_id"], "status_id": "Ready",
+                            "observed_at": NOW, "jira_provider": provider}
+
+                def write(record):
+                    calls.append(("write", record["binding"]["issue_id"]))
+                    return {"operation_id": record["operation_id"],
+                            "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED",
+                            "observed_at": NOW, "jira_provider": provider}
+
+                def readback(record, operation):
+                    calls.append(("read_back", record["binding"]["issue_id"]))
+                    return {"issue_id": record["binding"]["issue_id"], "status": "In Progress",
+                            "actor": "controller-1", "observed_at": NOW, "jira_provider": provider}
+
+                ownership = self.controller._batch_jira_ownership
+                def lock(selected_store, *, issue_id=None):
+                    locks.append(issue_id)
+                    return ownership(selected_store, issue_id=issue_id)
+
+                with patch.object(self.controller, "_batch_jira_ownership", side_effect=lock):
+                    result = self.controller.production_jira_lifecycle(store,
+                        config=self.config, contract={}, event="WORKER_STARTED",
+                        facts={"run_registered": True, "worktree_verified": True},
+                        binding=binding, issue_type="LEAF", state="DISPATCHED",
+                        producer_id="controller-1", run_id=str(uuid.uuid4()), now=NOW,
+                        evidence=["urn:fixture:identity-snapshot"], transition_id="31",
+                        observe_issue_identity=observe, observe_provider_identity=identity,
+                        read_current_status=read, write_transition=write, read_transition=readback)
+                self.assertEqual(["AWF-1"], observed)
+                self.assertEqual([("read", "AWF-1"), ("write", "AWF-1"),
+                                  ("read_back", "AWF-1")], calls)
+                self.assertEqual(["AWF-1"], locks)
+                self.assertEqual("SUCCEEDED", result["record"]["status"])
+                self.assertEqual(original, result["record"]["binding"])
+                self.assertEqual([], store.jira_operations("2001"))
+                self.assertEqual(original, store.jira_operations("AWF-1")[0]["record"]["binding"])
+
+
 class MissingCanonicalObserverTests(unittest.TestCase):
     setUp = BatchReconciliationSafetyTests.setUp
 
