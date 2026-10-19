@@ -36,11 +36,12 @@ after that schema update. Schema acceptance grants no dispatch authority.
 
 `independent_reviewers.allocation: shared_critic` uses one reviewer slot. Legacy `one_per_stream` and fixed counts remain binding. `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
 
-Planning owner overrides use authenticated `fixed` or `max` decisions with
+Owner overrides use authenticated `fixed` or `max` decisions with
 audited history. They apply after sealed safe capacity: `fixed` selects
 that count or refuses if unsafe; `max` limits the recommendation. Neither raises
 governance or observed capacity. Replans wait for round boundaries; running
-assignments retain their reservations. Live controller wiring remains pending.
+assignments retain reservations. Authenticated triggers persist; durable plans
+constrain admission with lane-start rechecks.
 
 ## Apply the user's choices
 
