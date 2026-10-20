@@ -6,10 +6,14 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+from agentic.canonical import canonical, fingerprint, sha256
+from agentic.provider_identity import require_jira_write_identity
+
 NOW = "2026-10-17T16:00:00Z"
 PROVIDER = dict(cloud_id="cloud-1", site="https://jira.example.invalid",
     project_id="project-1", project_key="AWF", controller_actor_id="controller-1")
@@ -1319,6 +1323,234 @@ class OperationalControllerTests(unittest.TestCase):
             self.assertEqual([], spy.calls)
         with self.assertRaises(ValidationError):
             script._batch_operation_request({'operation':'merge','repository_id':101,'batch_id':'batch-1'})
+
+
+# Persisted receipts model unchecked legacy outputs; intent bytes remain valid.
+class PersistedCompletionTests(unittest.TestCase):
+    setUp = BatchReconciliationSafetyTests.setUp
+    operational_inputs = OperationalControllerTests.operational_inputs
+
+    def rows(self):
+        with self.store.connection() as db:
+            return [dict(r) for r in db.execute(
+                'SELECT * FROM controller_batch_jira_operation ORDER BY issue_id')]
+
+    def pin(self):
+        with self.store.connection() as db:
+            return db.execute("SELECT value FROM controller_meta WHERE key='t11-batch:batch-1'").fetchone()[0]
+
+    def close(self, spy, **overrides):
+        inputs = self.operational_inputs(spy)
+        inputs.update(overrides)
+        return self.controller.production_batch_closeout(self.store, **inputs)['jira']
+
+    def reopen(self):
+        self.store = self.controller.ContinuousControllerStore(self.path, ['B'])
+
+    def b1(self, already_done):
+        self.config['jira']['site'] += '/'
+        admitted = require_jira_write_identity(self.config, deepcopy(PROVIDER))
+        self.assertEqual(PROVIDER, admitted)
+        spy = JiraSpy()
+        def before(binding):
+            value = spy.read_current_status(binding)
+            if already_done:
+                value['status_id'] = 'Done'
+            return value
+        first = self.close(spy, read_current_status=before)
+        initial = self.rows()
+        original_pin = self.pin()
+        self.reopen()
+        replay = JiraSpy()
+        # Restart must trust retained valid receipts without any callback replay.
+        def raw_before(binding):
+            value = replay.read_current_status(binding)
+            value['jira_provider']['site'] += '/'
+            value['status_id'] = 'Done'
+            return value
+        with patch.dict(globals(), NOW='2026-10-17T16:01:00Z'):
+            second = self.close(replay, read_current_status=raw_before)
+        self.assertEqual(original_pin, self.pin())
+        self.assertEqual(initial[0], self.rows()[0])
+        self.assertNotIn(('read', 'AWF-1'), replay.calls)
+        self.assertTrue(first['complete'], 'admitted normalized provider must reconcile')
+        self.assertTrue(second['complete'])
+        self.assertEqual([], replay.calls)
+        self.assertEqual(['SUCCEEDED', 'SUCCEEDED'], [row['status'] for row in initial])
+        self.assertEqual([('read', issue) for issue in ('AWF-1', 'AWF-2')] if already_done else [(op, issue) for issue in ('AWF-1', 'AWF-2') for op in ('read', 'write', 'read_back')], spy.calls)
+
+    def test_b1_already_done(self):
+        self.b1(True)
+
+    def test_b1_write_readback(self):
+        self.b1(False)
+
+    def seed_legacy(self, mode):
+        spy = JiraSpy()
+        def done(binding):
+            return dict(spy.read_current_status(binding), status_id='Done')
+        result = self.close(spy, **({'read_current_status': done} if mode == 'before-provider' else {}))
+        self.assertTrue(result['complete'])
+        with self.store.transaction() as db:
+            pin = json.loads(self.pin())
+            pin['observed_merge']['observed_at'] = NOW
+            encoded = canonical(pin)
+            db.execute("UPDATE controller_meta SET value=? WHERE key='t11-batch:batch-1'", (encoded.decode(),))
+            for row in db.execute('SELECT * FROM controller_batch_jira_operation').fetchall():
+                record = json.loads(row['record_json'])
+                record['batch_input_sha256'] = sha256(encoded)
+                intent = fingerprint('controller-jira-operation', {k:v for k,v in record.items() if k != 'created_at'})
+                db.execute('UPDATE controller_batch_jira_operation SET record_json=?,intent_sha256=? WHERE operation_id=?',
+                           (canonical(record).decode(), intent, row['operation_id']))
+            row = db.execute("SELECT * FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()
+            column = 'operation_json' if (mode.startswith('write-') or mode in ('json-null-operation', 'early-write')) else 'readback_json'
+            value = json.loads(row[column])
+            if mode in ('before-provider', 'after-provider', 'write-provider'):
+                value['jira_provider']['cloud_id'] = 'foreign'
+            elif mode == 'write-operation':
+                value['operation_id'] = 'foreign-operation'
+            elif mode in ('missing-provider', 'write-missing-provider'):
+                del value['jira_provider']
+            elif mode == 'write-missing-operation':
+                del value['operation_id']
+            elif mode == 'json-null-operation':
+                value = None
+            elif mode == 'foreign-issue':
+                value['issue_id'] = 'AWF-999'
+            elif mode == 'wrong-status':
+                value['status'] = 'In Review'
+            elif mode == 'wrong-actor':
+                value['actor'] = 'foreign'
+            elif mode == 'malformed-time':
+                value['observed_at'] = 'bad'
+            elif mode == 'early-write':
+                value['observed_at'] = '2026-10-17T15:59:59Z'
+            elif mode == 'early-readback':
+                value['observed_at'] = '2026-10-17T15:59:59Z'
+            elif mode == 'extra-field':
+                value['extra'] = True
+            db.execute('UPDATE controller_batch_jira_operation SET ' + column + '=? WHERE issue_id=?',
+                       (canonical(value).decode(), 'AWF-1'))
+
+    def test_b2_legacy_success_must_validate_evidence(self):
+        for mode in ('before-provider', 'after-provider', 'write-provider', 'write-operation',
+                     'missing-provider', 'write-missing-provider', 'write-missing-operation',
+                     'json-null-operation', 'foreign-issue', 'wrong-status', 'wrong-actor',
+                     'malformed-time', 'early-write', 'early-readback', 'extra-field'):
+            with self.subTest(mode=mode):
+                self.path = Path(self.temporary.name) / (mode + '.sqlite')
+                self.reopen()
+                self.seed_legacy(mode)
+                original, pin = self.rows(), self.pin()
+                self.reopen()
+                spy = JiraSpy()
+                def forbidden(*args):
+                    self.fail('completed historical operation replayed a provider callback')
+                for later in ('2026-10-17T16:01:00Z', '2026-10-17T16:02:00Z'):
+                    with patch.dict(globals(), NOW= later):
+                        result = self.close(spy, read_current_status=forbidden,
+                                            write_transition=forbidden, read_transition=forbidden)
+                    self.assertEqual(pin, self.pin())
+                    current = self.rows()
+                    for a,b in zip(original, current):
+                        for key in ('operation_id','intent_sha256','record_json','operation_json','readback_json'):
+                            self.assertEqual(a[key], b[key])
+                self.assertEqual([], spy.calls)
+                self.assertFalse(result['count_allowed'])
+                self.assertFalse(result['complete'], 'unproven legacy completion must be quarantined')
+                self.assertEqual('UNKNOWN', current[0]['status'])
+                self.assertEqual(['AWF-2'], result['reconciled'])
+                self.assertEqual('AWF-1', result['conflict']['issue_id'])
+
+    def test_control_valid_historical_success(self):
+        spy = JiraSpy()
+        self.assertTrue(self.close(spy)['complete'])
+        before = self.rows()
+        self.reopen()
+        replay = JiraSpy()
+        with patch.dict(globals(), NOW='2026-10-17T16:01:00Z'):
+            self.assertTrue(self.close(replay)['complete'])
+        self.assertEqual([], replay.calls)
+        self.assertEqual(before, self.rows())
+
+
+
+    def test_invalid_completion_without_ownership_never_reports_success(self):
+        from contextlib import contextmanager
+        real_ownership = self.controller._batch_jira_ownership
+        for blocked in ('batch', 'issue'):
+            with self.subTest(blocked=blocked):
+                self.path = Path(self.temporary.name) / (blocked + '.sqlite')
+                self.reopen()
+                self.seed_legacy('after-provider')
+                original = self.rows()
+                @contextmanager
+                def ownership(store, *, issue_id=None):
+                    if (blocked == 'batch' and issue_id is None) or (blocked == 'issue' and issue_id == 'AWF-1'):
+                        yield False
+                    else:
+                        with real_ownership(store, issue_id=issue_id) as owned:
+                            yield owned
+                spy = JiraSpy()
+                with patch.object(self.controller, '_batch_jira_ownership', ownership):
+                    result = self.close(spy)
+                self.assertFalse(result['complete'])
+                self.assertEqual(['AWF-2'], result['reconciled'])
+                self.assertEqual('AWF-1', result['conflict']['issue_id'])
+                self.assertEqual(original, self.rows())
+                self.assertEqual([], spy.calls)
+                self.assertFalse(self.close(JiraSpy())['complete'])
+                self.assertEqual('UNKNOWN', self.rows()[0]['status'])
+
+    def test_quarantine_persistence_failure_prevents_callbacks_and_success(self):
+        import sqlite3
+        from contextlib import contextmanager
+        self.seed_legacy('after-provider')
+        original = self.rows()
+        transaction = self.store.transaction
+        @contextmanager
+        def failing_transaction():
+            with transaction() as db:
+                def authorizer(action, table, column, *args):
+                    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_UPDATE and table == 'controller_batch_jira_operation' and column == 'status' else sqlite3.SQLITE_OK
+                db.set_authorizer(authorizer)
+                yield db
+        spy = JiraSpy()
+        with patch.object(self.store, 'transaction', failing_transaction), self.assertRaises(sqlite3.DatabaseError):
+            self.close(spy)
+        self.assertEqual([], spy.calls)
+        self.assertEqual(original, self.rows())
+
+    def test_invalid_later_success_quarantines_before_pending_callback(self):
+        self.seed_legacy('after-provider')
+        with self.store.transaction() as db:
+            # AWF-1 is pending and precedes the invalid retained success on AWF-2.
+            bad = json.loads(db.execute("SELECT readback_json FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()[0])
+            before = dict(issue_id='AWF-2', status_id='Done', observed_at=NOW, jira_provider=bad['jira_provider'])
+            db.execute("UPDATE controller_batch_jira_operation SET operation_json=NULL,readback_json=? WHERE issue_id='AWF-2'", (canonical(before).decode(),))
+            db.execute("UPDATE controller_batch_jira_operation SET status='PENDING',operation_json=NULL,readback_json=NULL WHERE issue_id='AWF-1'")
+        spy = JiraSpy()
+        result = self.close(spy)
+        self.assertFalse(result['complete'])
+        self.assertEqual([], spy.calls)
+        self.assertEqual(['PENDING', 'UNKNOWN'], [row['status'] for row in self.rows()])
+        self.assertEqual('AWF-2', result['conflict']['issue_id'])
+        resumed = JiraSpy()
+        self.close(resumed)
+        self.assertEqual([('read', 'AWF-1'), ('write', 'AWF-1'), ('read_back', 'AWF-1')], resumed.calls)
+
+    def test_valid_legacy_no_write_completion_preserves_historical_receipts(self):
+        spy = JiraSpy()
+        self.close(spy, read_current_status=lambda binding: dict(spy.read_current_status(binding), status_id='Done'))
+        original, pin = self.rows(), self.pin()
+        self.reopen()
+        replay = JiraSpy()
+        with patch.dict(globals(), NOW='2026-10-17T17:00:00Z'):
+            result = self.close(replay)
+        self.assertTrue(result['complete'])
+        self.assertEqual([], replay.calls)
+        self.assertEqual(original, self.rows())
+        self.assertEqual(pin, self.pin())
 
 
 if __name__ == "__main__":
