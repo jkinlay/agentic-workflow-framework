@@ -189,10 +189,39 @@ class PlanningOverlapAllowanceTests(unittest.TestCase):
 
     def test_no_allowance_is_byte_identical_to_base_overlap_probe(self):
         cfg = fixtures.config(2)
-        baseline = fixtures.plan(self.items, cfg, host_capacity=2, stream_capacity=2)
-        self.assertEqual('f4808516e2ad0ab98c273b819c6157155d1cb34d88ca42fdb44f1100656964de',
-                         sha256(canonical(baseline)))
-        self.assertEqual(1, baseline['lane_count'])
+
+        def base_overlap_components(graph, ready, allowances=None):
+            # Preserve the base probe's unconditional overlap serialization,
+            # independently of the allowance-aware component implementation.
+            adjacent = {key: set() for key in ready}
+            for edge in graph['overlaps']:
+                left, right = edge['left'], edge['right']
+                if left in adjacent and right in adjacent:
+                    adjacent[left].add(right)
+                    adjacent[right].add(left)
+            components, seen = [], set()
+            for start in sorted(ready):
+                if start in seen:
+                    continue
+                component, pending = set(), [start]
+                while pending:
+                    key = pending.pop()
+                    if key not in component:
+                        component.add(key)
+                        pending.extend(adjacent[key] - component)
+                seen.update(component)
+                components.append(component)
+            return components
+
+        # Use this runtime's configuration and capacity evidence in both plans:
+        # installed adoption changes their hashes, but must not change parity.
+        with patch.object(planning, '_planning_overlap_allowances', return_value={}), \
+                patch.object(planning, '_lane_components', side_effect=base_overlap_components):
+            base_probe = fixtures.plan(self.items, cfg, host_capacity=2, stream_capacity=2)
+        no_allowance = fixtures.plan(self.items, cfg, host_capacity=2, stream_capacity=2)
+        self.assertEqual(canonical(base_probe), canonical(no_allowance))
+        self.assertEqual(sha256(canonical(base_probe)), sha256(canonical(no_allowance)))
+        self.assertEqual(1, no_allowance['lane_count'])
 
     def test_authenticated_but_inexact_ticket_sets_still_fail_closed(self):
         original = deepcopy(self.record)
