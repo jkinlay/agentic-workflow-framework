@@ -1965,9 +1965,10 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 		return {'issue_id': issue, 'observed_status': observation.get('status', observation.get('status_id')),
 			'observed_actor': observation.get('actor'), 'observed_at': observation.get('observed_at'), 'reason': reason}
 
-	provider = {key: config['jira'][source] for key, source in (
-		('cloud_id', 'cloud_id'), ('site', 'site'), ('project_id', 'provider_project_id'),
-		('project_key', 'project_key'), ('controller_actor_id', 'controller_actor_id'))}
+	from .provider_identity import expected_jira_identity
+	expected = expected_jira_identity(config)
+	provider = {key: expected[key] for key in ('cloud_id', 'site', 'project_id', 'project_key')}
+	provider['controller_actor_id'] = expected['account_id']
 	def receipt(value, issue, time_floor, kind, expected_operation_id=None):
 		_require(isinstance(value, dict) and value.get('issue_id') == issue, 'Batch Jira receipt names a foreign issue')
 		fields = {'issue_id', 'observed_at', 'jira_provider'} | (
@@ -1982,10 +1983,51 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 			_require(isinstance(value.get('actor'), str) and value['actor'], 'Batch Jira readback actor is missing')
 		return status, timestamp(value['observed_at'])
 
+	def completion_valid(row, record):
+		"""Retained success needs historical proof, independently of restart time."""
+		try:
+			floor = timestamp(record['created_at'])
+			observation = loads(row['readback_json'])
+			if row['operation_json'] is None:
+				status, _ = receipt(observation, row['issue_id'], floor, 'before')
+			else:
+				operation = loads(row['operation_json'])
+				_, floor = receipt(operation, row['issue_id'], floor, 'write', row['operation_id'])
+				status, _ = receipt(observation, row['issue_id'], floor, 'after')
+				_require(observation['actor'] == provider['controller_actor_id'], 'Retained Jira actor is mismatched')
+			_require(status == record['to_status_id'], 'Retained Jira target status is mismatched')
+			return True
+		except (ValidationError, TypeError, ValueError, KeyError):
+			return False
+
+	def retained_observation(row):
+		try:
+			return loads(row['readback_json']) if row['readback_json'] is not None else None
+		except (ValidationError, TypeError, ValueError):
+			return None
+
+	# Inspect the entire retained batch before any status/write/readback callback.
+	# A contender may report invalid proof but may never change another owner's row.
+	invalid_completion = False
+	for record in records:
+		with store.connection() as db:
+			row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+		if row['status'] != 'SUCCEEDED' or completion_valid(row, record):
+			continue
+		invalid_completion = True
+		if ownership:
+			with _batch_jira_ownership(store, issue_id=row['issue_id']) as issue_owned:
+				if issue_owned:
+					with store.transaction() as db:
+						current = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+						if current['status'] == 'SUCCEEDED' and not completion_valid(current, record):
+							# Narrow quarantine: retain the immutable intent and both receipt bytes.
+							db.execute("UPDATE controller_batch_jira_operation SET status='UNKNOWN',updated_at=? WHERE operation_id=? AND status='SUCCEEDED'", (now, record['operation_id']))
+
 	# Only the exclusive OS-lock holder can abandon a prior invocation claim.
 	# The lock outlives callbacks but is released on return, exception or process
 	# death; no elapsed-time guess can steal an active provider call.
-	for record in records if ownership else ():
+	for record in records if ownership and not invalid_completion else ():
 		issue, operation_id = record['binding']['issue_id'], record['operation_id']
 		# Shared with the ordinary pre-writer check through durable completion.
 		# A live owner is deferred, never converted into a stop by a contender.
@@ -2051,6 +2093,8 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 		for record in records:
 			row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
 			issue, status = record['binding']['issue_id'], row['status']
+			if status == 'SUCCEEDED' and not completion_valid(row, record):
+				status = 'UNKNOWN'
 			if status == 'SUCCEEDED':
 				result['reconciled'].append(issue)
 			elif status == 'PENDING':
@@ -2058,7 +2102,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 			elif status == 'HELD':
 				result['held'].append(issue)
 			elif result['conflict'] is None:
-				observation = loads(row['readback_json']) if row['readback_json'] else None
+				observation = retained_observation(row)
 				result['conflict'] = conflict(issue, observation)
 	result['complete'] = len(result['reconciled']) == len(records)
 	return result
