@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic import git_isolation as isolation
+from agentic import child_process
 from agentic.heavy_validation_controller import GitCheckoutAttestor
 
 
@@ -185,6 +187,91 @@ class SafeDirectoryTests(unittest.TestCase):
 
     def test_status_preserves_split_index(self):
         self.status_filter_fixture(split=True)
+
+    def test_executable_index_with_filemode_false_is_clean(self):
+        self.git_run(self.root, "update-index", "--chmod=+x", "payload")
+        self.git_run(self.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                     "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "executable fixture")
+        self.assertTrue(self.git_run(self.root, "ls-files", "--stage", "payload").stdout.startswith(b"100755 "))
+        (self.root / "payload").chmod(0o644)
+        self.git_run(self.root, "config", "core.filemode", "false")
+        self.assertEqual(self.git_run(self.root, "status", "--porcelain=v1").stdout, b"")
+        candidate = {"head_sha": self.git_run(self.root, "rev-parse", "HEAD").stdout.decode().strip(),
+                     "tree_sha": self.git_run(self.root, "rev-parse", "HEAD^{tree}").stdout.decode().strip()}
+        index_before = (self.root / ".git/index").read_bytes()
+        with mock.patch.object(isolation.subprocess, "run", side_effect=self.other_owner_child):
+            self.assertEqual(self.read(["status", "--porcelain=v1"]), b"")
+            self.assertEqual(GitCheckoutAttestor(self.root)(candidate, str(self.root))["status"], "CLEAN")
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+        (self.root / "staged").write_bytes(b"new\n")
+        self.git_run(self.root, "add", "staged")
+        self.assertIn(b"A  staged\n", self.read(["status", "--porcelain=v1"]))
+        with self.assertRaisesRegex(ValidationError, "checkout is dirty"):
+            GitCheckoutAttestor(self.root)(candidate, str(self.root))
+
+    def test_private_status_preserves_effective_filemode_boolean_only(self):
+        for value, expected in (("false", "false"), ("true", "true"), (None, "true")):
+            with self.subTest(value=value):
+                if value is None:
+                    self.git_run(self.root, "config", "--unset", "core.filemode")
+                else:
+                    self.git_run(self.root, "config", "core.filemode", value)
+                seen = []
+
+                def child(command, **kwargs):
+                    if "status" in command:
+                        metadata = Path(next(arg.split("=", 1)[1] for arg in command
+                                             if arg.startswith("--git-dir=")))
+                        seen.append((metadata / "config").read_text(encoding="ascii"))
+                    return self.other_owner_child(command, **kwargs)
+
+                with mock.patch.object(isolation.subprocess, "run", side_effect=child):
+                    self.read(["status", "--porcelain=v1"])
+                self.assertEqual(len(seen), 1)
+                self.assertEqual(seen[0], "[core]\n\tbare = false\n\tfilemode = " + expected
+                                 + "\n\trepositoryformatversion = 0\n")
+
+    def test_invalid_filemode_policy_refuses_private_status(self):
+        self.git_run(self.root, "config", "core.filemode", "invalid")
+        with self.assertRaisesRegex(ValidationError, "filemode policy is unavailable"):
+            self.read(["status", "--porcelain=v1"])
+
+    def strip_controls_configuration(self, names):
+        config = self.base / "environment-policy.json"
+        config.write_text(json.dumps({"execution": {"child_env_strip_extra": list(names)}}), encoding="utf-8")
+        return mock.patch.object(child_process, "_DEFAULT_CONFIG", config)
+
+    def test_configured_exclusions_cannot_remove_mandatory_git_controls(self):
+        expected = isolation.isolated_git_environment()
+        mandatory = {key: value for key, value in expected.items()
+                     if key.startswith("GIT_") or key in {"LANG", "LC_ALL"}}
+        calls = []
+
+        def child(command, **kwargs):
+            calls.append(command)
+            for key, value in mandatory.items():
+                self.assertEqual(kwargs["env"].get(key), value, key)
+            self.assertNotIn("TEMP", kwargs["env"])
+            self.assertNotIn("OPENAI_API_KEY", kwargs["env"])
+            return self.other_owner_child(command, **kwargs)
+
+        with self.strip_controls_configuration([*mandatory, "GIT_OBJECT_DIRECTORY", "TEMP"]), mock.patch.dict(
+                os.environ, {"TEMP": self.base.as_posix(), "OPENAI_API_KEY": "fixture"}):
+            environment = isolation.isolated_git_environment()
+            for key, value in mandatory.items():
+                self.assertEqual(environment.get(key), value, key)
+            self.assertNotIn("TEMP", environment)
+            with mock.patch.object(isolation.subprocess, "run", side_effect=child):
+                self.assertEqual(self.read(["cat-file", "blob", "HEAD:payload"]), b"first\nsecond\n")
+                self.assertTrue(self.read(["archive", "--format=tar", "HEAD"]))
+                self.assertEqual(self.read(["status", "--porcelain=v1"]), b"")
+        self.assertTrue(any("rev-parse" in command for command in calls))
+        self.assertTrue(any("status" in command for command in calls))
+        self.assertTrue(any("archive" in command for command in calls))
+
+    def test_configured_exclusions_cannot_enable_promisor_remote_helper(self):
+        with self.strip_controls_configuration(["GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH"]):
+            self.test_missing_promisor_blob_never_executes_other_owner_remote_helper()
 
     def late_filter_archive(self, route):
         baseline = self.read(["archive", "--format=tar", "HEAD"])
