@@ -16,6 +16,9 @@ def isolated_git_environment() -> dict[str, str]:
     permitted = {"COMSPEC", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "WINDIR"}
     environment = {name: value for name, value in os.environ.items()
                    if name.upper() in permitted}
+    # Apply project exclusions only to inherited values. Mandatory isolation
+    # controls below must survive even when policy names those variables.
+    environment = child_env(environment)
     environment.update({
         "GIT_CONFIG_COUNT": "0",
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -34,7 +37,7 @@ def isolated_git_environment() -> dict[str, str]:
         "LANG": "C",
         "LC_ALL": "C",
     })
-    return child_env(environment)
+    return child_env(environment, strip_extra=[])
 
 
 def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
@@ -91,7 +94,7 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
              r"^filter\..*\.(smudge|process|required)$"],
             cwd=str(root), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-            env=child_env(environment), timeout=timeout, check=False)
+            env=child_env(environment, strip_extra=[]), timeout=timeout, check=False)
         if filters.returncode not in {0, 1} or len(filters.stdout) > 65536:
             raise ValidationError(f"{label} filter configuration is unavailable")
         for raw_key in filters.stdout.split(b"\0"):
@@ -113,7 +116,7 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
                 result = subprocess.run(
                     [*command, "rev-parse", *arguments], cwd=str(root),
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, shell=False, env=child_env(environment),
+                    stderr=subprocess.PIPE, shell=False, env=child_env(environment, strip_extra=[]),
                     timeout=timeout, check=False)
                 if result.returncode or len(result.stdout) > 65536:
                     raise ValidationError(f"{label} object discovery failed")
@@ -122,6 +125,19 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
             # Resolve names once, then read only that immutable object ID. The
             # discovery commands perform no archive/checkout conversion.
             status = args[0] == "status"
+            filemode = "true"  # Git's default when core.filemode is absent.
+            if status:
+                # Preserve the checkout's filesystem-capability policy without
+                # importing any other source configuration into private status.
+                mode = subprocess.run(
+                    [*command, "config", "--type=bool", "--get", "core.filemode"],
+                    cwd=str(root), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, shell=False,
+                    env=child_env(environment, strip_extra=[]), timeout=timeout, check=False)
+                if mode.returncode == 0 and mode.stdout in {b"true\n", b"false\n"}:
+                    filemode = mode.stdout.decode("ascii").strip()
+                elif mode.returncode != 1 or mode.stdout:
+                    raise ValidationError(f"{label} filemode policy is unavailable")
             object_id = discover(["--verify", "--end-of-options",
                                   "HEAD^{commit}" if status else args[2]])
             object_format = discover(["--show-object-format"])
@@ -144,6 +160,8 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
                 (metadata / "HEAD").write_text(
                     object_id + "\n" if status else "ref: refs/heads/unused\n", encoding="ascii")
                 config = "[core]\n\tbare = " + ("false" if status else "true")
+                if status:
+                    config += "\n\tfilemode = " + filemode
                 config += "\n\trepositoryformatversion = "
                 config += "0\n" if object_format == "sha1" else "1\n[extensions]\n\tobjectformat = sha256\n"
                 (metadata / "config").write_text(config, encoding="ascii")
@@ -187,12 +205,12 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
                      *operation],
                     cwd=str(metadata), stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-                    env=child_env(archive_environment), timeout=timeout, check=False)
+                    env=child_env(archive_environment, strip_extra=[]), timeout=timeout, check=False)
         else:
             done = subprocess.run(
                 [*command, *args], cwd=str(root), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-                env=child_env(environment), timeout=timeout, check=False)
+                env=child_env(environment, strip_extra=[]), timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ValidationError(f"{label} is unavailable") from exc
     if done.returncode or len(done.stdout) > maximum:
