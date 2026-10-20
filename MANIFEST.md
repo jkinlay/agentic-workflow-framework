@@ -398,7 +398,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_plan_streams.py` | `d301e9d1d49e7907db560f4f5de0b83979040a0ad278716d8b36bf80db35fd52` |
 | `.agentic/tests/test_planning.py` | `99dd6bf4143a78e4639e9e56c91e6d93c5fd2492700c54fac177126ddf86cbf0` |
 | `.agentic/tests/test_planning_graph.py` | `4cf3eb0767f1a29d73a4b6567de439f42d1618e2bed3f0318757e8af13719173` |
-| `.agentic/tests/test_planning_overlap_allowances.py` | `4a833aa7c3ea1d4543801b8aae9d6bf61555291cfbf980b58023b63b52b2b04a` |
+| `.agentic/tests/test_planning_overlap_allowances.py` | `966b013dceedfa4aa48cac294a274f0e482181486c9bc5bfcd5358c545d6e448` |
 | `.agentic/tests/test_posting_collector_awf60.py` | `fecc95adba72920bc822f9aecac32eeb2eae594cfefe45f3bf38e6c94049b845` |
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
 | `.agentic/tests/test_provenance.py` | `3de078d00f66e221c285858aaac4a47cda3b3d19f4cfc5f4c7b10286e1aa00e6` |
