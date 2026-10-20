@@ -34,7 +34,7 @@ from ..provenance import (format_writer_trailer, parse_critic_run_carrier,
                           _Git, _commit_details)
 from ..review_loop import ValidationError, require
 from .. import review_qualification
-from ..safeio import Tree, run_bounded
+from ..safeio import Tree, require_record_bytes, run_bounded
 
 
 PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattributes','.gitmodules','.lfsconfig'}
@@ -374,6 +374,7 @@ class HostDriver:
                 separators=(',', ':')).encode('utf-8'))}
             raw = (json.dumps(record, ensure_ascii=False, indent=2,
                               sort_keys=True) + '\n').encode('utf-8')
+            require_record_bytes(raw)
             if tree.inspect('commit-run-log.json') is not None:
                 require(tree.read('commit-run-log.json', maximum=1024 * 1024)
                         == raw, 'Retained commit run-log binding changed')
