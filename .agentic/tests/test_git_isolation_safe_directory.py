@@ -25,7 +25,7 @@ class SafeDirectoryTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
+        self.base = Path(self.temporary.name).resolve(strict=True)
         self.root = self.base / "repo"
         self.git = shutil.which("git")
         self.assertIsNotNone(self.git, "native Git is required, not a skipped test")
