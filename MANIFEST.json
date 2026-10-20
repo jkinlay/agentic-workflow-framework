@@ -571,7 +571,7 @@
     "scripts/tests/test_generate_examples_schema_refs.py": "acd329623a932ba4b7485fe1b544dc6729631ad5a5a20f73901e093571f84b17",
     "scripts/tests/test_generate_examples_ticket_plan.py": "6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2",
     "scripts/tests/test_generate_workflow_blob_sha.py": "305ca808de3384f905ef546dd384a4c8ee1da4b0bc05fdfde1e7afb8ecae34e6",
-    "scripts/tests/test_installed_self_test.py": "89026c233882ba2f217ff58d0618f273638c7c4d2ae791dacc189095c3513744",
+    "scripts/tests/test_installed_self_test.py": "53ab52e2b98714f4b94b0a3d93dca98824065d8764961b1b61fa616cad8e4583",
     "scripts/tests/test_manifest_conflicts.py": "6a9b19eded244de59583346b28d344b72f77c8d916f71a7426f61f09302c8a09",
     "scripts/tests/test_pre_controller_registry.py": "0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af",
     "scripts/tests/test_publish_catalog.py": "a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b",

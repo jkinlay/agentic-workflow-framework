@@ -4,8 +4,10 @@ Source-only tests must skip (via .agentic/tests/source_only.py), never error,
 when scripts/, tools/, root documents and historical fixtures are absent.
 """
 from __future__ import annotations
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -44,18 +46,99 @@ INSTALL_TIMEOUT_SECONDS = install_timeout_seconds(96.3)
 
 
 def run_with_timeout(command, *, timeout, **kwargs):
+    def report_output(stdout, stderr):
+        # TimeoutExpired may contain bytes even when text=True was requested.
+        # Emit all progress before the temporary installed tree is removed.
+        retained = []
+        for label, output, stream in (
+                ("stdout", stdout, sys.stdout), ("stderr", stderr, sys.stderr)):
+            if output is None:
+                continue
+            if isinstance(output, bytes):
+                output = output.decode(kwargs.get("encoding") or "utf-8", errors="replace")
+            print(output, file=stream, end="", flush=True)
+            retained.append(f"{label}:\n{output}")
+        return "\n".join(retained)
+
     started = time.monotonic()
     try:
-        return subprocess.run(command, timeout=timeout, **kwargs)
+        completed = subprocess.run(command, timeout=timeout, **kwargs)
     except subprocess.TimeoutExpired as failure:
         elapsed = time.monotonic() - started
+        progress = report_output(failure.stdout, failure.stderr)
         raise AssertionError(
             f"subprocess timeout: elapsed={elapsed:.3f}s; limit={float(timeout):.3f}s; "
-            f"command={command!r}"
+            f"command={command!r}\n{progress}"
         ) from failure
+    report_output(completed.stdout, completed.stderr)
+    return completed
 
 
 class InstallSubprocessTimeoutTests(unittest.TestCase):
+    def test_timeout_retains_child_progress_after_temporary_directory_cleanup(self):
+        for as_bytes in (False, True):
+            with self.subTest(as_bytes=as_bytes):
+                stdout, stderr = self.child_progress()
+                output = stdout.encode("utf-8") if as_bytes else stdout
+                errors = stderr.encode("utf-8") if as_bytes else stderr
+                failure = subprocess.TimeoutExpired(
+                    ["synthetic-installed-self-test"], 3600,
+                    output=output, stderr=errors)
+                retained_out, retained_err = io.StringIO(), io.StringIO()
+                with tempfile.TemporaryDirectory() as raw:
+                    with redirect_stdout(retained_out), redirect_stderr(retained_err), \
+                            mock.patch("subprocess.run", side_effect=failure) as run, \
+                            mock.patch("time.monotonic", side_effect=[25.0, 3625.5]):
+                        with self.assertRaises(AssertionError) as raised:
+                            run_with_timeout(
+                                failure.cmd, timeout=3600, capture_output=True,
+                                text=True, cwd=Path(raw))
+                self.assertFalse(Path(raw).exists())
+                self.assertEqual(stdout, retained_out.getvalue())
+                self.assertEqual(stderr, retained_err.getvalue())
+                self.assertIn("elapsed=3600.500s; limit=3600.000s", str(raised.exception))
+                self.assertIn(repr(failure.cmd), str(raised.exception))
+                self.assertIn(stdout, str(raised.exception))
+                self.assertIn(stderr, str(raised.exception))
+                self.assertIs(failure, raised.exception.__cause__)
+                self.assertEqual(3600, run.call_args.kwargs["timeout"])
+
+    def test_success_reports_child_progress_after_temporary_directory_cleanup(self):
+        for as_bytes in (False, True):
+            with self.subTest(as_bytes=as_bytes):
+                stdout, stderr = self.child_progress()
+                completed = subprocess.CompletedProcess(
+                    ["synthetic-installed-self-test"], 0,
+                    stdout=stdout.encode("utf-8") if as_bytes else stdout,
+                    stderr=stderr.encode("utf-8") if as_bytes else stderr)
+                retained_out, retained_err = io.StringIO(), io.StringIO()
+                with tempfile.TemporaryDirectory() as raw:
+                    with redirect_stdout(retained_out), redirect_stderr(retained_err), \
+                            mock.patch("subprocess.run", return_value=completed) as run:
+                        result = run_with_timeout(
+                            completed.args, timeout=3600, capture_output=True,
+                            text=not as_bytes, cwd=Path(raw))
+                self.assertFalse(Path(raw).exists())
+                self.assertEqual(stdout, retained_out.getvalue())
+                self.assertEqual(stderr, retained_err.getvalue())
+                self.assertIs(completed, result)
+                self.assertEqual(3600, run.call_args.kwargs["timeout"])
+
+    @staticmethod
+    def child_progress():
+        stdout = json.dumps({"phase_timings_seconds": {
+            "discovery": 8.183, "syntax": 2.666, "documentation": 0.037,
+            "release_hygiene": 0.0}}) + "\n"
+        stderr = "\n".join(json.dumps(event) for event in (
+            {"event": "self_test_phase_complete", "phase": "discovery",
+             "phase_elapsed_seconds": 8.183},
+            {"event": "self_test_phase_start", "phase": "test_suite",
+             "last_completed_phase": "release_hygiene"},
+            {"event": "self_test_case_start", "phase": "test_suite",
+             "current_test": "test_example.ExampleTests.test_portable_fixture"},
+        )) + "\n"
+        return stdout, stderr
+
     def test_ticket_plan_is_classified_as_a_non_form_schema(self):
         module = load_self_test_module()
         schemas = {
