@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic import git_isolation as isolation
+from agentic.heavy_validation_controller import GitCheckoutAttestor
 
 
 class SafeDirectoryTests(unittest.TestCase):
@@ -122,6 +123,68 @@ class SafeDirectoryTests(unittest.TestCase):
         baseline = self.read(["archive", "--format=tar", "HEAD"])
         self.hostile_config()
         self.assertEqual(self.read(["archive", "--format=tar", "HEAD"]), baseline)
+
+    def status_filter_fixture(self, late=False, split=False):
+        candidate = {"head_sha": self.git_run(self.root, "rev-parse", "HEAD").stdout.decode().strip(),
+                     "tree_sha": self.git_run(self.root, "rev-parse", "HEAD^{tree}").stdout.decode().strip()}
+        attestor = GitCheckoutAttestor(self.root)
+        self.assertEqual(attestor(candidate, str(self.root))["status"], "CLEAN")
+        (self.root / ".gitignore").write_text("ignored\n", encoding="utf-8")
+        self.git_run(self.root, "add", ".gitignore")
+        if split:
+            self.git_run(self.root, "update-index", "--split-index")
+        # Same length, different mtime: force Git's content conversion path.
+        payload = self.root / "payload"
+        original = payload.stat()
+        payload.write_bytes(b"other\nsecond\n")
+        os.utime(payload, ns=(original.st_atime_ns, original.st_mtime_ns + 2000000000))
+        (self.root / "untracked").write_text("new", encoding="utf-8")
+        (self.root / "ignored").write_text("ignored", encoding="utf-8")
+        (self.root / ".git/info/exclude").write_text("local-ignored\n", encoding="utf-8")
+        (self.root / "local-ignored").write_text("ignored", encoding="utf-8")
+        index_before = (self.root / ".git/index").read_bytes()
+        marker = self.base / "filter-marker"
+        script = self.base / "clean_filter.py"
+        script.write_text("from pathlib import Path\nimport sys\n"
+                          "Path(sys.argv[1]).write_text('executed')\n"
+                          "sys.stdout.buffer.write(sys.stdin.buffer.read())\n", encoding="utf-8")
+        command = f'"{Path(sys.executable).as_posix()}" "{script.as_posix()}" "{marker.as_posix()}"'
+
+        def install():
+            self.git_run(self.root, "config", "filter.hostile.clean", command)
+
+        if not late:
+            install()
+        outputs = []
+
+        def child(argv, **kwargs):
+            if "status" in argv and late:
+                install()
+            result = self.other_owner_child(argv, **kwargs)
+            if "status" in argv:
+                outputs.append(result.stdout)
+            return result
+
+        with mock.patch.object(isolation.subprocess, "run", side_effect=child):
+            with self.assertRaisesRegex(ValidationError, "checkout is dirty"):
+                attestor(candidate, str(self.root))
+        self.assertEqual(len(outputs), 1, "default attestor must reach status")
+        self.assertFalse(marker.exists(), "configured clean filter executed during attestation")
+        self.assertIn(b" M payload\n", outputs[0])
+        self.assertIn(b"A  .gitignore\n", outputs[0])
+        self.assertIn(b"?? untracked\n", outputs[0])
+        self.assertIn(b"!! ignored\n", outputs[0])
+        self.assertIn(b"!! local-ignored\n", outputs[0])
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+
+    def test_default_attestor_status_never_executes_clean_filter(self):
+        self.status_filter_fixture()
+
+    def test_status_clean_filter_added_after_discovery_never_executes(self):
+        self.status_filter_fixture(late=True)
+
+    def test_status_preserves_split_index(self):
+        self.status_filter_fixture(split=True)
 
     def late_filter_archive(self, route):
         baseline = self.read(["archive", "--format=tar", "HEAD"])
