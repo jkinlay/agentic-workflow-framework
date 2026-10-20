@@ -129,6 +129,8 @@ class FakeHttp:
 				return (200, json.dumps({'issues': [issue], 'total': 2}))
 			issue = {'id': '101', 'fields': {'issuetype': {'name': 'Task'}, 'status': {'statusCategory': {'key': 'new'}}}}
 			return (200, json.dumps({'issues': [issue], 'total': 2}))
+		if url.endswith('?fields=key'):
+			return (200, json.dumps({'id': '100', 'key': 'EX-42'}))
 		if '/rest/api/3/issue/' in url and method == 'GET':
 			self.issue_reads += 1
 			if 'expand=changelog' in url:
@@ -343,7 +345,8 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		config_path = self.root / 'config.json'
 		config_path.write_text(json.dumps(self.config), encoding='utf-8')
 		adapters, loader = _load_real(self.adapter, config_path)
-		self.assertEqual(set(adapters), {'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync'})
+		self.assertEqual(set(adapters), {'observe_issue_identity', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync'})
+		loader._require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'})
 		with self.assertRaisesRegex(ValidationError, 'SHA-256 pin'):
 			loader._load_reviewed_adapters(self.adapter, '0' * 64, config_path)
 
@@ -928,7 +931,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'jira-timing.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': '10001'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'])
 		self.assertIn('record', result, result)
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
 
@@ -1126,6 +1129,160 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		self.assertIn('auth_profile', stored['github'])
 		self.assertIn('merged_transition_id', stored['jira'])
 
+
+	def _identity_adapters(self, http, clock=None):
+		return __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_http_transport': http, '_clock': clock or FakeClock()})
+
+	def _identity_lifecycle(self, adapters, issue='EX-42'):
+		config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+		config['jira'].update({k: self.config['jira'][k] for k in ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')})
+		store = ContinuousControllerStore(self.root / 'identity.sqlite', ['A'], worktree_roots=[self.root / 'worktree'])
+		binding = {'issue_id': issue}
+		return production_jira_lifecycle(store, config=config, contract={}, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', **{k: adapters[k] for k in ('observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition')})
+
+	def test_issue_identity_returns_provider_key_and_completion_time(self):
+		clock = FakeClock()
+		class CompletingHttp(FakeHttp):
+			def request(self, method, url, **kwargs):
+				result = super().request(method, url, **kwargs)
+				if url.endswith('?fields=key'):
+					clock.value = '2026-10-09T08:00:02Z'
+				return result
+		http = CompletingHttp()
+		observer = self._identity_adapters(http, clock)['observe_issue_identity']
+		with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'):
+			result = observer('EX-42')
+		self.assertEqual({'issue_key': 'EX-42', 'observed_at': clock.value}, result)
+		self.assertEqual([url.split('invalid')[-1] for _, url, _, _ in http.calls], ['/rest/api/3/myself', '/rest/api/3/project/EX', '/_edge/tenant_info', '/rest/api/3/issue/EX-42?fields=key'])
+		self.assertTrue(all(call[0] == 'GET' for call in http.calls))
+
+	def test_provider_alias_is_rejected_before_status_or_intent(self):
+		http = FakeHttp()
+		adapters = self._identity_adapters(http)
+		observer = adapters['observe_issue_identity']
+		with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'):
+			self.assertEqual('EX-42', observer('OLD-42')['issue_key'])
+			with self.assertRaisesRegex(ValidationError, 'canonical issue key'):
+				self._identity_lifecycle(adapters, 'OLD-42')
+		self.assertEqual(0, http.issue_reads)
+		self.assertTrue(all(call[0] == 'GET' for call in http.calls))
+		store = ContinuousControllerStore(self.root / 'identity.sqlite', ['A'])
+		self.assertEqual([], store.jira_operations('OLD-42'))
+		self.assertEqual([], store.jira_operations('EX-42'))
+
+	def test_issue_identity_rejects_malformed_input_without_http(self):
+		http = FakeHttp()
+		observer = self._identity_adapters(http)['observe_issue_identity']
+		for issue in ('2001', 2001, 'ex-42', ' EX-42', 'EX-42 ', 'EX-0', 'EX-042', 'EX-42/x', 'EX-42?x'):
+			with self.subTest(issue=issue), self.assertRaises(ValidationError):
+				observer(issue)
+		self.assertEqual([], http.calls)
+
+	def test_issue_identity_verifies_provider_before_issue_get(self):
+		for field, value in (('cloudId', 'foreign'), ('siteUrl', 'https://foreign.invalid'), ('id', 'foreign'), ('key', 'OTHER'), ('accountId', 'foreign')):
+			with self.subTest(field=field):
+				class WrongProvider(FakeHttp):
+					def request(self, method, url, **kwargs):
+						status, body = super().request(method, url, **kwargs)
+						obj = json.loads(body)
+						if field in obj:
+							obj[field] = value
+						return status, json.dumps(obj)
+				http = WrongProvider()
+				observer = self._identity_adapters(http)['observe_issue_identity']
+				with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'), self.assertRaises(ValidationError):
+					observer('EX-42')
+				self.assertFalse(any('/issue/' in call[1] for call in http.calls))
+
+	def test_issue_identity_rejects_invalid_provider_payload(self):
+		for payload in ({}, [], {'key': None}, {'key': 100}, {'key': '100'}, {'key': 'ex-42'}, {'fields': {'key': 'EX-42'}}):
+			with self.subTest(payload=payload):
+				class InvalidKey(FakeHttp):
+					def request(self, method, url, **kwargs):
+						result = super().request(method, url, **kwargs)
+						return (200, json.dumps(payload)) if url.endswith('?fields=key') else result
+				http = InvalidKey()
+				observer = self._identity_adapters(http)['observe_issue_identity']
+				with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'), self.assertRaises(ValidationError):
+					observer('EX-42')
+				self.assertTrue(all(call[0] == 'GET' for call in http.calls))
+		observer = self._identity_adapters(FakeHttp(), FakeClock('bad-time'))['observe_issue_identity']
+		with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'), self.assertRaises(ValidationError):
+			observer('EX-42')
+
+	def test_issue_identity_transport_failures_are_bounded_and_sanitized(self):
+		import io
+		for raw, status in ((b'x' * (1024 * 1024 + 1), 200), (b'\xff', 200), (b'{}', 403), (b'not-json', 200), (None, 200)):
+			with self.subTest(size=None if raw is None else len(raw), status=status):
+				namespace = __import__('runpy').run_path(str(self.adapter))
+				reads, timeouts = [], []
+				class Response(io.BytesIO):
+					def read(self, size):
+						reads.append(size)
+						return super().read(size)
+				def urlopen(request, timeout):
+					timeouts.append(timeout)
+					if raw is None:
+						raise RuntimeError('fixture-secret')
+					response = Response(raw)
+					response.status = status
+					return response
+				with patch.dict(namespace['_HttpTransport'].request.__globals__, urlopen=urlopen):
+					observer = namespace['build_adapters']({**self.config, '_clock': FakeClock()})['observe_issue_identity']
+					with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'), self.assertRaises(ValidationError) as error:
+						observer('EX-42')
+				self.assertNotIn('fixture-secret', str(error.exception))
+				self.assertEqual([30], timeouts)
+				self.assertEqual([] if raw is None else [1024 * 1024 + 1], reads)
+		observer = self._identity_adapters(FakeHttp())['observe_issue_identity']
+		with patch.dict(os.environ, {}, clear=True), self.assertRaises(ValidationError):
+			observer('EX-42')
+
+	def test_cli_jira_lifecycle_uses_shipped_factory(self):
+		import contextlib
+		import io
+		adapter_config = self.root / 'adapter.json'
+		adapter_config.write_text(json.dumps(self.config), encoding='utf-8')
+		_, loader = _load_real(self.adapter, adapter_config)
+		for enabled in (True, False):
+			with self.subTest(enabled=enabled):
+				config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+				config['jira'].update({k: self.config['jira'][k] for k in ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')})
+				config['jira']['enabled'] = enabled
+				files = {'project': config, 'contract': {}, 'facts': {'run_registered': True, 'worktree_verified': True}, 'binding': {'issue_id': 'EX-42'}}
+				for name, value in files.items():
+					(self.root / (name + '.json')).write_text(json.dumps(value), encoding='utf-8')
+				state = self.root / ('cli-' + str(enabled) + '.sqlite')
+				argv = ['--state', str(state), '--stream', 'A', '--worktree-root', str(self.root / 'worktree'), '--project-config', str(self.root / 'project.json'), '--adapter-module', str(self.adapter), '--adapter-sha256', sha256(self.adapter.read_bytes()), '--adapter-config', str(adapter_config), 'jira-lifecycle', '--contract', str(self.root / 'contract.json'), '--facts', str(self.root / 'facts.json'), '--binding', str(self.root / 'binding.json'), '--event', 'WORKER_STARTED', '--lifecycle-state', 'DISPATCHED', '--producer-id', 'controller', '--run-id', '00000000-0000-0000-0000-000000000001', '--now', NOW, '--transition-id', '3']
+				http = FakeHttp()
+				def request(_transport, *args, **kwargs):
+					return http.request(*args, **kwargs)
+				def clock_text(_clock):
+					return NOW
+				original_exec = exec
+				def external_boundaries(code, namespace):
+					original_exec(code, namespace)
+					if namespace.get('__name__') == '_awf_reviewed_controller_adapter':
+						namespace['_HttpTransport'].request = request
+						namespace['_clock_text'] = clock_text
+				output = io.StringIO()
+				with patch.dict(loader._load_reviewed_adapters.__globals__, exec=external_boundaries), patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'), contextlib.redirect_stdout(output):
+					self.assertEqual(0, loader.main(argv))
+				result = json.loads(output.getvalue())
+				operations = ContinuousControllerStore(state, ['A']).jira_operations('EX-42')
+				if enabled:
+					self.assertEqual('SUCCEEDED', result['record']['status'])
+					self.assertEqual('EX-42', result['record']['binding']['issue_id'])
+					self.assertEqual(1, sum(call[0] == 'POST' for call in http.calls))
+					urls = [call[1] for call in http.calls]
+					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=key')), next(i for i, url in enumerate(urls) if url.endswith('?fields=status')))
+					post = next(i for i, call in enumerate(http.calls) if call[0] == 'POST')
+					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=status')), post)
+					self.assertGreater(next(i for i, url in enumerate(urls) if 'expand=changelog' in url), post)
+				else:
+					self.assertEqual([], http.calls)
+					self.assertEqual([], operations)
+
 	def test_jira_lifecycle_is_read_before_one_write_and_readback(self):
 		http = FakeHttp()
 		clock = FakeClock()
@@ -1134,10 +1291,10 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid', provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
-		binding = {'issue_id': '10001'}
+		binding = {'issue_id': 'EX-42'}
 		store = ContinuousControllerStore(self.root / 'jira.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'])
 		self.assertTrue(result['planned'])
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
 		self.assertEqual(http.asserted_transition_id, '3')
@@ -1155,7 +1312,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'foreign.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': '10001'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'])
 		self.assertNotEqual(result.get('record', {}).get('status'), 'SUCCEEDED')
 		self.assertIn('writes_stopped', result)
 

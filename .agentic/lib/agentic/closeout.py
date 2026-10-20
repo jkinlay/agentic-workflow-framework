@@ -280,6 +280,81 @@ def _validate_batch_closeout(record):
     return record
 
 
+def validate_retained_batch_candidate(candidate, *, repository_id, batch_id):
+    """Validate doc 49's closed retained W1 boundary, never caller evidence."""
+    fields = {'repository_id', 'batch_id', 'generation', 'pr', 'head', 'tree',
+              'base', 'state', 'audit_sha256', 'sources'}
+    if (not isinstance(candidate, dict) or set(candidate) != fields
+            or type(candidate['repository_id']) is not int
+            or candidate['repository_id'] != repository_id
+            or candidate['batch_id'] != batch_id
+            or type(candidate['generation']) is not int or candidate['generation'] < 1
+            or type(candidate['pr']) is not int or candidate['pr'] < 1
+            or candidate['state'] not in {'DRAFT', 'READY_AUTHORIZED', 'CI_GREEN', 'ABANDONED', 'MERGED_OBSERVED'}
+            or not isinstance(candidate['audit_sha256'], str)
+            or re.fullmatch('[0-9a-f]{64}', candidate['audit_sha256']) is None):
+        raise ValidationError('invalid retained batch candidate identity')
+    for field in ('head', 'tree', 'base'):
+        if not isinstance(candidate[field], str) or SHA.fullmatch(candidate[field]) is None:
+            raise ValidationError('invalid retained batch Git identity')
+    sources = candidate['sources']
+    if not isinstance(sources, list) or not 0 < len(sources) <= 1000:
+        raise ValidationError('retained batch requires ordered sources')
+    from .continuous_controller import _owned_path
+    prs, issues = {candidate['pr']}, set()
+    for source in sources:
+        if (not isinstance(source, dict) or set(source) != {'pr', 'head', 'issue_key', 'paths'}
+                or type(source['pr']) is not int or source['pr'] < 1 or source['pr'] in prs
+                or not isinstance(source['head'], str) or SHA.fullmatch(source['head']) is None
+                or not isinstance(source['issue_key'], str) or not source['issue_key']
+                or source['issue_key'] in issues
+                or not isinstance(source['paths'], list) or not source['paths']
+                or any(not isinstance(path, str) for path in source['paths'])
+                or len(set(source['paths'])) != len(source['paths'])):
+            raise ValidationError('invalid retained batch source')
+        for path in source['paths']:
+            if _owned_path(path) != path or path.endswith(('/*', '/**')):
+                raise ValidationError('retained batch path is not canonical')
+        prs.add(source['pr'])
+        issues.add(source['issue_key'])
+    return candidate
+
+
+def assemble_retained_batch_closeout(candidate, *, config, merge_observer_id,
+                                     merge_observer_registry, now):
+    """Authenticate exact main observation and assemble T11 inputs without writes."""
+    from .integration_queue import _registered_provider_observation, _evidence_max_age
+    github = config['github']
+    validate_retained_batch_candidate(candidate, repository_id=github['repository_id'],
+                                      batch_id=candidate['batch_id'])
+    if candidate['state'] != 'MERGED_OBSERVED' or github.get('base_branch') != 'main':
+        raise ValidationError('batch closeout requires retained MERGED_OBSERVED on exact main')
+    provider = {key: github[key] for key in ('host', 'repository', 'repository_id')}
+    provider['host'] = provider['host'].rstrip('/')
+    request = {'operation': 'BATCH_MERGE', 'provider_identity': provider,
+               'repository_identity': {key: github[key] for key in ('repository', 'repository_id')},
+               'candidate': deepcopy(candidate), 'target_branch': 'main'}
+    result = _registered_provider_observation(merge_observer_registry, merge_observer_id,
+        request, 'exact main batch merge', now=now, max_age=_evidence_max_age(config))
+    expected = {key: candidate[key] for key in ('repository_id', 'batch_id', 'generation',
+                                                'pr', 'head', 'tree', 'base')}
+    if (not isinstance(result, dict) or set(result) != set(expected) | {'target_branch', 'merge_commit_sha', 'observed_at'}
+            or any(result[key] != value for key, value in expected.items())
+            or result['target_branch'] != 'main' or result['merge_commit_sha'] != candidate['head']):
+        raise ValidationError('batch closeout waits for authenticated exact batch commit on main')
+    fresh(result['observed_at'], now, _evidence_max_age(config))
+    batch = {'batch_id': candidate['batch_id'], 'pr_number': candidate['pr'],
+             'merge_commit_sha': result['merge_commit_sha'], 'constituents': []}
+    for source in candidate['sources']:
+        batch['constituents'].append({'binding': {'issue_id': source['issue_key']},
+            'pr_number': source['pr'], 'reviewed_head_sha': source['head'],
+            'paths': deepcopy(source['paths']), 'closeout_kind': 'merged-via-batch',
+            'batch_id': candidate['batch_id'], 'merge_commit_sha': result['merge_commit_sha']})
+    observed = {'batch_id': candidate['batch_id'], 'target_branch': 'main',
+                'merge_commit_sha': result['merge_commit_sha'], 'observed_at': result['observed_at']}
+    return batch, observed
+
+
 def _save_batch_progress(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -436,6 +511,8 @@ def require_jira_reconciliation_before_counts(
     re-observed through a registered producer for the exact closeout binding;
     disabled Jira needs no synthetic transition record.
     """
+    if isinstance(closeout_record, dict) and ('batch_id' in closeout_record or 'constituents' in closeout_record):
+        raise ValidationError('batch progress cannot authorize counts; independent constituent reconciliation remains required')
     ordinary_closeout_guard(closeout_record)
     if contracts is None:
         raise ValidationError("post-merge counting requires the framework contract registry")

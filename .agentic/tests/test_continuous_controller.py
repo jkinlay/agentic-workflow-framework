@@ -1009,10 +1009,11 @@ class JiraProgressTests(unittest.TestCase):
 	def test_production_jira_lifecycle_writes_once_and_requires_readback(self):
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		calls=[]
 		binding=bundle['critic']['binding']
 		provider=configured_jira_provider(config)
-		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=7)),now=NOW,evidence=['urn:awf:fixture:jira'],transition_id='31',observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:calls.append('read-before')or jira_current(value,'Ready',NOW),write_transition=lambda record:calls.append('write')or{'operation_id':record['operation_id'],'issue_id':binding['issue_id'],'status':'ATTEMPTED','observed_at':NOW,'jira_provider':provider},read_transition=lambda record,operation:calls.append('read-after')or{'issue_id':binding['issue_id'],'status':'In Progress','actor':'fixture-controller','observed_at':NOW,'jira_provider':provider})
+		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=7)),now=NOW,evidence=['urn:awf:fixture:jira'],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:calls.append('read-before')or jira_current(value,'Ready',NOW),write_transition=lambda record:calls.append('write')or{'operation_id':record['operation_id'],'issue_id':binding['issue_id'],'status':'ATTEMPTED','observed_at':NOW,'jira_provider':provider},read_transition=lambda record,operation:calls.append('read-after')or{'issue_id':binding['issue_id'],'status':'In Progress','actor':'fixture-controller','observed_at':NOW,'jira_provider':provider})
 		self.assertEqual(calls,['read-before','write','read-after'])
 		self.assertEqual((result['record']['status'],result['writes_stopped']),('SUCCEEDED',False))
 
@@ -1020,16 +1021,18 @@ class JiraProgressTests(unittest.TestCase):
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		config['jira']['enabled']=False
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		calls=[]
-		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=bundle['critic']['binding'],issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=11)),now=NOW,evidence=[],transition_id='31',read_current_status=lambda value:calls.append('read-before'),write_transition=lambda value:calls.append('write'),read_transition=lambda record,operation:calls.append('read-after'))
+		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=bundle['critic']['binding'],issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=11)),now=NOW,evidence=[],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},read_current_status=lambda value:calls.append('read-before'),write_transition=lambda value:calls.append('write'),read_transition=lambda record,operation:calls.append('read-after'))
 		self.assertEqual(calls,[])
 		self.assertFalse(result['planned'])
 
 	def test_jira_lifecycle_refuses_unbound_or_unobserved_identity_before_issue_lookup(self):
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		calls=[]
-		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=bundle['critic']['binding'],issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=17)),now=NOW,evidence=[],transition_id='31',read_current_status=lambda value:calls.append('lookup'),write_transition=lambda value:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
+		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=bundle['critic']['binding'],issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=17)),now=NOW,evidence=[],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},read_current_status=lambda value:calls.append('lookup'),write_transition=lambda value:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
 		unbound=json.loads(json.dumps(config))
 		unbound['jira'].update(cloud_id=None,provider_project_id=None,controller_actor_id=None)
 		result=production_jira_lifecycle(self.store,**common|{'config':unbound},observe_provider_identity=lambda:calls.append('identity'))
@@ -1046,9 +1049,10 @@ class JiraProgressTests(unittest.TestCase):
 	def test_production_jira_lifecycle_rejects_unbound_or_stale_adapter_evidence(self):
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		binding=bundle['critic']['binding']
 		writes=[]
-		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=8)),now=NOW,evidence=['urn:awf:fixture:jira'],transition_id='31',observe_provider_identity=lambda:observe_jira_provider(config),write_transition=lambda record:writes.append(record),read_transition=lambda record,operation:self.fail('invalid write cannot be read back'))
+		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=8)),now=NOW,evidence=['urn:awf:fixture:jira'],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda:observe_jira_provider(config),write_transition=lambda record:writes.append(record),read_transition=lambda record,operation:self.fail('invalid write cannot be read back'))
 		result=production_jira_lifecycle(self.store,**common,read_current_status=lambda value:jira_current(value,'Ready',NOW)|{'issue_id':'other'})
 		self.assertTrue(result['writes_stopped'])
 		self.assertEqual(writes,[])
@@ -1059,6 +1063,7 @@ class JiraProgressTests(unittest.TestCase):
 	def test_jira_lifecycle_rejects_wrong_connector_site_project_or_actor_before_mutation(self):
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		original=bundle['critic']['binding']
 		provider=configured_jira_provider(config)
 		for field,replacement in(('cloud_id','other-cloud'),('site','https://other.example.invalid'),('project_id','other-project'),('project_key','OTHER'),('controller_actor_id','other-controller')):
@@ -1066,34 +1071,36 @@ class JiraProgressTests(unittest.TestCase):
 			wrong[field]=replacement
 			calls=[]
 			with self.subTest(field=field):
-				result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=original,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=18)),now=NOW,evidence=[],transition_id='31',observe_provider_identity=lambda wrong=wrong:wrong,read_current_status=lambda value:calls.append('lookup'),write_transition=lambda record:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
+				result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=original,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=18)),now=NOW,evidence=[],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda wrong=wrong:wrong,read_current_status=lambda value:calls.append('lookup'),write_transition=lambda record:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
 				self.assertTrue(result['writes_stopped'])
 				self.assertEqual(result['status'],'IDENTITY_MISMATCH')
 			self.assertEqual(calls,[])
 		calls=[]
-		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=original,issue_type='LEAF',state='DISPATCHED',producer_id='other-controller',run_id=str(uuid.UUID(int=19)),now=NOW,evidence=[],transition_id='31',observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:calls.append('read'),write_transition=lambda record:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
+		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=original,issue_type='LEAF',state='DISPATCHED',producer_id='other-controller',run_id=str(uuid.UUID(int=19)),now=NOW,evidence=[],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:calls.append('read'),write_transition=lambda record:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
 		self.assertEqual(result['status'],'IDENTITY_MISMATCH')
 		self.assertEqual(calls,[])
 
 	def test_jira_lifecycle_binds_write_and_readback_receipts_to_provider_identity(self):
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		binding=bundle['critic']['binding']
 		provider=configured_jira_provider(config)
 		wrong_site=dict(provider)|{'site':'https://second-connector.example.invalid'}
 		for stage in('write','readback'):
 			store=ContinuousControllerStore(Path(self.temporary.name)/f'jira-wrong-{stage}.sqlite3',['A'])
-			result=production_jira_lifecycle(store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=20)),now=NOW,evidence=[],transition_id='31',observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:jira_current(value,'Ready',NOW),write_transition=lambda record,stage=stage:{'operation_id':record['operation_id'],'issue_id':binding['issue_id'],'status':'ATTEMPTED','observed_at':NOW,'jira_provider':wrong_site if stage=='write' else provider},read_transition=lambda record,operation,stage=stage:{'issue_id':binding['issue_id'],'status':'In Progress','actor':'other-controller' if stage=='readback' else 'fixture-controller','observed_at':NOW,'jira_provider':provider})
+			result=production_jira_lifecycle(store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=20)),now=NOW,evidence=[],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:jira_current(value,'Ready',NOW),write_transition=lambda record,stage=stage:{'operation_id':record['operation_id'],'issue_id':binding['issue_id'],'status':'ATTEMPTED','observed_at':NOW,'jira_provider':wrong_site if stage=='write' else provider},read_transition=lambda record,operation,stage=stage:{'issue_id':binding['issue_id'],'status':'In Progress','actor':'other-controller' if stage=='readback' else 'fixture-controller','observed_at':NOW,'jira_provider':provider})
 			self.assertTrue(result['writes_stopped'])
 			self.assertEqual(store.jira_operations(binding['issue_id'])[0]['status'],'UNKNOWN')
 
 	def test_jira_identity_is_rechecked_after_issue_read_and_before_write(self):
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		binding=bundle['critic']['binding']
 		observations=iter([observe_jira_provider(config),observe_jira_provider(config,controller_actor_id='changed-actor')])
 		calls=[]
-		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=21)),now=NOW,evidence=[],transition_id='31',observe_provider_identity=lambda:next(observations),read_current_status=lambda value:calls.append('lookup')or jira_current(value,'Ready',NOW),write_transition=lambda record:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
+		result=production_jira_lifecycle(self.store,config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=21)),now=NOW,evidence=[],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda:next(observations),read_current_status=lambda value:calls.append('lookup')or jira_current(value,'Ready',NOW),write_transition=lambda record:calls.append('write'),read_transition=lambda record,operation:calls.append('readback'))
 		self.assertEqual(result['status'],'IDENTITY_MISMATCH')
 		self.assertEqual(calls,['lookup'])
 
@@ -1102,6 +1109,7 @@ class JiraProgressTests(unittest.TestCase):
 		store=ContinuousControllerStore(path,['A'])
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		binding=bundle['critic']['binding']
 		external={'status':'Ready','writes':0}
 
@@ -1112,7 +1120,7 @@ class JiraProgressTests(unittest.TestCase):
 			external['writes']+=1
 			external['status']='In Progress'
 			raise SystemExit('synthetic process loss after Jira side effect')
-		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=12)),evidence=['urn:awf:fixture:jira'],transition_id='31',observe_provider_identity=lambda:observe_jira_provider(config),read_transition=lambda record,operation:self.fail('crashed call has no receipt'))
+		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=12)),evidence=['urn:awf:fixture:jira'],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda:observe_jira_provider(config),read_transition=lambda record,operation:self.fail('crashed call has no receipt'))
 		with self.assertRaisesRegex(SystemExit,'synthetic process loss'):
 			production_jira_lifecycle(store,now=NOW,read_current_status=observe,write_transition=crash_after_mutation,**common)
 		in_flight=store.jira_operations(binding['issue_id'])
@@ -1132,8 +1140,9 @@ class JiraProgressTests(unittest.TestCase):
 		store=ContinuousControllerStore(path,['A'])
 		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		binding=bundle['critic']['binding']
-		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=13)),now=NOW,evidence=[],transition_id='31',observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:jira_current(value,'Ready',NOW),read_transition=lambda record,operation:self.fail('no receipt exists'))
+		common=dict(config=config,contract=bundle['contract'],event='WORKER_STARTED',facts={'run_registered':True,'worktree_verified':True},binding=binding,issue_type='LEAF',state='DISPATCHED',producer_id='fixture-controller',run_id=str(uuid.UUID(int=13)),now=NOW,evidence=[],transition_id='31',observe_issue_identity=lambda key:{'issue_key':'EX-42','observed_at':NOW},observe_provider_identity=lambda:observe_jira_provider(config),read_current_status=lambda value:jira_current(value,'Ready',NOW),read_transition=lambda record,operation:self.fail('no receipt exists'))
 		first=production_jira_lifecycle(store,write_transition=lambda record:(_ for _ in()).throw(RuntimeError('lost')),**common)
 		self.assertTrue(first['writes_stopped'])
 		calls=[]
@@ -1162,6 +1171,7 @@ class JiraProgressTests(unittest.TestCase):
 		jira_binding={'cloud_id':'fixture-cloud','project_id':'fixture-project','actor_id':'fixture-controller'}
 		scope_sha256=fingerprint('jira-progress-scope',{'scope':scope,'binding':jira_binding,'include_epics':False})
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
+		bundle['critic']['binding']=dict(bundle['critic']['binding'],issue_id='EX-42')
 		project_config_path=ROOT/'.agentic/examples/PROJECT_CONFIG.yaml'
 		project_config=json.loads(project_config_path.read_text())
 		project_config['controller'].update(dispatch_enabled=True,auto_dispatch=True,auto_request_critic=True,auto_resume_amendments=True)
@@ -1192,7 +1202,7 @@ class JiraProgressTests(unittest.TestCase):
 		reservation_envelope={'schema_version':1,'source':'host_observation','repository_id':INVENTORY_BINDING['repository_id'],'head_sha':merged_head,'tree_sha':merged_tree,'inventory_sha256':inventory_observation(NOW,inventory)['inventory_sha256'],'observed_at':NOW,'authenticated':True,'complete':True,'sources':[]}
 		reservation_envelope['observation_sha256']=fingerprint('controller-reservation-observation',reservation_envelope)
 		adapter_config={'reservations':reservation_envelope,'inventory':inventory_observation(NOW,inventory),'publication':publication,'jira_now':NOW,'jira_before':'Ready','jira_after':'In Progress','reconcile_receipt':{'ticket':'QA-CLI','issue_id':'10001',**jira_binding,'status':'RECONCILED','operation_id':str(uuid.UUID(int=9)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW},'jira_page':{'items':[{'id':'10001','issue_type':'TASK','status_category':'TERMINAL'}],'next_cursor':None,'complete':True,'snapshot_id':'snapshot-cli','scope_sha256':scope_sha256,'observed_at':NOW},'project_config_observation':{'raw_bytes_base64':base64.b64encode(project_config_bytes).decode('ascii'),'config_sha256':sha256(project_config_bytes),'policy_sha256':policy_hash(project_config,definition()),'path':'.agentic/PROJECT_CONFIG.yaml','repository':project_config['github']['repository'],'repository_id':project_config['github']['repository_id'],'ref':'refs/heads/'+project_config['github']['base_branch'],'blob_sha':'e'*40,'acceptance':{'status':'ACCEPTED','receipt_id':'cli-acceptance','workflow_version':project_config['template']['expected_workflow_version']}},'closeout_observation':{'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW},'jira_reconciliation_observation':{'record':transition}}
-		adapter_source='def build_adapters(config):\n    now = config["jira_now"]\n    def observe_inventory():\n        return config["inventory"]\n    def observe_reservations(request):\n        return config["reservations"]\n    def observe_publication(item):\n        return config["publication"]\n    def dispatch_ticket(payload):\n        keys = ["dispatch_schema_version", "dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage", "lane_start_waivers"]\n        if "reconcile_nonce" in payload:\n            keys += ["reconcile_nonce", "reconcile_at"]\n        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "dispatch_state": "TERMINAL", "terminal": True, "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}\n    def observe_dispatch(payload):\n        return dispatch_ticket(payload)\n    def deliver_status(digest):\n        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}\n    def observe_provider_identity():\n        return {"cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",\n                "project_id": "fixture-project", "project_key": "EX",\n                "controller_actor_id": "fixture-controller"}\n    def read_current_status(binding):\n        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}\n    def write_transition(record):\n        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}\n    def read_transition(record, operation):\n        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}\n    def reconcile_merged_ticket(ticket):\n        value = dict(config["reconcile_receipt"])\n        value["ticket"] = ticket\n        return value\n    def fetch_scope_page(scope, cursor):\n        return config["jira_page"]\n    def observe_accepted_project_config(request):\n        return {"observed_at": now, "result": config["project_config_observation"]}\n    def observe_closeout_record(request):\n        return {"observed_at": now, "result": config["closeout_observation"]}\n    def observe_jira_reconciliation(request):\n        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}\n    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}\n'
+		adapter_source='def build_adapters(config):\n    now = config["jira_now"]\n    def observe_inventory():\n        return config["inventory"]\n    def observe_reservations(request):\n        return config["reservations"]\n    def observe_publication(item):\n        return config["publication"]\n    def dispatch_ticket(payload):\n        keys = ["dispatch_schema_version", "dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage", "lane_start_waivers"]\n        if "reconcile_nonce" in payload:\n            keys += ["reconcile_nonce", "reconcile_at"]\n        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "dispatch_state": "TERMINAL", "terminal": True, "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}\n    def observe_dispatch(payload):\n        return dispatch_ticket(payload)\n    def deliver_status(digest):\n        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}\n    def observe_provider_identity():\n        return {"cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",\n                "project_id": "fixture-project", "project_key": "EX",\n                "controller_actor_id": "fixture-controller"}\n    def observe_issue_identity(issue):\n        return {"issue_key": "EX-42", "observed_at": now}\n    def read_current_status(binding):\n        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}\n    def write_transition(record):\n        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}\n    def read_transition(record, operation):\n        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}\n    def reconcile_merged_ticket(ticket):\n        value = dict(config["reconcile_receipt"])\n        value["ticket"] = ticket\n        return value\n    def fetch_scope_page(scope, cursor):\n        return config["jira_page"]\n    def observe_accepted_project_config(request):\n        return {"observed_at": now, "result": config["project_config_observation"]}\n    def observe_closeout_record(request):\n        return {"observed_at": now, "result": config["closeout_observation"]}\n    def observe_jira_reconciliation(request):\n        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}\n    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}\n'
 		adapter_source=adapter_source.replace('    def observe_inventory():','    resource_evidence = {}\n    def observe_host_resources(request):\n        from agentic.canonical import fingerprint\n        claims = {"observed_at": request["observed_at"], "host_capacity": 1, "resources": [{"name": "cpu", "capacity": 1}]}\n        auth = {"producer_id": "fixture-host", "evidence_id": "fixture-evidence", "evidence_sha256": fingerprint("fixture-resource-evidence", claims), "request_sha256": fingerprint("planning_resource_request", request)}\n        resource_evidence.update({"status": "VERIFIED", **auth, **claims})\n        return {"status": "OBSERVED", **auth, **claims}\n    def verify_host_observation(authentication, request):\n        from agentic.canonical import fingerprint\n        if authentication["request_sha256"] != fingerprint("planning_resource_request", request):\n            return {}\n        return dict(resource_evidence)\n'+'    def observe_inventory():')
 		adapter_path=root/'reviewed_adapter.py'
 		adapter_path.write_text(adapter_source,encoding='utf-8',newline='\n')
