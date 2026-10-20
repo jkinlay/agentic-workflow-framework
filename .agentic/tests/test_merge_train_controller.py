@@ -1553,5 +1553,167 @@ class PersistedCompletionTests(unittest.TestCase):
         self.assertEqual(pin, self.pin())
 
 
+class RetainedReceiptStorageTests(unittest.TestCase):
+    """SQLite storage types are distinct from JSON text null and JSON objects."""
+
+    setUp = PersistedCompletionTests.setUp
+    operational_inputs = PersistedCompletionTests.operational_inputs
+    rows = PersistedCompletionTests.rows
+    pin = PersistedCompletionTests.pin
+    close = PersistedCompletionTests.close
+    reopen = PersistedCompletionTests.reopen
+
+    def fresh(self, label):
+        self.path = Path(self.temporary.name) / (label + '.sqlite')
+        self.reopen()
+
+    def storage_values(self):
+        return (None, b'', b'{}', b'not-json')
+
+    def corrupt(self, column, value, status='SUCCEEDED'):
+        with self.store.transaction() as db:
+            db.execute('UPDATE controller_batch_jira_operation SET ' + column +
+                       '=?,status=? WHERE issue_id=?', (value, status, 'AWF-1'))
+
+    def test_storage_success_quarantines_without_replaying(self):
+        for column in ('readback_json', 'operation_json'):
+            for index, value in enumerate(self.storage_values()):
+                with self.subTest(column=column, value=value):
+                    self.fresh(column + str(index))
+                    self.assertTrue(self.close(JiraSpy())['complete'])
+                    self.corrupt(column, value)
+                    original, pin = self.rows(), self.pin()
+                    self.reopen()
+                    for _ in range(2):
+                        spy = JiraSpy()
+                        result = self.close(spy)
+                        self.assertFalse(result['complete'])
+                        self.assertFalse(result['count_allowed'])
+                        self.assertEqual(['AWF-2'], result['reconciled'])
+                        self.assertEqual('AWF-1', result['conflict']['issue_id'])
+                        self.assertEqual([], spy.calls)
+                        self.assertEqual('UNKNOWN', self.rows()[0]['status'])
+                        self.assertEqual(pin, self.pin())
+                        for before, after in zip(original, self.rows()):
+                            for key in ('operation_id', 'intent_sha256', 'record_json',
+                                        'operation_json', 'readback_json'):
+                                self.assertEqual(before[key], after[key])
+
+    def test_storage_unknown_reports_and_resumes_remaining_only(self):
+        for index, value in enumerate(self.storage_values()):
+            with self.subTest(value=value):
+                self.fresh('unknown' + str(index))
+                self.close(JiraSpy())
+                self.corrupt('readback_json', value, 'UNKNOWN')
+                with self.store.transaction() as db:
+                    db.execute("UPDATE controller_batch_jira_operation SET status='PENDING',operation_json=NULL,readback_json=NULL WHERE issue_id='AWF-2'")
+                original = self.rows()[0]
+                self.reopen()
+                spy = JiraSpy()
+                result = self.close(spy)
+                self.assertFalse(result['complete'])
+                self.assertEqual(['AWF-2'], result['reconciled'])
+                self.assertEqual('AWF-1', result['conflict']['issue_id'])
+                self.assertEqual([('read', 'AWF-2'), ('write', 'AWF-2'),
+                                  ('read_back', 'AWF-2')], spy.calls)
+                self.assertEqual(original, self.rows()[0])
+                replay = JiraSpy()
+                self.assertFalse(self.close(replay)['complete'])
+                self.assertEqual([], replay.calls)
+
+    def test_storage_success_ownership_denial_preserves_bytes(self):
+        from contextlib import contextmanager
+        real_ownership = self.controller._batch_jira_ownership
+        for blocked in ('batch', 'issue'):
+            for index, value in enumerate(self.storage_values()):
+                with self.subTest(blocked=blocked, value=value):
+                    self.fresh(blocked + str(index))
+                    self.close(JiraSpy())
+                    self.corrupt('readback_json', value)
+                    original = self.rows()
+                    @contextmanager
+                    def ownership(store, *, issue_id=None):
+                        if (blocked == 'batch' and issue_id is None) or (blocked == 'issue' and issue_id == 'AWF-1'):
+                            yield False
+                        else:
+                            with real_ownership(store, issue_id=issue_id) as owned:
+                                yield owned
+                    spy = JiraSpy()
+                    with patch.object(self.controller, '_batch_jira_ownership', ownership):
+                        result = self.close(spy)
+                    self.assertFalse(result['complete'])
+                    self.assertEqual(['AWF-2'], result['reconciled'])
+                    self.assertEqual(original, self.rows())
+                    self.assertEqual([], spy.calls)
+                    self.assertFalse(self.close(JiraSpy())['complete'])
+                    self.assertEqual('UNKNOWN', self.rows()[0]['status'])
+
+    def ordinary(self, run_id=1, writes=None):
+        import uuid
+        provider = deepcopy(PROVIDER)
+        binding = dict(issue_id='AWF-1', project_id='local-project',
+                       repository_id='101', requirements_hash='a' * 64)
+        def write(record):
+            if writes is not None:
+                writes.append(record)
+            return dict(operation_id=record['operation_id'], issue_id='AWF-1',
+                        status='ATTEMPTED', observed_at=NOW, jira_provider=provider)
+        return self.controller.production_jira_lifecycle(self.store,
+            config=self.config, contract={}, event='WORKER_STARTED',
+            facts=dict(run_registered=True, worktree_verified=True), binding=binding,
+            issue_type='LEAF', state='DISPATCHED', producer_id='controller-1',
+            run_id=str(uuid.UUID(int=run_id)), now=NOW, evidence=['urn:fixture:test'],
+            transition_id='31', observe_provider_identity=lambda: provider,
+            observe_issue_identity=lambda key: dict(issue_key=key, observed_at=NOW),
+            read_current_status=lambda b: dict(issue_id='AWF-1', status_id='Ready',
+                observed_at=NOW, jira_provider=provider), write_transition=write,
+            read_transition=lambda r, o: dict(issue_id='AWF-1', status='In Progress',
+                actor='controller-1', observed_at=NOW, jira_provider=provider))
+
+    def test_storage_prior_stop_from_either_table_blocks_ticket(self):
+        for table in ('controller_batch_jira_operation', 'controller_jira_operation'):
+            for index, value in enumerate(self.storage_values()):
+                with self.subTest(table=table, value=value):
+                    self.fresh(table + str(index))
+                    if table == 'controller_batch_jira_operation':
+                        self.close(JiraSpy())
+                    else:
+                        self.assertEqual('SUCCEEDED', self.ordinary()['record']['status'])
+                    with self.store.transaction() as db:
+                        db.execute('UPDATE ' + table + " SET status='UNKNOWN',readback_json=? WHERE issue_id='AWF-1'", (value,))
+                    with self.store.connection() as db:
+                        original = [dict(r) for r in db.execute('SELECT * FROM ' + table)]
+                    batch = deepcopy(self.batch)
+                    batch['batch_id'] = 'batch-2'
+                    for member in batch['constituents']:
+                        member['batch_id'] = 'batch-2'
+                    self.reopen()
+                    spy = JiraSpy()
+                    result = BatchReconciliationSafetyTests.run_batch(self, spy,
+                        batch=batch, observed_merge={**self.merge, 'batch_id': 'batch-2'})
+                    self.assertFalse(result['complete'])
+                    self.assertEqual('AWF-1', result['conflict']['issue_id'])
+                    self.assertFalse(any(issue == 'AWF-1' for _, issue in spy.calls))
+                    with self.store.connection() as db:
+                        for row in original:
+                            self.assertEqual(row, dict(db.execute('SELECT * FROM ' + table +
+                                ' WHERE operation_id=?', (row['operation_id'],)).fetchone()))
+
+    def test_storage_ordinary_history_never_crashes_or_replays(self):
+        for index, value in enumerate(self.storage_values()):
+            with self.subTest(value=value):
+                self.fresh('ordinary' + str(index))
+                self.assertEqual('SUCCEEDED', self.ordinary()['record']['status'])
+                with self.store.transaction() as db:
+                    db.execute("UPDATE controller_jira_operation SET readback_json=?", (value,))
+                original = self.store.jira_operations('AWF-1')
+                self.reopen()
+                writes = []
+                # Same operation cannot be attempted again, even with bad storage.
+                self.assertFalse(self.ordinary(writes=writes)['planned'])
+                self.assertEqual([], writes)
+                self.assertEqual(original, self.store.jira_operations('AWF-1'))
+
+
 if __name__ == "__main__":
     unittest.main()
