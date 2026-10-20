@@ -928,7 +928,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'jira-timing.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': '10001'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=lambda key: {'issue_key': 'EX-42', 'observed_at': NOW})
 		self.assertIn('record', result, result)
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
 
@@ -1134,10 +1134,10 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
 		project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid', provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
-		binding = {'issue_id': '10001'}
+		binding = {'issue_id': 'EX-42'}
 		store = ContinuousControllerStore(self.root / 'jira.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=lambda key: {'issue_key': 'EX-42', 'observed_at': NOW})
 		self.assertTrue(result['planned'])
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
 		self.assertEqual(http.asserted_transition_id, '3')
@@ -1155,7 +1155,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'foreign.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': '10001'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=lambda key: {'issue_key': 'EX-42', 'observed_at': NOW})
 		self.assertNotEqual(result.get('record', {}).get('status'), 'SUCCEEDED')
 		self.assertIn('writes_stopped', result)
 

@@ -90,7 +90,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `3a25f1260af3e9a34bc47ba4b224dcf8bb5db32482711ea1795372e77f392025` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `2edd978dab6c639e8119f90425020305a35bfa5b9ac9cc10d418cc6074ae7815` |
+| `.agentic/lib/agentic/continuous_controller.py` | `b48376e06e09fdb72c996d7fe3fa3c0f94305400ab1e11bcd052576a019c1f67` |
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -380,7 +380,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_merge_train.py` | `0457d5b10b53a69f42c0d674f36a1d07776dad947784db422b8118b0b61da6f2` |
 | `.agentic/tests/test_merge_train_batch_gate.py` | `e4080f96fd54e99a19bd0b2588ec4827dd8cde7f90283c5d02d5d47be5ec0f3a` |
 | `.agentic/tests/test_merge_train_closeout.py` | `8c25472f42ec224f1c0764a301c4d17b3bfe146304abf6707adc9423c9efb1fb` |
-| `.agentic/tests/test_merge_train_controller.py` | `60849c665acfc5775273381ed2f6b2441b142eefd5a3d98d5015b3e15ba681e4` |
+| `.agentic/tests/test_merge_train_controller.py` | `15aaa4c83e75b83dcd977c60e04b79463dab73b96d6af836b2e46d4ce74dcbed` |
 | `.agentic/tests/test_merge_train_lifecycle.py` | `18bf9f869c2d12d6544ede2aa8b365e4a5e10ff7f555d11d4716c7e439cc25be` |
 | `.agentic/tests/test_merge_train_publication.py` | `dcc5605b2e03ed587bd29fcee471aaa3820167b8e3337006e072e9fcc722c2e3` |
 | `.agentic/tests/test_model_routing.py` | `b6a65f8d07525444d66af2c9490df5420779aa27ffd044ad82ba1a66f659d4e9` |
@@ -411,7 +411,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
 | `.agentic/tests/test_ready_authorization.py` | `fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d` |
 | `.agentic/tests/test_reference.py` | `434afbc094afa6ade75424895581c1eebb13ab82565b19c93a99b3d51adc9058` |
-| `.agentic/tests/test_reference_controller_adapter.py` | `efee2b567c18b5b6263e12410e4b76a435eea8f411985ef4eb52129a863c3877` |
+| `.agentic/tests/test_reference_controller_adapter.py` | `67f7d6a80ed1588c0f687a65ce26e04b45ca4f676ff727f17695edd1135f7a9d` |
 | `.agentic/tests/test_release_trust.py` | `5ee524663da11f15a04ed83c19ffcc7a951f5d89715784610799ce4709c0eed4` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
 | `.agentic/tests/test_retry_authority.py` | `139ac0066214be7dbd8d468ae016f7f116b756621ee295d03d646ef94eaae3bf` |
