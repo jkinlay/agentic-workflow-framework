@@ -1341,6 +1341,16 @@ def _build(config):
 		_require(myself.get('accountId') == jira['controller_actor_id'] and str(project.get('id')) == jira['provider_project_id'] and (project.get('key') == jira['project_key']) and (observed_cloud == jira['cloud_id']) and isinstance(observed_site, str) and (observed_site.rstrip('/') == site), 'Jira provider identity mismatch')
 		return {'cloud_id': observed_cloud, 'site': observed_site.rstrip('/'), 'project_id': str(project['id']), 'project_key': project['key'], 'controller_actor_id': jira['controller_actor_id']}
 
+	def observe_issue_identity(issue):
+		_require(isinstance(issue, str) and re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', issue) is not None,
+			'Jira input must be a canonical issue key')
+		provider_identity()
+		value = jira_json('GET', '/rest/api/3/issue/' + quote(issue, safe='') + '?fields=key')
+		_require(isinstance(value, dict) and isinstance(value.get('key'), str) and
+			re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', value['key']) is not None,
+			'Jira canonical issue key is missing or malformed')
+		return {'issue_key': value['key'], 'observed_at': _clock_text(clock)}
+
 	def read_current_status(binding):
 		_require(isinstance(binding, dict) and isinstance(binding.get('issue_id'), str), 'Jira status read needs an issue identity')
 		value = jira_json('GET', '/rest/api/3/issue/' + quote(binding['issue_id'], safe='') + '?fields=status')
@@ -1438,7 +1448,7 @@ def _build(config):
 		complete = next_cursor is None
 		observed_at = snapshot['observed_at']
 		return {'items': items, 'next_cursor': next_cursor, 'complete': complete, 'snapshot_id': snapshot_id, 'scope_sha256': scope_sha, 'observed_at': observed_at}
-	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation}
+	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation}
 
 def build_adapters(config):
 	return _build(config)
