@@ -1060,6 +1060,77 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.assertEqual(1, len(self.history.planning_history()))
         self.assertFalse(self.store.production_planning_state()['pending'])
 
+    def recover_changed_planning_inputs(self, change, after_append):
+        from agentic import planning
+        from test_planning import operating_snapshot
+        append = planning.append_plan_record
+        def crash(store, record):
+            if store is self.history:
+                if after_append:
+                    append(store, record)
+                raise RuntimeError('injected durable append crash')
+            return append(store, record)
+        with patch('agentic.planning.append_plan_record', side_effect=crash):
+            with self.assertRaisesRegex(RuntimeError, 'injected durable append crash'):
+                self.cycle()
+        retained = deepcopy(self.store.production_planning_state()['candidate'])
+        self.assertEqual(2, retained['lane_count'])
+        self.assertEqual([], self.calls)
+        self.assertEqual(int(after_append), len(self.history.planning_history()))
+        self.events = []
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        if change == 'operating':
+            self.operating = operating_snapshot(self.config, 1)
+        elif change == 'configuration':
+            self.config['execution']['max_parallel_tickets'] = 1
+            self.operating = operating_snapshot(self.config, 1)
+        else:
+            original = self.backlog
+            def with_dependency(request):
+                value = original(request)
+                value['tickets'][1]['ticket']['dependencies'] = ['AWF-101']
+                self.evidence['backlog'] = {key: deepcopy(val) for key, val in value.items()
+                                            if key != 'authentication'}
+                return value
+            self.backlog = with_dependency
+        self.cycle()
+        history = self.history.planning_history()
+        self.assertEqual(2, len(history), 'recovery admitted the retained stale plan without recomputing')
+        self.assertEqual(retained, history[0], 'recovery must preserve the exact append candidate')
+        current = history[-1]
+        self.assertEqual(1, current['lane_count'])
+        self.assertEqual(['AWF-101'], [payload['ticket'] for payload in self.calls])
+        if change == 'dependencies':
+            self.assertTrue(current['inputs']['dependencies'])
+        else:
+            capacity = current['inputs']['capacity']
+            self.assertEqual(self.operating.operating_hash, capacity['operating_hash'])
+            self.assertEqual(fingerprint('accepted-project-config', self.config),
+                             capacity['project_config_sha256'])
+        processed = self.store.production_planning_state()['observation']
+        self.cycle()
+        self.assertEqual(history, self.history.planning_history(), 'unchanged retry duplicated a plan')
+        self.assertEqual(processed, self.store.production_planning_state()['observation'])
+        self.assertFalse(self.store.production_planning_state()['pending'])
+
+    def test_recovery_before_append_replans_changed_operating_capacity(self):
+        self.recover_changed_planning_inputs('operating', False)
+
+    def test_recovery_after_append_replans_changed_operating_capacity(self):
+        self.recover_changed_planning_inputs('operating', True)
+
+    def test_recovery_before_append_replans_changed_dependencies(self):
+        self.recover_changed_planning_inputs('dependencies', False)
+
+    def test_recovery_after_append_replans_changed_dependencies(self):
+        self.recover_changed_planning_inputs('dependencies', True)
+
+    def test_recovery_before_append_replans_changed_configuration(self):
+        self.recover_changed_planning_inputs('configuration', False)
+
+    def test_recovery_after_append_replans_changed_configuration(self):
+        self.recover_changed_planning_inputs('configuration', True)
+
     def test_override_trigger_reauthenticates_persisted_owner_chain(self):
         from agentic import planning
         from test_planning import owner_source, verify_owner
