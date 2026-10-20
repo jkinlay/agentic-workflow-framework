@@ -20,6 +20,7 @@ def isolated_git_environment() -> dict[str, str]:
         "GIT_CONFIG_COUNT": "0",
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_ATTR_NOSYSTEM": "1",
         "GIT_LITERAL_PATHSPECS": "1",
         # Missing promisor objects must fail locally, never trigger lazy fetch.
         "GIT_NO_LAZY_FETCH": "1",
@@ -83,7 +84,7 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
     try:
         # Retain fail-closed validation of existing filter keys. These overrides
         # alone are NOT an isolation boundary: source configuration can change
-        # after discovery. Archive execution below uses private metadata instead.
+        # after discovery. Archive/status execution uses private metadata instead.
         environment = isolated_git_environment()
         filters = subprocess.run(
             [*command, "config", "--null", "--name-only", "--get-regexp",
@@ -107,7 +108,7 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
             # Pin both execution routes even if only one was configured.
             command[2:2] = ["-c", f"{driver}.smudge=", "-c", f"{driver}.process=",
                             "-c", f"{driver}.required=false"]
-        if args and args[0] == "archive":
+        if args and args[0] in {"archive", "status"}:
             def discover(arguments: list[str]) -> str:
                 result = subprocess.run(
                     [*command, "rev-parse", *arguments], cwd=str(root),
@@ -120,7 +121,9 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
 
             # Resolve names once, then read only that immutable object ID. The
             # discovery commands perform no archive/checkout conversion.
-            object_id = discover(["--verify", "--end-of-options", args[2]])
+            status = args[0] == "status"
+            object_id = discover(["--verify", "--end-of-options",
+                                  "HEAD^{commit}" if status else args[2]])
             object_format = discover(["--show-object-format"])
             if (object_format not in {"sha1", "sha256"} or not re.fullmatch(
                     r"[0-9a-f]{40}" if object_format == "sha1" else r"[0-9a-f]{64}",
@@ -130,24 +133,58 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
             if not objects.is_absolute() or not objects.is_dir():
                 raise ValidationError(f"{label} object directory is unavailable")
             # Never import source config/includes, refs, worktree config, hooks
-            # or info/attributes. Only the object database is shared. In
+            # or info/attributes. Status also copies the real index and uses
+            # the independently observed HEAD, never a supplied candidate. In
             # particular, newly introduced filter names have no executable
             # definition here, even if source config changes at exec time.
             with tempfile.TemporaryDirectory(prefix="awf-git-read-") as temporary:
                 metadata = Path(temporary)
                 (metadata / "objects").mkdir()
                 (metadata / "refs").mkdir()
-                (metadata / "HEAD").write_text("ref: refs/heads/unused\n", encoding="ascii")
-                config = "[core]\n\tbare = true\n\trepositoryformatversion = "
+                (metadata / "HEAD").write_text(
+                    object_id + "\n" if status else "ref: refs/heads/unused\n", encoding="ascii")
+                config = "[core]\n\tbare = " + ("false" if status else "true")
+                config += "\n\trepositoryformatversion = "
                 config += "0\n" if object_format == "sha1" else "1\n[extensions]\n\tobjectformat = sha256\n"
                 (metadata / "config").write_text(config, encoding="ascii")
                 archive_environment = dict(environment)
                 archive_environment["GIT_OBJECT_DIRECTORY"] = str(objects)
+                if status:
+                    index = Path(discover(["--path-format=absolute", "--git-path", "index"]))
+                    if not index.is_absolute():
+                        raise ValidationError(f"{label} index path is invalid")
+                    # A split index refers to sharedindex.<hash> beside the
+                    # index. Copy that dependency too; never use the live index
+                    # or allow Git to refresh source metadata during inspection.
+                    shared = discover(["--path-format=absolute", "--shared-index-path"])
+                    if shared:
+                        shared_index = Path(shared)
+                        if (not shared_index.is_absolute() or not re.fullmatch(
+                                r"sharedindex\.[0-9a-f]{40}|sharedindex\.[0-9a-f]{64}",
+                                shared_index.name)):
+                            raise ValidationError(f"{label} shared index path is invalid")
+                        shutil.copyfile(shared_index, metadata / shared_index.name)
+                    if index.exists():
+                        shutil.copyfile(index, metadata / "index")
+                    # Preserve repository-local ignore data without importing
+                    # executable configuration or source info/attributes.
+                    exclude = Path(discover(["--path-format=absolute", "--git-path", "info/exclude"]))
+                    if not exclude.is_absolute():
+                        raise ValidationError(f"{label} exclude path is invalid")
+                    if exclude.exists():
+                        (metadata / "info").mkdir()
+                        shutil.copyfile(exclude, metadata / "info/exclude")
+                    operation = [f"--work-tree={root.resolve()}",
+                                 "-c", f"core.hooksPath={os.devnull}",
+                                 "-c", "core.fsmonitor=false",
+                                 *args, "--ignore-submodules=all"]
+                else:
+                    operation = ["archive", "--format=tar", object_id, *args[3:]]
                 # Replace the source -C with explicit private Git metadata;
                 # cwd also stays private, so no source repository is discovered.
                 done = subprocess.run(
                     [*command[:-2], f"--git-dir={metadata}",
-                     "archive", "--format=tar", object_id, *args[3:]],
+                     *operation],
                     cwd=str(metadata), stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
                     env=child_env(archive_environment), timeout=timeout, check=False)
