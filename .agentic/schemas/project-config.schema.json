@@ -1429,9 +1429,89 @@
           "uniqueItems": true
         }
       }
+    },
+    "commit_provenance": {
+      "$ref": "#/$defs/commitProvenancePolicy"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:awf:1.2:project-config",
-  "title": "Agentic Workflow 1.2 \u2014 project-config"
+  "title": "Agentic Workflow 1.2 \u2014 project-config",
+  "$defs": {
+    "commitProvenancePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "require_run_logs",
+        "default_ref",
+        "generated_paths",
+        "generators"
+      ],
+      "properties": {
+        "require_run_logs": {
+          "type": "boolean"
+        },
+        "default_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^refs/heads/[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9])?$",
+          "allOf": [
+            {
+              "not": {
+                "pattern": "\\.\\.|//|\\.lock$"
+              }
+            }
+          ]
+        },
+        "generated_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "minItems": 0,
+          "maxItems": 100000,
+          "uniqueItems": true,
+          "description": "Strict UTF-8 NFC relative POSIX paths: 1-4096 encoded bytes; components at most 255 encoded bytes. Runtime rejects unsafe separators/components, reserved names, trailing dot/space, U+0000-U+001F and U+007F; collision identity is NFC plus case-folding."
+        },
+        "generators": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "paths",
+              "reproducer_sha256"
+            ],
+            "properties": {
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "minItems": 0,
+                "maxItems": 100000,
+                "uniqueItems": true,
+                "description": "Strict UTF-8 NFC relative POSIX paths: 1-4096 encoded bytes; components at most 255 encoded bytes. Runtime rejects unsafe separators/components, reserved names, trailing dot/space, U+0000-U+001F and U+007F; collision identity is NFC plus case-folding."
+              },
+              "reproducer_sha256": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }

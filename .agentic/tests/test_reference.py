@@ -32,7 +32,7 @@ from agentic.review_tiers import classify
 from agentic.safeio import Tree
 from agentic.store import Store
 import test_ready_authorization as ready_fixtures
-from test_review_policy import (RuntimeAssignedGateConfig,
+from test_review_policy import (RuntimeAssignedGateConfig, acquire_commit_provenance_fixture,
                                 bind_production_posting_fixture,
                                 bind_review_admission)
 
@@ -49,12 +49,14 @@ class Fixture(unittest.TestCase):
     def setUp(self):
         self.bundle = copy.deepcopy(self.bundle0)
         self.config = RuntimeAssignedGateConfig(copy.deepcopy(self.config0), self)
+        acquire_commit_provenance_fixture(self)
+        self.bundle0 = copy.deepcopy(self.bundle)
 
     def gate(self):
         bind_review_admission(self.bundle)
         registry = bind_production_posting_fixture(self.config, self.bundle)
         return evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
-                        posting_collector_registry=registry)
+                        posting_collector_registry=registry, repository=self.repository)
 
     def authorize(self, decision="AUTHORIZE"):
         gate = self.gate()
@@ -411,12 +413,14 @@ class LifecycleTests(unittest.TestCase):
                     config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
                     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
                     self.bundle = bundle
-                    config = RuntimeAssignedGateConfig(config, self)
+                    self.config = config = RuntimeAssignedGateConfig(config, self)
+                    acquire_commit_provenance_fixture(self)
+                    bundle = self.bundle
                     bind_review_admission(bundle)
                     registry = bind_production_posting_fixture(config, bundle)
                     facts["final_gate"] = evaluate(config, definition(), bundle,
                         Contracts(ROOT / ".agentic/schemas"), NOW,
-                        posting_collector_registry=registry)
+                        posting_collector_registry=registry, repository=self.repository)
                 self.assertEqual(transition(source, event, facts), target)
 
     def test_no_unverified_progress_for_all_state_event_pairs(self):

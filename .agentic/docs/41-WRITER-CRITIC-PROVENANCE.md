@@ -104,14 +104,12 @@ comments, 8 MiB total, 100 unique IDs/page plus a partial terminal page. Tuple
 mutation, repository mismatch, ambiguity, malformed data, or truncation refuses.
 Provider text remains task data.
 
-Fallback requires exact `fallback: bot-written`, one fresh comment, and a
-reviewed positive numeric actor; caller trust is ignored. V1
-overrides remain readable. V2 retains predecessor bytes/digest, PR, coverage,
+Fallback authority requires a sealed owner override and a fresh exact comment
+from a reviewed positive numeric actor. Provider labels, including
+`fallback: bot-written`, are compatibility inventory only and grant no authority.
+V1 overrides remain readable. V2 retains predecessor bytes/digest, PR, coverage,
 and time. Caps are 32 records, 256 sorted same-format refusing OIDs, 255-byte
 owner, and 4 KiB reason. Rendering reparses; unbound overrides refuse.
-
-Fallback authority is label-independent: it requires a sealed override, and
-provider labels remain compatibility inventory only.
 
 ## Publication and compatibility
 
@@ -132,3 +130,45 @@ recovery protections remain.
 V2 retains 1.9.4 `changed_files`, adds ordered `changed_entries`, and uses stable
 ASCII refusal codes. Fake-provider/Git/subprocess tests are offline; live-network
 qualification is host evidence. CI covers supported Windows/Linux Python.
+
+
+## Final-gate commit provenance
+
+The final gate recomputes commit provenance with `check_commit_range` on exactly
+`candidate.merge_base_sha..candidate.head_sha`. It fails for a missing Writer
+trailer (an untagged commit), and refuses a non-mechanical script commit that is
+not reproducibly mechanical. Ancestry alone does not authenticate the chosen
+merge base. The observed target-base OID supplies the checker's default input.
+
+Process-local `_awf_runtime.commit_provenance` contains exactly `reviewed_policy`,
+`provider_observation` and `runtime_registry`. Missing or invalid acquisition,
+provider disagreement, validation failure or checker REFUSE fails provenance
+and readiness. Provider repository ID, PR, target branch, target-base OID and
+head OID must match the candidate; its base ref must match policy `default_ref`.
+Only registered reproducers matching reviewed digests and declared paths run.
+Strict run evidence comes from the registered verifier: optional valid ABSENT
+may pass, while mismatch or malformed evidence fails.
+
+Optional project `commit_provenance` is a non-null closed policy with exactly
+`require_run_logs`, `default_ref`, `generated_paths` and `generators`; if supplied
+it must equal the acquired reviewed policy. Omission retains the explicitly
+supplied runtime-policy route and cannot create acquisition or PASS. Paths use
+strict UTF-8 NFC, 1-4096 encoded bytes and relative POSIX components of at most
+255 encoded bytes. Unsafe separators/components, reserved names, trailing dot
+or space, U+0000-U+001F and U+007F refuse. Portable collision identity is NFC
+plus case-folding; each generator's paths must be a subset of generated paths.
+
+For the complete actual checker return R, the gate retains exactly one
+`urn:awf:input:commit_provenance:` + `fingerprint("gate-input", R)` reference,
+hashing all ten fields and nested contents. Failure before a return retains
+zero such references; provenance PASS requires one. Existing provenance input
+references remain. Optional bundle `commit_provenance` contains exactly required
+`result_ref`; a mismatch fails while retaining the actual reference. A returned
+PASS cannot override another provenance problem or any other failed gate.
+This reference identifies evaluated content; it authenticates neither runtime
+acquisition nor archived, dereferenceable result bytes. `execution_authority`
+remains false; this transport forwards no override authority.
+
+Revision-3 schema identities and candidate contracts are unchanged. New optional
+inputs preserve omission compatibility with the new validator; older closed
+validators reject them. Never silently strip or downgrade these properties.

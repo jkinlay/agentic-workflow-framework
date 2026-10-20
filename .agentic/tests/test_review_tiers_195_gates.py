@@ -35,7 +35,8 @@ from test_review_policy import (Fixture, NOW, bind_production_posting_fixture,
 class ReviewTiers195GateTests(Fixture):
     def _runtime_config(self, assignments, *, active_ticket="EX-1"):
         runtime = {"active_ticket_key": active_ticket,
-                   "intake_assignments": assignments}
+                   "intake_assignments": assignments,
+                   "commit_provenance": self.config.get("_awf_runtime")["commit_provenance"]}
 
         class ReviewedConfigWithRuntime(dict):
             def get(self, key, default=None):
@@ -270,7 +271,7 @@ class ReviewTiers195GateTests(Fixture):
         })
         return evaluate(
             self.config, definition(), self.bundle, self.contracts, NOW,
-            posting_collector_registry=registry,
+            posting_collector_registry=registry, repository=self.repository,
         )
 
     def _retain_historical_posting_body(self, body_sha256):

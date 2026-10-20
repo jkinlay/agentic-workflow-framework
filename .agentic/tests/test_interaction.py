@@ -22,7 +22,7 @@ from agentic.interaction import (ROUTINE, decide_action, gate_handoff, loop_next
 from agentic.lifecycle import definition
 from agentic.provenance import parse_writer_trailer
 from agentic.review_loop import LoopStore
-from test_review_policy import (RuntimeAssignedGateConfig,
+from test_review_policy import (RuntimeAssignedGateConfig, acquire_commit_provenance_fixture,
                                 bind_production_posting_fixture,
                                 bind_review_admission)
 
@@ -216,10 +216,11 @@ class GateHandoffTests(unittest.TestCase):
         self.bundle=load(ROOT/'.agentic/examples/evidence-bundle.json')
         self.config=RuntimeAssignedGateConfig(
             load(ROOT/'.agentic/examples/PROJECT_CONFIG.yaml'),self)
+        acquire_commit_provenance_fixture(self)
         bind_review_admission(self.bundle)
         registry=bind_production_posting_fixture(self.config,self.bundle)
         self.gate=evaluate(self.config,definition(),self.bundle,self.contracts,NOW,
-                           posting_collector_registry=registry)
+                           posting_collector_registry=registry, repository=self.repository)
         self.request=make_request(self.gate,self.contracts,NOW)
 
     def test_exact_existing_phrase_is_rendered_with_its_evidence_limitations(self):

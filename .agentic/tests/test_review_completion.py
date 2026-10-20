@@ -29,7 +29,7 @@ from agentic.review_completion import ReviewCompletionStore, review_authority_fr
 from agentic.providers.github_reviewer_removal import (approval_comment_body,
     github_reviewer_removal_observer)
 from agentic.store import Store
-from test_review_policy import (RuntimeAssignedGateConfig,
+from test_review_policy import (RuntimeAssignedGateConfig, acquire_commit_provenance_fixture,
                                 bind_production_posting_fixture,
                                 bind_review_admission)
 
@@ -864,11 +864,12 @@ class ReviewCompletionTests(unittest.TestCase):
         contracts = Contracts(ROOT / ".agentic/schemas")
         config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
-        config = RuntimeAssignedGateConfig(config, self)
+        self.config = config = RuntimeAssignedGateConfig(config, self)
+        acquire_commit_provenance_fixture(self)
         bind_review_admission(self.bundle)
         registry = bind_production_posting_fixture(config, self.bundle)
         gate = evaluate(config, definition(), self.bundle, contracts, "2026-09-09T12:00:00Z",
-                        posting_collector_registry=registry)
+                        posting_collector_registry=registry, repository=self.repository)
         request = make_request(gate, contracts, "2026-09-09T12:00:00Z")
         gate_handoff(gate, request, config, contracts, "2026-09-09T12:00:00Z")
         facts = {"derived_gate_ready": True, "requirements_current": True,

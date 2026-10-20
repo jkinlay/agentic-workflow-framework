@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -279,6 +280,66 @@ def bind_production_posting_fixture(config, bundle):
     return {producer_id: registration}
 
 
+def acquire_commit_provenance_fixture(fixture, path="src/example.py"):
+    """Create actual Git objects and bind the positive fixture before tests edit it."""
+    from agentic.gates import expected_binding
+    temporary = tempfile.TemporaryDirectory(prefix="awf-gate-range-")
+    fixture.addCleanup(temporary.cleanup)
+    repository = Path(temporary.name) / "repository"
+    repository.mkdir()
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_AUTHOR_NAME="AWF Fixture", GIT_COMMITTER_NAME="AWF Fixture",
+        GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+        GIT_AUTHOR_DATE="2026-09-09T11:00:00Z", GIT_COMMITTER_DATE="2026-09-09T11:00:00Z")
+
+    def git(*arguments):
+        return subprocess.run(["git", *arguments], cwd=repository, env=environment,
+            check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+
+    git("init", "--quiet", "--initial-branch=main", "--template=")
+    (repository / "README.md").write_bytes(b"fixture\n")
+    git("add", "--", "README.md")
+    base = git("commit-tree", git("write-tree"), "-m", "Fixture base")
+    (repository / path).parent.mkdir(parents=True)
+    (repository / path).write_bytes(b"value = 1\n")
+    git("add", "--", path)
+    tree = git("write-tree")
+    head = git("commit-tree", tree, "-p", base, "-m",
+               "Fixture change\n\nWriter: codex/11111111-1111-4111-8111-111111111111")
+    bundle = fixture.bundle
+    candidate = bundle["candidate"]
+    replacements = {candidate["head_sha"]: head, candidate["target_base_sha"]: base,
+                    candidate["merge_base_sha"]: base, candidate["head_tree_sha"]: tree,
+                    candidate["integration_tree_sha"]: tree, candidate["tested_merge_sha"]: head}
+
+    def replace(value):
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        return replacements.get(value, value) if isinstance(value, str) else value
+
+    fixture.bundle = bundle = replace(bundle)
+    binding = expected_binding(fixture.config, definition(), bundle)
+    for name in ("dispatch", "worker", "critic", "ci", "pr"):
+        bundle[name]["binding"] = copy.deepcopy(binding)
+    for record in bundle["runs"] + bundle["review_verdicts"]:
+        record["binding"] = copy.deepcopy(binding)
+    bundle["pr"]["file_manifest"][0]["blob_sha"] = git("rev-parse", tree + ":" + path)
+    bundle["critic"]["coverage"]["file_manifest_sha256"] = fingerprint("file-manifest", bundle["pr"]["file_manifest"])
+    fixture.repository = repository
+    fixture.commit_provenance = {
+        "reviewed_policy": {"require_run_logs": False, "default_ref": "refs/heads/main",
+                            "generated_paths": [], "generators": {}},
+        "provider_observation": {"version": 1, "repository_id": 101, "pr": 7,
+                                 "base_ref": "main", "base": base, "head": head},
+        "runtime_registry": {"run_log_verifier": lambda run, commit, entries: {
+            "version": 1, "status": "ABSENT", "run_id": run, "commit_sha": commit,
+            "entries": entries, "evidence_sha256": None, "reason_code": "OPTIONAL_ABSENT"}}}
+
+
 class RuntimeAssignedGateConfig(dict):
     """Test config whose hidden runtime assignment follows the mutable bundle."""
 
@@ -302,8 +363,11 @@ class RuntimeAssignedGateConfig(dict):
         record["assignment_sha256"] = fingerprint(
             "intake_assignment_record", record
         )
-        return {"active_ticket_key": ticket,
-                "intake_assignments": {ticket: record}}
+        runtime = {"active_ticket_key": ticket,
+                   "intake_assignments": {ticket: record}}
+        if hasattr(self.fixture, "commit_provenance"):
+            runtime["commit_provenance"] = self.fixture.commit_provenance
+        return runtime
 
 
 class Fixture(unittest.TestCase):
@@ -318,6 +382,7 @@ class Fixture(unittest.TestCase):
         self.config = RuntimeAssignedGateConfig(
             copy.deepcopy(self.config0), self
         )
+        acquire_commit_provenance_fixture(self)
 
     def test_shipped_example_config_and_evidence_bundle_share_policy_binding(self):
         """The generated bundle must directly bind the generated reviewed config."""
@@ -346,7 +411,7 @@ class Fixture(unittest.TestCase):
         bind_review_admission(self.bundle)
         registry = bind_production_posting_fixture(self.config, self.bundle)
         return evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
-                        posting_collector_registry=registry)
+                        posting_collector_registry=registry, repository=self.repository)
 
     def prepare_test_gate(self):
         """Freeze a valid test-only collector registry before an adversarial edit."""
@@ -355,7 +420,7 @@ class Fixture(unittest.TestCase):
 
     def gate_with_registry(self, registry):
         return evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
-                        posting_collector_registry=registry)
+                        posting_collector_registry=registry, repository=self.repository)
 
     def verifier_run(self):
         """Register an independent verifier run (the party that authenticated the owner's comment)."""
@@ -400,6 +465,7 @@ class Fixture(unittest.TestCase):
                                                  reviewed_paths=["tests/test_example.py"])
         self.bundle["contract"]["scope"]["expected_paths"] = ["tests/**"]
         self.bundle["contract"].update(risk_tier=1, tier_justification="Tests only.")
+        acquire_commit_provenance_fixture(self, "tests/test_example.py")
         self.rebind()
 
     def rebind(self):
@@ -1003,8 +1069,8 @@ class DigestTests(Fixture):
         return {"ticket": "EX-1", "awf_state": "MERGED", "pr_number": 7, "head_sha": "b" * 40, "base_sha": "c" * 40, "tree_sha": "e" * 40, "risk_tier": 2}
 
     def test_digest_shape_is_fixed_and_footer_generated(self):
-        bind_review_admission(self.bundle)
-        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
+        self.bundle = copy.deepcopy(self.bundle0)
+        gate = evaluate(self.config0, definition(), self.bundle, self.contracts, NOW)
         body = render(self.state(), audience="jira", gate=gate, findings=[self.finding("F1", "MAJOR", {"criterion_id": "AC1"})],
                       validation=self.bundle["worker"]["validation"], ci=self.bundle["ci"]["checks"], reviewer={"engine": "codex", "run_id": "r-1"})
         expected = ROOT / ".agentic/examples/digest-jira.md"

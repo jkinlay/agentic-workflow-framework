@@ -1110,6 +1110,29 @@ def catalog(*, include_ticket_plan=True):
         "$id": "urn:awf:1.2:posting-collector-registration",
         "title": "Agentic Workflow 1.9.5 — posting-collector-registration",
     })
+    # Optional revision-3 inputs; runtime acquisition and callbacks are never
+    # serialized. Runtime validation additionally enforces portable path bytes,
+    # NFC/case-fold collisions, and generator-path subset semantics.
+    provenance_paths = arr(text(maxLength=4096), maxItems=100000, uniqueItems=True,
+        description="Strict UTF-8 NFC relative POSIX paths: 1-4096 encoded bytes; components at most 255 encoded bytes. Runtime rejects unsafe separators/components, reserved names, trailing dot/space, U+0000-U+001F and U+007F; collision identity is NFC plus case-folding.")
+    provenance_policy = obj({
+        "require_run_logs": BOOL,
+        "default_ref": text(pattern=r"^refs/heads/[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9])?$",
+            allOf=[{"not": {"pattern": r"\.\.|//|\.lock$"}}]),
+        "generated_paths": provenance_paths,
+        "generators": {"type": "object", "propertyNames": text(maxLength=64,
+            pattern=r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$"),
+            "additionalProperties": obj({"paths": provenance_paths, "reproducer_sha256": DIGEST})}})
+    schemas["project-config"].setdefault("$defs", {})["commitProvenancePolicy"] = provenance_policy
+    schemas["project-config"]["properties"]["commit_provenance"] = {"$ref": "#/$defs/commitProvenancePolicy"}
+    schemas["evidence-bundle"]["properties"]["commit_provenance"] = obj({
+        "result_ref": text(pattern=r"^urn:awf:input:commit_provenance:[0-9a-f]{64}$")})
+    provenance_gate = schemas["final-gate"]["properties"]["gates"]["properties"]["provenance"]
+    provenance_gate["properties"]["result"] = enum("PASS", "FAIL")
+    provenance_gate["description"] = "Recomputed commit provenance; missing acquisition or REFUSE fails."
+    provenance_gate["allOf"] = [when("result", "PASS", {"properties": {"evidence": {
+        "contains": text(pattern=r"^urn:awf:input:commit_provenance:[0-9a-f]{64}$"),
+        "minContains": 1, "maxContains": 1}}})]
     return schemas
 
 

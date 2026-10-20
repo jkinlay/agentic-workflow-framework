@@ -18,6 +18,7 @@ from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_pa
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
+from .provenance import check_commit_range, _validate_reviewed_provenance_policy
 from .review_tiers import classify
 
 
@@ -1261,6 +1262,51 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                  and owner_review_ok)
     provenance_problems = [f"exclusive resource {name} held by overlapping COMPLETE runs {a} and {b}"
                            for name, a, b in resource_overlaps(bundle["runs"], config["execution"]["host_broker"].get("resources", {}))]
+    # Runtime acquisition is process-local authority, never reconstructed from
+    # a serialized policy, expected reference, candidate, or environment.
+    commit_result_ref = None
+    try:
+        runtime = config.get("_awf_runtime")
+        acquisition = runtime.get("commit_provenance") if isinstance(runtime, dict) else None
+        if (not isinstance(acquisition, dict)
+                or set(acquisition) != {"reviewed_policy", "provider_observation", "runtime_registry"}
+                or not isinstance(acquisition["runtime_registry"], dict)):
+            raise ValidationError("Commit provenance runtime acquisition is missing or invalid")
+        reviewed = acquisition["reviewed_policy"]
+        _validate_reviewed_provenance_policy(reviewed)
+        if "commit_provenance" in config:
+            _validate_reviewed_provenance_policy(config["commit_provenance"])
+            if config["commit_provenance"] != reviewed:
+                raise ValidationError("Serialized commit provenance policy differs from reviewed runtime policy")
+        provider = acquisition["provider_observation"]
+        if not isinstance(provider, dict):
+            raise ValidationError("Commit provenance provider observation is invalid")
+        for observed, selected in (("repository_id", "repository_id"), ("pr", "pr_number"),
+                                   ("base_ref", "target_base_branch"),
+                                   ("base", "target_base_sha"), ("head", "head_sha")):
+            if (type(provider.get(observed)) is not type(candidate[selected])
+                    or provider.get(observed) != candidate[selected]):
+                raise ValidationError("Commit provenance provider/candidate disagreement: " + observed)
+        if provider["base_ref"] != reviewed["default_ref"].removeprefix("refs/heads/"):
+            raise ValidationError("Commit provenance provider default ref differs from reviewed policy")
+        checked = check_commit_range(
+            repository or Path(__file__).resolve().parents[3],
+            candidate["merge_base_sha"], candidate["head_sha"],
+            reviewed_policy=reviewed, provider_observation=provider,
+            runtime_registry=acquisition["runtime_registry"])
+        # Address the complete actual return, including every nested field.
+        commit_result_ref = "urn:awf:input:commit_provenance:" + fingerprint("gate-input", checked)
+        if checked["status"] != "PASS":
+            provenance_problems.append("Commit range provenance refused")
+        expected = bundle.get("commit_provenance")
+        if expected is not None and expected["result_ref"] != commit_result_ref:
+            provenance_problems.append("Commit provenance expected result reference differs from actual result")
+    except Exception as exc:
+        # Adapter acquisition and validation failures must close readiness. Do
+        # not echo untrusted provider data, callback messages, or local paths.
+        provenance_problems.append("Commit provenance acquisition/check failed: " + type(exc).__name__)
+    if commit_result_ref is None and not provenance_problems:
+        provenance_problems.append("Commit provenance result is unavailable")
     unique(ci["checks"], "name", "CI check name")
     checks = {check["name"]: check for check in ci["checks"]}
     ci_ok = bool(config["validation"]["required_ci_checks"]) and ci["retrieval_complete"] and candidate["tested_merge_sha"] is not None
@@ -1346,6 +1392,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         inputs["verdict_posting"].append("owner_review")
     refs = {name: ["urn:awf:input:" + key + ":" + fingerprint("gate-input", bundle[key]) for key in keys]
             for name, keys in inputs.items()}
+    if commit_result_ref is not None:
+        refs["provenance"].append(commit_result_ref)
     refs["critic_current_tuple"].append(
         "urn:awf:input:overcap_approvals:"
         + fingerprint("gate-input", overcap_approvals)

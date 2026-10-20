@@ -487,8 +487,7 @@
             "result": {
               "enum": [
                 "PASS",
-                "FAIL",
-                "N_A"
+                "FAIL"
               ]
             },
             "evidence": {
@@ -501,7 +500,35 @@
               "minItems": 1,
               "uniqueItems": true
             }
-          }
+          },
+          "description": "Recomputed commit provenance; missing acquisition or REFUSE fails.",
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                },
+                "required": [
+                  "result"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "evidence": {
+                    "contains": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^urn:awf:input:commit_provenance:[0-9a-f]{64}$"
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  }
+                }
+              }
+            }
+          ]
         },
         "local_ci_parity": {
           "type": "object",

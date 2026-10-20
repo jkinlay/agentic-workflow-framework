@@ -70,6 +70,7 @@ class OwnerReviewGateTests(unittest.TestCase):
             self.fixture.contracts,
             NOW,
             posting_collector_registry=registry,
+            repository=self.fixture.repository,
         )
 
     def test_provider_observed_trusted_owner_review_qualifies(self):

@@ -602,6 +602,20 @@
         "offline_fixture",
         "production_observation"
       ]
+    },
+    "commit_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result_ref"
+      ],
+      "properties": {
+        "result_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^urn:awf:input:commit_provenance:[0-9a-f]{64}$"
+        }
+      }
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
