@@ -588,7 +588,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_self_test_review.py` | `51d5b33199d2f93c1af51ef32cea3146f1fca72567db8c58efb80cd886bd97cf` |
 | `scripts/tests/test_skill_distribution_launcher.py` | `26fcfe891d4be5a7fbaa638f0b6dbbfe418f6831d1973f889ebc97fe6a6dc64c` |
 | `scripts/tests/test_skill_distribution_ordering.py` | `4897f1406db51a786ccf4179363c93b50e1d99578c28f51a947154e448366955` |
+| `scripts/tests/test_validate_archive_report.py` | `d5e1a5bc555b69976b30011d688e3b142d0bf0008e400b18dc7d836807a34d56` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
-| `scripts/validate_archive.py` | `8f242ac24701d58f0972b74e36accdbc78b00372554f62e4533861bb88350a29` |
+| `scripts/validate_archive.py` | `6ec77671ce0fcbb13e22eccbbe965ea905da186416deedac67ca54da1e99488b` |
 | `scripts/validate_git_checkout.py` | `da31f52ab345e19cf580171bef96404958795217d88535c112c4e36278bea174` |
 | `tools/windows/Invoke-AC42.ps1` | `f466b43973c26d2d9b4e74efbc7371c1be2bbae27780160dfe909e10eb0b1e3b` |
