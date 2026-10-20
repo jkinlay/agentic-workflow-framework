@@ -35,6 +35,7 @@ class OwnerReviewGateTests(unittest.TestCase):
 
     def setUp(self):
         self.fixture = tier_fixture.ReviewTiers195GateTests(methodName="runTest")
+        self.addCleanup(self.fixture.doCleanups)  # AWF117-S1-R3-001 (devhead-2119)
         self.fixture.setUp()
         self.fixture._tier_three_candidate()
         self.fixture._review_history(2, historical_tier=2, terminal_tier=3)
