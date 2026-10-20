@@ -115,11 +115,11 @@ provider labels remain compatibility inventory only.
 
 ## Publication and compatibility
 
-Canonical UTF-8 `record.json` caps at 1,048,576 bytes inclusive, including
-key/digest/framing/escaped payload. Writes check before reservation;
-bounded reads/recovery refuse oversize unchanged/unsealed. Exact-limit
-write/read/recovery, append-only retries, crash/digest semantics, separate
-1,024-byte seal cap and global document limit remain.
+Canonical UTF-8 `record.json`: inclusive 1,048,576-byte envelope cap
+(keys/digests/framing/escaping), checked before reservation. Oversize reads/recovery
+refuse unchanged/unsealed; exact-limit operations/retries, append-only/crash/digest
+semantics, 1,024-byte seals/global document limit remain. Host `commit-run-log.json`
+checks complete bytes (including LF) before retained-record inspection/write.
 
 First drafts validate shared-grammar 4 KiB titles, trusted contract Markdown
 and untrusted model/effort/branch scalars before reservation; escape scalars.
