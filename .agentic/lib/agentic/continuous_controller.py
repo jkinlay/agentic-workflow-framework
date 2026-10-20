@@ -652,6 +652,7 @@ class ContinuousControllerStore:
 			state['pending'].append(deepcopy(event))
 		# Content changes are controller-derived only after independent authentication.
 		observed = fingerprint('controller-planning-input', {'backlog': backlog,
+			'configuration': config, 'overrides': state['overrides'],
 			'resources': {k: resource_observation[k] for k in ('binding', 'host_capacity', 'resources')},
 			'operating': operating_snapshot.operating_hash,
 			'overlap_allowances': overlap_allowances})
@@ -670,9 +671,16 @@ class ContinuousControllerStore:
 			_require(not matches or matches == [candidate], 'Durable plan conflicts with the retained append candidate')
 			if not matches:
 				planning.append_plan_record(state_store, candidate)
+			# Acknowledgement processes only the inputs used by this candidate.
+			# Legacy candidates have no fingerprint and require a fresh plan.
+			state['observation'] = state.pop('candidate_observation', None)
 			state['candidate'] = None
 			state['pending'] = state['pending'][1:]
 			self._save_production_planning(state)
+		# Recovery may consume the last event while authenticated inputs have
+		# changed. Append their plan before returning anything for admission.
+		if state['observation'] != observed and not state['pending']:
+			state['pending'].append({'source_id': observed, 'trigger': 'files_changed', 'override': None})
 		while state['pending']:
 			working = deepcopy(state['overrides'])
 			working['planning_history'] = state_store.planning_history()
@@ -687,17 +695,17 @@ class ContinuousControllerStore:
 				verify_overlap_allowance=verify_overlap_allowance)
 			candidate = result['record']
 			state['candidate'] = candidate
+			state['candidate_observation'] = observed
 			self._save_production_planning(state)
 			history = state_store.planning_history()
 			matches = [record for record in history if record['plan_id'] == candidate['plan_id']]
 			_require(not matches or matches == [candidate], 'Planning append candidate conflicts with immutable history')
 			if not matches:
 				planning.append_plan_record(state_store, candidate)
+			state['observation'] = state.pop('candidate_observation')
 			state['candidate'] = None
 			state['pending'].pop(0)
 			self._save_production_planning(state)
-		state['observation'] = observed
-		self._save_production_planning(state)
 		record = state_store.current_plan()
 		_require(record is not None, 'Production dispatch requires a durable verified plan')
 		planning.verify_plan_record(record)
