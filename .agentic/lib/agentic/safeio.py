@@ -982,6 +982,15 @@ def snapshot_file(source, relative=None, *, maximum=64 * 1024 * 1024):
             return tree._snapshot(path.name, maximum)
 
 
+def require_record_bytes(raw):
+    """Check a complete encoded record, including framing, without changing it."""
+    if not isinstance(raw, bytes):
+        raise ValidationError("RECORD_TYPE: encoded record must be bytes")
+    if len(raw) > 1_048_576:
+        raise ValidationError("RECORD_SIZE: encoded record exceeds 1,048,576 bytes")
+    return raw
+
+
 def write_json(tree, relative, value, *, maximum=1024 * 1024):
     """Atomically replace one confined leaf with canonical strict JSON."""
     if not isinstance(tree, Tree):
