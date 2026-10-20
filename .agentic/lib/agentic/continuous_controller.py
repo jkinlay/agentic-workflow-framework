@@ -1769,6 +1769,17 @@ def _batch_jira_ownership(store, *, issue_id=None):
 		os.close(descriptor)
 
 
+def _retained_jira_observation(value):
+	"""Corrupt SQLite receipt storage is an unknown observation, never proof."""
+	if not isinstance(value, str):
+		return None
+	try:
+		observation = loads(value)
+		return observation if isinstance(observation, dict) else None
+	except (ValidationError, TypeError, ValueError):
+		return None
+
+
 def production_batch_jira_reconciliation(store, *, config, role, batch, observed_merge, now,
 		read_current_status, write_transition, read_transition, policy_context=None, observe_issue_identity=None):
 	"""Serialize T11 invocations; reject aliases before any durable intent."""
@@ -1888,10 +1899,12 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 		"""Retained success needs historical proof, independently of restart time."""
 		try:
 			floor = timestamp(record['created_at'])
+			_require(isinstance(row['readback_json'], str), 'Retained Jira readback must be JSON text')
 			observation = loads(row['readback_json'])
 			if row['operation_json'] is None:
 				status, _ = receipt(observation, row['issue_id'], floor, 'before')
 			else:
+				_require(isinstance(row['operation_json'], str), 'Retained Jira write receipt must be JSON text')
 				operation = loads(row['operation_json'])
 				_, floor = receipt(operation, row['issue_id'], floor, 'write', row['operation_id'])
 				status, _ = receipt(observation, row['issue_id'], floor, 'after')
@@ -1902,10 +1915,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 			return False
 
 	def retained_observation(row):
-		try:
-			return loads(row['readback_json']) if row['readback_json'] is not None else None
-		except (ValidationError, TypeError, ValueError):
-			return None
+		return _retained_jira_observation(row['readback_json'])
 
 	# Inspect the entire retained batch before any status/write/readback callback.
 	# A contender may report invalid proof but may never change another owner's row.
@@ -1944,7 +1954,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 				if status == 'PENDING':
 					prior_stop = db.execute("SELECT readback_json FROM controller_batch_jira_operation WHERE issue_id=? AND operation_id<>? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') UNION ALL SELECT readback_json FROM controller_jira_operation WHERE issue_id=? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') LIMIT 1", (issue, operation_id, issue)).fetchone()
 					if prior_stop is not None:
-						observation = loads(prior_stop['readback_json']) if prior_stop['readback_json'] else None
+						observation = _retained_jira_observation(prior_stop['readback_json'])
 						db.execute("UPDATE controller_batch_jira_operation SET status='FAILED',readback_json=?,updated_at=? WHERE operation_id=?", (canonical(observation).decode(), now, operation_id))
 						status = 'FAILED'
 					else:
@@ -2516,8 +2526,10 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	for operation_row in durable:
 		record = dict(operation_row['record'])
 		record['status'] = operation_row['status']
-		if operation_row['readback_json']:
-			observed = loads(operation_row['readback_json'])
+		if operation_row['readback_json'] is not None:
+			observed = _retained_jira_observation(operation_row['readback_json'])
+			if observed is None:
+				return {'planned': False, 'reason': 'Durable Jira receipt is corrupt; writes remain stopped', 'writes_stopped': True, 'operation_id': operation_row['operation_id'], 'current_observation': current, 'execution_authority': False}
 			record['read_back'] = {'observed_status': observed.get('status_id', observed.get('status')), 'observed_actor': observed.get('actor'), 'observed_at': observed.get('observed_at')}
 		prior_writes.append(record)
 	key, target = planned_write(config, contract, event, facts, issue_type=issue_type, current_status=current['status_id'], prior_writes=prior_writes, state=state)

@@ -90,7 +90,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `3a25f1260af3e9a34bc47ba4b224dcf8bb5db32482711ea1795372e77f392025` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `d738b27343407bef52c11fc5f2fb8ff6f95a03f5f2b67983c2d423a6a85bc315` |
+| `.agentic/lib/agentic/continuous_controller.py` | `d2dc18dfa6a1d5cdc8caf9f471d1fcd084d09b1d6bd713ae34b625bb10f2613b` |
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -380,7 +380,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_merge_train.py` | `0457d5b10b53a69f42c0d674f36a1d07776dad947784db422b8118b0b61da6f2` |
 | `.agentic/tests/test_merge_train_batch_gate.py` | `e4080f96fd54e99a19bd0b2588ec4827dd8cde7f90283c5d02d5d47be5ec0f3a` |
 | `.agentic/tests/test_merge_train_closeout.py` | `8c25472f42ec224f1c0764a301c4d17b3bfe146304abf6707adc9423c9efb1fb` |
-| `.agentic/tests/test_merge_train_controller.py` | `a188532e2a201f1809c268e6d5f48cb3b80414ab56a2f627eda3147ca88bb9ef` |
+| `.agentic/tests/test_merge_train_controller.py` | `d2e81625f18b4aa038ae5dc9df29c8abd7df0ebbc777604a04d22c343e774447` |
 | `.agentic/tests/test_merge_train_lifecycle.py` | `18bf9f869c2d12d6544ede2aa8b365e4a5e10ff7f555d11d4716c7e439cc25be` |
 | `.agentic/tests/test_merge_train_publication.py` | `dcc5605b2e03ed587bd29fcee471aaa3820167b8e3337006e072e9fcc722c2e3` |
 | `.agentic/tests/test_model_routing.py` | `b6a65f8d07525444d66af2c9490df5420779aa27ffd044ad82ba1a66f659d4e9` |
