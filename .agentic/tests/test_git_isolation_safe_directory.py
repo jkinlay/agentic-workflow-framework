@@ -377,5 +377,41 @@ class SafeDirectoryTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
 
+class WindowsAliasFixtureTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction regression")
+    def test_setup_resolves_aliased_temporary_directory_for_attestor(self):
+        import _winapi
+
+        temporary_directory = tempfile.TemporaryDirectory
+        temporary = temporary_directory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve(strict=True)
+        target = base / "target"
+        target.mkdir()
+        alias = base / "alias"
+        try:
+            _winapi.CreateJunction(str(target), str(alias))
+        except OSError as error:
+            self.skipTest(f"Windows directory junction unavailable: {error}")
+        self.addCleanup(alias.rmdir)
+        self.assertNotEqual(alias, alias.resolve(strict=True))
+
+        fixture = SafeDirectoryTests("test_executable_index_with_filemode_false_is_clean")
+        self.addCleanup(fixture.doCleanups)
+        with mock.patch.object(tempfile, "TemporaryDirectory", side_effect=
+                               lambda: temporary_directory(dir=alias.as_posix())):
+            fixture.setUp()
+        lexical_root = Path(fixture.temporary.name) / "repo"
+        with self.assertRaisesRegex(ValidationError, "execution checkout uses a symlink or reparse alias"):
+            GitCheckoutAttestor(lexical_root)
+        candidate = {
+            "head_sha": fixture.git_run(fixture.root, "rev-parse", "HEAD").stdout.decode().strip(),
+            "tree_sha": fixture.git_run(fixture.root, "rev-parse", "HEAD^{tree}").stdout.decode().strip(),
+        }
+        self.assertEqual(GitCheckoutAttestor(fixture.root)(candidate, str(fixture.root))["status"],
+                         "CLEAN")
+        self.assertEqual(fixture.root, fixture.root.resolve(strict=True))
+
+
 if __name__ == "__main__":
     unittest.main()
