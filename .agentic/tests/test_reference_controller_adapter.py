@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
-from test_continuous_controller_planning import planning_resource_inputs
+from test_continuous_controller_planning import planning_fixture_inputs, planning_resource_inputs
 from agentic import ValidationError
 from source_only import skip_unless_source_repo
 from agentic.canonical import canonical, fingerprint, sha256
@@ -535,8 +535,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
+		planning_inputs = {**planning_resource_inputs(1), **planning_fixture_inputs([_ticket('tracked.txt')], state, 1, binding=inventory_binding, now=NOW)}
 		with patch.dict(os.environ, {'GH_TOKEN': 'secret-gh', 'GITHUB_TOKEN': 'secret-github', 'AWF_JIRA_TOKEN': 'secret-jira', 'ATLASSIAN_API_TOKEN': 'secret-atlassian', 'JIRA_API_KEY': 'secret-jira-key', 'EXAMPLE_CLIENT_SECRET': 'secret-generic'}, clear=False):
-			result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=1, **planning_resource_inputs(1), inventory_binding=inventory_binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=cfg, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
+			result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=1, **planning_inputs, inventory_binding=inventory_binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=cfg, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(result['status_delivery']['status'], 'DELIVERED')
 		self.assertEqual(len(result['dispatch_receipts']), 1, result)
 		self.assertTrue(runner.launches)
@@ -578,7 +579,8 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A', 'B'], worktree_roots=[self.root / 'worktree'])
-		result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=2, **planning_resource_inputs(2), inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
+		planning_inputs = {**planning_resource_inputs(2), **planning_fixture_inputs([first, second], state, 2, binding=binding, now=NOW)}
+		result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=2, **planning_inputs, inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(len(result['dispatch_receipts']), 2, result)
 		self.assertEqual(len(runner.launches), 2)
 		self.assertEqual(len(runner.observations), 2)
