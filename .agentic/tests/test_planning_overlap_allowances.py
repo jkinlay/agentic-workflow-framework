@@ -190,35 +190,69 @@ class PlanningOverlapAllowanceTests(unittest.TestCase):
     def test_no_allowance_is_byte_identical_to_base_overlap_probe(self):
         cfg = fixtures.config(2)
 
-        def base_overlap_components(graph, ready, allowances=None):
-            # Preserve the base probe's unconditional overlap serialization,
-            # independently of the allowance-aware component implementation.
-            adjacent = {key: set() for key in ready}
-            for edge in graph['overlaps']:
-                left, right = edge['left'], edge['right']
-                if left in adjacent and right in adjacent:
-                    adjacent[left].add(right)
-                    adjacent[right].add(left)
-            components, seen = [], set()
-            for start in sorted(ready):
-                if start in seen:
-                    continue
-                component, pending = set(), [start]
-                while pending:
-                    key = pending.pop()
-                    if key not in component:
-                        component.add(key)
-                        pending.extend(adjacent[key] - component)
-                seen.update(component)
-                components.append(component)
-            return components
-
-        # Use this runtime's configuration and capacity evidence in both plans:
-        # installed adoption changes their hashes, but must not change parity.
-        with patch.object(planning, '_planning_overlap_allowances', return_value={}), \
-                patch.object(planning, '_lane_components', side_effect=base_overlap_components):
-            base_probe = fixtures.plan(self.items, cfg, host_capacity=2, stream_capacity=2)
-        no_allowance = fixtures.plan(self.items, cfg, host_capacity=2, stream_capacity=2)
+        inputs = fixtures.capacity_kwargs(cfg, host_capacity=2, stream_capacity=2)
+        snapshot = inputs['operating_snapshot']
+        # Complete pre-allowance output for this fixed two-ticket overlap probe
+        # (planning.py at a7d5eb9^). Assemble it independently of plan_lanes,
+        # _lane_components and _estimate: even an added result field must fail.
+        # Only capacity provenance varies with the runtime's adopted config.
+        capacity = {
+            'observation_sha256': inputs['resource_observation']['observation_sha256'],
+            'producer_implementation_sha256': inputs['expected_resource_producer_sha256'],
+            'host_capacity': 2,
+            'operating_hash': snapshot.operating_hash,
+            'stream_capacity': 2,
+            'stream_capacity_source': {
+                'kind': 'validated_operating_snapshot',
+                'operating_hash': snapshot.operating_hash,
+                'governance_hash': snapshot.governance_hash,
+                'source': snapshot.source,
+                'last_change_id': snapshot.last_change_id,
+            },
+            'resources': [{'name': 'cpu', 'capacity': 12}],
+            'resource_capacity': 12,
+            'project_config_sha256': fingerprint('accepted-project-config', cfg),
+            'governed_ceiling': 2,
+            'governance_sources': ['$.execution.max_lanes'],
+            'safe_lane_count': 1,
+        }
+        capacity['capacity_binding_sha256'] = fingerprint('planning_capacity_binding', capacity)
+        base_probe = {
+            'lanes': [{
+                'ticket_keys': ['AWF-101', 'AWF-102'],
+                'write_paths': ['src/left.py', 'src/right.py', 'src/shared.py'],
+                'critical_path_minutes': 30,
+                'risk_tier_floor': 2,
+                'label': 'A',
+            }],
+            'blocked': {},
+            'critical_path_minutes': {'AWF-101': 30, 'AWF-102': 30},
+            'estimate': {
+                'independent_lane_count': 1,
+                'safe_lane_count': 1,
+                'binding_constraints': ['dependency_graph/file_overlap'],
+                'constraints': {
+                    'dependency_graph/file_overlap': 1,
+                    'configured_ceiling': 2,
+                    'max_parallel_tickets': 12,
+                    'reviewed_operating_streams': 2,
+                    'observed_host_capacity': 2,
+                    'resource:cpu': 12,
+                },
+                'governance_sources': ['$.execution.max_lanes'],
+                'capacity': deepcopy(capacity),
+                'reasoning': (
+                    '1 independent lane(s); safe count 1; binding: '
+                    'dependency_graph/file_overlap; authenticated host, reviewed '
+                    'stream, and resource capacities are sealed'),
+            },
+            'owner_decision': {'kind': 'accepted_default', 'value': 1},
+            'capacity': deepcopy(capacity),
+            'lane_count': 1,
+            'warnings': [],
+        }
+        no_allowance = planning.plan_lanes(
+            planning.build_backlog_graph(self.items, cfg), cfg, **inputs)
         self.assertEqual(canonical(base_probe), canonical(no_allowance))
         self.assertEqual(sha256(canonical(base_probe)), sha256(canonical(no_allowance)))
         self.assertEqual(1, no_allowance['lane_count'])
