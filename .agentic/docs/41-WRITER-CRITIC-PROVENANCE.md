@@ -1,108 +1,94 @@
 # Writer and critic provenance
 
-Provenance identifies commits/reviews, not scope/merge. Digest-bound policy uses
-immutable bytes or fresh provider reads.
+Provenance identifies commits/reviews, never scope/merge. Policy binds immutable
+bytes/fresh provider reads.
 
 ## Commit contract
 
-An AWF commit has exactly one final-block trailer:
+Each commit requires one final-block trailer:
 
 ```text
 Writer: codex/11111111-1111-4111-8111-111111111111
 Writer: script/manifest-regen
 ```
 
-Codex IDs are lowercase non-nil UUIDs. Script IDs are 1–64 ASCII lowercase
-alphanumerics plus `.`, `_`, or `-`, starting alphanumeric.
+Codex IDs: lowercase non-nil UUIDs. Script IDs: 1-64 lowercase ASCII
+alphanumerics/`._-`, initially alphanumeric.
 
-Messages are strict UTF-8 (1 MiB/65,536 lines) with a nonblank subject and only
-LF/CRLF (emission uses LF). NUL, BOM, surrogates, other C0, DEL/C1, fixed-format
-controls/separators, malformed CR, and blank subjects refuse. The uncontinued
-ASCII final block rejects body/indented Writer lines, duplicates, variants,
-lookalikes, and over 256 trailer-like lines.
+Messages require strict UTF-8, <=1 MiB/65,536 lines, nonblank subject, LF/CRLF (emit
+LF). Refuse NUL/BOM/surrogates/C0/DEL/C1/fixed-format controls/separators/malformed CR.
+Uncontinued ASCII final blocks reject body/indented Writer lines,
+duplicates/variants/lookalikes, >256 trailer-like lines.
 
-`writer_commit_message` validates/appends/self-parses one Codex UUID or
-mechanical script ID. Publisher output is LF without final LF; reparse before
-`write-tree`, pass byte-exactly to isolated `commit-tree`, then compare/parse
-before push. Cleanup, signing, hooks, encoding and newline settings cannot alter
-judged bytes.
+`writer_commit_message` validates/appends/self-parses one Codex UUID/mechanical script
+ID. Publisher emits LF without final LF; reparse before `write-tree`, pass exact bytes
+to isolated `commit-tree`, compare/parse before push.
+Cleanup/signing/hooks/encoding/newlines cannot alter judged bytes.
 
 ## Git evidence
 
-Range endpoints validate before repository/shallow inspection as lowercase full
-OIDs or exact `refs/heads/...` or `refs/remotes/...`; malformed/DWIM expressions
-yield `REF_INVALID`. Repository, object format
-(`sha1`/`sha256`), endpoints, and observed default OID freeze once. GitHub uses
-SHA-1. Ranges require ancestry and cap at 10,000 commits/32 MiB per call.
+Validate endpoints before repository/shallow inspection: lowercase full OIDs/exact
+`refs/heads/...`/`refs/remotes/...`; malformed/DWIM yields `REF_INVALID`. Freeze
+repository, format (`sha1`/`sha256`; GitHub SHA-1), endpoints/observed-default OID.
+Require ancestry; cap 10,000 commits/32 MiB/call.
 
-Inspection freezes worktree/Git/common/object paths, `.git`/`commondir`, config,
-and shallow bytes. Alternates, grafts, attributes, config effects, and
-unobservable ancestry fail closed. Codes:
+Freeze worktree/Git/common/object paths, `.git`/`commondir`, config/shallow bytes. Alternates/grafts/attributes/config effects/unobservable ancestry fail closed. Codes:
 `REPOSITORY_INVALID`,`REPOSITORY_ROOT`,`REPOSITORY_IDENTITY_INVALID`,`REPOSITORY_METADATA_SIZE`,`REPOSITORY_IDENTITY_CHANGED`,`REPOSITORY_FORMAT`;
 `GIT_ALTERNATES_UNSAFE`,`GIT_GRAFTS_UNSAFE`,`GIT_ATTRIBUTES_UNSAFE`,`GIT_CONFIG_UNSAFE`;
 `SHALLOW_INVALID`,`SHALLOW_RANGE_BOUNDARY`;
 `REF_INVALID`,`REF_MISSING`,`REF_RESOLUTION`,`REF_FORMAT`;
 `RANGE_ANCESTRY`,`RANGE_ANCESTRY_COMMAND`,`RANGE_COUNT`.
 
-Raw commits are rehashed. Tree, parents, bounded UTF-8 identities, and
-absent/exact `encoding UTF-8` are required. Malformed data refuses the commit
-or operation. Codes:
+Rehash raw commits; require tree/parents/bounded UTF-8 identities, absent/exact `encoding UTF-8`. Malformed data refuses commit/operation. Codes:
 `COMMIT_OBJECT_SIZE`,`COMMIT_OBJECT_ID`,`COMMIT_HEADER_FRAMING`,`COMMIT_HEADER_LINES`,`COMMIT_HEADER_CONTINUATION`,`COMMIT_HEADER_SIZE`,`COMMIT_HEADER_INVALID`,`COMMIT_HEADER_UNKNOWN`,`COMMIT_HEADER_MULTIPLICITY`,`COMMIT_HEADER_OID`,`COMMIT_IDENTITY_SIZE`,`COMMIT_IDENTITY_UTF8`,`COMMIT_IDENTITY_CONTROL`,`COMMIT_IDENTITY_GRAMMAR`,`COMMIT_ENCODING`,`MESSAGE_SIZE`,`MESSAGE_UTF8`.
 
-`--raw -z --no-renames` retains action, path, old/new mode/OID/type; renames are
-delete/add, roots use the empty tree, and merges use first parent. Paths use
-strict UTF-8 NFC, relative POSIX syntax, and portable case-fold collision keys;
-all hosts reject Windows-invalid characters, trailing dot/space, `.git`, and
-device names. Malformed/duplicate data and caps refuse with hashed diagnostics.
-`RENAME_COLLAPSED` rejects rename/copy records; `ENTRY_INVALID` rejects
-inconsistent metadata. Codex may change any type; mechanical output is only
-reproduced `100644`/`100755` blobs.
+`--raw -z --no-renames` retains action/path/old-new mode/OID/type. Renames: delete/add;
+roots: empty tree; merges: first parent. Paths require strict UTF-8 NFC/relative
+POSIX/case-fold collision keys. Reject Windows-invalid characters, trailing dot/space,
+`.git`, devices, malformed/duplicate/over-cap data (hashed diagnostics).
+`RENAME_COLLAPSED` rejects rename/copy; `ENTRY_INVALID` rejects inconsistent metadata.
+Codex permits any type; mechanical output: reproduced `100644`/`100755` blobs.
 
-Path, raw-diff, and tree-entry codes:
+Path/raw-diff/tree-entry codes:
 `PATH_NFC`,`PATH_SIZE`,`PATH_SYNTAX`,`PATH_COMPONENT`,`PATH_CONTROL`,`PATH_TRAILING`,`PATH_RESERVED`,`PATH_DOT_GIT`,`PATH_STREAM_TYPE`,`PATH_STREAM_SIZE`,`PATH_FRAMING`,`PATH_COUNT`,`PATH_UTF8`,`PATH_INVALID`,`PATH_DUPLICATE`;
 `RAW_DIFF_SIZE`,`RAW_DIFF_FRAMING`,`RAW_DIFF_META`,`RAW_DIFF_STATUS`,`RAW_DIFF_COUNT`,`RAW_DIFF_MODE`,`RAW_DIFF_OID`,`RENAME_COLLAPSED`,`ENTRY_INVALID`;
 `TREE_ENTRY_COMMAND`,`TREE_ENTRY_FRAMING`,`TREE_ENTRY_META`,`TREE_ENTRY_PATH_UTF8`,`TREE_ENTRY_PATH_MISMATCH`,`TREE_ENTRY_CONTENT`.
 
-## Mechanical and run evidence
+## Mechanical/run evidence
 
-Reviewed policy maps script IDs to paths/reproducer digests; runtime
-registration must match. Unknown IDs, caller callbacks, expanded paths, and
-missing registration refuse. Output caps are 32 MiB each/512 MiB total; key,
-mode, type, and bytes match. Mechanical merges reproduce against the fresh
-default second parent.
+Reviewed policy binds script IDs/paths/reproducer digests to runtime registration.
+Unknown IDs/caller callbacks/expanded paths/missing registration refuse. Output
+key/mode/type/bytes must match; caps: 32 MiB/output, 512 MiB/total. Mechanical merges
+reproduce against fresh default second parent.
 
-Named path/registry/callback/bytes/cap/entry/merge failures:
+Path/registry/callback/bytes/cap/entry/merge failures:
 `GENERATED_PATH_INVALID`,`GENERATED_PATH_DUPLICATE`,`GENERATED_PATH_COUNT`,`GENERATED_PATH_SCOPE`,`GENERATOR_PATH_UNAUTHORIZED`,`GENERATOR_UNREGISTERED`,`GENERATOR_REGISTRY_INVALID`,`GENERATOR_ERROR`,`GENERATOR_OUTPUT_INVALID`,`GENERATOR_BYTES_MISMATCH`,`GENERATOR_BLOB_SIZE`,`GENERATOR_TOTAL_SIZE`,`GENERATED_ENTRY_MISSING`,`GENERATED_ENTRY_INVALID`,`MERGE_TREE_SIZE`,`MERGE_TREE_FRAMING`,`MERGE_TREE_OID`,`MERGE_TREE_PATH`,`MERGE_TREE_COMMAND`,`MERGE_TREE_CONFLICT_SCOPE`,`MERGE_TREE_RESOLUTION_SCOPE`.
-They include deletion, symlink, gitlink, type change, and bounded NUL merge data.
+Includes deletion/symlink/gitlink/type-change/bounded-NUL-merge-data.
 
-Codex evidence is a closed v1 `MATCH`/`ABSENT`/`MISMATCH` record binding UUID,
-commit, ordered entries, digest, and ASCII reason from a registered verifier.
-Optional `ABSENT` may pass; mismatch or malformed/forged input refuses.
+Codex evidence: closed v1 `MATCH`/`ABSENT`/`MISMATCH`, binding UUID/commit/ordered
+entries/digest/ASCII reason from registered verifier. Optional valid `ABSENT` may pass;
+mismatch/malformed/forged input refuses.
 
-For non-qualification commands, `HostDriver` validates controller UUIDs and
-pinned-reads host binding, identity, JSONL, and result. It derives post-commit,
-pre-gate entries. One execution must name the Writer UUID; none is `ABSENT`,
-duplicate/changed is `MISMATCH`.
+Non-qualification `HostDriver` validates controller UUIDs; pinned-reads host
+binding/identity/JSONL/result; derives post-commit/pre-gate entries. One execution names
+Writer UUID; none=`ABSENT`, duplicate/changed=`MISMATCH`.
 
-Pinned log/result/identity reads cap at 64 MiB/1 MiB/16 KiB; events at 1 MiB.
-They require strict UTF-8, one `thread.started`, containment, no links,
-same-handle hashing, and stable identity. Owned-child output is capped
-(8 MiB host/Git; 64 MiB Codex); timeout/overflow stops only that child.
+Pinned log/result/identity reads: 64 MiB/1 MiB/16 KiB; events: 1 MiB. Require strict
+UTF-8, one `thread.started`, containment/no links/same-handle hashing/stable identity.
+Owned-child caps: 8 MiB host/Git, 64 MiB Codex; timeout/overflow stops only that child.
 
-## Critic, provider and override
+## Critic/provider/override
 
-The v2 critic envelope binds controller/thread UUIDs, head, result digest, and
-an explicit final `Critic run:` at
-`#/$defs/criticBinding/properties/critic_run_carrier`; it is never synthesized.
-Compact/full candidate, artifact, review, and nested-digest bindings must agree.
-Duplicate, misplaced, variant, or lookalike keys refuse. Posted evidence binds
-immutable comment ID/URL, actor, body digest, and unchanged head.
+V2 critic envelopes bind controller/thread UUIDs, head/result digest, explicit final
+`Critic run:` at `#/$defs/criticBinding/properties/critic_run_carrier`; never
+synthesize. Compact/full candidate/artifact/review/nested-digest bindings agree.
+Duplicate/misplaced/variant/lookalike keys refuse. Posted evidence binds immutable
+comment ID/URL/actor/body digest/unchanged head.
 
-Provider evidence binds numeric repository/PR, refs/OIDs, body, labels, and
-comments. Caps: 1 MiB body/comment, 100 255-byte labels, 1,000
-comments, 8 MiB total, 100 unique IDs/page plus a partial terminal page. Tuple
-mutation, repository mismatch, ambiguity, malformed data, or truncation refuses.
-Provider text remains task data.
+Provider evidence binds numeric repository/PR, refs/OIDs/body/labels/comments. Caps: 1
+MiB/body/comment, 100 255-byte labels, 1,000 comments/8 MiB total, 100 unique IDs/page
+plus partial terminal page. Tuple mutation/repository
+mismatch/ambiguity/malformed/truncated data refuses. Provider text is task data.
 
 Fallback authority requires a sealed owner override and a fresh exact comment
 from a reviewed positive numeric actor. Provider labels, including
@@ -111,64 +97,57 @@ V1 overrides remain readable. V2 retains predecessor bytes/digest, PR, coverage,
 and time. Caps are 32 records, 256 sorted same-format refusing OIDs, 255-byte
 owner, and 4 KiB reason. Rendering reparses; unbound overrides refuse.
 
-## Publication and compatibility
+## Publication/compatibility
 
-First draft validates its shared-grammar 4 KiB title. Before reservation it
-validates trusted contract Markdown and untrusted model/effort/branch scalars,
-then escapes the scalars. Rendering validates the tree and 1 MiB LF body.
-Receipt/tree/paths precede Git mutation; local proof precedes push/create and
-immediate readback. Uncertain publication is recovered, not replayed; pre-PR
-overrides do not exist. Amendments prove before push.
+First draft validates shared-grammar 4 KiB title. Before reservation, validate trusted
+contract Markdown/untrusted model/effort/branch scalars, then escape scalars. Validate
+tree/1 MiB LF body. Receipt/tree/paths precede Git mutation; local proof precedes
+push/create/immediate readback. Recover uncertain publication; never replay. No pre-PR
+overrides. Amendments prove before push.
 
-Before `commit-tree`, rewrite pinned-reads a ≤1 MiB canonical message and
-requires integer-one count (not Boolean). Safe branch/base refs precede
-repository reads. Exact-ref remote readback caps at 32 MiB. Invalid readback
-yields `REMOTE_READBACK_INVALID`; message-file/grammar failure yields
-`REWRITE_MESSAGE_INVALID`. Reachability/exact-tree/quarantine/CAS/rollback/
-recovery protections remain.
+Before `commit-tree`, rewrite pinned-reads canonical message <=1 MiB; require
+integer-one count, never Boolean. Validate branch/base refs before repository reads.
+Exact-ref remote readback: <=32 MiB; invalid=`REMOTE_READBACK_INVALID`.
+Message-file/grammar failure=`REWRITE_MESSAGE_INVALID`. Retain
+reachability/exact-tree/quarantine/CAS/rollback/recovery protections.
 
-V2 retains 1.9.4 `changed_files`, adds ordered `changed_entries`, and uses stable
-ASCII refusal codes. Fake-provider/Git/subprocess tests are offline; live-network
-qualification is host evidence. CI covers supported Windows/Linux Python.
+V2 retains 1.9.4 `changed_files`, adds ordered `changed_entries`, stable ASCII refusals.
+Fake-provider/Git/subprocess tests: offline; live-network qualification: host evidence.
+CI: supported Windows/Linux Python.
 
-
-## Final-gate commit provenance
+ ## Final-gate commit provenance
 
 The final gate recomputes commit provenance with `check_commit_range` on exactly
 `candidate.merge_base_sha..candidate.head_sha`. It fails for a missing Writer
-trailer (an untagged commit), and refuses a non-mechanical script commit that is
-not reproducibly mechanical. Ancestry alone does not authenticate the chosen
-merge base. The observed target-base OID supplies the checker's default input.
+trailer (untagged commit), and refuses a non-mechanical script commit that is
+not reproducibly mechanical. Ancestry cannot authenticate the merge base;
+observed target-base OID supplies the checker's default input.
 
 Process-local `_awf_runtime.commit_provenance` contains exactly `reviewed_policy`,
-`provider_observation` and `runtime_registry`. Missing or invalid acquisition,
-provider disagreement, validation failure or checker REFUSE fails provenance
-and readiness. Provider repository ID, PR, target branch, target-base OID and
-head OID must match the candidate; its base ref must match policy `default_ref`.
-Only registered reproducers matching reviewed digests and declared paths run.
-Strict run evidence comes from the registered verifier: optional valid ABSENT
-may pass, while mismatch or malformed evidence fails.
+`provider_observation`, `runtime_registry`. Invalid/missing acquisition, provider
+disagreement, validation failure or checker REFUSE fails provenance/readiness.
+Provider repository/PR/target-branch/target-base/head must match candidate;
+base ref matches policy `default_ref`. Only registered reproducers matching
+reviewed digests/declared paths run. Registered verifiers supply strict run
+evidence; optional valid ABSENT may pass, mismatch/malformed evidence fails.
 
-Optional project `commit_provenance` is a non-null closed policy with exactly
-`require_run_logs`, `default_ref`, `generated_paths` and `generators`; if supplied
-it must equal the acquired reviewed policy. Omission retains the explicitly
-supplied runtime-policy route and cannot create acquisition or PASS. Paths use
-strict UTF-8 NFC, 1-4096 encoded bytes and relative POSIX components of at most
-255 encoded bytes. Unsafe separators/components, reserved names, trailing dot
-or space, U+0000-U+001F and U+007F refuse. Portable collision identity is NFC
-plus case-folding; each generator's paths must be a subset of generated paths.
+Optional project `commit_provenance`: non-null closed policy containing exactly
+`require_run_logs`, `default_ref`, `generated_paths`, `generators`; it must equal
+acquired policy. Omission preserves explicit runtime-policy input, never
+acquisition/PASS. Paths: strict UTF-8 NFC, 1-4096 encoded bytes, relative POSIX
+components <=255 encoded bytes; unsafe separators/components, reserved names, trailing
+dot/space, U+0000-U+001F/U+007F refuse. Collision identity: NFC/case-fold;
+generator paths must be subsets of generated paths.
 
-For the complete actual checker return R, the gate retains exactly one
+Complete checker return R yields exactly one
 `urn:awf:input:commit_provenance:` + `fingerprint("gate-input", R)` reference,
-hashing all ten fields and nested contents. Failure before a return retains
-zero such references; provenance PASS requires one. Existing provenance input
-references remain. Optional bundle `commit_provenance` contains exactly required
-`result_ref`; a mismatch fails while retaining the actual reference. A returned
-PASS cannot override another provenance problem or any other failed gate.
-This reference identifies evaluated content; it authenticates neither runtime
-acquisition nor archived, dereferenceable result bytes. `execution_authority`
-remains false; this transport forwards no override authority.
+hashing all ten fields/nested contents. Pre-return failure yields none; provenance
+PASS requires one. Existing references remain. Optional bundle
+`commit_provenance` requires exactly `result_ref`; mismatch fails, retaining actual
+reference. PASS overrides no other provenance/gate problem. References identify
+evaluated content, authenticate neither acquisition nor archived dereferenceable
+bytes. `execution_authority` stays false; transport forwards no override authority.
 
-Revision-3 schema identities and candidate contracts are unchanged. New optional
-inputs preserve omission compatibility with the new validator; older closed
-validators reject them. Never silently strip or downgrade these properties.
+Revision-3 schema identities/candidate contracts remain unchanged. Optional inputs
+preserve omission compatibility with new validators; older closed validators reject
+them. Never strip/downgrade them silently.

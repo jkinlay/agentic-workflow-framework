@@ -1,14 +1,14 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.4; AWF-16 ships in 1.9.5. Code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative.
+Version 1.9.4; AWF-16 ships in 1.9.5. [Lifecycle](23-TICKET-LIFECYCLE.md)/code govern.
 
 ## Risk tiers
 
-Contracts declare justified `risk_tier` 1-3; uncertain is Tier 2. Tier 1 requires eligible, unprotected paths and no true `risk_flags`. The gate recomputes it. Changes require owner-signed `tier-reassignment`, re-issued contract and rebound records.
+Contracts justify `risk_tier` 1-3; uncertainty means Tier 2. Tier 1 needs eligible, unprotected paths, no true `risk_flags`, and gate recomputation. Changes need owner-signed `tier-reassignment`, reissued contract and rebound records.
 
-Tier 1 uses one critic; findings advise. Tier 2 has three rounds, then tickets P2s and routes P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI, is capped at three, and requires candidate-bound owner review. Boundaries always block.
+Tier 1: one advisory critic. Tier 2: three rounds, then ticket P2s; send P1s to owner. Tier 3: governance, release, merge/qualification, CI; three-round cap, candidate-bound owner review. Boundaries block.
 
-Each `critic_artifact_binding` identifies run, canonical `result.json`, head and round; its receipt retains those bytes and frozen completion identities. Gates reparse artifacts. Unchanged diffs retain history; changed diffs require a current round. Tier 2 over-cap needs authenticated owner disposition. Tier 3 round N needs this preceding PR comment from the posting actor's trusted owner:
+Each `critic_artifact_binding` binds run, canonical `result.json`, head/round; receipts retain bytes/frozen completion identities. Gates reparse. Unchanged diffs retain history; changes need current rounds. Tier 2 over-cap needs authenticated owner disposition. Tier 3 round N needs this prior PR comment from the posting actor's trusted owner:
 
 `AWF-OVERCAP-APPROVAL: round N of cap M, approver <owner>, ruling <time>`
 
@@ -30,7 +30,7 @@ Project `merge_gate.trusted_owner_ids` supplies the reviewed numeric human owner
 
 ## Automation account separation
 
-Use a least-privilege bot/App for publication/collection. Its credential stays in the host secret store, never worktrees/records. The configured bot must be absent from `trusted_owner_ids`; ambiguity refuses. Owner credentials remain human-held; automation never uses or impersonates the owner account.
+Publish/collect with a least-privilege bot/App; credentials stay in host secrets, never worktrees/records. Exclude bots from `trusted_owner_ids`; ambiguity refuses. Owner credentials remain human-held; automation never uses/impersonates owners.
 
 ## Closure standard
 
@@ -38,7 +38,7 @@ Use a least-privilege bot/App for publication/collection. Its credential stays i
 
 ## The amendment cap
 
-`execution.max_amendment_cycles` (3) bounds cycles; evidence-only amendments consume none. At `REVIEW_CAP_REACHED`, record one owner-signed `review-cap-disposition`:
+`execution.max_amendment_cycles` (3) excludes evidence-only amendments. `REVIEW_CAP_REACHED` needs one owner-signed `review-cap-disposition`:
 
 | Decision | Transition | Effect |
 | --- | --- | --- |
@@ -47,7 +47,7 @@ Use a least-privilege bot/App for publication/collection. Its credential stays i
 | `RESCOPE` | → SUPERSEDED | Successor recorded. |
 | `EXTEND_ONE_CYCLE` | → CHANGES_REQUESTED | Tier 2: increments `cap_extensions`; refused at `execution.max_cap_extensions` (default 2, maximum 3). Tier 3 uses the canonical pre-round approval above. |
 
-`workflow.py cap-plan` translates or refuses; the host pauses at `REVIEW_CAP_REACHED` and resumes only with `--disposition`.
+`workflow.py cap-plan` translates/refuses; hosts pause at `REVIEW_CAP_REACHED` until `--disposition`.
 
 `MERGE_WITH_NOTES` authenticates the exact terminal verdict/digest and artifact.
 Otherwise the terminal artifact must be `APPROVE`/`PASS`; only this cap path may
@@ -61,7 +61,7 @@ Only the controller writes. `WORKER_STARTED` → `in_progress`; `PR_READY` → `
 
 `validate-closeout` resolves recorded Git objects and digests; absent objects fail and the worktree is unread. `JIRA_RECONCILED` needs `closeout_valid`; `verifies_history` needs `fetch-depth: 0` and the long-path step.
 
-## Digests, skips, parity, resources, preflight
+## Validation
 
 `digest` renders fixed state, gates, findings, validation, reviewer and authority; `--prose` caps free text at 80 words. Posted digests are hash-bound `evidence_comment`s, never transitions.
 
@@ -73,44 +73,10 @@ overlapping capacity fails dispatch/provenance. `POST_MERGE_FINDING` opens a
 
 Preflight PASS/WARN/SKIP/N_A covers paths, lint, longpaths, policy, symlinks, line endings and LFS; warnings do not block.
 
-
 ## Final-gate commit provenance
 
-The final gate recomputes commit provenance with `check_commit_range` on exactly
+The final gate recomputes commit provenance using `check_commit_range` on
 `candidate.merge_base_sha..candidate.head_sha`. It fails for a missing Writer
-trailer (an untagged commit), and refuses a non-mechanical script commit that is
-not reproducibly mechanical. Ancestry alone does not authenticate the chosen
-merge base. The observed target-base OID supplies the checker's default input.
-
-Process-local `_awf_runtime.commit_provenance` contains exactly `reviewed_policy`,
-`provider_observation` and `runtime_registry`. Missing or invalid acquisition,
-provider disagreement, validation failure or checker REFUSE fails provenance
-and readiness. Provider repository ID, PR, target branch, target-base OID and
-head OID must match the candidate; its base ref must match policy `default_ref`.
-Only registered reproducers matching reviewed digests and declared paths run.
-Strict run evidence comes from the registered verifier: optional valid ABSENT
-may pass, while mismatch or malformed evidence fails.
-
-Optional project `commit_provenance` is a non-null closed policy with exactly
-`require_run_logs`, `default_ref`, `generated_paths` and `generators`; if supplied
-it must equal the acquired reviewed policy. Omission retains the explicitly
-supplied runtime-policy route and cannot create acquisition or PASS. Paths use
-strict UTF-8 NFC, 1-4096 encoded bytes and relative POSIX components of at most
-255 encoded bytes. Unsafe separators/components, reserved names, trailing dot
-or space, U+0000-U+001F and U+007F refuse. Portable collision identity is NFC
-plus case-folding; each generator's paths must be a subset of generated paths.
-
-For the complete actual checker return R, the gate retains exactly one
-`urn:awf:input:commit_provenance:` + `fingerprint("gate-input", R)` reference,
-hashing all ten fields and nested contents. Failure before a return retains
-zero such references; provenance PASS requires one. Existing provenance input
-references remain. Optional bundle `commit_provenance` contains exactly required
-`result_ref`; a mismatch fails while retaining the actual reference. A returned
-PASS cannot override another provenance problem or any other failed gate.
-This reference identifies evaluated content; it authenticates neither runtime
-acquisition nor archived, dereferenceable result bytes. `execution_authority`
-remains false; this transport forwards no override authority.
-
-Revision-3 schema identities and candidate contracts are unchanged. New optional
-inputs preserve omission compatibility with the new validator; older closed
-validators reject them. Never silently strip or downgrade these properties.
+trailer (untagged commit) and refuses a non-mechanical script commit that is
+not reproducibly mechanical. See [provenance](41-WRITER-CRITIC-PROVENANCE.md#final-gate-commit-provenance)
+for acquisition, policy, result binding and compatibility requirements.
