@@ -22,6 +22,9 @@ class FakeTree:
             for target, source in build_release.SOURCE_CONFIGS.items()
         }
         self.data.update({
+            '.tmp-tests/installed-self-test-evidence/run/capture.json': b'{}',
+            '.tmp-tests/installed-self-test-evidence/run/excerpt.txt': b'tail',
+            '.tmp-tests/installed-self-test-evidence/run/.capture.partial': b'partial',
             "README.md": b"release\n",
             ".agentic/installed-manifest.json": b"receipt\n",
             ".agentic-state/operating/changes/change.json": b"state\n",
@@ -51,6 +54,7 @@ class AdoptableReleaseBuildTests(unittest.TestCase):
         self.assertIn("README.md", paths)
         self.assertNotIn(".agentic/installed-manifest.json", paths)
         self.assertNotIn(".agentic-state/operating/changes/change.json", paths)
+        self.assertFalse(any('installed-self-test-evidence' in path for path in paths))
         for target, source in build_release.SOURCE_CONFIGS.items():
             self.assertIn(target, paths)
             self.assertNotIn(source, paths)

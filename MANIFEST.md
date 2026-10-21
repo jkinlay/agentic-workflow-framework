@@ -550,6 +550,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
 | `scripts/generate_review_loop.py` | `d054e0c23663f5eeb0d4e186a8d4b1567103b779e0b1739dd7a885b29f3f3368` |
 | `scripts/generate_rules_activation.py` | `e9f72016edcb898ac1ddc480c4d12181fb889118de776b8e536d090757edcaaa` |
+| `scripts/installed_self_test_capture.py` | `ef961db4365689064f5781db502dfdea323d348a9bb352aaf9cc3a9573dd05ae` |
 | `scripts/manifest_merge_driver.py` | `00916ad023ac7c79572cb6d0b9608f99bedbe1e131be6d30772a451cd697e1b9` |
 | `scripts/prompt_templates/amendment.md` | `99fdf23206b59af9dc6cfcc4386afba5f2576263836878281f9aa4b7918fbec3` |
 | `scripts/prompt_templates/controller.md` | `b1f62c80f28d7b0ddab28eb893e6660057e31d99a61ac73b564c36dc9445ea4e` |
@@ -569,7 +570,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
 | `scripts/tests/test_awf88_resource_ceilings.py` | `06d6f41c47bda0ce78cfbe1c989c6c4956ec4f7c41142b7c636f7ec77df0e51c` |
-| `scripts/tests/test_build_release_adoptable_source.py` | `378f4e8844ef552be777e92503be4c20ed44678747353798636c643bf4f1b9be` |
+| `scripts/tests/test_build_release_adoptable_source.py` | `8b37406758f5165c74b841f9e9b54c434fd6974aa13d288c799b31b47b6409ef` |
 | `scripts/tests/test_ci_suite_coverage.py` | `46d04a5bced736858e27ece727fe9a8b339b826f6ba322237ccfc44ba2e7fba2` |
 | `scripts/tests/test_ci_windows_final_candidate.py` | `b24641b80b683d0f7909ba93c26c0e49128f6e3aceaa56c04c71eef6b2895c91` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
@@ -579,12 +580,12 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_generate_examples_schema_refs.py` | `acd329623a932ba4b7485fe1b544dc6729631ad5a5a20f73901e093571f84b17` |
 | `scripts/tests/test_generate_examples_ticket_plan.py` | `6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2` |
 | `scripts/tests/test_generate_workflow_blob_sha.py` | `305ca808de3384f905ef546dd384a4c8ee1da4b0bc05fdfde1e7afb8ecae34e6` |
-| `scripts/tests/test_installed_self_test.py` | `53ab52e2b98714f4b94b0a3d93dca98824065d8764961b1b61fa616cad8e4583` |
+| `scripts/tests/test_installed_self_test.py` | `646ad1e2b1128ccfac63d2d425511f648bb55a3a57b127eb01c53c2ac363affd` |
 | `scripts/tests/test_manifest_conflicts.py` | `6a9b19eded244de59583346b28d344b72f77c8d916f71a7426f61f09302c8a09` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
 | `scripts/tests/test_publish_release.py` | `825a820892db919acc1eac3d03196b81f8dad129f45de141a7e1a78f41c3608d` |
-| `scripts/tests/test_release_hygiene.py` | `6d287514cd24c90ad7ba5da7fd96e3286092658e79896ea4fd95ad72cc60f894` |
+| `scripts/tests/test_release_hygiene.py` | `6f7f69dcfad944b02de6c1ef8d3bf159af7c2ee6f0319ecb1fedf9ab5962c00e` |
 | `scripts/tests/test_release_review.py` | `d8a06f43b87b6654e6542927ccadd21380b2430432de1888b76456389987701a` |
 | `scripts/tests/test_self_test_review.py` | `51d5b33199d2f93c1af51ef32cea3146f1fca72567db8c58efb80cd886bd97cf` |
 | `scripts/tests/test_skill_distribution_launcher.py` | `26fcfe891d4be5a7fbaa638f0b6dbbfe418f6831d1973f889ebc97fe6a6dc64c` |
