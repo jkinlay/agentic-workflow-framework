@@ -2557,7 +2557,15 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	for operation in operations:
 		payload, dispatch_id = (operation['payload'], operation['dispatch_id'])
 		if operation['status'] == 'PENDING':
-			admitted = payload['ticket'] in publication_reports and any((stream['stream'] == payload['stream'] and stream['state'] == 'WORKING' and (stream['ticket'] == payload['ticket']) and (stream['exact_tuple'] == payload['exact_tuple']) for stream in streams))
+			# Scheduling can retain a pre-crash WORKING snapshot at a closed boundary.
+			# Revalidate against the current plan and ticket before launching its intent.
+			current = next((item for item in tickets if item['ticket'] == payload['ticket']), None)
+			admitted = (plan is not None
+				and any(payload['ticket'] in lane['ticket_keys'] for lane in plan['lanes'])
+				and current is not None and current['disposition'] == 'ELIGIBLE'
+				and all(current[key] for key in ('dependencies_satisfied', 'budget_available', 'cap_available', 'review_independent'))
+				and current['exact_tuple'] == payload['exact_tuple']
+				and payload['ticket'] in publication_reports and any((stream['stream'] == payload['stream'] and stream['state'] == 'WORKING' and (stream['ticket'] == payload['ticket']) and (stream['exact_tuple'] == payload['exact_tuple']) for stream in streams)))
 			if not admitted:
 				current = next((item for item in tickets if item['ticket'] == payload['ticket']), None)
 				if current is None:
