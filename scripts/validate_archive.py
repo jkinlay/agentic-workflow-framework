@@ -485,11 +485,13 @@ def validate(argv=None):
     command(['scripts/build_release.py','--output',REBUILT],name='Rebuild deterministic ZIP')
     assert ARCHIVE.read_bytes()==REBUILT.read_bytes()
     checks.append({'check':'ZIP byte-for-byte reproducibility','status':'PASS'})
+    extracted_tests = json.loads((RUN/'extracted-self-test.json').read_text())
+    installed_tests = json.loads((RUN/'installed-self-test.json').read_text())
     report = {'template_version':VERSION,'status':'PASS','archive':ARCHIVE.name,
      'current_review':current_review,
      'self_test_timeout_seconds':selected_self_test_timeout,
      'archive_sha256':hashlib.sha256(ARCHIVE.read_bytes()).hexdigest(),'manifest_sha256':MANIFEST,
-     'checks':checks,'git_checkout':git_checkout,'extracted_tests':json.loads((RUN/'extracted-self-test.json').read_text()),
+     'checks':checks,'git_checkout':git_checkout,'extracted_tests':extracted_tests,
      'default_development_checks':default_checks,
      'adoption_configuration_acceptance':{'status':'PASS','unconfigured':first,
         'configured':adopted,'upgrade':second,'installed_status':unconfigured_status,
@@ -500,8 +502,8 @@ def validate(argv=None):
         'repository_rules':'MISSING','adoption_allowed':True,'expected_decision_codes':missing_rules['decision_codes'],
         'hosted_adoption_pr_created':False,'rules_enablement_ready':False,'live_ruleset_tested':False,
         'scope':'Real local installer and installed prerequisite CLI with a synthetic rules-none observation; no hosted PR or legacy adapter enforcement claimed.'},
-     'installed_tests':json.loads((RUN/'installed-self-test.json').read_text()),
-     'external_operator_unit':{'source':source_external_unit,'installed':installed_external_unit},
+     'installed_tests':installed_tests,
+     'external_operator_unit':{'source':extracted_tests['tests'],'installed':installed_tests['tests']},
      'limitations':['Offline evidence, synthetic Jira planning and host review-loop validation; no live Jira mutation, native agent dispatch, model, remote amendment or scheduler qualification tested.','Other operating systems not exercised in this run.']}
     # Keep portable release evidence, excluding transient local paths in test logs.
     for name in ['extracted_tests','installed_tests','default_development_checks']:
