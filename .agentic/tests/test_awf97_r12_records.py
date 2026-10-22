@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from agentic import ValidationError
 from agentic.canonical import canonical, sha256
 from agentic import merge_train as train, review_loop as loop
