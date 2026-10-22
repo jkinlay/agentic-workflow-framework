@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, load_yaml, now_text, sha256, timestamp
 from agentic.continuous_controller import validate_ticket_record
+from agentic.safeio import require_record_bytes
 MAX_OUTPUT = 1024 * 1024
 MAX_PAGES = 20
 MAX_SECONDS = 120
@@ -73,7 +74,7 @@ class _SubprocessRunner:
 		operation = self._overlap_operations.get('observe_overlap_sync_inventory')
 		_require(callable(operation), 'Production post-sync PR observer is unavailable')
 		return operation(gate)
-	_WATCHER = '\nimport json\nimport os\nimport subprocess\nimport sys\nimport tempfile\nimport threading\nimport time\n\nspec_path = sys.argv[1]\nwith open(spec_path, "r", encoding="utf-8") as stream:\n    spec = json.load(stream)\n\ndef durable(path, value):\n    directory = os.path.dirname(path) or "."\n    fd, temporary = tempfile.mkstemp(prefix=".awf-durable-", dir=directory)\n    try:\n        with os.fdopen(fd, "w", encoding="utf-8", newline="\\n") as stream:\n            json.dump(value, stream, sort_keys=True, separators=(",", ":"))\n            stream.write("\\n")\n            stream.flush()\n            os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        try:\n            os.unlink(temporary)\n        except FileNotFoundError:\n            pass\n\npid = os.getpid()\nnonce = spec["launch_nonce"]\nhandoff = spec["handoff_path"]\nproof = spec["terminal_proof_path"]\nstartup_proof = spec["startup_proof_path"]\ndurable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})\nstartup_lock = threading.Lock()\nstartup_recorded = False\nsession_id = None\n\ndef publish_startup(value):\n    global startup_recorded\n    with startup_lock:\n        if startup_recorded:\n            return\n        durable(startup_proof, value)\n        startup_recorded = True\n\ncode = None\nstatus = "COMPLETED"\ndiagnostic = None\ntry:\n    child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],\n                             shell=False, stdin=subprocess.PIPE,\n                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n    stderr_tail = bytearray()\n    stderr_limit = spec["max_stderr_bytes"]\n    markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",\n               "winerror 32", "invalid transport", "being used by another process")\n\n    def drain_stderr():\n        while True:\n            chunk = child.stderr.read1(8192)\n            if not chunk:\n                return\n            stderr_tail.extend(chunk)\n            if len(stderr_tail) > stderr_limit:\n                del stderr_tail[:-stderr_limit]\n            lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n            if any(marker in lowered for marker in markers):\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "FAILED", "terminal": False,\n                                 "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",\n                                 "config_source": spec["config_source"]})\n\n    def drain_stdout():\n        global session_id\n        while True:\n            line = child.stdout.readline(spec["max_output_bytes"] + 1)\n            if not line:\n                return\n            if len(line) > spec["max_output_bytes"]:\n                continue\n            try:\n                event = json.loads(line.decode("utf-8", "strict"))\n            except (UnicodeDecodeError, json.JSONDecodeError):\n                continue\n            # Codex JSON mode emits this only after isolated configuration has\n            # been accepted and the execution thread has been initialized.\n            if (isinstance(event, dict) and event.get("type") == "thread.started"\n                    and isinstance(event.get("thread_id"), str) and event["thread_id"].strip()):\n                session_id = event["thread_id"]\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "STARTED", "terminal": False,\n                                 "session_id": session_id})\n\n    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)\n    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)\n    stderr_thread.start()\n    stdout_thread.start()\n    try:\n        try:\n            child.stdin.write(spec["stdin"].encode("utf-8"))\n        except BrokenPipeError:\n            pass\n        finally:\n            child.stdin.close()\n        child.wait(timeout=spec["timeout"])\n        code = child.returncode\n        stderr_thread.join()\n        stdout_thread.join()\n        lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n        if code and any(marker in lowered for marker in markers):\n            diagnostic = "SANDBOX_SETUP_CONFIG_ERROR"\n    except subprocess.TimeoutExpired:\n        status = "TIMED_OUT"\n        child.kill()\n        child.wait()\n        stderr_thread.join()\n        stdout_thread.join()\nexcept Exception:\n    status = "FAILED"\nvalue = {"pid": pid, "launch_nonce": nonce, "status": status,\n         "returncode": code, "terminal": True}\nif session_id is not None:\n    value["session_id"] = session_id\nif diagnostic is not None:\n    value["diagnostic"] = diagnostic\n    value["config_source"] = spec["config_source"]\ndurable(proof, value)\npublish_startup(value)\n'
+	_WATCHER = '\nimport json\nimport os\nimport subprocess\nimport sys\nimport tempfile\nimport threading\nimport time\n\nspec_path = sys.argv[1]\nMAX_RECORD = 1_048_576\ndef require_record(raw):\n    if len(raw) > MAX_RECORD:\n        raise ValueError("RECORD_SIZE: watcher record exceeds byte bound")\n    return raw\n\nwith open(spec_path, "rb") as stream:\n    raw = require_record(stream.read(MAX_RECORD + 1))\nspec = json.loads(raw.decode("utf-8"))\n\ndef durable(path, value):\n    raw = require_record((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\\n").encode("utf-8"))\n    directory = os.path.dirname(path) or "."\n    fd, temporary = tempfile.mkstemp(prefix=".awf-durable-", dir=directory)\n    try:\n        with os.fdopen(fd, "wb") as stream:\n            stream.write(raw)\n            stream.flush()\n            os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        try:\n            os.unlink(temporary)\n        except FileNotFoundError:\n            pass\n\npid = os.getpid()\nnonce = spec["launch_nonce"]\nhandoff = spec["handoff_path"]\nproof = spec["terminal_proof_path"]\nstartup_proof = spec["startup_proof_path"]\ndurable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})\nstartup_lock = threading.Lock()\nstartup_recorded = False\nsession_id = None\n\ndef publish_startup(value):\n    global startup_recorded\n    with startup_lock:\n        if startup_recorded:\n            return\n        durable(startup_proof, value)\n        startup_recorded = True\n\ncode = None\nstatus = "COMPLETED"\ndiagnostic = None\ntry:\n    child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],\n                             shell=False, stdin=subprocess.PIPE,\n                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n    stderr_tail = bytearray()\n    stderr_limit = spec["max_stderr_bytes"]\n    markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",\n               "winerror 32", "invalid transport", "being used by another process")\n\n    def drain_stderr():\n        while True:\n            chunk = child.stderr.read1(8192)\n            if not chunk:\n                return\n            stderr_tail.extend(chunk)\n            if len(stderr_tail) > stderr_limit:\n                del stderr_tail[:-stderr_limit]\n            lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n            if any(marker in lowered for marker in markers):\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "FAILED", "terminal": False,\n                                 "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",\n                                 "config_source": spec["config_source"]})\n\n    def drain_stdout():\n        global session_id\n        while True:\n            line = child.stdout.readline(spec["max_output_bytes"] + 1)\n            if not line:\n                return\n            if len(line) > spec["max_output_bytes"]:\n                continue\n            try:\n                event = json.loads(line.decode("utf-8", "strict"))\n            except (UnicodeDecodeError, json.JSONDecodeError):\n                continue\n            # Codex JSON mode emits this only after isolated configuration has\n            # been accepted and the execution thread has been initialized.\n            if (isinstance(event, dict) and event.get("type") == "thread.started"\n                    and isinstance(event.get("thread_id"), str) and event["thread_id"].strip()):\n                session_id = event["thread_id"]\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "STARTED", "terminal": False,\n                                 "session_id": session_id})\n\n    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)\n    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)\n    stderr_thread.start()\n    stdout_thread.start()\n    try:\n        try:\n            child.stdin.write(spec["stdin"].encode("utf-8"))\n        except BrokenPipeError:\n            pass\n        finally:\n            child.stdin.close()\n        child.wait(timeout=spec["timeout"])\n        code = child.returncode\n        stderr_thread.join()\n        stdout_thread.join()\n        lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n        if code and any(marker in lowered for marker in markers):\n            diagnostic = "SANDBOX_SETUP_CONFIG_ERROR"\n    except subprocess.TimeoutExpired:\n        status = "TIMED_OUT"\n        child.kill()\n        child.wait()\n        stderr_thread.join()\n        stdout_thread.join()\nexcept Exception:\n    status = "FAILED"\nvalue = {"pid": pid, "launch_nonce": nonce, "status": status,\n         "returncode": code, "terminal": True}\nif session_id is not None:\n    value["session_id"] = session_id\nif diagnostic is not None:\n    value["diagnostic"] = diagnostic\n    value["config_source"] = spec["config_source"]\ndurable(proof, value)\npublish_startup(value)\n'
 
 	def run(self, argv, *, cwd, env, timeout, max_bytes, stdin=None):
 		_require(stdin is None or isinstance(stdin, str), 'External command stdin is invalid')
@@ -393,8 +394,8 @@ def _verify_executable(item):
 
 def _read_record(path):
 	try:
-		raw = path.read_bytes()
-		_require(len(raw) <= MAX_OUTPUT, 'Detached run record exceeded its byte bound')
+		with path.open('rb') as stream:
+			raw = require_record_bytes(stream.read(MAX_OUTPUT + 1))
 		value = json.loads(raw.decode('utf-8'))
 	except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
 		raise ValidationError('Detached run record is unavailable or invalid') from exc
@@ -402,11 +403,10 @@ def _read_record(path):
 	return value
 
 def _write_record(path, value):
-	data = canonical(value)
-	_require(len(data) <= MAX_OUTPUT, 'Detached run record exceeded its byte bound')
+	data = require_record_bytes(canonical(value) + b'\n')
 	temporary = path.with_suffix('.tmp')
 	try:
-		temporary.write_bytes(data + b'\n')
+		temporary.write_bytes(data)
 		os.replace(temporary, path)
 	except OSError as exc:
 		raise ValidationError('Detached run record could not be made durable') from exc
@@ -1277,30 +1277,34 @@ def _build(config):
 
 	def deliver_status(digest):
 		_require(isinstance(digest, dict) and isinstance(digest.get('delivery_id'), str), 'Status digest is missing its delivery identity')
+		delivery_id = digest['delivery_id']
+		row = {'delivery_id': delivery_id, 'digest_sha256': fingerprint('controller-delivery', digest), 'digest': digest, 'observed_at': _clock_text(clock)}
+		raw = require_record_bytes((json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n').encode('utf-8'))
 		outbox_dir.mkdir(parents=True, exist_ok=True)
 		path = outbox_dir / 'controller-status.jsonl'
-		delivery_id = digest['delivery_id']
 		found = None
 		try:
-			with path.open('a+', encoding='utf-8', newline='\n') as stream:
+			with path.open('a+b') as stream:
 				stream.seek(0)
-				for line in stream:
+				while True:
+					line = require_record_bytes(stream.readline(MAX_OUTPUT + 1))
+					if not line:
+						break
 					if line.strip():
-						row = json.loads(line)
-						if row.get('delivery_id') == delivery_id:
-							found = row
+						retained = json.loads(line.decode('utf-8'))
+						if retained.get('delivery_id') == delivery_id:
+							found = retained
 							break
 				if found is None:
-					row = {'delivery_id': delivery_id, 'digest_sha256': fingerprint('controller-delivery', digest), 'digest': digest, 'observed_at': _clock_text(clock)}
 					stream.seek(0, 2)
 					position = stream.tell()
-					stream.write(json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n')
+					stream.write(raw)
 					stream.flush()
 					stream.seek(position)
-					encoded = stream.readline()
-					found = json.loads(encoded)
+					encoded = require_record_bytes(stream.readline(MAX_OUTPUT + 1))
+					found = json.loads(encoded.decode('utf-8'))
 					_require(found == row, 'Status outbox readback differs from the appended record')
-		except (OSError, ValueError, json.JSONDecodeError) as exc:
+		except (OSError, ValueError, UnicodeError) as exc:
 			raise ValidationError('Status outbox write or readback failed') from exc
 		_require(found.get('digest_sha256') == fingerprint('controller-delivery', digest), 'Status outbox readback differs from the requested digest')
 		return {'delivery_id': delivery_id, 'status': 'DELIVERED', 'observed_at': found['observed_at']}
