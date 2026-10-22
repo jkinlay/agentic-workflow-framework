@@ -16,6 +16,7 @@ from . import ValidationError
 from .canonical import canonical, fingerprint, fresh, loads, sha256, timestamp
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions
 from .provider_identity import github_identity_preflight
+from .safeio import require_record_bytes
 from .publication_readiness import _eligible_branch
 from .providers.github import branch_name, repository_name
 
@@ -37,6 +38,21 @@ CREATE TABLE IF NOT EXISTS owner_publication_pr(
 def _require(condition, message):
     if not condition:
         raise ValidationError(message)
+
+
+def _json_projection(column):
+    # SQLite checks UTF-8 byte length before Python materializes a JSON field.
+    return (f'length(CAST({column} AS BLOB)) AS {column}_bytes, '
+            f'CASE WHEN length(CAST({column} AS BLOB)) <= {MAX_REQUEST} '
+            f'THEN {column} END AS {column}')
+
+
+def _check_json_fields(row, *columns):
+    for column in columns:
+        size = row[column + '_bytes']
+        _require(size is None or size <= MAX_REQUEST,
+                 'RECORD_SIZE: retained owner-publication artifact exceeds byte bound')
+    return {key: row[key] for key in row.keys() if key not in {c + '_bytes' for c in columns}}
 
 
 def _literal(value):
@@ -217,6 +233,7 @@ class OwnerPublicationStore:
         request = _request(config, request)
         authorization = _authorization(config, request, authorization, now=now)
         request = {**request, "host_authorization": authorization}
+        request_raw = require_record_bytes(canonical(request)).decode("utf-8")
         worktree = Path(request["worktree"]).resolve()
         _require(worktree in self.worktree_roots, "The command worktree must be a protected state exclusion")
         config_sha = fingerprint("owner-publication-config", config)
@@ -231,7 +248,7 @@ class OwnerPublicationStore:
             row = db.execute("SELECT request_sha256 FROM owner_publication_batch WHERE batch_id=?", (batch_id,)).fetchone()
             if row is None:
                 db.execute("INSERT INTO owner_publication_batch VALUES(?,?,?,?,?,?)",
-                           (batch_id, canonical(request).decode(), request_sha, config_sha, command, now))
+                           (batch_id, request_raw, request_sha, config_sha, command, now))
                 for item in request["streams"]:
                     db.execute("INSERT INTO owner_publication_pr VALUES(?,?,?,'WAITING_OWNER_PUSH',NULL,NULL,NULL)",
                                (batch_id, item["stream"], str(uuid.uuid4())))
@@ -239,15 +256,18 @@ class OwnerPublicationStore:
 
     def snapshot(self, batch_id, config):
         with self.connection() as db:
-            row = db.execute("SELECT * FROM owner_publication_batch WHERE batch_id=?", (batch_id,)).fetchone()
+            row = db.execute('SELECT batch_id,request_sha256,config_sha256,command,prepared_at,' + _json_projection('request_json') + ' FROM owner_publication_batch WHERE batch_id=?', (batch_id,)).fetchone()
             _require(row is not None, "Unknown owner-publication handoff")
             _require(row["config_sha256"] == fingerprint("owner-publication-config", config),
                      "Accepted publication configuration changed; reconcile the retained handoff")
+            row = _check_json_fields(row, "request_json")
             request = loads(row["request_json"])
             _require(row["request_sha256"] == fingerprint("owner-publication-request", request),
                      "Retained owner-publication request digest changed")
-            operations = [dict(item) for item in db.execute(
-                "SELECT * FROM owner_publication_pr WHERE batch_id=? ORDER BY stream", (batch_id,))]
+            operations = [_check_json_fields(item, 'remote_json', 'receipt_json') for item in db.execute(
+                'SELECT batch_id,stream,operation_id,state,started_at,'
+                + _json_projection('remote_json') + ',' + _json_projection('receipt_json')
+                + ' FROM owner_publication_pr WHERE batch_id=? ORDER BY stream', (batch_id,))]
             return {"batch_id": batch_id, "request": request, "command": row["command"],
                     "prepared_at": row["prepared_at"], "operations": operations,
                     "complete": all(item["state"] == "PR_CREATED" for item in operations),
@@ -268,14 +288,15 @@ class OwnerPublicationStore:
         _require(timestamp(observation["observed_at"]) >= timestamp(snapshot["prepared_at"]),
                  "Remote-head observation predates the owner handoff")
         _require(observation["heads"] == expected, "Owner push is missing or remote heads differ from completed work")
+        observation_raw = require_record_bytes(canonical(observation)).decode("utf-8")
         with self.transaction() as db:
             db.execute("UPDATE owner_publication_pr SET state='PR_PENDING',remote_json=? WHERE batch_id=? AND state='WAITING_OWNER_PUSH'",
-                       (canonical(observation).decode(), batch_id))
+                       (observation_raw, batch_id))
 
     def begin_pr(self, batch_id, stream, *, now):
         timestamp(now)
         with self.transaction() as db:
-            row = db.execute("SELECT * FROM owner_publication_pr WHERE batch_id=? AND stream=?", (batch_id, stream)).fetchone()
+            row = db.execute("SELECT state FROM owner_publication_pr WHERE batch_id=? AND stream=?", (batch_id, stream)).fetchone()
             _require(row is not None, "Unknown publication stream")
             if row["state"] != "PR_PENDING":
                 return False
@@ -306,13 +327,15 @@ class OwnerPublicationStore:
         fresh(receipt["observed_at"], now, 300, skew_seconds=0)
         _require(timestamp(receipt["observed_at"]) >= timestamp(operation["started_at"]),
                  "Draft PR readback predates its durable intent")
+        receipt_raw = require_record_bytes(canonical(receipt)).decode("utf-8")
         with self.transaction() as db:
-            prior = db.execute("SELECT receipt_json FROM owner_publication_pr WHERE batch_id=? AND stream<>? AND receipt_json IS NOT NULL",
+            prior = db.execute('SELECT ' + _json_projection('receipt_json') + ' FROM owner_publication_pr WHERE batch_id=? AND stream<>? AND receipt_json IS NOT NULL',
                                (batch_id, stream)).fetchall()
+            prior = [_check_json_fields(row, "receipt_json") for row in prior]
             _require(all(loads(row["receipt_json"])["number"] != receipt["number"] for row in prior),
                      "A draft PR cannot satisfy two different retained streams")
             db.execute("UPDATE owner_publication_pr SET state='PR_CREATED',receipt_json=? WHERE batch_id=? AND stream=? AND state IN ('PR_IN_FLIGHT','PR_UNKNOWN')",
-                       (canonical(receipt).decode(), batch_id, stream))
+                       (receipt_raw, batch_id, stream))
 
 
 def resume_owner_publication(store, batch_id, config, *, now, observe_identity,
