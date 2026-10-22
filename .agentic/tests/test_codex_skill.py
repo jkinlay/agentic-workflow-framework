@@ -265,7 +265,7 @@ class CodexSkillTests(unittest.TestCase):
             "repository_id": "repository",
             "scope_sha256": "a" * 64,
         }
-        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE", "paths": ["src/a.py"], "priority": 1}
+        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE", "paths": ["src/a.py"], "priority": 1, "dependencies_satisfied": True, "budget_available": True, "cap_available": True, "review_independent": True, "exact_tuple": "tuple"}
         observation = {
             "source": "host_observation",
             "observed_at": now,
@@ -376,7 +376,7 @@ class CodexSkillTests(unittest.TestCase):
             "repository_id": "repository",
             "scope_sha256": "a" * 64,
         }
-        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE", "paths": ["src/a.py"], "priority": 1}
+        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE", "paths": ["src/a.py"], "priority": 1, "dependencies_satisfied": True, "budget_available": True, "cap_available": True, "review_independent": True, "exact_tuple": "tuple"}
         observation = {
             "source": "host_observation",
             "observed_at": now,
