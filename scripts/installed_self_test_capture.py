@@ -20,6 +20,9 @@ import threading
 import time
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.agentic/lib'))
+from agentic.child_process import child_env  # noqa: E402
+
 PHASES = ('discovery', 'syntax', 'documentation', 'release_hygiene', 'test_suite')
 CHUNK = 4096
 TAIL = 65536
@@ -560,7 +563,7 @@ class Persistence:
         try:
             self.process = subprocess.Popen(worker_command(parent), stdin=subprocess.PIPE,
                                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                            bufsize=0)
+                                            bufsize=0, env=child_env())
             os.set_blocking(self.process.stdin.fileno(), False)
             deadline = started + self.remaining - .15
             while time.monotonic() < deadline:
@@ -706,7 +709,7 @@ def run_bounded(command, *, timeout, evidence_parent, **kwargs):
     input_offset = 0
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   bufsize=0, **kwargs)
+                                   bufsize=0, env=child_env(kwargs.pop('env', None)), **kwargs)
         for name, pipe in (('stdout', process.stdout), ('stderr', process.stderr)):
             if os.name != 'nt':
                 os.set_blocking(pipe.fileno(), False)

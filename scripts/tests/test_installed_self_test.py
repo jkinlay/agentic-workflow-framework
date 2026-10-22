@@ -170,6 +170,44 @@ class InstallSubprocessTimeoutTests(unittest.TestCase):
                 self.capture_child(parent, 'import sys; sys.exit(9)', check=True)
             self.assertEqual(9, raised.exception.returncode)
 
+    def test_capture_launch_environments_strip_provider_keys(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import installed_self_test_capture as capture
+        from agentic.child_process import PROVIDER_API_KEY_ENV_VARS
+
+        provider_values = {name.swapcase(): 'dummy-provider-value'
+                           for name in PROVIDER_API_KEY_ENV_VARS}
+        ambient = dict(provider_values, AWF_CAPTURE_SENTINEL='ambient')
+        real_popen = subprocess.Popen
+        for mode in ('omitted', 'none', 'mapping'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as parent:
+                supplied = dict(os.environ, **provider_values,
+                                AWF_CAPTURE_SENTINEL='supplied')
+                original = supplied.copy()
+                options = {} if mode == 'omitted' else {
+                    'env': None if mode == 'none' else supplied}
+                with mock.patch.dict(os.environ, ambient), \
+                        mock.patch.object(capture.subprocess, 'Popen',
+                                          wraps=real_popen) as spawn:
+                    result = self.capture_child(
+                        parent, "import os; print(os.environ['AWF_CAPTURE_SENTINEL'])",
+                        text=True, **options)
+                self.assertEqual(0, result.returncode)
+                self.assertEqual('supplied\n' if mode == 'mapping' else 'ambient\n',
+                                 result.stdout)
+                self.assertEqual(original, supplied)
+                self.assertEqual(2, spawn.call_count)
+                for index, call in enumerate(spawn.call_args_list):
+                    environment = call.kwargs.get('env')
+                    self.assertIsNotNone(environment, 'launch must supply a scrubbed environment')
+                    self.assertFalse(PROVIDER_API_KEY_ENV_VARS &
+                                     {name.upper() for name in environment})
+                    expected = 'supplied' if index == 1 and mode == 'mapping' else 'ambient'
+                    self.assertEqual(expected, environment['AWF_CAPTURE_SENTINEL'])
+                value = self.evidence(parent)
+                self.assertTrue(value['persistence']['allocation_acknowledged'])
+                self.assertEqual(2, self.capture_log.count('self-test evidence saved:'))
+
     def test_capture_3_cleanup_survival_and_unique_runs(self):
         from concurrent.futures import ThreadPoolExecutor
         with tempfile.TemporaryDirectory() as parent:
