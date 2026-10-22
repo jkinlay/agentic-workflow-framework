@@ -1060,6 +1060,44 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.assertEqual(1, len(self.history.planning_history()))
         self.assertFalse(self.store.production_planning_state()['pending'])
 
+    def test_restart_pending_intents_revalidate_changed_backlog_dependencies(self):
+        inventory_before = observation(self.items)['inventory_sha256']
+        with patch.object(self.store, 'bind_dispatch_waivers',
+                          side_effect=SystemExit('crash before launch')):
+            with self.assertRaisesRegex(SystemExit, 'crash before launch'):
+                self.cycle()
+        self.assertEqual([], self.calls)
+        self.assertEqual(['WORKING', 'WORKING'],
+                         [row['state'] for row in self.store.snapshot()])
+        pending = self.store.pending_dispatches()
+        self.assertEqual(['AWF-101', 'AWF-102'], [row['ticket'] for row in pending])
+        self.assertTrue(all(row['status'] == 'PENDING' for row in pending))
+
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = []
+        original = self.backlog
+        def with_dependency(request):
+            value = original(request)
+            value['tickets'][1]['ticket']['dependencies'] = ['AWF-101']
+            self.evidence['backlog'] = {key: deepcopy(val) for key, val in value.items()
+                                       if key != 'authentication'}
+            return value
+        self.backlog = with_dependency
+        self.cycle()
+
+        self.assertEqual(inventory_before, observation(self.items)['inventory_sha256'])
+        current = self.history.current_plan()
+        self.assertTrue(current['inputs']['dependencies'])
+        self.assertEqual(['AWF-101'],
+                         [key for lane in current['lanes'] for key in lane['ticket_keys']])
+        self.assertEqual(['AWF-101'], [payload['ticket'] for payload in self.calls])
+        with self.store.connection() as db:
+            rows = [dict(row) for row in db.execute(
+                'SELECT ticket,status,payload_json FROM controller_dispatch ORDER BY ticket')]
+        self.assertEqual([('AWF-101', 'TERMINAL'), ('AWF-102', 'CANCELLED')],
+                         [(row['ticket'], row['status']) for row in rows])
+        self.assertNotIn('begun_at', json.loads(rows[1]['payload_json']))
+
     def recover_changed_planning_inputs(self, change, after_append):
         from agentic import planning
         from test_planning import operating_snapshot
