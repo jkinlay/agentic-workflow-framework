@@ -13,6 +13,29 @@ import build_release
 
 
 class ReleaseBuildTraversalTests(unittest.TestCase):
+    def test_evidence_absent_from_actual_release_and_manifest_inventory(self):
+        from agentic.safeio import Tree
+        from agentic.installer import release_member
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for source in build_release.SOURCE_CONFIGS.values():
+                target = root / source
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'template')
+            (root / 'README.md').write_bytes(b'release')
+            evidence = []
+            for name in ('capture.json', 'excerpt.txt', '.capture.partial'):
+                relative = '.tmp-tests/installed-self-test-evidence/run/' + name
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'evidence')
+                evidence.append(relative)
+                self.assertFalse(release_member(relative))
+            paths = build_release.release_paths(Tree(root))
+            inventory = {path: 'digest' for path in paths}
+            self.assertTrue(set(evidence).isdisjoint(paths))
+            self.assertTrue(set(evidence).isdisjoint(inventory))
+
     def test_manifest_and_zip_inventory_prune_excluded_directories_before_traversal(self):
         class FakeTree:
             def file_list(self, **kwargs):
