@@ -675,20 +675,27 @@ class ContinuousControllerStore:
 			# Legacy candidates have no fingerprint and require a fresh plan.
 			state['observation'] = state.pop('candidate_observation', None)
 			state['candidate'] = None
-			state['pending'] = state['pending'][1:]
+			# Legacy retained candidates covered only the first pending event.
+			consumed = set(state.pop('candidate_source_ids',
+				[event['source_id'] for event in state['pending'][:1]]))
+			state['pending'] = [event for event in state['pending'] if event['source_id'] not in consumed]
 			self._save_production_planning(state)
 		# Recovery may consume the last event while authenticated inputs have
 		# changed. Append their plan before returning anything for admission.
 		if state['observation'] != observed and not state['pending']:
 			state['pending'].append({'source_id': observed, 'trigger': 'files_changed', 'override': None})
 		while state['pending']:
+			trigger = state['pending'][0]['trigger']
+			# All event effects and source fingerprints were retained above.
+			# Coalesce this trigger across the entire queue, including interleaved sources.
+			source_ids = [event['source_id'] for event in state['pending'] if event['trigger'] == trigger]
 			# Seal a fresh candidate; the durable history check below accepts an
 			# identical plan without appending it again and refuses conflicting bytes.
 			working = deepcopy(state['overrides'])
 			working['planning_history'] = []
 			working['current_plan'] = None
 			result = planning.recompute_plan(backlog, config, working, now=now,
-				trigger=state['pending'][0]['trigger'], resource_observation=resource_observation,
+				trigger=trigger, resource_observation=resource_observation,
 				expected_resource_binding=expected_resource_binding,
 				expected_resource_producer_sha256=expected_resource_producer_sha256,
 				operating_snapshot=operating_snapshot, observed_at=now,
@@ -698,6 +705,7 @@ class ContinuousControllerStore:
 			candidate = result['record']
 			state['candidate'] = candidate
 			state['candidate_observation'] = observed
+			state['candidate_source_ids'] = source_ids
 			self._save_production_planning(state)
 			history = state_store.planning_history()
 			matches = [record for record in history if record['plan_id'] == candidate['plan_id']]
@@ -706,7 +714,8 @@ class ContinuousControllerStore:
 				planning.append_plan_record(state_store, candidate)
 			state['observation'] = state.pop('candidate_observation')
 			state['candidate'] = None
-			state['pending'].pop(0)
+			consumed = set(state.pop('candidate_source_ids'))
+			state['pending'] = [event for event in state['pending'] if event['source_id'] not in consumed]
 			self._save_production_planning(state)
 		record = state_store.current_plan()
 		_require(record is not None, 'Production dispatch requires a durable verified plan')

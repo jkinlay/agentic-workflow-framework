@@ -993,6 +993,131 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
             deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW},
             publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW), **args)
 
+    def test_same_trigger_sources_recompute_exactly_once_per_cycle(self):
+        from agentic import planning
+        self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                       for source in ('ticket-added-1', 'ticket-added-2')]
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle()
+
+        state = self.store.production_planning_state()
+        self.assertEqual({event['source_id']: fingerprint('controller-planning-event', event)
+                          for event in self.events}, state['seen'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+        self.assertEqual('DELIVERED', result['status_delivery']['status'])
+        self.assertEqual(2, len(result['dispatch_receipts']))
+        self.assertEqual(1, recompute.call_count)
+
+    def test_recomputed_identical_plan_id_completes_without_duplicate_history(self):
+        from agentic import planning
+        self.cycle()
+        history = self.history.planning_history()
+        self.events = [{'source_id': 'identical-plan-source', 'trigger': 'project_start', 'override': None}]
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle()
+
+        self.assertEqual(1, recompute.call_count)
+        self.assertEqual(history[0]['plan_id'], self.history.current_plan()['plan_id'])
+        self.assertEqual(history, self.history.planning_history())
+        state = self.store.production_planning_state()
+        self.assertEqual(fingerprint('controller-planning-event', self.events[0]),
+                         state['seen']['identical-plan-source'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+        self.assertIsNone(result['status_delivery'])
+        self.assertEqual(2, len(self.calls))
+
+    def test_interleaved_same_trigger_sources_share_one_recompute(self):
+        from agentic import planning
+        self.events = [{'source_id': source, 'trigger': trigger, 'override': None}
+                       for source, trigger in (('added-1', 'ticket_added'),
+                                               ('changed-1', 'files_changed'),
+                                               ('added-2', 'ticket_added'),
+                                               ('changed-2', 'files_changed'))]
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle()
+        self.assertEqual(['ticket_added', 'files_changed'],
+                         [call.kwargs['trigger'] for call in recompute.call_args_list])
+        self.assertEqual(2, recompute.call_count)
+        self.assertEqual(['ticket_added', 'files_changed'],
+                         [record['trigger'] for record in self.history.planning_history()])
+        state = self.store.production_planning_state()
+        self.assertEqual({event['source_id']: fingerprint('controller-planning-event', event)
+                          for event in self.events}, state['seen'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+
+    def test_same_trigger_group_recovers_both_sides_of_durable_append(self):
+        from agentic import planning
+        from agentic.store import Store
+        append = planning.append_plan_record
+        for after_append in (False, True):
+            with self.subTest(after_append=after_append):
+                self.store = ContinuousControllerStore(
+                    self.root / f'controller-group-{after_append}.sqlite3', ['A', 'B'])
+                self.history = Store(self.root / f'history-group-{after_append}.sqlite3',
+                                     '00000000-0000-0000-0000-000000000050')
+                self.calls = []
+                self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                               for source in ('recover-source-1', 'recover-source-2')]
+                def crash(store, record):
+                    if store is self.history:
+                        if after_append:
+                            append(store, record)
+                        raise RuntimeError('injected coalesced append crash')
+                    return append(store, record)
+                with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+                    with patch('agentic.planning.append_plan_record', side_effect=crash):
+                        with self.assertRaisesRegex(RuntimeError, 'injected coalesced append crash'):
+                            self.cycle()
+                    retained = self.store.production_planning_state()
+                    self.assertEqual([event['source_id'] for event in self.events],
+                                     retained['candidate_source_ids'])
+                    self.assertEqual(int(after_append), len(self.history.planning_history()))
+                    self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+                    result = self.cycle()
+                self.assertEqual(1, recompute.call_count)
+                self.assertEqual(1, len(self.history.planning_history()))
+                state = self.store.production_planning_state()
+                self.assertEqual({event['source_id']: fingerprint('controller-planning-event', event)
+                                  for event in self.events}, state['seen'])
+                self.assertEqual([], state['pending'])
+                self.assertIsNone(state['candidate'])
+                self.assertNotIn('candidate_source_ids', state)
+                self.assertEqual([], result['errors'])
+                self.assertEqual(2, len(self.calls))
+
+    def test_same_trigger_owner_chains_apply_before_single_recompute(self):
+        from agentic import planning
+        from test_planning import owner_source, verify_owner
+        overrides = {}
+        first = planning.change_owner_override(self.config, overrides, mode='fixed', value=2,
+            reason='fixture initial', owner_source=owner_source(None, 'fixed', 2, 'fixture initial'),
+            verify_owner_source=verify_owner, now=NOW)
+        self.events = [{'source_id': 'override-source-1', 'trigger': 'override_changed',
+                        'override': deepcopy(overrides)}]
+        second = planning.change_owner_override(self.config, overrides, mode='fixed', value=1,
+            reason='fixture final', owner_source=owner_source(first['override_id'], 'fixed', 1,
+                'fixture final', source_id='comment-2'), verify_owner_source=verify_owner, now=NOW)
+        self.events.append({'source_id': 'override-source-2', 'trigger': 'override_changed',
+                            'override': deepcopy(overrides)})
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle(verify_planning_owner=verify_owner)
+        self.assertEqual(1, recompute.call_count)
+        self.assertEqual(1, self.history.current_plan()['lane_count'])
+        state = self.store.production_planning_state()
+        self.assertEqual([first, second], state['overrides']['planning_override_history'])
+        self.assertEqual(second, state['overrides']['planning_override'])
+        self.assertEqual({event['source_id']: fingerprint('controller-planning-event', event)
+                          for event in self.events}, state['seen'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+
     def test_same_trigger_events_complete_cycle_and_record_every_source(self):
         self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
                        for source in ('ticket-added-1', 'ticket-added-2')]
