@@ -10,7 +10,7 @@ import uuid
 from . import ValidationError
 from .canonical import now_text, timestamp, sha256
 from .interaction import loop_next_step, render_markdown
-from .safeio import Tree, render_diagnostic
+from .safeio import Tree, render_diagnostic, require_record_bytes
 
 BOUNDARY_CODES = ('PROTECTED_PATH', 'SCOPE_ESCAPE', 'CREDENTIAL_EXPOSURE', 'UNSAFE_PATH', 'UNREGISTERED_PRODUCER', 'CI_BINDING', 'INDEPENDENCE')
 CAP_REASON = 'REVIEW_CAP_REACHED'
@@ -99,6 +99,16 @@ def require_first_draft_config_binding(state, config, *, allow_bound_pr=False):
             'Bound first-draft configuration is not the exact provider PR assignment')
 
 
+PUBLICATION_ARTIFACTS = ('first_draft_worker_receipt', 'first_draft_publication',
+                         'first_draft_publication_plan')
+
+
+def _artifact_bytes(kind, value):
+    return require_record_bytes(json.dumps({
+        'format': 'awf-loop-publication-artifact-1', 'kind': kind, 'value': value,
+    }, sort_keys=True).encode('utf-8'))
+
+
 class LoopStore:
     """One canonical host database; transaction lock spans each bounded tick.
 
@@ -111,6 +121,7 @@ class LoopStore:
         self.db = sqlite3.connect(self.directory / 'review-loop.sqlite3', timeout=0, isolation_level=None)
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS publication_artifacts (digest TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS prs (key TEXT PRIMARY KEY, owner TEXT UNIQUE NOT NULL, state TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, key TEXT NOT NULL, at TEXT NOT NULL, state TEXT NOT NULL);
         ''')
@@ -135,20 +146,73 @@ class LoopStore:
         row = self.db.execute('SELECT state FROM prs WHERE key=?', (key,)).fetchone()
         require(row is not None, 'PR is not enrolled')
         state=json.loads(row[0])
+        for kind in PUBLICATION_ARTIFACTS:
+            value = state.get(kind)
+            if value is None:
+                continue
+            if isinstance(value, dict) and '$publication_artifact' in value:
+                require(set(value) == {'$publication_artifact', 'kind'} and value['kind'] == kind,
+                        'Invalid publication artifact reference')
+                digest = value['$publication_artifact']
+                require(isinstance(digest, str) and len(digest) == 64
+                        and all(c in '0123456789abcdef' for c in digest),
+                        'Invalid publication artifact digest')
+                row = self.db.execute(
+                    'SELECT length(CAST(body AS BLOB)), '
+                    'CASE WHEN length(CAST(body AS BLOB)) <= 1048576 THEN body END '
+                    'FROM publication_artifacts WHERE digest=?', (digest,)).fetchone()
+                require(row is not None, 'Missing publication artifact')
+                require(row[0] <= 1_048_576, 'RECORD_SIZE: publication artifact exceeds byte bound')
+                raw = require_record_bytes(row[1].encode('utf-8'))
+                require(sha256(raw) == digest, 'Publication artifact digest mismatch')
+                artifact = json.loads(raw)
+                require(isinstance(artifact, dict) and set(artifact) == {'format', 'kind', 'value'}
+                        and artifact['format'] == 'awf-loop-publication-artifact-1'
+                        and artifact['kind'] == kind and isinstance(artifact['value'], dict),
+                        'Invalid publication artifact envelope')
+                state[kind] = artifact['value']
+            else:
+                # Legacy state/events remain untouched; only a later save emits references.
+                require(isinstance(value, dict), 'Invalid legacy publication artifact')
+                _artifact_bytes(kind, value)
         # Enrollments recorded by 1.8.9 lack the cap fields; defaults never reset consumed cycles.
         for name, value in (('cap_extensions', 0), ('evidence_only_amendments', 0), ('dispositions', [])):
             state.setdefault(name, value)
         state['next_step']=loop_next_step(state)
         return state
 
+    def _prepare_artifacts(self, state):
+        retained = deepcopy(state)
+        artifacts = []
+        for kind in PUBLICATION_ARTIFACTS:
+            value = state.get(kind)
+            if value is not None:
+                require(isinstance(value, dict), 'Invalid publication artifact')
+                raw = _artifact_bytes(kind, value)
+                digest = sha256(raw)
+                artifacts.append((digest, raw.decode('utf-8')))
+                retained[kind] = {'$publication_artifact': digest, 'kind': kind}
+        return json.dumps(retained, sort_keys=True), artifacts
+
+    def _insert_artifacts(self, artifacts):
+        for digest, body in artifacts:
+            self.db.execute('INSERT OR IGNORE INTO publication_artifacts VALUES (?,?)', (digest, body))
+            row = self.db.execute(
+                'SELECT length(CAST(body AS BLOB)), '
+                'CASE WHEN length(CAST(body AS BLOB)) <= 1048576 THEN body END '
+                'FROM publication_artifacts WHERE digest=?', (digest,)).fetchone()
+            require(row[0] <= 1_048_576 and row[1] == body,
+                    'Retained publication artifact changed')
+
     def save(self, state, new=False):
         state['next_step'] = loop_next_step(state)
         relative='reports/' + sha256(state['key'].encode('utf-8')) + '.md'
         state['status_report_path']=str(self.directory / relative)
         state['reported_at']=now_text()
-        body = json.dumps(state, sort_keys=True)
+        body, artifacts = self._prepare_artifacts(state)
         self.db.execute('BEGIN IMMEDIATE')
         try:
+            self._insert_artifacts(artifacts)
             if new:
                 self.db.execute('INSERT INTO prs VALUES (?,?,?)', (state['key'], state['owner'], body))
             else:
@@ -209,7 +273,7 @@ def reserve_first_draft(store, config, *, git_controls=None):
         'first_draft_publication_status': None, 'resume_ready': False,
         'reason': 'First-draft run reserved before worker execution', 'history': []}
     with store.lock():
-        row = store.db.execute('SELECT state FROM prs WHERE key=?', (key,)).fetchone()
+        row = store.db.execute('SELECT 1 FROM prs WHERE key=?', (key,)).fetchone()
         if row is None:
             store.save(state, new=True)
             return state
@@ -374,9 +438,10 @@ def complete_first_draft(store, config, snapshot, reconciled_run=None):
         state.update(phase='REVIEW', candidate=snapshot, inflight=None,
                      resume_ready=False,
                      reason='Enrolled after first draft', generation=state['generation'] + 1)
-        body = json.dumps(state, sort_keys=True)
+        body, artifacts = store._prepare_artifacts(state)
         store.db.execute('BEGIN IMMEDIATE')
         try:
+            store._insert_artifacts(artifacts)
             store.db.execute('DELETE FROM prs WHERE key=?', (old_key,))
             store.db.execute('INSERT INTO prs VALUES (?,?,?)', (state['key'], state['owner'], body))
             store.db.execute('INSERT INTO events(key,at,state) VALUES (?,?,?)', (state['key'], now_text(), body))

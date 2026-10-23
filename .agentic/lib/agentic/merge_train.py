@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 from . import ValidationError
+from .safeio import require_record_bytes
 from .canonical import canonical, fingerprint, fresh, timestamp
 
 
@@ -1023,20 +1024,31 @@ def _validate_publisher(registration, expected_provider_identity):
 
 
 def _save_publication_journal(path, value):
+    raw = require_record_bytes((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    raw = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+    with temporary.open("wb") as stream:
         stream.write(raw)
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
 
 
+def _read_publication_record(path):
+    try:
+        with Path(path).open("rb") as stream:
+            raw = require_record_bytes(stream.read(1_048_577))
+        return json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValidationError("publication intent journal is unreadable") from exc
+
+
 def _load_publication_journal(path, candidate):
     path = Path(path)
+    abandoned_path = path.with_name(path.name + ".abandoned")
     if not path.exists():
+        _require(not abandoned_path.exists(), "publication generation is abandoned; journal is missing")
         value = {
             "format": "awf-merge-train-publication-journal-1",
             "publication_candidate_id": candidate["publication_candidate_id"],
@@ -1048,10 +1060,7 @@ def _load_publication_journal(path, candidate):
         }
         _save_publication_journal(path, value)
         return value
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ValidationError("publication intent journal is unreadable") from exc
+    value = _read_publication_record(path)
     _require(isinstance(value, dict)
              and value.get("format") == "awf-merge-train-publication-journal-1"
              and value.get("publication_candidate_id") ==
@@ -1062,6 +1071,16 @@ def _load_publication_journal(path, candidate):
              and value.get("status", "ACTIVE") in {"ACTIVE", "ABANDONED"}
              and isinstance(value.get("operations"), list),
              "publication intent journal belongs to another candidate")
+    if abandoned_path.exists():
+        marker = _read_publication_record(abandoned_path)
+        _require(marker == {
+            'format': 'awf-merge-train-abandonment-1',
+            'publication_candidate_id': candidate['publication_candidate_id'],
+            'batch_id': candidate['batch_id'],
+            'generation': candidate['generation']['generation'],
+            'expected_head': candidate['batch_head_sha'],
+        }, 'publication abandonment belongs to another candidate')
+        value['status'] = 'ABANDONED'
     return value
 
 
@@ -1085,8 +1104,23 @@ def _require_current_publication(candidate, observer_id, observer_registry, *,
         observer_registry, observer_id, request, now=now,
         max_age_seconds=max_age_seconds)
     if result != expected:
+        # A full ACTIVE journal may have no room for the longer status token.
+        # Seal abandonment separately before attempting that expansion; retain
+        # all existing operation evidence and consult the seal on every restart.
+        path = Path(intent_path)
+        _save_publication_journal(path.with_name(path.name + '.abandoned'), {
+            'format': 'awf-merge-train-abandonment-1',
+            'publication_candidate_id': candidate['publication_candidate_id'],
+            'batch_id': candidate['batch_id'],
+            'generation': generation['generation'],
+            'expected_head': candidate['batch_head_sha'],
+        })
         journal["status"] = "ABANDONED"
-        _save_publication_journal(intent_path, journal)
+        try:
+            _save_publication_journal(intent_path, journal)
+        except ValidationError as exc:
+            if not str(exc).startswith('RECORD_SIZE:'):
+                raise
         raise ValidationError(
             "publication generation is abandoned because its freeze drifted")
 

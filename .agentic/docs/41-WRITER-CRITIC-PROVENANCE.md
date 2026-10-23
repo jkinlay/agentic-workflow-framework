@@ -116,24 +116,27 @@ provider labels remain compatibility inventory only.
 ## Publication and compatibility
 
 Canonical UTF-8 `record.json`: inclusive 1,048,576-byte envelope cap
-(keys/digests/framing/escaping), checked before reservation. Oversize reads/recovery
-refuse unchanged/unsealed; exact-limit operations/retries, append-only/crash/digest
-semantics, 1,024-byte seals/global document limit remain. Host `commit-run-log.json`
+(keys/digests/framing/escaping), before reservation. Oversize reads/recovery
+refuse unchanged/unsealed; exact-limit retries, append-only/crash/digest
+semantics, 1,024-byte seals/global limit remain. Host `commit-run-log.json`
 checks complete bytes (including LF) before retained-record inspection/write.
 
-First drafts validate shared-grammar 4 KiB titles, trusted contract Markdown
-and untrusted model/effort/branch scalars before reservation; escape scalars.
-Rendering validates tree/1 MiB LF body. Receipt/tree/paths precede Git mutation;
-Local proof precedes push/create/immediate readback. Recover uncertain publication;
-never replay. No pre-PR overrides. Amendments prove before push.
+PR2 bounds detached/watcher, owner-SQL, journal, delivery-row and digest-referenced
+loop-artifact envelopes; preserves serializers/history/legacy hydration,
+committed evidence/report ordering, uncertain intents and sealed abandonment
+without mutation replay.
 
-Before `commit-tree`, rewrite pinned-reads canonical messages (1 MiB maximum),
-requiring integer-one count, never Boolean. Safe branch/base refs precede reads.
-Exact-ref readback: 32 MiB; invalidity yields
-`REMOTE_READBACK_INVALID`. Message-file/grammar:
-`REWRITE_MESSAGE_INVALID`. Reachability/exact-tree/quarantine/CAS/rollback/
-recovery protections remain.
+First drafts: shared-grammar 4 KiB titles, trusted contract Markdown,
+escaped untrusted model/effort/branch scalars validated before reservation.
+Validate tree/1 MiB LF body. Receipt/tree/paths precede Git mutation;
+local proof precedes push/create/immediate readback. Recover uncertainty;
+no pre-PR overrides. Amendments prove before push.
 
-V2 retains 1.9.4 `changed_files`, adds ordered `changed_entries`, with stable
-ASCII refusal codes. Fake-provider/Git/subprocess tests are offline; live-network
-qualification is host evidence. CI covers supported Windows/Linux Python.
+Before `commit-tree`: pinned canonical-message reads (1 MiB), integer-one
+count, never Boolean. Pre-read branch/base-ref validation.
+Exact-ref readback: 32 MiB; invalidity: `REMOTE_READBACK_INVALID`.
+Message-file/grammar: `REWRITE_MESSAGE_INVALID`.
+Reachability/exact-tree/quarantine/CAS/rollback/recovery protections remain.
+
+V2: retained 1.9.4 `changed_files`, ordered `changed_entries`, stable ASCII refusals. Fake-provider/Git/subprocess tests: offline; live-network
+qualification: host evidence. CI: supported Windows/Linux/Python.
