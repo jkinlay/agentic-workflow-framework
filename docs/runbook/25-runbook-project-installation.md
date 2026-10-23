@@ -6,5 +6,3 @@ For an unmerged adoption, retain the isolated change and backups while the owner
 
 For an already merged adoption, use an owner-reviewed revert/restoration plan. Exact commands and activation consequences are **UNVERIFIED**. Installation does not authorize destructive cleanup or changes to server rules. Source: `7fcaeece:.agentic/docs/20-NEW-PROJECT-SETUP.md:56`.
 
-## 8. Troubleshooting
-

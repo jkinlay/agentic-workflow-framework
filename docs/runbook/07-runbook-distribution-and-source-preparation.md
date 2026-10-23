@@ -23,7 +23,3 @@ Sources: `7fcaeece:global/awf-portable/scripts/prepare_release.py:189`; `7fcaeec
 
 A 1.9.4 bundle requested as 1.9.5 must reject; it must not silently substitute another release. An incomplete, different, or corrupted existing cache is preserved. Select a new dedicated cache after investigating the rejection. Sources: `7fcaeece:global/awf-portable/scripts/prepare_release.py:121`; `7fcaeece:global/awf-portable/tests/test_prepare_release.py:136`; `7fcaeece:global/awf-portable/tests/test_prepare_release.py:230`.
 
-## 3. INSTALL TO ACTIVE
-
-**All three OS sequences below are conditional on the publication checkpoint in §2. Their successful execution with the integrated 1.9.5 release is UNVERIFIED.**
-

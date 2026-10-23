@@ -4,5 +4,3 @@
 
 This runbook was prepared by source inspection. No installation, adoption, upgrade, tests, network requests, commits, pushes, or GitHub actions were performed. **The requested exhaustive inspection of every scoped file and every transitive caller/callee was not completed.** Appendix A identifies full reads and partial inspection; remaining coverage is **UNVERIFIED**.
 
-## 1. Prerequisites
-
