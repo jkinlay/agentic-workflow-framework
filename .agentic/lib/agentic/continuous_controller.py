@@ -682,9 +682,11 @@ class ContinuousControllerStore:
 		if state['observation'] != observed and not state['pending']:
 			state['pending'].append({'source_id': observed, 'trigger': 'files_changed', 'override': None})
 		while state['pending']:
+			# Seal a fresh candidate; the durable history check below accepts an
+			# identical plan without appending it again and refuses conflicting bytes.
 			working = deepcopy(state['overrides'])
-			working['planning_history'] = state_store.planning_history()
-			working['current_plan'] = state_store.current_plan()
+			working['planning_history'] = []
+			working['current_plan'] = None
 			result = planning.recompute_plan(backlog, config, working, now=now,
 				trigger=state['pending'][0]['trigger'], resource_observation=resource_observation,
 				expected_resource_binding=expected_resource_binding,

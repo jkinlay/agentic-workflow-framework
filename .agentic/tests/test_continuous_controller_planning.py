@@ -993,6 +993,62 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
             deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW},
             publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW), **args)
 
+    def test_same_trigger_events_complete_cycle_and_record_every_source(self):
+        self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                       for source in ('ticket-added-1', 'ticket-added-2')]
+        result = self.cycle()
+
+        state = self.store.production_planning_state()
+        self.assertEqual({event['source_id']: fingerprint('controller-planning-event', event)
+                          for event in self.events}, state['seen'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        history = self.history.planning_history()
+        self.assertEqual(1, len(history))
+        self.assertEqual('ticket_added', history[0]['trigger'])
+        self.assertEqual(['AWF-101', 'AWF-102'], [payload['ticket'] for payload in self.calls])
+        self.assertEqual(2, len(result['dispatch_receipts']))
+        self.assertEqual('DELIVERED', result['status_delivery']['status'])
+        self.assertEqual([], result['errors'])
+
+    def test_same_trigger_events_at_identical_now_survive_restart_and_replay(self):
+        first = {'source_id': 'ticket-added-1', 'trigger': 'ticket_added', 'override': None}
+        self.events = [first]
+        self.cycle()
+        history = self.history.planning_history()
+        self.assertEqual(NOW, history[0]['created_at'])
+
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                       for source in ('ticket-added-2', 'ticket-added-3')]
+        for _ in range(2):
+            result = self.cycle()
+            self.assertEqual(NOW, result['observed_at'])
+            self.assertEqual([], result['errors'])
+            self.assertEqual(history, self.history.planning_history())
+            state = self.store.production_planning_state()
+            self.assertEqual({event['source_id']: fingerprint('controller-planning-event', event)
+                              for event in [first, *self.events]}, state['seen'])
+            self.assertEqual([], state['pending'])
+            self.assertIsNone(state['candidate'])
+            self.assertEqual(2, len(self.calls), 'replayed events relaunched completed dispatches')
+
+    def test_identical_plan_id_with_conflicting_bytes_still_refuses(self):
+        self.cycle()
+        history = self.history.planning_history()
+        conflict = deepcopy(history[0])
+        conflict['lane_count'] = 1
+        conflict['plan_sha256'] = fingerprint('planning_audit_record',
+            {key: value for key, value in conflict.items() if key != 'plan_sha256'})
+        self.events = [{'source_id': 'conflicting-event', 'trigger': 'project_start', 'override': None}]
+        with patch('agentic.planning.recompute_plan', return_value={'record': conflict}):
+            with self.assertRaisesRegex(ValidationError, 'Planning append candidate conflicts with immutable history'):
+                self.cycle()
+        self.assertEqual(history, self.history.planning_history())
+        self.assertEqual(['conflicting-event'],
+                         [event['source_id'] for event in self.store.production_planning_state()['pending']])
+        self.assertEqual(2, len(self.calls))
+
     def test_project_start_and_intake_plan_before_dispatch(self):
         for trigger in ('project_start', 'intake'):
             with self.subTest(trigger=trigger):
