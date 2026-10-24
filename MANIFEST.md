@@ -639,3 +639,4 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/validate_archive.py` | `6ec77671ce0fcbb13e22eccbbe965ea905da186416deedac67ca54da1e99488b` |
 | `scripts/validate_git_checkout.py` | `da31f52ab345e19cf580171bef96404958795217d88535c112c4e36278bea174` |
 | `tools/windows/Invoke-AC42.ps1` | `f466b43973c26d2d9b4e74efbc7371c1be2bbae27780160dfe909e10eb0b1e3b` |
+| `tools/windows/pre-push-gate.ps1` | `00fec1816b2d15a33fba4224c66527403a073cc934eacc3729287a68c036e0f1` |
