@@ -25,6 +25,7 @@ STATE_APPLICATION_ID = 1096238641
 DISPATCH_SCHEMA_VERSION = 2
 REPLAN_TRIGGER_SCHEMA_VERSION = 2
 PRODUCTION_PLANNING_MAX_BYTES = 4 * 1024 * 1024
+PRODUCTION_PLANNING_MAX_EVENTS = 4000
 PRODUCTION_PLANNING_RECOVERY_MAX_BYTES = 16 * 1024 * 1024
 PRODUCTION_PLANNING_SEEN_RETENTION = 4096
 PRODUCTION_PLANNING_SCHEMA_VERSION = 2
@@ -781,6 +782,10 @@ class ContinuousControllerStore:
 		if state['observation'] != observed and not state['pending']:
 			trigger = 'project_start' if state['observation'] is None else 'files_changed'
 			state['pending'].append({'source_id': observed, 'trigger': trigger, 'override': None})
+		if len(events) > PRODUCTION_PLANNING_MAX_EVENTS:
+			# Check staged bytes first, but refuse the batch before any durable save.
+			_encode_production_planning(state)
+			raise ValidationError('Production planning cycle exceeds 4,000 events; reduce the provider event window')
 		self._save_production_planning(state)
 		if not boundary_ready:
 			return None

@@ -26,6 +26,9 @@ identical plans do not duplicate history. Every save checks canonical UTF-8
 against 4 MiB; the general reader remains capped at 8 MiB. Excessive pinned or
 preserved fields refuse before that write, retaining its previous bytes.
 Earlier saves or history appends may already be durable.
+Each cycle accepts at most 4,000 provider events, counting repeated sources.
+Larger batches refuse before planning-state writes, history appends or dispatch;
+the staged-state 4 MiB guard takes precedence over the event ceiling.
 
 Stop **all cycles using the state** before explicit recovery:
 

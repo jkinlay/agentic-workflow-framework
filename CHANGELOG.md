@@ -1,6 +1,6 @@
 # Change history
 
-1.9.5: AWF-201 items 7/9 bound planning retention/recovery and restrict sidecar permissions.
+1.9.5: AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
 
 ## 1.9.4 — 8 October 2026
 

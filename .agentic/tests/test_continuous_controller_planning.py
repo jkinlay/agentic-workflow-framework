@@ -964,14 +964,73 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.cycle()
         self.assertEqual(9, self.store.production_planning_state()['cycle_sequence'])
 
+    def test_4001_events_within_byte_guard_refuse_without_durable_changes(self):
+        from agentic.canonical import canonical
+        from agentic import planning
+        self.cycle()
+        before = self.raw_planning()
+        history = self.history.planning_history()
+        calls = deepcopy(self.calls)
+        self.events = [{'source_id': f'overflow-{i}', 'trigger': 'files_changed', 'override': None}
+                       for i in range(4001)]
+        staged = self.store.production_planning_state()
+        staged['cycle_sequence'] += 1
+        staged['pending'].extend(deepcopy(self.events))
+        staged['seen'].update({event['source_id']: [fingerprint('controller-planning-event', event),
+                                                  staged['cycle_sequence']]
+                               for event in self.events})
+        self.assertLess(len(canonical(staged)), 4 * 1024 * 1024)
+        for boundary_ready in (False, True):
+            with self.subTest(boundary_ready=boundary_ready), patch.object(
+                    self.store, 'round_boundary_ready', return_value=boundary_ready), patch(
+                    'agentic.planning.append_plan_record', wraps=planning.append_plan_record) as append, patch.object(
+                    self, 'dispatch', wraps=self.dispatch) as dispatch:
+                with self.assertRaisesRegex(ValidationError, '4,000 events'):
+                    self.cycle()
+                self.assertEqual(before, self.raw_planning())
+                self.assertEqual(json.loads(before), self.store.production_planning_state())
+                self.assertEqual(history, self.history.planning_history())
+                self.assertEqual(calls, self.calls)
+                append.assert_not_called()
+                dispatch.assert_not_called()
+
+    def test_event_ceiling_counts_duplicate_sources_before_initial_save(self):
+        self.events *= 4001
+        with self.assertRaisesRegex(ValidationError, '4,000 events'):
+            self.cycle()
+        self.assertIsNone(self.raw_planning())
+        self.assertEqual([], self.history.planning_history())
+        self.assertEqual([], self.calls)
+
+    def test_byte_guard_precedes_event_ceiling_without_durable_changes(self):
+        self.cycle()
+        state = self.store.production_planning_state()
+        state['preserved'] = 'x' * (2 * 1024 * 1024)
+        self.store._save_production_planning(state)
+        before = self.raw_planning()
+        history = self.history.planning_history()
+        calls = deepcopy(self.calls)
+        self.events = self.retention_events(0, 4001)
+        with self.assertRaisesRegex(ValidationError, '4 MiB'):
+            self.cycle()
+        self.assertEqual(before, self.raw_planning())
+        self.assertEqual(history, self.history.planning_history())
+        self.assertEqual(calls, self.calls)
+
     def test_5000_long_pending_sources_refuse_candidate_without_losing_journal(self):
-        self.events = self.retention_events(0, 5000)
+        first = self.retention_events(0, 4000)
+        self.events = first
+        with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.cycle()
+        self.events = self.retention_events(4000, 1000)
         with self.assertRaisesRegex(ValidationError, '4 MiB'):
             self.cycle()
         state = self.store.production_planning_state()
-        self.assertEqual(self.events, state['pending'])
+        self.assertEqual(first + self.events, state['pending'])
         self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event), 1]
-                          for event in self.events}, state['seen'])
+                          for event in first} | {
+                              event['source_id']: [fingerprint('controller-planning-event', event), 2]
+                              for event in self.events}, state['seen'])
         self.assertIsNone(state['candidate'])
         self.assertLessEqual(len(self.raw_planning().encode()), 4 * 1024 * 1024)
         self.assertEqual([], self.history.planning_history())
@@ -1056,8 +1115,10 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.assertEqual(json.loads(before), self.store.production_planning_state())
 
     def test_pending_sources_are_pinned_during_eviction(self):
-        self.events = self.retention_events(0, 4200)
         with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.events = self.retention_events(0, 4000)
+            self.cycle()
+            self.events = self.retention_events(4000, 200)
             self.cycle()
         state = self.store.production_planning_state()
         self.assertEqual(4200, len(state['seen']))
@@ -1084,7 +1145,9 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.assertEqual(0, migrated['cycle_sequence'])
         self.assertEqual(state['candidate_source_ids'], migrated['candidate_source_ids'])
         self.assertEqual(state['candidate_observation'], migrated['candidate_observation'])
-        self.events = self.retention_events(0, 4096)
+        self.events = self.retention_events(0, 4000)
+        self.cycle()
+        self.events = self.retention_events(4000, 96)
         self.cycle()
         self.assertNotIn('legacy', self.store.production_planning_state()['seen'])
 
@@ -1101,11 +1164,14 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
 
     def test_evicted_source_reemission_recomputes_once_without_duplicate_history(self):
         from agentic import planning
-        self.events = self.retention_events(0, 4200)
+        first = self.retention_events(0, 4000)
+        self.events = first
         self.cycle()
-        self.assertNotIn(self.events[0]['source_id'], self.store.production_planning_state()['seen'])
+        self.events = self.retention_events(4000, 200)
+        self.cycle()
+        self.assertNotIn(first[0]['source_id'], self.store.production_planning_state()['seen'])
         history = self.history.planning_history()
-        self.events = self.events[:1]
+        self.events = first[:1]
         with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
             self.cycle()
         self.assertEqual(1, recompute.call_count)
