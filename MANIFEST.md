@@ -28,7 +28,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/benchmarks/native/routine-measurement-rubric.json` | `10f074df2b7a69d7c0ad4888c4c523d4779c6ad821d2b9213d3d06393632fb94` |
 | `.agentic/benchmarks/native/routine-rubric.json` | `c9b2bf9d1953b8b1c777964c1d20e813e76f002937e22ab9b0945aa5c247c653` |
 | `.agentic/benchmarks/native/rubric.json` | `61e719369395e2721f8a7aa9a819ca8203947547dd6793ed9f6994df4442628f` |
-| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `aca5a0aa3a39a6e0e18097d528187555367f3081339ee7e67e8af47a8c77f3f3` |
+| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `80020eabaa5b6addabd91ed0fd256cd2a08a7494ca3a7e387ea005ae3600341b` |
 | `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `017867bd395605cf5199c81b011edafa224837a47ddaf847e27d111b2202f147` |
 | `.agentic/docs/23-TICKET-LIFECYCLE.md` | `4b55b7a6da6164e2480bcd81f7f03639caac2bcaefc3477ba89888020701b3ef` |
 | `.agentic/docs/24-STREAM-STARTUP.md` | `9ebb3ea9686dc6ab133b51c7d89c6043e1fd5f2483776762d8a653a3cd1e6ac9` |
@@ -282,7 +282,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/merge-attempt.yaml` | `a13f2ce39311bdd8d1be10cdad8cc755ee4b9e59d470ca4408fba18721b9d37d` |
 | `.agentic/templates/merge-authorization.md` | `5efdff601b57f67c5fe8be1948b4cfed8e630b49cecc9d37f8a25c0755f6ae54` |
 | `.agentic/templates/merge-result.yaml` | `10d4706b329ab2669e9bb8eb4774ef0732a18963a749621b8ed4b5edc405652c` |
-| `.agentic/templates/operating.gitignore` | `69e14c79dc4be2c6debe91062b1c1f227a1bf5275d745e291312ebae2c54fb6f` |
+| `.agentic/templates/operating.gitignore` | `47bf80531643a361a97e60db147db1fb7ae7c9ff38e9b7ffabc9aab7612066aa` |
 | `.agentic/templates/owner-authorization.yaml` | `2092b457d2dae2924769876acd7f16e0bbe168678e170db62a011912361e535f` |
 | `.agentic/templates/owner-closure.yaml` | `d450f5237ac510580f72f47e2423acfe30ca3e49e15e216b1c110c299e81e919` |
 | `.agentic/templates/posting-collector-registration.yaml` | `8e020643c500b3c286fc9d7d7c1cc63a185e5c445aa90150380aa73c580f9c5a` |
@@ -369,6 +369,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_heavy_validation.py` | `fb89a68095c82f96c2f31f38fd4322426193fd094599ef6429944342d3d165bb` |
 | `.agentic/tests/test_host_preflight_split_root.py` | `71d996b32ae2ef3744786fee6bc56c65cd4fc71ec0299706ead251df6a320d89` |
 | `.agentic/tests/test_host_process.py` | `0da0de3462d0568a363058476e672b10e7a1e2dba45a31d541c473c33b71776a` |
+| `.agentic/tests/test_installation_hygiene_awf206.py` | `3ff91748d614c9ce72216662c52bcdf5a21cad9418d95414c23a8c40551595a1` |
 | `.agentic/tests/test_intake_assignment.py` | `c518d8bdd68af2f5fbdd7c2a5e60b4c7697df3e89f53bfdc7a2e9566dc459a11` |
 | `.agentic/tests/test_integration_build.py` | `eef506016c4f0bc1a88bf615ea19d41409e0306861a1090f00921eba440d4de2` |
 | `.agentic/tests/test_integration_queue.py` | `06000a6001e1e5264b8e2930323af52af3dd084561455491ffd065b2d642e78e` |

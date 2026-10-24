@@ -18,7 +18,7 @@ python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 
 python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 TRUSTED_SHA256 --runtime-wheelhouse ABS_VERIFIED_WHEELHOUSE --codeowner '@handle' --on-conflict backup
 ```
 
-New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organization/team'` overrides it. Preserve existing CODEOWNERS/reviewers; verify access and eligibility. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies evidence; `--default-branch EXPECTED` avoids assuming `main`; conflicts reject. Fresh installs need no predecessor. Verified 1.8.3/1.8.9/1.9.1/1.9.2/1.9.3 use `--mode upgrade` and the release-source migration guide. Preserve backups/journals; recover unfinished installation first.
+Ownership defaults: `@maintainer`; override with `--codeowner '@handle'` or `'@organization/team'`. Preserve CODEOWNERS/reviewers; verify access/eligibility. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies evidence; conflicts reject. Fresh: no predecessor. Verified 1.8.3/1.8.9/1.9.1/1.9.2/1.9.3 upgrades: `--mode upgrade`; follow release-source migration guidance. Preserve backups/journals; recover unfinished installation.
 
 5. Bootstrap preserves existing configuration, deriving missing values from observed target metadata. Review derivation/residue:
 
@@ -26,6 +26,7 @@ New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organizat
 | --- | --- |
 | `project.id` | Generate one real UUID4; retain it in later receipts. |
 | GitHub repository/numeric ID | Parse target `origin`; obtain numeric ID through authenticated `gh`. Supply `--github-repo OWNER/REPO` and `--repository-id NUMBER` if needed; never invent it. |
+| `github.base_branch` | Observed metadata or `--default-branch`; unobserved/unsupplied missing values stay null (`INSTALLED_UNCONFIGURED`), never assume `main`. |
 | Name/short name | Derive from repository name; override with `--project-name NAME` / `--project-short-name SHORT`. |
 | Specialist reviewer identities | Default new entries to the selected code owner; preserve existing identities. Handles do not prove access, independence or approval. |
 | Test command | Prefer an npm test script, then evident pytest markers; otherwise supply `--test-command COMMAND`. Run it separately. |
@@ -35,7 +36,7 @@ Preserve `template.expected_workflow_version: 1.9.4`. Bootstrap accepts `--proje
 
 Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer allocation/count. Ordinary upgrades preserve both. `--propose-operating-capacity` stages ceiling six (preserving higher values) and current reviewer allocation for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 
-Bootstrap appends [narrow ignore rules](../templates/operating.gitignore), preserving existing bytes. Commit operating configuration and `changes/` audit records; review broad owner rules hiding them. Preserve ignored recovery files through recovery.
+Bootstrap appends [narrow ignores](../templates/operating.gitignore), preserving bytes. Commit operating configuration and `changes/` audit records; review broad owner ignores. Retain `.agentic-install/`, `.agentic-backup/` and recovery files through recovery.
 
 Empty `validation.required_ci_checks: []` is accepted for adoption as `ci_gate: NOT_CONFIGURED`; fresh empty trusted-owner IDs also warn. Neither fabricates identity or live-ready policy. Configure observed CI identities and real merge owners before relevant live enablement.
 
