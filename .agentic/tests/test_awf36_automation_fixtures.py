@@ -21,6 +21,7 @@ _ticket = parked.ticket
 _dispatch_receipt = parked.dispatch_receipt
 _production_cycle = parked.production_controller_cycle
 _set_up = parked.ControllerAutomationTests.setUp
+_cycle = parked.ControllerAutomationTests.cycle
 
 
 def ticket(name, *, role="writer", stage="implementation"):
@@ -50,11 +51,21 @@ def production_cycle(*args, **kwargs):
     return _production_cycle(*args, **kwargs)
 
 
+@wraps(_cycle)
+def planning_cycle(self, store, item, policy, *, observed_at=parked.NOW, **operations):
+    from functools import partial
+    from test_continuous_controller_planning import planning_fixture_inputs
+    inputs = planning_fixture_inputs([item], store, 1, binding=parked.BINDING, now=observed_at)
+    with patch.object(parked, "production_controller_cycle", partial(production_cycle, **inputs)):
+        return _cycle(self, store, item, policy, observed_at=observed_at, **operations)
+
+
 @wraps(_set_up)
 def set_up(self):
     _set_up(self)
     for fixture_patch in (
         patch.object(parked, "ticket", ticket),
+        patch.object(parked.ControllerAutomationTests, "cycle", planning_cycle),
         patch.object(parked, "dispatch_receipt", dispatch_receipt),
         patch.object(parked, "production_controller_cycle", production_cycle),
         patch("agentic.continuous_controller.canonical_reservation_sources", return_value=[]),
