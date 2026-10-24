@@ -5,6 +5,10 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import os
+import sqlite3
+import stat
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only
@@ -23,6 +27,56 @@ def plan(trigger='project_start'):
 
 
 class StorePlanningHistoryTests(unittest.TestCase):
+    def test_store_restricts_permissions_after_initialisation(self):
+        calls = []
+        with patch('os.chmod', side_effect=lambda p, m: calls.append((Path(p), m))):
+            Store(self.path, PROJECT)
+            with self.store.connection():
+                Store(self.path, PROJECT)
+        self.assertEqual(2, calls.count((self.path, stat.S_IRUSR | stat.S_IWUSR)))
+
+    def test_store_permission_restriction_runs_after_schema_commit(self):
+        connections = []
+        connect = sqlite3.connect
+        def tracked(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            connections.append(db)
+            return db
+        def restricted(path):
+            self.assertEqual(self.path, path)
+            for db in connections:
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    db.execute('SELECT 1')
+            db = connect(path)
+            try:
+                self.assertEqual('1', db.execute("SELECT value FROM planning_history_meta WHERE key='version'").fetchone()[0])
+            finally:
+                db.close()
+        with patch('agentic.store.sqlite3.connect', side_effect=tracked), patch(
+                'agentic.store.restrict_state_permissions', side_effect=restricted) as restrict:
+            Store(self.path, PROJECT)
+        restrict.assert_called_once_with(self.path)
+
+    def test_store_permission_failure_propagates(self):
+        with patch('os.chmod', side_effect=PermissionError('fixture permission refusal')):
+            with self.assertRaises(PermissionError):
+                Store(self.path, PROJECT)
+
+    @unittest.skipIf(os.name == 'nt', 'Windows chmod does not restrict ACLs')
+    def test_store_file_is_owner_only_on_posix(self):
+        # A fresh file under a permissive umask makes the baseline failure reliable.
+        old = os.umask(0)
+        try:
+            store = Store(self.path.with_name('permissions.sqlite3'), PROJECT)
+        finally:
+            os.umask(old)
+        self.assertEqual(0o600, stat.S_IMODE(store.path.stat().st_mode))
+        with store.connection():
+            for suffix in ('-wal', '-shm'):
+                path = Path(str(store.path) + suffix)
+                self.assertTrue(path.exists())
+                self.assertEqual(0o600, stat.S_IMODE(path.stat().st_mode))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='awf50c-store-')
         self.addCleanup(self.temp.cleanup)

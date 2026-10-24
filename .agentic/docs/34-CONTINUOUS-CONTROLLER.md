@@ -11,6 +11,37 @@ python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --s
 State stays outside worktrees; pin intent and never reissue unresolved
 mutations.
 
+## Planning retention and recovery
+
+The primary controller database holds `controller_meta['production_planning']`;
+the separate `.planning.sqlite3` database holds immutable plan history. Both
+restrict current database/WAL/SHM permissions after initialization closes.
+POSIX uses owner read/write permissions; Windows ACLs remain unchanged.
+
+Planning format 2 persists `cycle_sequence` and `seen` digest/last-cycle pairs.
+Legacy digest strings migrate to age zero. Identical observations refresh age.
+Retention evicts oldest `(last_cycle, source_id)` entries above 4096, pinning
+pending sources even beyond that target. Evicted sources can recompute again;
+identical plans do not duplicate history. Every save checks canonical UTF-8
+against 4 MiB; the general reader remains capped at 8 MiB. Excessive pinned or
+preserved fields refuse before that write, retaining its previous bytes.
+Earlier saves or history appends may already be durable.
+
+Stop **all cycles using the state** before explicit recovery:
+
+```text
+python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB --worktree-root ABSOLUTE_WORKTREE planning-state prune
+```
+
+Recovery requires an existing protected primary database, bounds input to
+16 MiB before parsing, trims only `seen`, and reports byte/count metadata.
+Pending work, overrides, observation, candidate metadata, other rows and history
+stay intact. Unshrinkable state refuses; reduce event windows before they
+accumulate. After provider-owner confirmation, append `--forget-source SOURCE_ID`
+to reconsider a retained identity with changed bytes; pending identities cannot
+be forgotten. Never delete the planning key to recover. Restart cycles only
+after successful repair.
+
 ## Dispatch state and round boundaries
 
 Dispatch payloads and receipts use closed schema version 2. Opening protected

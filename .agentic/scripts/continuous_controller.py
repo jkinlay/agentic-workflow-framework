@@ -142,6 +142,9 @@ def main(argv=None, default_root=ROOT):
 	parser.add_argument('--adapter-sha256')
 	parser.add_argument('--adapter-config', type=Path)
 	sub = parser.add_subparsers(dest='command', required=True)
+	planning_state = sub.add_parser('planning-state', help='Repair primary planning state; stop all cycles using this database first')
+	prune = planning_state.add_subparsers(dest='planning_command', required=True).add_parser('prune')
+	prune.add_argument('--forget-source', action='append', default=[], help='explicitly forget a retained non-pending source after provider-owner confirmation')
 	cycle = sub.add_parser('cycle', help='Run inventory, dispatch and status delivery through reviewed adapters')
 	cycle.add_argument('--inventory-binding', type=Path, required=True)
 	cycle.add_argument('--repository-root', type=Path, required=True)
@@ -184,6 +187,11 @@ def main(argv=None, default_root=ROOT):
 		batch.add_argument('--now', required=True)
 	sub.add_parser('snapshot')
 	args = parser.parse_args(argv)
+	if args.command == 'planning-state':
+		from agentic.continuous_controller import prune_production_planning_state
+		output = prune_production_planning_state(args.state, worktree_roots=args.worktree_root, forget_sources=args.forget_source)
+		print(json.dumps(output, indent=2))
+		return 0
 	config_path = args.project_config or default_root / '.agentic/PROJECT_CONFIG.yaml'
 	config = load(config_path)
 	configured_cadence = config.get('controller', {}).get('status_cadence_seconds', 600)
