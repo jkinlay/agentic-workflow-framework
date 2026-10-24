@@ -32,7 +32,7 @@
               "type": "object",
               "minProperties": 1,
               "patternProperties": {
-                "^[A-F]$": {
+                "^[A-L]$": {
                   "type": "object",
                   "minProperties": 1,
                   "properties": {
@@ -73,7 +73,7 @@
         "count": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 6
+          "maximum": 12
         },
         "A": {
           "type": "object",
@@ -464,6 +464,396 @@
               }
             }
           }
+        },
+        "G": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker"
+          ],
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "H": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker"
+          ],
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "I": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker"
+          ],
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "J": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker"
+          ],
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "K": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker"
+          ],
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "L": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker"
+          ],
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -760,6 +1150,180 @@
                 "streams": {
                   "properties": {
                     "F": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 7
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "G": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 8
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "H": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 9
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "I": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 10
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "J": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 11
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "K": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 12
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "L": {
                       "required": [
                         "reviewer"
                       ]

@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import fingerprint, load, sha256
+from agentic.contracts import Contracts
 from agentic.operating import operating_ceiling, stream_labels, validate_operating
 from agentic import planning
 
@@ -123,6 +124,156 @@ def capacity_kwargs(cfg, host_capacity=12, resources=None, stream_capacity=None)
 def plan(tickets, cfg, **capacity):
     return planning.plan_lanes(
         planning.build_backlog_graph(tickets, cfg), cfg, **capacity_kwargs(cfg, **capacity))
+
+
+class SchemaLaneTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.contracts = Contracts(ROOT / ".agentic/schemas")
+
+    def inputs(self, count=12):
+        cfg = load(ROOT / ".agentic/PROJECT_CONFIG.yaml")
+        cfg["execution"]["max_parallel_tickets"] = 12
+        cfg["execution"]["max_lanes"] = 12
+        cfg["execution"]["host_broker"].update(enabled=False, max_workers=12)
+        cfg["github"]["repository_id"] = 123
+        cfg["github"]["expected_actor_id"] = 101
+        cfg["merge_gate"]["trusted_owner_ids"] = [101, 202]
+        operating = load(ROOT / "OPERATING_CONFIG.yaml")
+        route = deepcopy(operating["streams"]["A"])
+        operating["streams"] = {
+            "count": count,
+            **{chr(ord("A") + i): deepcopy(route) for i in range(count)},
+        }
+        return cfg, operating
+
+    def assert_schema_valid(self, name, value):
+        try:
+            self.contracts.validate(name, value)
+        except ValidationError as exc:
+            self.fail(str(exc))
+
+    def validated_plan(self, cfg, operating, **capacity):
+        for name, value in (("project-config", cfg), ("operating-config", operating)):
+            with self.subTest(schema=name):
+                self.assert_schema_valid(name, value)
+        snapshot = validate_operating(operating, cfg)
+        kwargs = capacity_kwargs(cfg, stream_capacity=snapshot.count, **capacity)
+        self.assertEqual(snapshot.operating_hash, kwargs["operating_snapshot"].operating_hash)
+        tickets = [ticket(f"AWF-{i}", f"src/{i}.py") for i in range(1, 13)]
+        return planning.plan_lanes(planning.build_backlog_graph(tickets, cfg), cfg, **kwargs)
+
+    def test_t1_seven_streams_validate_and_plan(self):
+        cfg, operating = self.inputs(7)
+        result = self.validated_plan(cfg, operating)
+        self.assertEqual(tuple("ABCDEFG"), stream_labels(7))
+        self.assertEqual(7, result["lane_count"])
+        self.assertEqual(7, result["estimate"]["constraints"]["reviewed_operating_streams"])
+
+    def test_t2_twelve_streams_validate_and_plan(self):
+        cfg, operating = self.inputs()
+        result = self.validated_plan(cfg, operating)
+        self.assertEqual(tuple("ABCDEFGHIJKL"), stream_labels(12))
+        self.assertEqual(12, result["lane_count"])
+        self.assertEqual(12, len(result["lanes"]))
+
+    def test_t3_optional_max_lanes_preserves_six_lane_fallback(self):
+        for configured in (True, False):
+            with self.subTest(configured=configured):
+                expected = 12 if configured else 6
+                cfg, operating = self.inputs(expected)
+                if not configured:
+                    del cfg["execution"]["max_lanes"]
+                result = self.validated_plan(cfg, operating)
+                self.assertEqual(expected, operating_ceiling(cfg)["effective_ceiling"])
+                self.assertEqual(expected, result["estimate"]["constraints"]["configured_ceiling"])
+                self.assertEqual(expected, result["lane_count"])
+                self.assertEqual(configured, "max_lanes" in cfg["execution"])
+
+    def test_t4_above_six_configuration_retains_broker_limit(self):
+        cfg, operating = self.inputs(4)
+        cfg["execution"]["host_broker"].update(enabled=True, max_workers=4)
+        result = self.validated_plan(cfg, operating)
+        self.assertEqual(4, result["lane_count"])
+        self.assertEqual(12, result["estimate"]["constraints"]["configured_ceiling"])
+        self.assertEqual(4, result["estimate"]["constraints"]["host_broker"])
+        self.assertIn("host_broker", result["estimate"]["binding_constraints"])
+
+    def test_t5_above_six_configuration_retains_host_and_resource_limits(self):
+        for capacity, expected, constraint in (
+                ({"host_capacity": 3}, 3, "observed_host_capacity"),
+                ({"resources": [{"name": "cpu", "capacity": 2}]}, 2, "resource:cpu")):
+            with self.subTest(constraint=constraint):
+                cfg, operating = self.inputs()
+                result = self.validated_plan(cfg, operating, **capacity)
+                self.assertEqual(expected, result["lane_count"])
+                self.assertEqual(expected, result["estimate"]["safe_lane_count"])
+                self.assertIn(constraint, result["estimate"]["binding_constraints"])
+
+    def test_t6_epic_overrides_accept_g_through_l_and_preserve_route_checks(self):
+        for label in "GHIJKL":
+            with self.subTest(label=label):
+                cfg, operating = self.inputs(3)
+                route = deepcopy(operating["streams"]["A"])
+                operating["epic_overrides"] = {"AWF-50": {"streams": {label: route}}}
+                with self.subTest(valid=True):
+                    self.assert_schema_valid("operating-config", operating)
+                    self.assertEqual(operating, validate_operating(operating, cfg).config)
+                for invalid in ("model", "reasoning_effort", "extra"):
+                    with self.subTest(invalid=invalid):
+                        changed = deepcopy(operating)
+                        worker = changed["epic_overrides"]["AWF-50"]["streams"][label]["worker"]
+                        worker[invalid] = "unsupported"
+                        with self.assertRaises(ValidationError):
+                            validate_operating(changed, cfg)
+                with self.subTest(extra_property=True):
+                    changed = deepcopy(operating)
+                    changed["epic_overrides"]["AWF-50"]["streams"][label]["extra"] = True
+                    with self.assertRaises(ValidationError):
+                        self.contracts.validate("operating-config", changed)
+        for label in ("M", "AA", "GG", "g"):
+            with self.subTest(invalid_label=label):
+                _, operating = self.inputs(3)
+                operating["epic_overrides"] = {"AWF-50": {"streams": {
+                    label: deepcopy(operating["streams"]["A"])}}}
+                with self.assertRaises(ValidationError):
+                    self.contracts.validate("operating-config", operating)
+
+    def test_t7_above_six_reviewers_and_shared_critic(self):
+        for shared in (True, False):
+            with self.subTest(shared=shared):
+                cfg, operating = self.inputs()
+                reviewer = deepcopy(operating["critic"])
+                if not shared:
+                    del operating["critic"]
+                    for label in "ABCDEFGHIJKL":
+                        operating["streams"][label]["reviewer"] = deepcopy(reviewer)
+                with self.subTest(valid=True):
+                    self.assert_schema_valid("operating-config", operating)
+                    self.assertEqual(12, validate_operating(operating, cfg).count)
+                if not shared:
+                    for label in "GHIJKL":
+                        with self.subTest(missing_reviewer=label):
+                            changed = deepcopy(operating)
+                            del changed["streams"][label]["reviewer"]
+                            with self.assertRaisesRegex(ValidationError, label + ".*reviewer"):
+                                self.contracts.validate("operating-config", changed)
+                            with self.assertRaisesRegex(ValidationError, label + ".*reviewer"):
+                                validate_operating(changed, cfg)
+
+    def test_t8_invalid_lane_values_remain_rejected(self):
+        for value in (0, 13, True, False, 1.5, None, "12", "invalid"):
+            with self.subTest(value=value):
+                cfg, _ = self.inputs()
+                cfg["execution"]["max_lanes"] = value
+                with self.assertRaises(ValidationError):
+                    self.contracts.validate("project-config", cfg)
+        for count in (1, 12):
+            with self.subTest(valid_boundary=count):
+                cfg, operating = self.inputs(count)
+                cfg["execution"]["max_lanes"] = count
+                # Runtime acceptance is independent of new-key schema rejection.
+                self.assertEqual(count, validate_operating(operating, cfg).count)
 
 
 class ProviderSnapshotTests(unittest.TestCase):
