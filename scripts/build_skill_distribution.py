@@ -172,6 +172,8 @@ The launcher contains package pins and verifies the installer before executing i
 
 The installer supports an empty skills root; a fresh installation never needs an earlier AWF version. When an `awf` installation exists, it stages and verifies the new package, retains the previous folder in an external backup and preserves local catalog/update-channel settings. Do not uninstall an existing skill first. Use `--dest ABSOLUTE_SKILLS_DIRECTORY/awf` to choose another installation. It does not remove other copies or plugins. See [installation and rollback](awf/references/skill-installation.md).
 
+A candidate package that differs from the installed package but carries the same version is a conflict. The helper may report `Manifest hash does not match the supplied trust pin`. Keep the installed skill and do not bypass verification. A replacement candidate needs a new version and independently verified pins; a new version does not make an incorrect pin valid.
+
 The skill will be available on your next turn; start a new Codex task if needed to refresh discovery. Invoke `$awf` and ask it to adopt AWF {LINE} in the intended project. Existing projects retain their version until separately migrated. The bundled source contains the applicable versioned migration guides.
 
 Balanced routing selects models and effort by role/task/risk, escalates within configured limits and records usage/outcomes. Adaptive mode initially makes evidence-based recommendations. The host must support the chosen models and enforce actual run limits; synthetic tests do not establish model quality or live integration.
