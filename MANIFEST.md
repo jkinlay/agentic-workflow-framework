@@ -119,7 +119,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/output.py` | `f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b` |
 | `.agentic/lib/agentic/owner_publication.py` | `a64337186ced78f05a13125542f6d83e45c1ae464467cf657c55afc861fb3e30` |
 | `.agentic/lib/agentic/path_containment.py` | `4be54130cfcca72bf384faa56d14d39f365ba5ff4d84fc69d97d7a6816609c15` |
-| `.agentic/lib/agentic/planning.py` | `d12c7e141c7dec8b35de2fa6e382b50716b2fe2e9c3103b7d02fad88ba9156a0` |
+| `.agentic/lib/agentic/planning.py` | `d590537c427570fa47714a7fe838405a3e837ed0c4bfa64f5e1bab2445f464f0` |
 | `.agentic/lib/agentic/planning_graph.py` | `c16ecb51b8ce16ec24508ab728af3bcb55be6d358e6962a545a8236fde8a6239` |
 | `.agentic/lib/agentic/policy.py` | `0d3516af5ff5045e50f9d260758243289d0de21d3f1868355dde36d77e38d5f5` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
@@ -400,7 +400,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_owner_publication.py` | `98d4f785a021e9deb1f36b992207ad4c5e0c0c95ef08bc8066f93bf51d989a47` |
 | `.agentic/tests/test_path_containment.py` | `18cb0c113915b08d88ff94e067f1d4c5fbe9a7dab7fecec75e0e2ad59b8dbf67` |
 | `.agentic/tests/test_plan_streams.py` | `d301e9d1d49e7907db560f4f5de0b83979040a0ad278716d8b36bf80db35fd52` |
-| `.agentic/tests/test_planning.py` | `ca2ef1ce13f1613f9f8901a3648fa356874d8aa319ae24ade66e717e4b095443` |
+| `.agentic/tests/test_planning.py` | `d4eeed615758d99ea7fca485d7a9f3979de2113a2ad03189ccb8ce2280b7c9cb` |
 | `.agentic/tests/test_planning_graph.py` | `4cf3eb0767f1a29d73a4b6567de439f42d1618e2bed3f0318757e8af13719173` |
 | `.agentic/tests/test_planning_overlap_allowances.py` | `966b013dceedfa4aa48cac294a274f0e482181486c9bc5bfcd5358c545d6e448` |
 | `.agentic/tests/test_posting_collector_awf60.py` | `fecc95adba72920bc822f9aecac32eeb2eae594cfefe45f3bf38e6c94049b845` |
