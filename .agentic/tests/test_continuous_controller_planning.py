@@ -135,6 +135,38 @@ def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now
         verify_planning_owner=lambda *_: {}, cycle_id=cycle_id,
         project_config_sha256=fingerprint('accepted-project-config', cfg), operating_config_sha256=operating.operating_hash)
 
+
+class ContinuousControllerStreamMigrationTests(unittest.TestCase):
+
+	def test_c1_reopen_superset_streams_with_migrate_option(self):
+		original_streams = list('ABCDEF')
+		expanded_streams = list('ABCDEFGH')
+		with tempfile.TemporaryDirectory(prefix='awf50-c1-') as scratch:
+			path = Path(scratch) / 'controller.sqlite3'
+			original = ContinuousControllerStore(path, original_streams)
+			with original.connection() as db:
+				# Retain an active assignment in the six-row before-image.
+				db.execute("UPDATE stream_status SET state='WORKING', ticket='AWF-C1', "
+					"actor='worker-c1', reason='Preserve the existing assignment', "
+					"updated_at=? WHERE stream_id='A'", (NOW,))
+				before = {row['stream_id']: dict(row) for row in
+					db.execute('SELECT * FROM stream_status ORDER BY stream_id')}
+			self.assertEqual(original_streams, list(before))
+			self.assertEqual('WORKING', before['A']['state'])
+
+			reopened = ContinuousControllerStore(path, expanded_streams, migrate_streams=True)
+			with reopened.connection() as db:
+				after_rows = list(db.execute('SELECT * FROM stream_status ORDER BY stream_id'))
+				self.assertEqual(8, len(after_rows))
+				after = {row['stream_id']: dict(row) for row in after_rows}
+				metadata = db.execute("SELECT value FROM controller_meta WHERE key='streams'").fetchone()
+			self.assertEqual(8, len(after))
+			self.assertEqual(expanded_streams, list(after))
+			self.assertEqual(before, {stream: after[stream] for stream in original_streams})
+			self.assertIsNotNone(metadata)
+			self.assertEqual(expanded_streams, json.loads(metadata['value']))
+
+
 class ContinuousControllerPlanningTests(unittest.TestCase):
 
 	def test_controller_persists_before_return_and_rejects_replay_after_restart(self):
