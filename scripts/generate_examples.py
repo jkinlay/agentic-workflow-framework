@@ -46,6 +46,8 @@ def controller_adapter_config():
                 "writer": {"model": "CHANGE_ME_APPROVED_WRITER_MODEL", "reasoning_effort": "high", "sandbox": "workspace-write"},
                 "critic": {"model": "CHANGE_ME_APPROVED_CRITIC_MODEL", "reasoning_effort": "high", "sandbox": "read-only"},
             },
+            "isolated_home": "<AWF_CODEX_HOME>",
+            "windows_sandbox": "elevated",
             "worktree_root": "<WORKTREE_ROOT>",
             "run_record_directory": "<STATE_DIR>/controller-runs",
             "timeout_seconds": 900,

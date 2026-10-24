@@ -16,6 +16,8 @@
         "sandbox": "read-only"
       }
     },
+    "isolated_home": "<AWF_CODEX_HOME>",
+    "windows_sandbox": "elevated",
     "worktree_root": "<WORKTREE_ROOT>",
     "run_record_directory": "<STATE_DIR>/controller-runs",
     "timeout_seconds": 900
