@@ -32,6 +32,7 @@ STATE = ".agentic-state/operating"
 LOCK = STATE + "/lock"
 JOURNAL = STATE + "/pending.json"
 DEFAULT_MAX_LANES = 6
+MAX_LANES = 12
 DEFAULT_MAX_LANES_SOURCE = ".agentic/schemas/operating-config.schema.json#/properties/streams/properties/count/maximum"
 EPIC_ID = r"[A-Z][A-Z0-9_]*-[1-9][0-9]*"
 STAGING_NAME = r"\.awf-operating-[0-9a-f]{32}\.tmp"
@@ -175,6 +176,21 @@ def _upgrade_safe_operating(governance):
             "simple_worker": {"enabled": True, **dict(simple)}}
 
 
+def _validated_lane_ceiling(configured):
+    if type(configured) is not int or not 1 <= configured <= MAX_LANES:
+        fail("$.streams.count", "Configured $.execution.max_lanes must be an exact integer in 1..12",
+             "$.execution.max_lanes", configured)
+    return configured
+
+
+def configured_lane_ceiling(governance):
+    """Validate the structural lane bound; only absence selects the default six."""
+    execution = governance.get("execution") if isinstance(governance, dict) else None
+    if not isinstance(execution, dict):
+        fail("$.streams.count", "A governing execution configuration is required", "$.execution", execution)
+    return _validated_lane_ceiling(execution.get("max_lanes", DEFAULT_MAX_LANES))
+
+
 def operating_ceiling(governance):
     """Configured stream bound, independent of observed host slots or ownership."""
     execution = governance.get("execution") if isinstance(governance, dict) else None
@@ -183,9 +199,7 @@ def operating_ceiling(governance):
     project = execution.get("max_parallel_tickets")
     if type(project) is not int or project < 1:
         fail("$.streams.count", "Invalid configured writer ceiling", "$.execution.max_parallel_tickets", project)
-    configured = execution.get("max_lanes", DEFAULT_MAX_LANES)
-    if type(configured) is not int or configured < 1:
-        fail("$.streams.count", "Invalid configured lane ceiling", "$.execution.max_lanes", configured)
+    configured = configured_lane_ceiling(governance)
     lane_source = "$.execution.max_lanes" if "max_lanes" in execution else DEFAULT_MAX_LANES_SOURCE
     limits = [(project, "$.execution.max_parallel_tickets"), (configured, lane_source)]
     broker = execution.get("host_broker")
@@ -204,13 +218,12 @@ def operating_ceiling(governance):
             "effective_ceiling_sources": sources}
 
 
-def _schema(name, value, *, stream_ceiling=None):
+def _schema(name, value, *, stream_ceiling=MAX_LANES):
     from .contracts import checker
     schema = loads((SCHEMAS / (name + ".schema.json")).read_text(encoding="utf-8"))
-    if name == "operating-config" and stream_ceiling is not None:
-        # Part b updates the shipped static schema.  Until then the runtime
-        # validator derives its label members from the already reviewed
-        # governance ceiling, without broadening any model or effort rule.
+    if name == "operating-config":
+        # Specialization can only narrow the shipped twelve-lane contract.
+        stream_ceiling = _validated_lane_ceiling(stream_ceiling)
         streams = schema["properties"]["streams"]
         route = deepcopy(streams["properties"]["A"])
         streams["properties"]["count"]["maximum"] = stream_ceiling
@@ -264,7 +277,7 @@ def validate_operating(value, governance):
         fail("$", "A complete governing execution/model_routing policy is required", "$.execution", execution)
     capacity = operating_ceiling(governance)
     ceiling = capacity["effective_ceiling"]
-    structural_ceiling = execution.get("max_lanes", DEFAULT_MAX_LANES)
+    structural_ceiling = configured_lane_ceiling(governance)
     errors = _schema("operating-config", value, stream_ceiling=structural_ceiling)
     configured_policy = execution["model_routing"]
     from .model_routing import EFFORTS
@@ -850,11 +863,11 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                 selected[path] = _selection(path, text)
             source = "user"
         count = selected.get("streams.count", value["streams"]["count"])
+        structural_ceiling = configured_lane_ceiling(governance)
         ceiling = operating_ceiling(governance)["effective_ceiling"]
         if type(count) is int and 1 <= count <= ceiling:
             for label in stream_labels(count):
                 value["streams"].setdefault(label, _stream(_routing_policy(governance)))
-        structural_ceiling = governance["execution"].get("max_lanes", DEFAULT_MAX_LANES)
         migration_paths = _prune_unrepresentable_routes(value, structural_ceiling)
         for path, choice in selected.items():
             if path.startswith("epic_overrides.") and path.endswith(".pinned") and _get(value, path.rsplit(".", 1)[0]) is None:
@@ -1198,6 +1211,7 @@ def _local_state(root, governance):
 
 
 def main(argv=None, default_root=None):
+    from .contracts import Contracts
     from .output import configure_streams, json_text
     configure_streams()
     parser = argparse.ArgumentParser(description="Show, recommend or explicitly change project-owned operating choices; never change governance or launch models")
@@ -1224,6 +1238,7 @@ def main(argv=None, default_root=None):
     try:
         with Tree(args.root) as tree:
             governance = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
+        Contracts(SCHEMAS).validate("project-config", governance)
         if args.command == "recommend":
             record = save_recommendation(args.root, governance, args.epics, args.inventory)
             print(json_text(record) if args.json else render_recommendation(record))

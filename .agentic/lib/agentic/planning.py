@@ -14,7 +14,7 @@ import uuid
 from . import ValidationError
 from .canonical import fingerprint, sha256, timestamp
 from .intake_assignment import classify_ticket, _canonical_repo_path
-from .operating import DEFAULT_MAX_LANES, operating_ceiling, stream_labels, validate_snapshot
+from .operating import configured_lane_ceiling, operating_ceiling, stream_labels, validate_snapshot
 
 
 MANIFEST_OUTPUTS = {"MANIFEST.json", "MANIFEST.md"}
@@ -757,7 +757,7 @@ def _estimate(graph, config, independent_count, capacity_inputs):
     execution = config["execution"]
     constraints = {
         "dependency_graph/file_overlap": independent_count,
-        "configured_ceiling": execution.get("max_lanes", DEFAULT_MAX_LANES),
+        "configured_ceiling": configured_lane_ceiling(config),
         "max_parallel_tickets": execution["max_parallel_tickets"],
     }
     broker = execution.get("host_broker")

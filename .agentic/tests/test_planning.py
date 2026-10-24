@@ -189,6 +189,9 @@ class SchemaLaneTests(unittest.TestCase):
                 self.assertEqual(expected, result["estimate"]["constraints"]["configured_ceiling"])
                 self.assertEqual(expected, result["lane_count"])
                 self.assertEqual(configured, "max_lanes" in cfg["execution"])
+                _, excessive = self.inputs(expected + 1)
+                with self.assertRaisesRegex(ValidationError, r"\$\.streams.count.*1\.\." + str(expected)):
+                    validate_operating(excessive, cfg)
 
     def test_t4_above_six_configuration_retains_broker_limit(self):
         cfg, operating = self.inputs(4)
@@ -262,17 +265,24 @@ class SchemaLaneTests(unittest.TestCase):
                                 validate_operating(changed, cfg)
 
     def test_t8_invalid_lane_values_remain_rejected(self):
-        for value in (0, 13, True, False, 1.5, None, "12", "invalid"):
+        for value in (0, -1, 13, 20, 2**53 - 1, 10**100, True, False,
+                      1.5, 6.0, None, "12", "invalid", [], {}):
             with self.subTest(value=value):
-                cfg, _ = self.inputs()
+                cfg, operating = self.inputs(3)
                 cfg["execution"]["max_lanes"] = value
                 with self.assertRaises(ValidationError):
                     self.contracts.validate("project-config", cfg)
+                with self.assertRaisesRegex(ValidationError, r"\$\.execution.max_lanes"):
+                    operating_ceiling(cfg)
+                # Keep huge invalid inputs away from the defective baseline's label expansion.
+                with patch("agentic.operating.stream_labels", side_effect=AssertionError("Invalid ceiling reached label generation")):
+                    with self.assertRaisesRegex(ValidationError, r"\$\.execution.max_lanes"):
+                        validate_operating(operating, cfg)
         for count in (1, 12):
             with self.subTest(valid_boundary=count):
                 cfg, operating = self.inputs(count)
                 cfg["execution"]["max_lanes"] = count
-                # Runtime acceptance is independent of new-key schema rejection.
+                # Both boundaries remain accepted through the runtime contract.
                 self.assertEqual(count, validate_operating(operating, cfg).count)
 
 
