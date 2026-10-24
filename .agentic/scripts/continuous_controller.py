@@ -142,6 +142,9 @@ def main(argv=None, default_root=ROOT):
 	parser.add_argument('--adapter-sha256')
 	parser.add_argument('--adapter-config', type=Path)
 	sub = parser.add_subparsers(dest='command', required=True)
+	planning_state = sub.add_parser('planning-state', help='Repair primary planning state; stop all cycles using this database first')
+	prune = planning_state.add_subparsers(dest='planning_command', required=True).add_parser('prune')
+	prune.add_argument('--forget-source', action='append', default=[], help='explicitly forget a retained non-pending source after provider-owner confirmation')
 	cycle = sub.add_parser('cycle', help='Run inventory, dispatch and status delivery through reviewed adapters')
 	cycle.add_argument('--inventory-binding', type=Path, required=True)
 	cycle.add_argument('--repository-root', type=Path, required=True)
@@ -184,6 +187,11 @@ def main(argv=None, default_root=ROOT):
 		batch.add_argument('--now', required=True)
 	sub.add_parser('snapshot')
 	args = parser.parse_args(argv)
+	if args.command == 'planning-state':
+		from agentic.continuous_controller import prune_production_planning_state
+		output = prune_production_planning_state(args.state, worktree_roots=args.worktree_root, forget_sources=args.forget_source)
+		print(json.dumps(output, indent=2))
+		return 0
 	config_path = args.project_config or default_root / '.agentic/PROJECT_CONFIG.yaml'
 	config = load(config_path)
 	configured_cadence = config.get('controller', {}).get('status_cadence_seconds', 600)
@@ -214,7 +222,7 @@ def main(argv=None, default_root=ROOT):
 	elif args.command == 'owner-publication-status':
 		output = store.snapshot(args.batch, config)
 	elif args.command == 'cycle':
-		names = {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation'}
+		names = {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'}
 		overlap_requests = None
 		if args.overlap_allowances is not None:
 			overlap_requests = load(args.overlap_allowances)
@@ -227,7 +235,10 @@ def main(argv=None, default_root=ROOT):
 				calls[name] = adapters[name]
 		from agentic.operating import read_operating
 		operating = read_operating(args.repository_root, config)
-		output = production_controller_cycle(store, planning_resource_producer_sha256=args.adapter_sha256, project_config_sha256=fingerprint('accepted-project-config', config), operating_config_sha256=operating.operating_hash, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id, overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
+		from agentic.store import Store
+		planning_store = Store(args.state.with_suffix('.planning.sqlite3'), config['project']['id'], worktree_roots=args.worktree_root)
+		provider = {'provider_id': 'reviewed-controller', 'implementation_sha256': args.adapter_sha256, 'verifier_implementation_sha256': args.adapter_sha256}
+		output = production_controller_cycle(store, planning_state_store=planning_store, planning_config=config, planning_operating_snapshot=operating, planning_provider=provider, planning_resource_producer_sha256=args.adapter_sha256, project_config_sha256=fingerprint('accepted-project-config', config), operating_config_sha256=operating.operating_hash, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id or fingerprint('controller-planning-cycle', {'binding': load(args.inventory_binding), 'head': args.repository_head_sha, 'now': args.now}), overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
 	elif args.command == 'jira-lifecycle':
 		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'})
 		output = production_jira_lifecycle(store, config=config, contract=load(args.contract), event=args.event, facts=load(args.facts), binding=load(args.binding), issue_type=args.issue_type, state=args.lifecycle_state, producer_id=args.producer_id, run_id=args.run_id, now=args.now, evidence=args.evidence, transition_id=args.transition_id, merge_result_id=args.merge_result_id, **calls)

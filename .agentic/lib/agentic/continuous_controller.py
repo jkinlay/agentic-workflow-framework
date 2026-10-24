@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib
 import inspect
+import json
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import timedelta
@@ -14,7 +15,7 @@ import unicodedata
 import uuid
 from . import ValidationError
 from .child_process import child_env
-from .canonical import canonical, loads, now_text, timestamp
+from .canonical import MAX_DOCUMENT_BYTES, _pairs, canonical, loads, now_text, timestamp, validate_value
 from .controller_state import STATE_SCHEMA_VERSION, configure_database, protected_state_path, restrict_state_permissions
 STREAM_STATES = {'WORKING', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 TICKET_STATES = {'ELIGIBLE', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
@@ -23,6 +24,11 @@ DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 1096238641
 DISPATCH_SCHEMA_VERSION = 2
 REPLAN_TRIGGER_SCHEMA_VERSION = 2
+PRODUCTION_PLANNING_MAX_BYTES = 4 * 1024 * 1024
+PRODUCTION_PLANNING_MAX_EVENTS = 4000
+PRODUCTION_PLANNING_RECOVERY_MAX_BYTES = 16 * 1024 * 1024
+PRODUCTION_PLANNING_SEEN_RETENTION = 4096
+PRODUCTION_PLANNING_SCHEMA_VERSION = 2
 DDL = '\nCREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS stream_status(\n stream_id TEXT PRIMARY KEY,state TEXT NOT NULL,ticket TEXT,actor TEXT NOT NULL,\n reason TEXT NOT NULL,next_action TEXT NOT NULL,resume_trigger TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,\n reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,\n jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_outbox(\n delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,\n observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_dispatch(\n dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,\n receipt_json TEXT,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_dispatch_waiver(\n waiver_id TEXT PRIMARY KEY,dispatch_id TEXT NOT NULL,allowance_id TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,\n UNIQUE(dispatch_id,allowance_id));\nCREATE TABLE IF NOT EXISTS controller_replan_seal(\n seal_id TEXT PRIMARY KEY,trigger_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,consumed_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_ticket_authority(\n ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,\n lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,\n PRIMARY KEY(ticket,exact_tuple));\nCREATE TABLE IF NOT EXISTS controller_overlap_allowance(\n allowance_id TEXT PRIMARY KEY,source_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL,\n cycle_id TEXT NOT NULL,path TEXT NOT NULL,tickets_json TEXT NOT NULL,\n pull_requests_json TEXT NOT NULL,heads_json TEXT NOT NULL,expires_at TEXT NOT NULL,\n status TEXT NOT NULL,record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_overlap_sync_gate(\n gate_id TEXT PRIMARY KEY,allowance_id TEXT NOT NULL,status TEXT NOT NULL,\n record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_overlap_gate_allowance\n ON controller_overlap_sync_gate(allowance_id,status);\nCREATE TABLE IF NOT EXISTS controller_jira_operation(\n operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,\n intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,\n operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_jira_issue ON controller_jira_operation(issue_id,status);\n'
 
 BATCH_JIRA_DDL = '''CREATE TABLE IF NOT EXISTS controller_batch_jira_operation(
@@ -63,6 +69,113 @@ BATCH_AUDIT_DDL = (
 def _require(condition, message):
 	if not condition:
 		raise ValidationError(message)
+
+def _planning_state(state, *, migrate=False):
+	"""Validate retention metadata without discarding unfamiliar planning fields."""
+	from .planning import RECOMPUTE_TRIGGERS, verify_plan_record
+	_require(isinstance(state, dict) and {'pending', 'seen', 'overrides', 'candidate', 'observation'} <= set(state), 'Malformed production planning state')
+	version = state.get('schema_version', 1)
+	_require(type(version) is int and version in (1, PRODUCTION_PLANNING_SCHEMA_VERSION), 'Unsupported production planning format version')
+	sequence = state.get('cycle_sequence', 0) if version == 1 else state.get('cycle_sequence')
+	_require(type(sequence) is int and 0 <= sequence <= 2**53 - 1, 'Invalid production planning cycle sequence')
+	_require(isinstance(state['seen'], dict) and isinstance(state['pending'], list) and isinstance(state['overrides'], dict), 'Malformed production planning collections')
+	_require(state['candidate'] is None or isinstance(state['candidate'], dict), 'Malformed retained planning candidate')
+	if state['candidate'] is not None:
+		verify_plan_record(state['candidate'])
+	for key in ('observation', 'candidate_observation'):
+		value = state.get(key)
+		_require(value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None, 'Malformed planning observation')
+	if 'candidate_source_ids' in state:
+		_require(isinstance(state['candidate_source_ids'], list) and all(isinstance(source, str) and 0 < len(source) <= 256 for source in state['candidate_source_ids']), 'Malformed retained candidate sources')
+	for source, entry in state['seen'].items():
+		_require(isinstance(source, str) and 0 < len(source) <= 256, 'Invalid retained planning source identity')
+		if version == 1:
+			digest, age = entry, 0
+		else:
+			_require(isinstance(entry, list) and len(entry) == 2, 'Malformed retained planning digest and age')
+			digest, age = entry
+		_require(isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest) is not None, 'Invalid retained planning digest')
+		_require(type(age) is int and 0 <= age <= sequence, 'Invalid retained planning age')
+	for event in state['pending']:
+		_require(isinstance(event, dict) and set(event) == {'source_id', 'trigger', 'override'} and isinstance(event['source_id'], str) and 0 < len(event['source_id']) <= 256, 'Malformed pending planning event')
+		_require(isinstance(event['trigger'], str) and event['trigger'] in RECOMPUTE_TRIGGERS and (event['override'] is None or isinstance(event['override'], dict)), 'Malformed pending planning trigger or override')
+	if migrate:
+		if version == 1:
+			state['seen'] = {source: [digest, 0] for source, digest in state['seen'].items()}
+		state['schema_version'] = PRODUCTION_PLANNING_SCHEMA_VERSION
+		state['cycle_sequence'] = sequence
+	return state
+
+def _planning_eviction_order(state):
+	pinned = {event['source_id'] for event in state['pending']}
+	return sorted((source for source in state['seen'] if source not in pinned),
+		key=lambda source: (state['seen'][source][1] if isinstance(state['seen'][source], list) else 0, source))
+
+def _encode_production_planning(state, *, recovery=False):
+	"""Retain pending sources and store exactly the canonical bytes checked here."""
+	_planning_state(state)
+	eligible = _planning_eviction_order(state)
+	count = min(max(0, len(state['seen']) - PRODUCTION_PLANNING_SEEN_RETENTION), len(eligible))
+	for source in eligible[:count]:
+		del state['seen'][source]
+	encoded = canonical(state)
+	if recovery and len(encoded) > PRODUCTION_PLANNING_MAX_BYTES:
+		# Account for each canonical entry and its comma, then encode the final
+		# reduced state once more. This avoids quadratic re-encoding during repair.
+		size = len(encoded)
+		for source in eligible[count:]:
+			entry_size = len(canonical({source: state['seen'][source]})) - 2
+			size -= entry_size + (1 if len(state['seen']) > 1 else 0)
+			del state['seen'][source]
+			if size <= PRODUCTION_PLANNING_MAX_BYTES:
+				break
+		encoded = canonical(state)
+	_require(len(encoded) <= PRODUCTION_PLANNING_MAX_BYTES,
+		"Production planning state exceeds 4 MiB; pending/preserved fields cannot fit. Stop cycles and run planning-state prune on the primary controller database; if refused, reach a round boundary or reduce the provider event window")
+	return encoded
+
+def prune_production_planning_state(path, *, worktree_roots=(), forget_sources=()):
+	"""Repair only the existing primary planning key. Operators must stop cycles."""
+	_require(Path(path).is_file(), 'Planning recovery requires an existing controller database')
+	path = protected_state_path(path, worktree_roots)
+	_require(isinstance(forget_sources, (list, tuple)) and all(isinstance(source, str) and source for source in forget_sources), 'Invalid source identities to forget')
+	# mode=rw prevents a missing file from becoming a new database. No ordinary
+	# constructor, migration, journal configuration, adapter, or provider runs.
+	db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=10, isolation_level=None)
+	try:
+		db.execute('BEGIN IMMEDIATE')
+		_require(db.execute('PRAGMA application_id').fetchone()[0] == STATE_APPLICATION_ID,
+			'Planning recovery requires the primary controller database identity')
+		_require(db.execute('PRAGMA user_version').fetchone()[0] == STATE_SCHEMA_VERSION,
+			'Planning recovery requires the established controller schema version')
+		_require(db.execute('PRAGMA quick_check').fetchone()[0] == 'ok', 'Controller state integrity check failed')
+		row = db.execute("SELECT length(CAST(value AS BLOB)) FROM controller_meta WHERE key='production_planning'").fetchone()
+		_require(row is not None, "Missing controller_meta['production_planning']; recovery does not initialize state")
+		before_bytes = row[0]
+		_require(before_bytes <= PRODUCTION_PLANNING_RECOVERY_MAX_BYTES, 'Planning recovery input exceeds the finite 16 MiB allowance')
+		raw = db.execute("SELECT value FROM controller_meta WHERE key='production_planning'").fetchone()[0]
+		try:
+			state = json.loads(raw, object_pairs_hook=_pairs)
+			validate_value(state)
+		except (ValueError, RecursionError) as exc:
+			raise ValidationError(f'Invalid recovery JSON: {exc}') from exc
+		_planning_state(state)
+		before_count = len(state['seen'])
+		pinned = {event['source_id'] for event in state['pending']}
+		_require(not pinned.intersection(forget_sources), 'Cannot forget a pending planning source')
+		for source in forget_sources:
+			state['seen'].pop(source, None)
+		encoded = _encode_production_planning(state, recovery=True)
+		db.execute("UPDATE controller_meta SET value=? WHERE key='production_planning'", (encoded.decode('utf-8'),))
+		db.execute('COMMIT')
+		return {'status': 'PRUNED', 'before_bytes': before_bytes, 'after_bytes': len(encoded),
+			'retained': len(state['seen']), 'removed': before_count - len(state['seen'])}
+	except BaseException:
+		if db.in_transaction:
+			db.execute('ROLLBACK')
+		raise
+	finally:
+		db.close()
 
 def _reviewer_counts(counts):
 	required = {'required', 'completed', 'acceptable', 'failed', 'stale', 'outstanding'}
@@ -611,6 +724,130 @@ class ContinuousControllerStore:
 		with self.connection() as db:
 			return [self._batch_audit_from_row(row) for row in
 				db.execute('SELECT * FROM controller_batch_audit ORDER BY sequence')]
+
+	def production_planning_state(self):
+		with self.connection() as db:
+			row = db.execute("SELECT value FROM controller_meta WHERE key='production_planning'").fetchone()
+		if row and len(row[0].encode('utf-8')) > MAX_DOCUMENT_BYTES:
+			raise ValidationError("controller_meta['production_planning'] exceeds 8 MiB; ordinary cycle loading cannot repair it. Stop cycles and run planning-state prune on the primary controller database")
+		state = loads(row[0]) if row else {'pending': [], 'seen': {}, 'overrides': {}, 'candidate': None, 'observation': None}
+		return _planning_state(state, migrate=True)
+
+	def _save_production_planning(self, state):
+		encoded = _encode_production_planning(state)
+		with self.transaction() as db:
+			db.execute("INSERT OR REPLACE INTO controller_meta VALUES('production_planning',?)", (encoded.decode('utf-8'),))
+
+	def prune_production_planning(self, *, forget_sources=()):
+		return prune_production_planning_state(self.path, worktree_roots=self.worktree_roots, forget_sources=forget_sources)
+
+	def plan_production_cycle(self, state_store, tickets, config, *, backlog, events,
+			verify_owner_source, resource_observation, expected_resource_binding,
+			expected_resource_producer_sha256, operating_snapshot, verify_host_observation,
+			now, boundary_ready, overlap_allowances=(),
+			expected_overlap_binding=None, verify_overlap_allowance=None):
+		"""Journal authenticated observations and recover the two-store append window."""
+		from . import planning
+		from .canonical import fingerprint
+		state = self.production_planning_state()
+		_require(state['cycle_sequence'] < 2**53 - 1, 'Production planning cycle sequence exhausted')
+		state['cycle_sequence'] += 1
+		planning.verify_override_state(config, state['overrides'], verify_owner_source)
+		for event in events:
+			_require(isinstance(event, dict) and set(event) == {'source_id', 'trigger', 'override'}, 'Planning event must be a closed observation')
+			_require(isinstance(event['source_id'], str) and 0 < len(event['source_id']) <= 256, 'Planning event source identity is required')
+			_require(event['trigger'] in planning.RECOMPUTE_TRIGGERS, 'Unknown planning event trigger')
+			digest = fingerprint('controller-planning-event', event)
+			prior = state['seen'].get(event['source_id'])
+			_require(prior is None or prior[0] == digest, f"Planning event source identity was reused with changed bytes: {event['source_id']}")
+			if prior is not None:
+				prior[1] = state['cycle_sequence']
+				continue
+			if event['override'] is not None:
+				_require(event['trigger'] == 'override_changed', 'Only an override event may carry an owner chain')
+				incoming = event['override']
+				planning.verify_override_state(config, incoming, verify_owner_source)
+				old = state['overrides'].get('planning_override_history', [])
+				new = incoming.get('planning_override_history', [])
+				_require(len(new) > len(old) and new[:len(old)] == old, 'Planning owner chain replay or rollback')
+				state['overrides'] = deepcopy(incoming)
+			state['seen'][event['source_id']] = [digest, state['cycle_sequence']]
+			state['pending'].append(deepcopy(event))
+		# Content changes are controller-derived only after independent authentication.
+		observed = fingerprint('controller-planning-input', {'backlog': backlog,
+			'configuration': config, 'overrides': state['overrides'],
+			'resources': {k: resource_observation[k] for k in ('binding', 'host_capacity', 'resources')},
+			'operating': operating_snapshot.operating_hash,
+			'overlap_allowances': overlap_allowances})
+		if state['observation'] != observed and not state['pending']:
+			trigger = 'project_start' if state['observation'] is None else 'files_changed'
+			state['pending'].append({'source_id': observed, 'trigger': trigger, 'override': None})
+		if len(events) > PRODUCTION_PLANNING_MAX_EVENTS:
+			# Check staged bytes first, but refuse the batch before any durable save.
+			_encode_production_planning(state)
+			raise ValidationError('Production planning cycle exceeds 4,000 events; reduce the provider event window')
+		self._save_production_planning(state)
+		if not boundary_ready:
+			return None
+		# Verify the retained candidate against the durable history before any retry.
+		candidate = state['candidate']
+		if candidate is not None:
+			planning.verify_plan_record(candidate)
+			history = state_store.planning_history()
+			matches = [record for record in history if record['plan_id'] == candidate['plan_id']]
+			_require(not matches or matches == [candidate], 'Durable plan conflicts with the retained append candidate')
+			if not matches:
+				planning.append_plan_record(state_store, candidate)
+			# Acknowledgement processes only the inputs used by this candidate.
+			# Legacy candidates have no fingerprint and require a fresh plan.
+			state['observation'] = state.pop('candidate_observation', None)
+			state['candidate'] = None
+			# Legacy retained candidates covered only the first pending event.
+			consumed = set(state.pop('candidate_source_ids',
+				[event['source_id'] for event in state['pending'][:1]]))
+			state['pending'] = [event for event in state['pending'] if event['source_id'] not in consumed]
+			self._save_production_planning(state)
+		# Recovery may consume the last event while authenticated inputs have
+		# changed. Append their plan before returning anything for admission.
+		if state['observation'] != observed and not state['pending']:
+			state['pending'].append({'source_id': observed, 'trigger': 'files_changed', 'override': None})
+		while state['pending']:
+			trigger = state['pending'][0]['trigger']
+			# All event effects and source fingerprints were retained above.
+			# Coalesce this trigger across the entire queue, including interleaved sources.
+			source_ids = [event['source_id'] for event in state['pending'] if event['trigger'] == trigger]
+			# Seal a fresh candidate; the durable history check below accepts an
+			# identical plan without appending it again and refuses conflicting bytes.
+			working = deepcopy(state['overrides'])
+			working['planning_history'] = []
+			working['current_plan'] = None
+			result = planning.recompute_plan(backlog, config, working, now=now,
+				trigger=trigger, resource_observation=resource_observation,
+				expected_resource_binding=expected_resource_binding,
+				expected_resource_producer_sha256=expected_resource_producer_sha256,
+				operating_snapshot=operating_snapshot, observed_at=now,
+				verify_host_observation=verify_host_observation, verify_owner_source=verify_owner_source,
+				overlap_allowances=overlap_allowances, expected_overlap_binding=expected_overlap_binding,
+				verify_overlap_allowance=verify_overlap_allowance)
+			candidate = result['record']
+			state['candidate'] = candidate
+			state['candidate_observation'] = observed
+			state['candidate_source_ids'] = source_ids
+			self._save_production_planning(state)
+			history = state_store.planning_history()
+			matches = [record for record in history if record['plan_id'] == candidate['plan_id']]
+			_require(not matches or matches == [candidate], 'Planning append candidate conflicts with immutable history')
+			if not matches:
+				planning.append_plan_record(state_store, candidate)
+			state['observation'] = state.pop('candidate_observation')
+			state['candidate'] = None
+			consumed = set(state.pop('candidate_source_ids'))
+			state['pending'] = [event for event in state['pending'] if event['source_id'] not in consumed]
+			self._save_production_planning(state)
+		record = state_store.current_plan()
+		_require(record is not None, 'Production dispatch requires a durable verified plan')
+		planning.verify_plan_record(record)
+		return record
 
 	def recompute_durable_plan(self, state_store, tickets, config, *, legacy_state=None,
 			migration_version=1, **planning_inputs):
@@ -2138,9 +2375,9 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	from .canonical import fingerprint
 	_require(observation['binding'] == inventory_binding and observation['inventory_sha256'] == fingerprint('controller-inventory', {'binding': inventory_binding, 'tickets': observation['tickets']}), 'Production inventory identity or digest differs from the configured scope')
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
-	return (tickets, repository_binding, observation)
+	return (deepcopy(tickets), repository_binding, observation)
 
-def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None):
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')
 	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
@@ -2176,6 +2413,29 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(host_capacity is None or (type(host_capacity) is int and host_capacity == resources['host_capacity']),
 		'Operator capacity differs from authenticated host capacity')
 	host_capacity = min(resources['host_capacity'], *(item['capacity'] for item in resources['resources']))
+	from .store import Store
+	from .planning import tickets_from_provider_snapshot
+	from .operating import validate_snapshot
+	from .canonical import fingerprint
+	_require(isinstance(planning_state_store, Store) and isinstance(planning_config, dict), 'Production requires authenticated planning inputs and a durable planning store')
+	_require(all(callable(callback) for callback in (observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events)), 'Production requires authenticated planning backlog and event callbacks')
+	validate_snapshot(planning_operating_snapshot, planning_config)
+	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
+	_require(isinstance(cycle_id, str) and cycle_id, 'Production planning requires a bound cycle identity')
+	planning_binding = {**inventory_binding, 'repository_head_sha': repository_head_sha,
+		'project_config_sha256': project_config_sha256, 'cycle_id': cycle_id}
+	planning_request = {'provider': deepcopy(planning_provider), 'binding': deepcopy(planning_binding), 'observed_at': now}
+	planning_snapshot = observe_planning_backlog(deepcopy(planning_request))
+	backlog = tickets_from_provider_snapshot(planning_snapshot, planning_config,
+		expected_binding=planning_binding, expected_provider=planning_provider, now=now,
+		verify_provider_snapshot=verify_planning_backlog)
+	event_snapshot = observe_planning_events(deepcopy(planning_request))
+	_require(isinstance(event_snapshot, dict) and set(event_snapshot) == {'binding', 'observed_at', 'events', 'authentication'}, 'Planning event observation must be closed')
+	_require(event_snapshot['binding'] == planning_binding and event_snapshot['observed_at'] == now and isinstance(event_snapshot['events'], list), 'Planning events are foreign, stale or incomplete')
+	auth = event_snapshot['authentication']
+	_require(isinstance(auth, dict) and set(auth) == {'evidence_id'} and isinstance(auth['evidence_id'], str) and auth['evidence_id'], 'Planning events require independent evidence identity')
+	verified = verify_planning_events(deepcopy(auth), deepcopy(planning_request))
+	_require(verified == {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': {k: deepcopy(v) for k, v in event_snapshot.items() if k != 'authentication'}}, 'Planning events differ from independent authenticated evidence')
 	store.recover_dispatches(now)
 
 	def observe_current_reservations(observed_at, current_inventory_sha256):
@@ -2375,7 +2635,46 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(isinstance(reservations, list), 'Authenticated reservations were not refreshed for the inventory being scheduled')
 	ticket_by_id = {item['ticket']: item for item in tickets}
 	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
-	streams = store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
+	_require({item['key'] for item in backlog} == {item['ticket'] for item in tickets}, 'Authenticated backlog ticket keys differ from dispatch inventory')
+	backlog_by_key = {item['key']: item for item in backlog}
+	for item in tickets:
+		paths = set(backlog_by_key[item['ticket']]['write_paths']) | set(backlog_by_key[item['ticket']]['open_pr_files']) | set(backlog_by_key[item['ticket']]['worktree_diff'])
+		_require(paths == set(item['paths']) - {'MANIFEST.json', 'MANIFEST.md'}, 'Dispatch paths differ from authenticated planning attribution')
+	# Only provider-authenticated records that survived the fresh lane-start
+	# recheck may influence sealed capacity. Candidate inventory never grants
+	# an exception and the planner cannot select its own verifier or context.
+	planning_allowances = [deepcopy(item['record']) for item in active_allowances]
+	bound_prs = {}
+	for request, _record in lane_allowance_plans:
+		for pr in request['pull_requests']:
+			prior = bound_prs.get(pr['ticket'])
+			_require(prior is None or prior == pr, 'Overlap planning PR identities disagree')
+			bound_prs[pr['ticket']] = deepcopy(pr)
+	overlap_binding = {'repository_id': inventory_binding['repository_id'], 'cycle_id': cycle_id,
+		'pull_requests': sorted(bound_prs.values(), key=lambda pr: pr['number'])}
+	def verify_planning_allowance(record, binding):
+		_require(binding == overlap_binding and record in planning_allowances,
+			'Planning allowance was not authenticated by this controller cycle')
+		return deepcopy(record)
+	plan = store.plan_production_cycle(planning_state_store, tickets, planning_config,
+		backlog=backlog, events=event_snapshot['events'], verify_owner_source=verify_planning_owner,
+		resource_observation=resources, expected_resource_binding=resource_binding,
+		expected_resource_producer_sha256=planning_resource_producer_sha256,
+		operating_snapshot=planning_operating_snapshot, verify_host_observation=verify_host_observation,
+		now=now, boundary_ready=round_boundary_ready, overlap_allowances=planning_allowances,
+		expected_overlap_binding=overlap_binding, verify_overlap_allowance=verify_planning_allowance)
+	if plan is not None:
+		host_capacity = min(host_capacity, plan['lane_count'])
+		admitted = {key for lane in plan['lanes'] for key in lane['ticket_keys']}
+		ranked = sorted(admitted, key=lambda key: (-plan['ranking'][key], ticket_by_id[key]['priority'], key))
+		priority = {key: index for index, key in enumerate(ranked)}
+		for index, item in enumerate(tickets):
+			if item['ticket'] in priority:
+				tickets[index] = {**item, 'priority': priority[item['ticket']]}
+			elif item['disposition'] == 'ELIGIBLE':
+				tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': 'Authenticated durable plan did not admit this ticket'}
+	streams = (store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
+		if plan is not None else store.snapshot())
 	# Evaluate and consume any authenticated boundary seal before cancellation.
 	# A closed boundary retains pending intents across restarts.
 	if cancellation_boundary_ready:
@@ -2396,7 +2695,15 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	for operation in operations:
 		payload, dispatch_id = (operation['payload'], operation['dispatch_id'])
 		if operation['status'] == 'PENDING':
-			admitted = payload['ticket'] in publication_reports and any((stream['stream'] == payload['stream'] and stream['state'] == 'WORKING' and (stream['ticket'] == payload['ticket']) and (stream['exact_tuple'] == payload['exact_tuple']) for stream in streams))
+			# Scheduling can retain a pre-crash WORKING snapshot at a closed boundary.
+			# Revalidate against the current plan and ticket before launching its intent.
+			current = next((item for item in tickets if item['ticket'] == payload['ticket']), None)
+			admitted = (plan is not None
+				and any(payload['ticket'] in lane['ticket_keys'] for lane in plan['lanes'])
+				and current is not None and current['disposition'] == 'ELIGIBLE'
+				and all(current[key] for key in ('dependencies_satisfied', 'budget_available', 'cap_available', 'review_independent'))
+				and current['exact_tuple'] == payload['exact_tuple']
+				and payload['ticket'] in publication_reports and any((stream['stream'] == payload['stream'] and stream['state'] == 'WORKING' and (stream['ticket'] == payload['ticket']) and (stream['exact_tuple'] == payload['exact_tuple']) for stream in streams)))
 			if not admitted:
 				current = next((item for item in tickets if item['ticket'] == payload['ticket']), None)
 				if current is None:

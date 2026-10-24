@@ -93,6 +93,48 @@ def planning_resource_inputs(capacity, *, resource_capacity=None, operator_capac
 		'planning_resource_producer_sha256': 'c' * 64,
 		'project_config_sha256': 'd' * 64, 'operating_config_sha256': 'e' * 64}
 
+def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now=NOW,
+                            config=None, cycle_id='fixture-cycle', repository=REPOSITORY):
+    """Independent fixture backlog, built from explicitly supplied fixture records.
+
+    No production inventory callback is invoked or inspected by this helper.
+    """
+    import uuid
+    from agentic.store import Store
+    from test_planning import config as project_fixture, operating_snapshot
+    cfg = deepcopy(config) if config is not None else project_fixture(min(max(capacity, 1), 6))
+    cfg['project']['id'] = binding['project_id']
+    cfg['github']['repository_id'] = binding['repository_id']
+    operating = operating_snapshot(cfg, min(max(capacity, 1), 6))
+    history = Store(Path(controller.path).with_suffix('.planning.sqlite3'),
+                    str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-planning:' + binding['project_id'])))
+    owned = deepcopy(items)
+    evidence = {}
+    def observe_backlog(request):
+        body = {'format': 'awf-backlog-provider-snapshot-1', 'complete': True,
+                'provider': request['provider'], 'binding': request['binding'],
+                'observed_at': request['observed_at'], 'tickets': []}
+        for item in owned:
+            body['tickets'].append({'ticket': {'key': item['ticket'], 'status': 'open', 'risk_tier': 3},
+                'components': [{'kind': kind, 'ticket_key': item['ticket'], 'binding': request['binding'],
+                    'observed_at': request['observed_at'], 'files': item['paths'] if kind == 'brief' else []}
+                    for kind in ('brief', 'open_pr', 'worktree_diff')]})
+        evidence['backlog'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'fixture-backlog'}}
+    def observe_events(request):
+        body = {'binding': request['binding'], 'observed_at': request['observed_at'], 'events': []}
+        evidence['events'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'fixture-events'}}
+    return dict(planning_config=cfg, planning_state_store=history,
+        planning_operating_snapshot=operating,
+        planning_provider={'provider_id': 'fixture-backlog', 'implementation_sha256': '1'*64, 'verifier_implementation_sha256': '2'*64},
+        observe_planning_backlog=observe_backlog,
+        verify_planning_backlog=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(evidence['backlog'])},
+        observe_planning_events=observe_events,
+        verify_planning_events=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(evidence['events'])},
+        verify_planning_owner=lambda *_: {}, cycle_id=cycle_id,
+        project_config_sha256=fingerprint('accepted-project-config', cfg), operating_config_sha256=operating.operating_hash)
+
 class ContinuousControllerPlanningTests(unittest.TestCase):
 
 	def test_controller_persists_before_return_and_rejects_replay_after_restart(self):
@@ -243,6 +285,7 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 	def cycle(self, items, *, capacity=2, dispatch=None, **resources):
 		calls = []
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
+		resources = {**resources, **planning_fixture_inputs(items, self.store, capacity)}
 		result = production_controller_cycle(self.store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, **resources, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
 
@@ -399,6 +442,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			'controller_clock': controller_clock or (lambda: now),
 		}
 		arguments.update(planning_resource_inputs(capacity))
+		arguments.update(planning_fixture_inputs(items, store, capacity, now=now))
 		arguments.update(operations)
 		return production_controller_cycle(store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=now, host_capacity=capacity,
 			inventory_binding=BINDING, **REPOSITORY, **arguments)
@@ -768,6 +812,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			return value
 
 		result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
+			**{key: value for key, value in planning_fixture_inputs(drifted, self.store, 2).items() if key != 'cycle_id'},
 			dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
 			cycle_id='cycle-17', overlap_allowance_requests=[allowance_request()],
 			observe_overlap_allowance=observe_allowance)
@@ -806,6 +851,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 
 		with patch('agentic.continuous_controller.canonical_reservation_sources', side_effect=lambda raw, *_args, **_kwargs: raw['sources']):
 			result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
+			**{key: value for key, value in planning_fixture_inputs(refreshed, self.store, 2).items() if key != 'cycle_id'},
 				dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
 				observe_reservations=observe_reservations, cycle_id='cycle-17',
 				overlap_allowance_requests=[allowance_request()], observe_overlap_allowance=observe_allowance)
@@ -865,3 +911,1045 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		self.assertEqual(diff, dispatched[0]['overlap_sync_evidence'][0]['diff'])
 if __name__ == '__main__':
 	unittest.main()
+
+
+class ProductionPlanningTriggerTests(unittest.TestCase):
+    """Production planning must precede every newly admitted dispatch."""
+
+    @staticmethod
+    def retention_events(start, count):
+        return [{'source_id': f'{i:08d}' + 'x' * 248, 'trigger': 'ticket_added', 'override': None}
+                for i in range(start, start + count)]
+
+    def raw_planning(self):
+        with self.store.connection() as db:
+            row = db.execute("SELECT value FROM controller_meta WHERE key='production_planning'").fetchone()
+            return row[0] if row else None
+
+    def put_raw_planning(self, raw):
+        with self.store.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO controller_meta VALUES('production_planning',?)", (raw,))
+
+    def oversized_legacy(self):
+        self.cycle()
+        state = self.store.production_planning_state()
+        state.pop('schema_version', None)
+        state.pop('cycle_sequence', None)
+        state['seen'] = {event['source_id']: fingerprint('controller-planning-event', event)
+                         for event in self.retention_events(0, 30000)}
+        self.put_raw_planning(json.dumps(state))
+        return state
+
+    def test_seen_retention_is_bounded_and_persisted_state_stays_loadable(self):
+        first = self.retention_events(0, 2100)
+        self.events = first
+        self.cycle()
+        self.events = self.retention_events(2100, 2100)
+        self.cycle()
+        state = self.store.production_planning_state()
+        self.assertLessEqual(len(state['seen']), 4096)
+        self.assertLess(len(self.raw_planning().encode()), 2 * 1024 * 1024)
+        self.assertEqual({event['source_id'] for event in first[:104]},
+                         {event['source_id'] for event in first} - set(state['seen']))
+
+    def test_sustained_seen_retention_and_empty_cycles(self):
+        for cycle in range(8):
+            self.events = self.retention_events(cycle * 4000, 4000)
+            self.cycle()
+            state = self.store.production_planning_state()
+            self.assertEqual(min((cycle + 1) * 4000, 4096), len(state['seen']))
+            self.assertLessEqual(len(self.raw_planning().encode()), 4 * 1024 * 1024)
+            self.assertEqual(cycle + 1, state['cycle_sequence'])
+        self.events = []
+        self.cycle()
+        self.assertEqual(9, self.store.production_planning_state()['cycle_sequence'])
+
+    def test_4001_events_within_byte_guard_refuse_without_durable_changes(self):
+        from agentic.canonical import canonical
+        from agentic import planning
+        self.cycle()
+        before = self.raw_planning()
+        history = self.history.planning_history()
+        calls = deepcopy(self.calls)
+        self.events = [{'source_id': f'overflow-{i}', 'trigger': 'files_changed', 'override': None}
+                       for i in range(4001)]
+        staged = self.store.production_planning_state()
+        staged['cycle_sequence'] += 1
+        staged['pending'].extend(deepcopy(self.events))
+        staged['seen'].update({event['source_id']: [fingerprint('controller-planning-event', event),
+                                                  staged['cycle_sequence']]
+                               for event in self.events})
+        self.assertLess(len(canonical(staged)), 4 * 1024 * 1024)
+        for boundary_ready in (False, True):
+            with self.subTest(boundary_ready=boundary_ready), patch.object(
+                    self.store, 'round_boundary_ready', return_value=boundary_ready), patch(
+                    'agentic.planning.append_plan_record', wraps=planning.append_plan_record) as append, patch.object(
+                    self, 'dispatch', wraps=self.dispatch) as dispatch:
+                with self.assertRaisesRegex(ValidationError, '4,000 events'):
+                    self.cycle()
+                self.assertEqual(before, self.raw_planning())
+                self.assertEqual(json.loads(before), self.store.production_planning_state())
+                self.assertEqual(history, self.history.planning_history())
+                self.assertEqual(calls, self.calls)
+                append.assert_not_called()
+                dispatch.assert_not_called()
+
+    def test_event_ceiling_counts_duplicate_sources_before_initial_save(self):
+        self.events *= 4001
+        with self.assertRaisesRegex(ValidationError, '4,000 events'):
+            self.cycle()
+        self.assertIsNone(self.raw_planning())
+        self.assertEqual([], self.history.planning_history())
+        self.assertEqual([], self.calls)
+
+    def test_byte_guard_precedes_event_ceiling_without_durable_changes(self):
+        self.cycle()
+        state = self.store.production_planning_state()
+        state['preserved'] = 'x' * (2 * 1024 * 1024)
+        self.store._save_production_planning(state)
+        before = self.raw_planning()
+        history = self.history.planning_history()
+        calls = deepcopy(self.calls)
+        self.events = self.retention_events(0, 4001)
+        with self.assertRaisesRegex(ValidationError, '4 MiB'):
+            self.cycle()
+        self.assertEqual(before, self.raw_planning())
+        self.assertEqual(history, self.history.planning_history())
+        self.assertEqual(calls, self.calls)
+
+    def test_5000_long_pending_sources_refuse_candidate_without_losing_journal(self):
+        first = self.retention_events(0, 4000)
+        self.events = first
+        with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.cycle()
+        self.events = self.retention_events(4000, 1000)
+        with self.assertRaisesRegex(ValidationError, '4 MiB'):
+            self.cycle()
+        state = self.store.production_planning_state()
+        self.assertEqual(first + self.events, state['pending'])
+        self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event), 1]
+                          for event in first} | {
+                              event['source_id']: [fingerprint('controller-planning-event', event), 2]
+                              for event in self.events}, state['seen'])
+        self.assertIsNone(state['candidate'])
+        self.assertLessEqual(len(self.raw_planning().encode()), 4 * 1024 * 1024)
+        self.assertEqual([], self.history.planning_history())
+        self.assertEqual([], self.calls)
+
+    def test_oversized_planning_state_error_names_key_and_recovery(self):
+        self.oversized_legacy()
+        before = self.raw_planning()
+        self.events = []
+        with self.assertRaises(ValidationError) as ctx:
+            self.cycle()
+        self.assertIn("controller_meta['production_planning']", str(ctx.exception))
+        self.assertIn('planning-state prune', str(ctx.exception))
+        self.assertEqual(before, self.raw_planning())
+
+    def test_prune_trims_seen_and_preserves_other_fields_then_cycle_succeeds(self):
+        before = self.oversized_legacy()
+        history = self.history.planning_history()
+        result = self.store.prune_production_planning()
+        after = json.loads(self.raw_planning())
+        self.assertEqual(4096, len(after['seen']))
+        self.assertEqual({k: v for k, v in before.items() if k != 'seen'},
+                         {k: v for k, v in after.items() if k != 'seen'})
+        self.assertEqual(set(sorted(before['seen'])[-4096:]), set(after['seen']))
+        self.assertLessEqual(result['after_bytes'], 4 * 1024 * 1024)
+        self.events = []
+        self.cycle()
+        self.assertEqual(history, self.history.planning_history())
+
+    def test_prune_forget_source_clears_reuse_refusal(self):
+        self.events = [{'source_id': 'reused-source', 'trigger': 'ticket_added', 'override': None}]
+        self.cycle()
+        self.events[0]['trigger'] = 'files_changed'
+        with self.assertRaisesRegex(ValidationError, 'reused-source'):
+            self.cycle()
+        self.store.prune_production_planning(forget_sources=['reused-source'])
+        self.cycle()
+        state = self.store.production_planning_state()
+        self.assertEqual([fingerprint('controller-planning-event', self.events[0]), 2],
+                         state['seen']['reused-source'])
+
+    def test_prune_preserves_retained_candidate_and_unrelated_controller_rows(self):
+        from agentic.canonical import canonical
+        from agentic import planning
+        append = planning.append_plan_record
+        def crash(store, record):
+            if store is self.history:
+                raise RuntimeError('crash')
+            return append(store, record)
+        with patch('agentic.planning.append_plan_record', side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                self.cycle()
+        state = self.store.production_planning_state()
+        self.assertIsNotNone(state['candidate'])
+        state['seen'].update({event['source_id']: ['a' * 64, 0]
+                              for event in self.retention_events(0, 30000)})
+        self.put_raw_planning(canonical(state).decode())
+        def unrelated_rows():
+            with self.store.connection() as db:
+                tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+                return {name: [tuple(row) for row in db.execute('SELECT * FROM "' + name + '"')
+                               if name != 'controller_meta' or row[0] != 'production_planning'] for name in tables}
+        rows = unrelated_rows()
+        self.store.prune_production_planning()
+        after = self.store.production_planning_state()
+        self.assertEqual({k: v for k, v in state.items() if k != 'seen'},
+                         {k: v for k, v in after.items() if k != 'seen'})
+        self.assertEqual(state['seen']['event-1'], after['seen']['event-1'])
+        self.assertEqual(rows, unrelated_rows())
+        self.events = []
+        self.cycle()
+        self.assertEqual([state['candidate']], self.history.planning_history())
+
+    def test_save_refuses_state_above_byte_ceiling_and_keeps_prior_state_loadable(self):
+        self.cycle()
+        before = self.raw_planning()
+        self.events = self.retention_events(0, 20)
+        with patch('agentic.continuous_controller.PRODUCTION_PLANNING_MAX_BYTES', 1024):
+            with self.assertRaisesRegex(ValidationError, '4 MiB'):
+                self.cycle()
+        self.assertEqual(before, self.raw_planning())
+        self.assertEqual(json.loads(before), self.store.production_planning_state())
+
+    def test_pending_sources_are_pinned_during_eviction(self):
+        with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.events = self.retention_events(0, 4000)
+            self.cycle()
+            self.events = self.retention_events(4000, 200)
+            self.cycle()
+        state = self.store.production_planning_state()
+        self.assertEqual(4200, len(state['seen']))
+        self.assertEqual({e['source_id'] for e in state['pending']}, set(state['seen']))
+        before = self.raw_planning()
+        with self.assertRaisesRegex(ValidationError, 'pending'):
+            self.store.prune_production_planning(forget_sources=[self.events[0]['source_id']])
+        self.assertEqual(before, self.raw_planning())
+        self.events = []
+        self.cycle()
+        self.assertEqual(4096, len(self.store.production_planning_state()['seen']))
+
+    def test_schema1_seen_strings_migrate_on_load_and_evict_first(self):
+        self.cycle()
+        state = json.loads(self.raw_planning())
+        state.pop('schema_version', None)
+        state.pop('cycle_sequence', None)
+        state['seen'] = {'legacy': 'a' * 64}
+        state['candidate_observation'] = 'b' * 64
+        state['candidate_source_ids'] = ['legacy']
+        self.put_raw_planning(json.dumps(state))
+        migrated = self.store.production_planning_state()
+        self.assertEqual({'legacy': ['a' * 64, 0]}, migrated['seen'])
+        self.assertEqual(0, migrated['cycle_sequence'])
+        self.assertEqual(state['candidate_source_ids'], migrated['candidate_source_ids'])
+        self.assertEqual(state['candidate_observation'], migrated['candidate_observation'])
+        self.events = self.retention_events(0, 4000)
+        self.cycle()
+        self.events = self.retention_events(4000, 96)
+        self.cycle()
+        self.assertNotIn('legacy', self.store.production_planning_state()['seen'])
+
+    def test_duplicate_refresh_and_sequence_persist_across_reopen(self):
+        self.cycle()
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        history = self.history.planning_history()
+        self.cycle()
+        state = self.store.production_planning_state()
+        self.assertEqual(2, state['cycle_sequence'])
+        self.assertEqual({'event-1': [fingerprint('controller-planning-event', self.events[0]), 2]}, state['seen'])
+        self.assertEqual([], state['pending'])
+        self.assertEqual(history, self.history.planning_history())
+
+    def test_evicted_source_reemission_recomputes_once_without_duplicate_history(self):
+        from agentic import planning
+        first = self.retention_events(0, 4000)
+        self.events = first
+        self.cycle()
+        self.events = self.retention_events(4000, 200)
+        self.cycle()
+        self.assertNotIn(first[0]['source_id'], self.store.production_planning_state()['seen'])
+        history = self.history.planning_history()
+        self.events = first[:1]
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            self.cycle()
+        self.assertEqual(1, recompute.call_count)
+        self.assertEqual(history, self.history.planning_history())
+
+    def test_save_exact_canonical_utf8_boundary_and_each_save_site(self):
+        from agentic.canonical import canonical
+        from agentic import planning
+        self.cycle()
+        state = self.store.production_planning_state()
+        state['extra'] = '\u00e9'
+        size = len(canonical(state))
+        with patch('agentic.continuous_controller.PRODUCTION_PLANNING_MAX_BYTES', size):
+            self.store._save_production_planning(state)
+            before = self.raw_planning()
+            state['extra'] += 'x'
+            with self.assertRaises(ValidationError):
+                self.store._save_production_planning(state)
+        self.assertEqual(before, self.raw_planning())
+        save = self.store._save_production_planning
+        # Fresh input hits initial journal, candidate stage, and acknowledgement.
+        for rejected in (1, 2, 3):
+            self.events = [{'source_id': f'guard-{rejected}', 'trigger': 'files_changed', 'override': None}]
+            count = 0
+            durable = self.raw_planning()
+            def guarded(value):
+                nonlocal count, durable
+                count += 1
+                if count == rejected:
+                    with patch('agentic.continuous_controller.PRODUCTION_PLANNING_MAX_BYTES', 1):
+                        return save(value)
+                result = save(value)
+                durable = self.raw_planning()
+                return result
+            with patch.object(self.store, '_save_production_planning', side_effect=guarded):
+                with self.assertRaises(ValidationError):
+                    self.cycle()
+            self.assertEqual(durable, self.raw_planning())
+            self.events = []
+            self.cycle()
+        # Recovering a retained candidate hits the fourth, recovery-ack save site.
+        self.events = [{'source_id': 'recover-guard', 'trigger': 'ticket_closed', 'override': None}]
+        append = planning.append_plan_record
+        def crash(store, record):
+            if store is self.history:
+                raise RuntimeError('crash')
+            return append(store, record)
+        with patch('agentic.planning.append_plan_record', side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                self.cycle()
+        self.assertIsNotNone(self.store.production_planning_state()['candidate'])
+        count = 0
+        durable = self.raw_planning()
+        rejected = 2
+        with patch.object(self.store, '_save_production_planning', side_effect=guarded):
+            with self.assertRaises(ValidationError):
+                self.cycle()
+        self.assertEqual(durable, self.raw_planning())
+        self.cycle()
+
+    def test_prune_refusals_preserve_bytes(self):
+        self.cycle()
+        valid = json.loads(self.raw_planning())
+        nested = None
+        for _ in range(66):
+            nested = [nested]
+        cases = ['{"seen":{},"seen":{}}', '{bad', json.dumps({**valid, 'schema_version': 99}),
+                 json.dumps({**valid, 'seen': {'bad': ['a' * 64, True]}}),
+                 json.dumps({**valid, 'pending': [{'source_id': 'bad', 'trigger': [], 'override': None}]}),
+                 json.dumps({**valid, 'candidate': []}),
+                 json.dumps({**valid, 'candidate': {}}),
+                 json.dumps({**valid, 'extra': 1.5}),
+                 json.dumps({**valid, 'extra': '\ud800'}),
+                 json.dumps({**valid, 'extra': 2**53}),
+                 json.dumps({**valid, 'extra': nested}),
+                 json.dumps({**valid, 'extra': 'x' * (4 * 1024 * 1024)}),
+                 json.dumps({**valid, 'extra': 'x' * (16 * 1024 * 1024)})]
+        for raw in cases:
+            with self.subTest(size=len(raw), prefix=raw[:40]):
+                self.put_raw_planning(raw)
+                with self.assertRaises(ValidationError):
+                    self.store.prune_production_planning()
+                self.assertEqual(raw, self.raw_planning())
+
+    def test_exact_four_mib_guard_and_recovery_eviction_below_target(self):
+        from agentic.canonical import canonical
+        self.cycle()
+        state = self.store.production_planning_state()
+        state['extra'] = '\u00e9'
+        state['extra'] += 'x' * (4 * 1024 * 1024 - len(canonical(state)))
+        self.assertEqual(4 * 1024 * 1024, len(canonical(state)))
+        self.store._save_production_planning(state)
+        before = self.raw_planning()
+        state['extra'] += 'x'
+        with self.assertRaisesRegex(ValidationError, '4 MiB'):
+            self.store._save_production_planning(state)
+        self.assertEqual(before, self.raw_planning())
+        state['extra'] = 'x' * (3 * 1024 * 1024)
+        state['seen'] = {event['source_id']: ['a' * 64, 1] for event in self.retention_events(0, 4096)}
+        self.put_raw_planning(canonical(state).decode())
+        self.store.prune_production_planning()
+        after = self.store.production_planning_state()
+        self.assertLess(len(after['seen']), 4096)
+        self.assertEqual(state['extra'], after['extra'])
+        self.assertEqual(set(sorted(state['seen'])[-len(after['seen']):]), set(after['seen']))
+        self.assertLessEqual(len(self.raw_planning().encode()), 4 * 1024 * 1024)
+
+    def test_mixed_age_eviction_pins_and_conflicting_batch_identity(self):
+        self.cycle()
+        state = self.store.production_planning_state()
+        state['cycle_sequence'] = 3
+        sources = self.retention_events(0, 4098)
+        state['seen'] = {event['source_id']: ['a' * 64, 1 if i < 4 else 2]
+                         for i, event in reversed(list(enumerate(sources)))}
+        state['pending'] = [sources[0]]
+        self.store._save_production_planning(state)
+        self.assertEqual({sources[i]['source_id'] for i in (1, 2)},
+                         {event['source_id'] for event in sources} - set(self.store.production_planning_state()['seen']))
+        before = self.raw_planning()
+        self.events = [sources[1], {**sources[1], 'trigger': 'files_changed'}]
+        with self.assertRaisesRegex(ValidationError, 'reused'):
+            self.cycle()
+        self.assertEqual(before, self.raw_planning())
+
+    def test_invalid_planning_ages_and_versions_refuse_without_overwrite(self):
+        self.cycle()
+        valid = json.loads(self.raw_planning())
+        for changes in ({'cycle_sequence': True}, {'cycle_sequence': -1},
+                        {'schema_version': 3}, {'seen': {'bad': ['a' * 64, -1]}},
+                        {'seen': {'bad': ['not-a-digest', 0]}},
+                        {'seen': {'bad': ['a' * 64, 2**53]}}):
+            raw = json.dumps({**valid, **changes})
+            self.put_raw_planning(raw)
+            with self.subTest(changes=changes), self.assertRaises(ValidationError):
+                self.store.production_planning_state()
+            self.assertEqual(raw, self.raw_planning())
+
+    def test_production_cycle_sidecar_is_permission_restricted(self):
+        from agentic.store import Store
+        paths = []
+        with patch('os.chmod', side_effect=lambda path, mode: paths.append(Path(path))):
+            ContinuousControllerStore(self.store.path, ['A', 'B'])
+            Store(self.history.path, self.history.project_id)
+        self.assertEqual([self.store.path, self.history.path], paths)
+
+    def controller_cli(self):
+        import importlib.util
+        path = Path(__file__).resolve().parents[2] / '.agentic/scripts/continuous_controller.py'
+        spec = importlib.util.spec_from_file_location('awf_test_planning_cli', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_prune_cli_bypasses_initialisation_config_and_adapters(self):
+        import io
+        from contextlib import redirect_stdout
+        self.cycle()
+        cli = self.controller_cli()
+        args = ['--state', str(self.store.path), '--worktree-root', str(self.root / 'worktree'),
+                'planning-state', 'prune']
+        with patch.object(cli, 'load', side_effect=AssertionError('config read')), patch.object(
+                cli, '_load_reviewed_adapters', side_effect=AssertionError('adapter load')), patch.object(
+                ContinuousControllerStore, '__init__', side_effect=AssertionError('initialisation')):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(0, cli.main(args))
+        self.assertEqual('PRUNED', json.loads(output.getvalue())['status'])
+
+    def test_prune_requires_existing_controller_identity(self):
+        from agentic.continuous_controller import prune_production_planning_state
+        missing = self.root / 'missing.sqlite3'
+        with self.assertRaises(ValidationError):
+            prune_production_planning_state(missing, worktree_roots=[self.root / 'worktree'])
+        self.assertFalse(missing.exists())
+        before = self.history.path.read_bytes()
+        with self.assertRaises(ValidationError):
+            prune_production_planning_state(self.history.path, worktree_roots=[])
+        self.assertEqual(before, self.history.path.read_bytes())
+        with self.assertRaises(ValidationError):
+            prune_production_planning_state(self.store.path, worktree_roots=[self.root])
+
+    def test_cli_sidecar_permission_failure_stops_before_cycle(self):
+        cli = self.controller_cli()
+        config = deepcopy(self.config)
+        config['project']['id'] = self.history.project_id
+        config['controller'] = {}
+        args = ['--state', str(self.store.path), '--stream', 'A', '--stream', 'B',
+                '--worktree-root', str(self.root / 'worktree'), 'cycle',
+                '--inventory-binding', str(self.root / 'inventory.json'),
+                '--repository-root', str(self.root), '--repository-head-sha', 'a' * 40,
+                '--repository-tree-sha', 'b' * 40, '--now', NOW]
+        def restrict(path, mode):
+            if Path(path).name.endswith('.planning.sqlite3'):
+                raise PermissionError('sidecar restriction failed')
+        with patch.object(cli, 'load', return_value=config), patch.object(
+                cli, '_load_reviewed_adapters', return_value={}), patch.object(
+                cli, '_require_adapters', return_value={}), patch(
+                'agentic.operating.read_operating', return_value=self.operating), patch(
+                'os.chmod', side_effect=restrict), patch.object(cli, 'production_controller_cycle', return_value={}) as cycle:
+            with self.assertRaisesRegex(PermissionError, 'sidecar restriction failed'):
+                cli.main(args)
+        cycle.assert_not_called()
+
+    def setUp(self):
+        from agentic.store import Store
+        from test_planning import config, operating_snapshot
+        self.temp = tempfile.TemporaryDirectory(prefix='awf50-production-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.store = ContinuousControllerStore(self.root / 'controller.sqlite3', ['A', 'B'])
+        self.history = Store(self.root / 'history.sqlite3', '00000000-0000-0000-0000-000000000050')
+        self.config = config(2)
+        self.config['github']['repository_id'] = '101'
+        self.operating = operating_snapshot(self.config, 2)
+        self.items = [ticket('AWF-101', 1), ticket('AWF-102', 2)]
+        self.events = [{'source_id': 'event-1', 'trigger': 'project_start', 'override': None}]
+        self.calls = []
+        self.evidence = {}
+        for target, value in (
+            ('agentic.continuous_controller.canonical_repository_paths', lambda items, *_: (items, {'repository_root': '/fixture', 'head_sha': 'a'*40, 'tree_sha': 'b'*40, 'git_path_count': 0})),
+            ('agentic.continuous_controller.canonical_reservation_sources', lambda *_args, **_kwargs: [])):
+            mock = patch(target, side_effect=value)
+            mock.start()
+            self.addCleanup(mock.stop)
+        mock = patch('agentic.codex_skill.observe_codex_awf_skills', return_value={'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.4', 'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill', 'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})
+        mock.start()
+        self.addCleanup(mock.stop)
+
+    def backlog(self, request):
+        body = {'format': 'awf-backlog-provider-snapshot-1', 'complete': True,
+                'provider': request['provider'], 'binding': request['binding'],
+                'observed_at': request['observed_at'], 'tickets': []}
+        for item in self.items:
+            body['tickets'].append({'ticket': {'key': item['ticket'], 'status': 'open', 'risk_tier': 3},
+                'components': [{'kind': kind, 'ticket_key': item['ticket'],
+                    'binding': request['binding'], 'observed_at': request['observed_at'],
+                    'files': item['paths'] if kind == 'brief' else []}
+                    for kind in ('brief', 'open_pr', 'worktree_diff')]})
+        self.evidence['backlog'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'backlog'}}
+
+    def observe_events(self, request):
+        body = {'binding': request['binding'], 'observed_at': request['observed_at'],
+                'events': deepcopy(self.events)}
+        self.evidence['events'] = deepcopy(body)
+        return {**body, 'authentication': {'evidence_id': 'events'}}
+
+    def dispatch(self, payload):
+        from agentic.planning import verify_plan_record
+        record = self.history.current_plan()
+        self.assertIsNotNone(record, 'dispatch preceded durable plan append')
+        self.assertTrue(verify_plan_record(record))
+        self.assertIn(payload['ticket'], record['inputs']['tickets'])
+        self.calls.append(payload)
+        return receipt(payload)
+
+    def inputs(self):
+        return dict(planning_state_store=self.history, planning_config=self.config,
+            planning_operating_snapshot=self.operating,
+            planning_provider={'provider_id': 'fixture-backlog', 'implementation_sha256': '1'*64, 'verifier_implementation_sha256': '2'*64},
+            observe_planning_backlog=self.backlog,
+            verify_planning_backlog=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(self.evidence['backlog'])},
+            observe_planning_events=self.observe_events,
+            verify_planning_events=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(self.evidence['events'])},
+            project_config_sha256=fingerprint('accepted-project-config', self.config),
+            operating_config_sha256=self.operating.operating_hash,
+            cycle_id='cycle-production')
+
+    def cycle(self, **changes):
+        args = planning_resource_inputs(2)
+        args.update(self.inputs())
+        args.update(changes)
+        return production_controller_cycle(self.store,
+            controller_config=dict.fromkeys(('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'), True),
+            now=NOW, host_capacity=2, inventory_binding=BINDING, **REPOSITORY,
+            observe_inventory=lambda: observation(self.items), observe_reservations=lambda request: {},
+            dispatch_ticket=self.dispatch, observe_dispatch=lambda payload: receipt(payload),
+            deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW},
+            publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW), **args)
+
+    def test_same_trigger_sources_recompute_exactly_once_per_cycle(self):
+        from agentic import planning
+        self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                       for source in ('ticket-added-1', 'ticket-added-2')]
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle()
+
+        state = self.store.production_planning_state()
+        self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event), 1]
+                          for event in self.events}, state['seen'])
+        self.assertEqual(1, state['cycle_sequence'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+        self.assertEqual('DELIVERED', result['status_delivery']['status'])
+        self.assertEqual(2, len(result['dispatch_receipts']))
+        self.assertEqual(1, recompute.call_count)
+
+    def test_recomputed_identical_plan_id_completes_without_duplicate_history(self):
+        from agentic import planning
+        self.cycle()
+        history = self.history.planning_history()
+        self.events = [{'source_id': 'identical-plan-source', 'trigger': 'project_start', 'override': None}]
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle()
+
+        self.assertEqual(1, recompute.call_count)
+        self.assertEqual(history[0]['plan_id'], self.history.current_plan()['plan_id'])
+        self.assertEqual(history, self.history.planning_history())
+        state = self.store.production_planning_state()
+        self.assertEqual([fingerprint('controller-planning-event', self.events[0]), 2],
+                         state['seen']['identical-plan-source'])
+        self.assertEqual(2, state['cycle_sequence'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+        self.assertIsNone(result['status_delivery'])
+        self.assertEqual(2, len(self.calls))
+
+    def test_interleaved_same_trigger_sources_share_one_recompute(self):
+        from agentic import planning
+        self.events = [{'source_id': source, 'trigger': trigger, 'override': None}
+                       for source, trigger in (('added-1', 'ticket_added'),
+                                               ('changed-1', 'files_changed'),
+                                               ('added-2', 'ticket_added'),
+                                               ('changed-2', 'files_changed'))]
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle()
+        self.assertEqual(['ticket_added', 'files_changed'],
+                         [call.kwargs['trigger'] for call in recompute.call_args_list])
+        self.assertEqual(2, recompute.call_count)
+        self.assertEqual(['ticket_added', 'files_changed'],
+                         [record['trigger'] for record in self.history.planning_history()])
+        state = self.store.production_planning_state()
+        self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event), 1]
+                          for event in self.events}, state['seen'])
+        self.assertEqual(1, state['cycle_sequence'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+
+    def test_same_trigger_group_recovers_both_sides_of_durable_append(self):
+        from agentic import planning
+        from agentic.store import Store
+        append = planning.append_plan_record
+        for after_append in (False, True):
+            with self.subTest(after_append=after_append):
+                self.store = ContinuousControllerStore(
+                    self.root / f'controller-group-{after_append}.sqlite3', ['A', 'B'])
+                self.history = Store(self.root / f'history-group-{after_append}.sqlite3',
+                                     '00000000-0000-0000-0000-000000000050')
+                self.calls = []
+                self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                               for source in ('recover-source-1', 'recover-source-2')]
+                def crash(store, record):
+                    if store is self.history:
+                        if after_append:
+                            append(store, record)
+                        raise RuntimeError('injected coalesced append crash')
+                    return append(store, record)
+                with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+                    with patch('agentic.planning.append_plan_record', side_effect=crash):
+                        with self.assertRaisesRegex(RuntimeError, 'injected coalesced append crash'):
+                            self.cycle()
+                    retained = self.store.production_planning_state()
+                    self.assertEqual([event['source_id'] for event in self.events],
+                                     retained['candidate_source_ids'])
+                    self.assertEqual(int(after_append), len(self.history.planning_history()))
+                    self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+                    result = self.cycle()
+                self.assertEqual(1, recompute.call_count)
+                self.assertEqual(1, len(self.history.planning_history()))
+                state = self.store.production_planning_state()
+                self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event), 2]
+                                  for event in self.events}, state['seen'])
+                self.assertEqual(2, state['cycle_sequence'])
+                self.assertEqual([], state['pending'])
+                self.assertIsNone(state['candidate'])
+                self.assertNotIn('candidate_source_ids', state)
+                self.assertEqual([], result['errors'])
+                self.assertEqual(2, len(self.calls))
+
+    def test_same_trigger_owner_chains_apply_before_single_recompute(self):
+        from agentic import planning
+        from test_planning import owner_source, verify_owner
+        overrides = {}
+        first = planning.change_owner_override(self.config, overrides, mode='fixed', value=2,
+            reason='fixture initial', owner_source=owner_source(None, 'fixed', 2, 'fixture initial'),
+            verify_owner_source=verify_owner, now=NOW)
+        self.events = [{'source_id': 'override-source-1', 'trigger': 'override_changed',
+                        'override': deepcopy(overrides)}]
+        second = planning.change_owner_override(self.config, overrides, mode='fixed', value=1,
+            reason='fixture final', owner_source=owner_source(first['override_id'], 'fixed', 1,
+                'fixture final', source_id='comment-2'), verify_owner_source=verify_owner, now=NOW)
+        self.events.append({'source_id': 'override-source-2', 'trigger': 'override_changed',
+                            'override': deepcopy(overrides)})
+        with patch('agentic.planning.recompute_plan', wraps=planning.recompute_plan) as recompute:
+            result = self.cycle(verify_planning_owner=verify_owner)
+        self.assertEqual(1, recompute.call_count)
+        self.assertEqual(1, self.history.current_plan()['lane_count'])
+        state = self.store.production_planning_state()
+        self.assertEqual([first, second], state['overrides']['planning_override_history'])
+        self.assertEqual(second, state['overrides']['planning_override'])
+        self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event), 1]
+                          for event in self.events}, state['seen'])
+        self.assertEqual(1, state['cycle_sequence'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        self.assertEqual([], result['errors'])
+
+    def test_same_trigger_events_complete_cycle_and_record_every_source(self):
+        self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                       for source in ('ticket-added-1', 'ticket-added-2')]
+        result = self.cycle()
+
+        state = self.store.production_planning_state()
+        self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event), 1]
+                          for event in self.events}, state['seen'])
+        self.assertEqual(1, state['cycle_sequence'])
+        self.assertEqual([], state['pending'])
+        self.assertIsNone(state['candidate'])
+        history = self.history.planning_history()
+        self.assertEqual(1, len(history))
+        self.assertEqual('ticket_added', history[0]['trigger'])
+        self.assertEqual(['AWF-101', 'AWF-102'], [payload['ticket'] for payload in self.calls])
+        self.assertEqual(2, len(result['dispatch_receipts']))
+        self.assertEqual('DELIVERED', result['status_delivery']['status'])
+        self.assertEqual([], result['errors'])
+
+    def test_same_trigger_events_at_identical_now_survive_restart_and_replay(self):
+        first = {'source_id': 'ticket-added-1', 'trigger': 'ticket_added', 'override': None}
+        self.events = [first]
+        self.cycle()
+        history = self.history.planning_history()
+        self.assertEqual(NOW, history[0]['created_at'])
+
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = [{'source_id': source, 'trigger': 'ticket_added', 'override': None}
+                       for source in ('ticket-added-2', 'ticket-added-3')]
+        for sequence in (2, 3):
+            result = self.cycle()
+            self.assertEqual(NOW, result['observed_at'])
+            self.assertEqual([], result['errors'])
+            self.assertEqual(history, self.history.planning_history())
+            state = self.store.production_planning_state()
+            self.assertEqual({event['source_id']: [fingerprint('controller-planning-event', event),
+                                                  1 if event == first else sequence]
+                              for event in [first, *self.events]}, state['seen'])
+            self.assertEqual(sequence, state['cycle_sequence'])
+            self.assertEqual([], state['pending'])
+            self.assertIsNone(state['candidate'])
+            self.assertEqual(2, len(self.calls), 'replayed events relaunched completed dispatches')
+
+    def test_identical_plan_id_with_conflicting_bytes_still_refuses(self):
+        self.cycle()
+        history = self.history.planning_history()
+        conflict = deepcopy(history[0])
+        conflict['lane_count'] = 1
+        conflict['plan_sha256'] = fingerprint('planning_audit_record',
+            {key: value for key, value in conflict.items() if key != 'plan_sha256'})
+        self.events = [{'source_id': 'conflicting-event', 'trigger': 'project_start', 'override': None}]
+        with patch('agentic.planning.recompute_plan', return_value={'record': conflict}):
+            with self.assertRaisesRegex(ValidationError, 'Planning append candidate conflicts with immutable history'):
+                self.cycle()
+        self.assertEqual(history, self.history.planning_history())
+        self.assertEqual(['conflicting-event'],
+                         [event['source_id'] for event in self.store.production_planning_state()['pending']])
+        self.assertEqual(2, len(self.calls))
+
+    def test_project_start_and_intake_plan_before_dispatch(self):
+        for trigger in ('project_start', 'intake'):
+            with self.subTest(trigger=trigger):
+                self.events = [{'source_id': trigger, 'trigger': trigger, 'override': None}]
+                self.cycle()
+                self.assertEqual(trigger, self.history.current_plan()['trigger'])
+        self.assertTrue(self.calls)
+
+    def test_controller_recomputes_for_merge_files_ticket_and_override_without_mid_round_reassignment(self):
+        self.cycle()
+        for trigger in ('pr_merged', 'files_changed', 'ticket_added', 'ticket_closed', 'override_changed'):
+            with self.subTest(trigger=trigger):
+                self.events = [{'source_id': trigger, 'trigger': trigger, 'override': None}]
+                self.cycle()
+                self.assertEqual(trigger, self.history.current_plan()['trigger'])
+        # An unresolved dispatch closes the boundary; observations remain pending.
+        self.items[0]['exact_tuple'] += '/next'
+        prior = self.store.snapshot()
+        self.events = [{'source_id': 'during-round', 'trigger': 'intake', 'override': None}]
+        with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.cycle()
+        self.assertEqual(prior, self.store.snapshot())
+        self.assertTrue(self.store.production_planning_state()['pending'])
+
+    def test_pending_planning_trigger_survives_restart_and_is_consumed_once(self):
+        with patch.object(self.store, 'round_boundary_ready', return_value=False):
+            self.cycle()
+        self.assertEqual([], self.history.planning_history())
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = []
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.events = [{'source_id': 'event-1', 'trigger': 'project_start', 'override': None}]
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.events[0]['trigger'] = 'intake'
+        with self.assertRaises(ValidationError):
+            self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+
+    def test_plan_append_failure_blocks_dispatch_and_retains_trigger(self):
+        with patch('agentic.planning.append_plan_record', side_effect=ValidationError('injected append failure')):
+            with self.assertRaises(ValidationError):
+                self.cycle()
+        self.assertEqual([], self.calls)
+        self.assertTrue(self.store.production_planning_state()['pending'])
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.assertFalse(self.store.production_planning_state()['pending'])
+
+    def test_restart_after_plan_append_does_not_duplicate_plan(self):
+        from agentic import planning
+        append = planning.append_plan_record
+        def crash(store, record):
+            result = append(store, record)
+            if store is self.history:
+                raise RuntimeError('crash after append before acknowledgement')
+            return result
+        with patch('agentic.planning.append_plan_record', side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.cycle()
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.assertFalse(self.store.production_planning_state()['pending'])
+
+    def test_restart_pending_intents_revalidate_changed_backlog_dependencies(self):
+        inventory_before = observation(self.items)['inventory_sha256']
+        with patch.object(self.store, 'bind_dispatch_waivers',
+                          side_effect=SystemExit('crash before launch')):
+            with self.assertRaisesRegex(SystemExit, 'crash before launch'):
+                self.cycle()
+        self.assertEqual([], self.calls)
+        self.assertEqual(['WORKING', 'WORKING'],
+                         [row['state'] for row in self.store.snapshot()])
+        pending = self.store.pending_dispatches()
+        self.assertEqual(['AWF-101', 'AWF-102'], [row['ticket'] for row in pending])
+        self.assertTrue(all(row['status'] == 'PENDING' for row in pending))
+
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = []
+        original = self.backlog
+        def with_dependency(request):
+            value = original(request)
+            value['tickets'][1]['ticket']['dependencies'] = ['AWF-101']
+            self.evidence['backlog'] = {key: deepcopy(val) for key, val in value.items()
+                                       if key != 'authentication'}
+            return value
+        self.backlog = with_dependency
+        self.cycle()
+
+        self.assertEqual(inventory_before, observation(self.items)['inventory_sha256'])
+        current = self.history.current_plan()
+        self.assertTrue(current['inputs']['dependencies'])
+        self.assertEqual(['AWF-101'],
+                         [key for lane in current['lanes'] for key in lane['ticket_keys']])
+        self.assertEqual(['AWF-101'], [payload['ticket'] for payload in self.calls])
+        with self.store.connection() as db:
+            rows = [dict(row) for row in db.execute(
+                'SELECT ticket,status,payload_json FROM controller_dispatch ORDER BY ticket')]
+        self.assertEqual([('AWF-101', 'TERMINAL'), ('AWF-102', 'CANCELLED')],
+                         [(row['ticket'], row['status']) for row in rows])
+        self.assertNotIn('begun_at', json.loads(rows[1]['payload_json']))
+
+    def recover_changed_planning_inputs(self, change, after_append):
+        from agentic import planning
+        from test_planning import operating_snapshot
+        append = planning.append_plan_record
+        def crash(store, record):
+            if store is self.history:
+                if after_append:
+                    append(store, record)
+                raise RuntimeError('injected durable append crash')
+            return append(store, record)
+        with patch('agentic.planning.append_plan_record', side_effect=crash):
+            with self.assertRaisesRegex(RuntimeError, 'injected durable append crash'):
+                self.cycle()
+        retained = deepcopy(self.store.production_planning_state()['candidate'])
+        self.assertEqual(2, retained['lane_count'])
+        self.assertEqual([], self.calls)
+        self.assertEqual(int(after_append), len(self.history.planning_history()))
+        self.events = []
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        if change == 'operating':
+            self.operating = operating_snapshot(self.config, 1)
+        elif change == 'configuration':
+            self.config['execution']['max_parallel_tickets'] = 1
+            self.operating = operating_snapshot(self.config, 1)
+        else:
+            original = self.backlog
+            def with_dependency(request):
+                value = original(request)
+                value['tickets'][1]['ticket']['dependencies'] = ['AWF-101']
+                self.evidence['backlog'] = {key: deepcopy(val) for key, val in value.items()
+                                            if key != 'authentication'}
+                return value
+            self.backlog = with_dependency
+        self.cycle()
+        history = self.history.planning_history()
+        self.assertEqual(2, len(history), 'recovery admitted the retained stale plan without recomputing')
+        self.assertEqual(retained, history[0], 'recovery must preserve the exact append candidate')
+        current = history[-1]
+        self.assertEqual(1, current['lane_count'])
+        self.assertEqual(['AWF-101'], [payload['ticket'] for payload in self.calls])
+        if change == 'dependencies':
+            self.assertTrue(current['inputs']['dependencies'])
+        else:
+            capacity = current['inputs']['capacity']
+            self.assertEqual(self.operating.operating_hash, capacity['operating_hash'])
+            self.assertEqual(fingerprint('accepted-project-config', self.config),
+                             capacity['project_config_sha256'])
+        processed = self.store.production_planning_state()['observation']
+        self.cycle()
+        self.assertEqual(history, self.history.planning_history(), 'unchanged retry duplicated a plan')
+        self.assertEqual(processed, self.store.production_planning_state()['observation'])
+        self.assertFalse(self.store.production_planning_state()['pending'])
+
+    def test_recovery_before_append_replans_changed_operating_capacity(self):
+        self.recover_changed_planning_inputs('operating', False)
+
+    def test_recovery_after_append_replans_changed_operating_capacity(self):
+        self.recover_changed_planning_inputs('operating', True)
+
+    def test_recovery_before_append_replans_changed_dependencies(self):
+        self.recover_changed_planning_inputs('dependencies', False)
+
+    def test_recovery_after_append_replans_changed_dependencies(self):
+        self.recover_changed_planning_inputs('dependencies', True)
+
+    def test_recovery_before_append_replans_changed_configuration(self):
+        self.recover_changed_planning_inputs('configuration', False)
+
+    def test_recovery_after_append_replans_changed_configuration(self):
+        self.recover_changed_planning_inputs('configuration', True)
+
+    def test_override_trigger_reauthenticates_persisted_owner_chain(self):
+        from agentic import planning
+        from test_planning import owner_source, verify_owner
+        state = {}
+        first = planning.change_owner_override(self.config, state, mode='fixed', value=1,
+            reason='fixture fixed', owner_source=owner_source(None, 'fixed', 1, 'fixture fixed'),
+            verify_owner_source=verify_owner, now=NOW)
+        second = planning.change_owner_override(self.config, state, mode='max', value=1,
+            reason='fixture maximum', owner_source=owner_source(first['override_id'], 'max', 1, 'fixture maximum', source_id='comment-2'),
+            verify_owner_source=verify_owner, now=NOW)
+        self.events[0] = {'source_id': 'override-chain', 'trigger': 'override_changed', 'override': state}
+        self.cycle(verify_planning_owner=verify_owner)
+        self.assertEqual(1, self.history.current_plan()['lane_count'])
+        self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
+        self.events = []
+        with self.assertRaises(ValidationError):
+            self.cycle(verify_planning_owner=lambda *_: {})
+        self.cycle(verify_planning_owner=verify_owner)
+        self.assertEqual(second, self.store.production_planning_state()['overrides']['planning_override'])
+        self.events = [{'source_id': 'forged-tip', 'trigger': 'override_changed', 'override': {'planning_override': second, 'planning_override_history': [second]}}]
+        with self.assertRaises(ValidationError):
+            self.cycle(verify_planning_owner=verify_owner)
+
+    def test_invalid_planning_observation_blocks_new_dispatch(self):
+        original = self.backlog
+        for mutation in (lambda value: value.update(complete=False),
+                         lambda value: value['binding'].update(repository_id='foreign'),
+                         lambda value: value.update(observed_at='2026-01-01T00:00:00Z'),
+                         lambda value: value['tickets'][0]['ticket'].update(summary='forged')):
+            def forged(request, mutation=mutation):
+                value = original(request)
+                mutation(value)
+                return value
+            with self.subTest(mutation=mutation), self.assertRaises(ValidationError):
+                self.cycle(observe_planning_backlog=forged)
+            self.assertEqual([], self.calls)
+        with self.assertRaises(ValidationError):
+            self.cycle(observe_planning_backlog=None)
+
+    def test_cli_wires_reviewed_planning_inputs_without_trust_override_flags(self):
+        import ast
+        source = (Path(__file__).resolve().parents[2] / '.agentic/scripts/continuous_controller.py').read_text()
+        tree = ast.parse(source)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'production_controller_cycle']
+        self.assertEqual(1, len(calls))
+        self.assertTrue({'planning_state_store', 'planning_config', 'planning_operating_snapshot', 'planning_provider'} <= {kw.arg for kw in calls[0].keywords})
+        for name in ('observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events'):
+            self.assertIn(name, source)
+        for flag in ('--planning-provider', '--verify-planning', '--trusted-planning-owner'):
+            self.assertNotIn(flag, source)
+
+    def test_dispatch_without_authenticated_planning_inputs_fails_closed(self):
+        # Existing authenticated resources and eligible inventory are insufficient.
+        # Omit only the new planning inputs; a baseline dispatch is observable.
+        args = planning_resource_inputs(2)
+        refused = False
+        try:
+            production_controller_cycle(self.store,
+                controller_config=dict.fromkeys(('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'), True),
+                now=NOW, host_capacity=2, inventory_binding=BINDING, **REPOSITORY,
+                observe_inventory=lambda: observation(self.items), observe_reservations=lambda request: {},
+                dispatch_ticket=lambda payload: self.calls.append(payload) or receipt(payload),
+                observe_dispatch=lambda payload: receipt(payload),
+                deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW},
+                publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW), **args)
+        except ValidationError:
+            refused = True
+        self.assertTrue(refused, 'missing authenticated planning inputs admitted dispatch')
+        self.assertEqual([], self.calls)
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT count(*) FROM controller_dispatch').fetchone()[0])
+        self.assertFalse(any(row['state'] == 'WORKING' for row in self.store.snapshot()))
+
+
+    def test_authenticated_overlap_evidence_is_sealed_before_two_dispatches(self):
+        self.items = allowance_inventory()
+        cfg = publication_config()
+        cfg['github']['repository_id'] = 101
+        cfg.setdefault('merge_gate', {})['trusted_owner_ids'] = [7002]
+        phases = []
+        def observe(request, phase):
+            phases.append(phase)
+            value = allowance_observation(request)
+            for pr in value['pull_requests']:
+                pr['head_ref'] = 'codex/' + pr['ticket'] + '-' + pr['ticket'].lower()
+            return value
+        with patch('test_continuous_controller_planning.publication_config', return_value=cfg):
+            result = self.cycle(cycle_id='cycle-17', controller_clock=lambda: NOW,
+                overlap_allowance_requests=[allowance_request()], observe_overlap_allowance=observe)
+        record = self.history.current_plan()
+        self.assertEqual(['PLAN', 'LANE_START'], phases, result)
+        self.assertEqual(2, record['lane_count'])
+        self.assertEqual(2, len(self.calls))
+        self.assertEqual(1, len(record['inputs']['overlap_allowances']))
+        self.assertEqual(['src/shared.py'], record['inputs']['overlaps'][0]['paths'])
+        self.assertTrue(all('src/shared.py' in lane['write_paths'] for lane in record['lanes']))
+
+    def test_unapproved_overlap_keeps_sealed_capacity_serial(self):
+        self.items = allowance_inventory()
+        self.cycle()
+        record = self.history.current_plan()
+        self.assertEqual(1, record['lane_count'])
+        self.assertEqual(1, len(self.calls))
+        self.assertNotIn('overlap_allowances', record['inputs'])
+
+    def test_forged_event_evidence_refuses_before_dispatch_intent(self):
+        def forged(request):
+            value = self.observe_events(request)
+            value['events'][0]['trigger'] = 'ticket_closed'
+            return value
+        with self.assertRaises(ValidationError):
+            self.cycle(observe_planning_events=forged)
+        self.assertEqual([], self.calls)
+        self.assertEqual([], self.history.planning_history())
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT count(*) FROM controller_dispatch').fetchone()[0])
+
+
+    def test_live_nonterminal_round_retains_assignments_and_pending_trigger(self):
+        dispatch = self.dispatch
+        def launched(payload):
+            return {**dispatch(payload), 'dispatch_state': 'LAUNCHED', 'terminal': False}
+        self.dispatch = launched
+        self.cycle()
+        self.assertEqual(2, len(self.calls))
+        before = self.store.snapshot()
+        with self.store.connection() as db:
+            intents = [tuple(row) for row in db.execute('SELECT dispatch_id,stream_id,ticket,exact_tuple,status FROM controller_dispatch ORDER BY dispatch_id')]
+        self.items[0]['exact_tuple'] += '/successor'
+        self.events = [{'source_id': 'live-round-event', 'trigger': 'files_changed', 'override': None}]
+        self.cycle()
+        self.assertEqual(before, self.store.snapshot())
+        self.assertEqual(1, len(self.history.planning_history()))
+        self.assertEqual(2, len(self.calls))
+        self.assertEqual('live-round-event', self.store.production_planning_state()['pending'][0]['source_id'])
+        with self.store.connection() as db:
+            self.assertEqual(intents, [tuple(row) for row in db.execute('SELECT dispatch_id,stream_id,ticket,exact_tuple,status FROM controller_dispatch ORDER BY dispatch_id')])
