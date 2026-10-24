@@ -56,7 +56,12 @@ class Contracts:
         self.formats = checker()
 
     def validate(self, name: str, value):
-        validate_value(value)
+        if name in self.schemas and name in {'status-report', 'status-report-input'}:
+            from .status_report import validate_report_input, validate_report_value
+            walker = validate_report_value if name == 'status-report' else validate_report_input
+            walker(value)
+        else:
+            validate_value(value)
         if name not in self.schemas:
             raise ValidationError(f"Unknown contract {name}")
         validator = Draft202012Validator(self.schemas[name], registry=self.registry,
