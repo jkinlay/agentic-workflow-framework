@@ -285,6 +285,179 @@ class ProviderSnapshotTests(unittest.TestCase):
             with self.subTest(verifier=verifier), self.assertRaises(ValidationError):
                 self.read(verifier=verifier)
 
+    def test_rejected_collector_isolates_empty_attribution_and_preserves_sibling(self):
+        snapshot = deepcopy(self.snapshot)
+        sibling = deepcopy(snapshot["tickets"][0])
+        sibling["ticket"]["key"] = "AWF-2"
+        for component in sibling["components"]:
+            component["ticket_key"] = "AWF-2"
+        snapshot["tickets"].append(sibling)
+        for component in snapshot["tickets"][0]["components"]:
+            component["files"] = []
+        self.trusted = self.body(snapshot)
+        original = deepcopy(snapshot)
+        rejected, evidence = {}, {}
+        tickets = self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+        self.assertEqual(["AWF-2"], [item["key"] for item in tickets])
+        self.assertEqual({"AWF-1": "Backlog ticket AWF-1 has no observed exact write files"}, rejected)
+        self.assertEqual({"paths": [], "complete": True}, evidence["AWF-1"])
+        self.assertEqual(original, snapshot)
+        tickets[0]["write_paths"].append("src/later.py")
+        evidence["AWF-2"]["paths"].append("src/later.py")
+        self.assertEqual(original, snapshot)
+
+    def test_rejected_collector_isolates_inexact_component_paths(self):
+        for field in (0, 2):  # brief and diff; the PR remains complete and safe.
+            for invalid in ("src/*.py", "src/", "/outside.py", "../outside.py", "", None, 7, {}):
+                with self.subTest(field=field, invalid=invalid):
+                    snapshot = deepcopy(self.snapshot)
+                    sibling = deepcopy(snapshot["tickets"][0])
+                    sibling["ticket"]["key"] = "AWF-2"
+                    for component in sibling["components"]:
+                        component["ticket_key"] = "AWF-2"
+                    snapshot["tickets"].append(sibling)
+                    snapshot["tickets"][0]["components"][field]["files"] = [invalid]
+                    self.trusted = self.body(snapshot)
+                    with self.assertRaises(ValidationError) as strict:
+                        self.read(snapshot)
+                    rejected, evidence = {}, {}
+                    tickets = self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+                    self.assertEqual(["AWF-2"], [item["key"] for item in tickets])
+                    self.assertEqual({"AWF-1": str(strict.exception)}, rejected)
+                    self.assertEqual({"paths": ["src/pr.py"], "complete": True}, evidence["AWF-1"])
+
+    def test_rejected_collector_continues_validation_and_detects_later_duplicate_or_forgery(self):
+        for case in ("duplicate", "wrong-attribution", "foreign", "stale", "missing",
+                     "duplicate-component", "unknown-component", "non-list", "metadata", "forged"):
+            with self.subTest(case=case):
+                snapshot = deepcopy(self.snapshot)
+                valid = deepcopy(snapshot["tickets"][0])
+                valid["ticket"]["key"] = "AWF-2"
+                for component in valid["components"]:
+                    component["ticket_key"] = "AWF-2"
+                later = deepcopy(valid)
+                snapshot["tickets"].extend([valid, later])
+                for component in snapshot["tickets"][0]["components"]:
+                    component["files"] = []
+                later["ticket"]["key"] = "AWF-1" if case == "duplicate" else "AWF-3"
+                for component in later["components"]:
+                    component["ticket_key"] = later["ticket"]["key"]
+                component = later["components"][1]
+                if case == "wrong-attribution":
+                    component["ticket_key"] = "AWF-99"
+                elif case == "foreign":
+                    component["binding"]["repository_id"] = "456"
+                elif case == "stale":
+                    component["observed_at"] = "2026-10-11T12:00:00Z"
+                elif case == "missing":
+                    later["components"].pop()
+                elif case == "duplicate-component":
+                    component["kind"] = "brief"
+                elif case == "unknown-component":
+                    component["kind"] = "other"
+                elif case == "non-list":
+                    component["files"] = "src/pr.py"
+                elif case == "metadata":
+                    later["ticket"]["open_pr_files"] = ["src/injected.py"]
+                self.trusted = self.body(snapshot)
+                if case == "forged":
+                    component["files"] = ["src/forged.py"]
+                rejected = {"previous": "unchanged"}
+                evidence = {"previous": {"paths": ["prior.py"], "complete": True}}
+                original = deepcopy((snapshot, rejected, evidence))
+                with self.assertRaises(ValidationError):
+                    self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+                self.assertEqual(original, (snapshot, rejected, evidence))
+
+    def test_pr_evidence_survives_rejected_brief_or_diff(self):
+        paths = [f"src/pr-{index}.py" for index in range(15)]
+        for field in (0, 2):
+            with self.subTest(field=field):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["components"][field]["files"] = ["../invalid.py"]
+                snapshot["tickets"][0]["components"][1]["files"] = paths
+                self.trusted = self.body(snapshot)
+                rejected, evidence = {}, {}
+                self.assertEqual([], self.read(snapshot, rejected=rejected, observed_pr_paths=evidence))
+                self.assertEqual({"AWF-1"}, set(rejected))
+                self.assertEqual({"AWF-1": {"paths": sorted(paths), "complete": True}}, evidence)
+
+    def test_pr_evidence_retains_all_files_before_manifest_filtering(self):
+        # Also covers the plan's unsafe-PR completeness acceptance row.
+        paths = ["MANIFEST.json", "MANIFEST.md", "src/pr.py"]
+        for extra in ([], ["src/*.py"], ["src/"], ["/outside.py"], ["../outside.py"],
+                      [None], [7], [""], [{}]):
+            with self.subTest(extra=extra):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["components"][1]["files"] = paths[:1] + extra + paths[1:]
+                self.trusted = self.body(snapshot)
+                original = deepcopy(snapshot)
+                rejected, evidence = {}, {}
+                tickets = self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+                self.assertEqual({"AWF-1": {"paths": sorted(paths), "complete": not bool(extra)}}, evidence)
+                if extra:
+                    self.assertEqual([], tickets)
+                    self.assertEqual({"AWF-1"}, set(rejected))
+                else:
+                    self.assertEqual(self.read(snapshot), tickets)
+                    self.assertEqual(["src/pr.py"], tickets[0]["open_pr_files"])
+                    self.assertEqual({}, rejected)
+                self.assertEqual(original, snapshot)
+
+    def test_snapshot_collectors_reject_invalid_types_and_shared_dictionary(self):
+        for name in ("rejected", "observed_pr_paths"):
+            for invalid in ([], "invalid", False, 1):
+                with self.subTest(name=name, invalid=invalid):
+                    with self.assertRaisesRegex(ValidationError, "collector.*dictionary"):
+                        self.read(**{name: invalid})
+        collector = {}
+        with self.assertRaisesRegex(ValidationError, "distinct"):
+            self.read(rejected=collector, observed_pr_paths=collector)
+        self.assertEqual({}, collector)
+
+    def test_snapshot_collectors_do_not_weaken_authentication(self):
+        for case in ("unsigned", "partial", "stale", "foreign", "unverified", "unavailable"):
+            with self.subTest(case=case):
+                snapshot = deepcopy(self.snapshot)
+                overrides = {}
+                if case == "unsigned":
+                    del snapshot["authentication"]
+                elif case == "partial":
+                    snapshot["complete"] = False
+                elif case == "stale":
+                    snapshot["observed_at"] = "2026-10-11T12:00:00Z"
+                elif case == "foreign":
+                    snapshot["binding"]["repository_id"] = "456"
+                elif case == "unverified":
+                    overrides["verify_provider_snapshot"] = lambda *_: {"status": "UNVERIFIED"}
+                else:
+                    def unavailable(*_):
+                        raise RuntimeError("provider unavailable")
+                    overrides["verify_provider_snapshot"] = unavailable
+                rejected, evidence = {}, {}
+                with self.assertRaises(ValidationError):
+                    self.read(snapshot, rejected=rejected, observed_pr_paths=evidence, **overrides)
+                self.assertEqual(({}, {}), (rejected, evidence))
+
+    def test_snapshot_collectors_preserve_strict_default_and_manifest_only_rejection(self):
+        for files in ([], ["MANIFEST.json", "MANIFEST.md"]):
+            with self.subTest(files=files):
+                snapshot = deepcopy(self.snapshot)
+                for component in snapshot["tickets"][0]["components"]:
+                    component["files"] = files
+                self.trusted = self.body(snapshot)
+                evidence = {}
+                with self.assertRaisesRegex(ValidationError, "no observed exact write files"):
+                    self.read(snapshot, observed_pr_paths=evidence)
+                self.assertEqual({}, evidence)
+                rejected = {}
+                self.assertEqual([], self.read(snapshot, rejected=rejected, observed_pr_paths=evidence))
+                self.assertEqual({"AWF-1": {"paths": sorted(files), "complete": True}}, evidence)
+                self.assertEqual({"AWF-1": "Backlog ticket AWF-1 has no observed exact write files"}, rejected)
+        # The rejection collector is also usable without the evidence collector.
+        self.trusted = self.body(self.snapshot)
+        self.assertEqual(self.read(), self.read(rejected={}))
+
     def test_operating_doc_covers_max_lanes_overrides_and_migration(self):
         doc = (ROOT / ".agentic/docs/29-OPERATING-CONFIGURATION.md").read_text(encoding="utf-8")
         for text in ("execution.max_lanes", "fixed", "max", "sealed safe capacity",
