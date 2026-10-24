@@ -87,4 +87,3 @@ The code supplies a POSIX installed interpreter, POSIX locking, and explicit des
     Sources: `7fcaeece:.agentic/lib/agentic/cli.py:141`; `7fcaeece:.agentic/lib/agentic/providers/github_status.py:640`.
 
     **Success/confirm:** exit 0, ACTIVE, accepted checkout VERIFIED. **Failure:** retain CONFIGURED and resolve reported blockers; offline/provider-unavailable execution cannot establish ACTIVE. Source: `7fcaeece:.agentic/tests/test_adoption_status.py:963`.
-

@@ -13,4 +13,3 @@ Check the returned blockers in this order:
 Source: `7fcaeece:.agentic/lib/agentic/providers/github_status.py:551`.
 
 Missing provider access, an unmerged PR, an unrelated PR, a different default tip, or changed governance bytes keeps ACTIVE unestablished. Sources: `7fcaeece:.agentic/tests/test_adoption_status.py:963`; `7fcaeece:.agentic/tests/test_adoption_status.py:992`; `7fcaeece:.agentic/tests/test_adoption_status.py:1006`; `7fcaeece:.agentic/tests/test_adoption_status.py:1025`.
-

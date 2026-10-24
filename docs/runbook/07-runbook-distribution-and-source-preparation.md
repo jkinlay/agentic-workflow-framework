@@ -22,4 +22,3 @@ Expected success:
 Sources: `7fcaeece:global/awf-portable/scripts/prepare_release.py:189`; `7fcaeece:global/awf-portable/scripts/prepare_release.py:219`; `7fcaeece:global/awf-portable/tests/test_prepare_release.py:87`.
 
 A 1.9.4 bundle requested as 1.9.5 must reject; it must not silently substitute another release. An incomplete, different, or corrupted existing cache is preserved. Select a new dedicated cache after investigating the rejection. Sources: `7fcaeece:global/awf-portable/scripts/prepare_release.py:121`; `7fcaeece:global/awf-portable/tests/test_prepare_release.py:136`; `7fcaeece:global/awf-portable/tests/test_prepare_release.py:230`.
-

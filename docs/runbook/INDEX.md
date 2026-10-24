@@ -1,6 +1,6 @@
 # Runbook index
 
-The AWF 1.9.5 install and adoption runbook is kept in the repository in parts, split byte-exact at every level-2 and level-3 heading with no rewording (rulings jk-direct-1657 and jk-direct-1715), so every part starts with its own heading. Read the parts in this order. Joining them in this order reproduces the source byte for byte: SHA-256 24fc50e5dd4854ab63d4426f1caa936cb2bbc9e43bfc7ce678c79282d30dbb83, 71585 bytes.
+The AWF 1.9.5 install and adoption runbook is kept in the repository in parts, split byte-exact at every level-2 and level-3 heading with no rewording (rulings jk-direct-1657 and jk-direct-1715), so every part starts with its own heading. Read the parts in this order. Joining them in this order reproduces the source text with exactly one newline at the end of each part: SHA-256 956d39cab43ce8bfee823af6196aeda9fc21db2836e8d5537239acf77f81409c, 71546 bytes.
 
 1. [00-runbook-introduction.md](00-runbook-introduction.md): AWF 1.9.5 Install and Adoption Runbook
 2. [01-runbook-prerequisites.md](01-runbook-prerequisites.md): 1. Prerequisites

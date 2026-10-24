@@ -30,4 +30,3 @@ CLI recovery dispatch: `7fcaeece:scripts/bootstrap_project.py:181`.
 Recovery phases are `object_prepare`, `active`, `rollback_cleanup`, `commit_cleanup`, and `commit_cleanup_authenticated`. They are transaction phases, not repository activation states. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1121`.
 
 A stable installer lock may remain after successful rollback; its presence alone does not prove an active installer. The tests deliberately retain its inode. Source: `9f44c2a1:.agentic/tests/test_upgrade_195_path.py:214`.
-

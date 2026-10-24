@@ -13,4 +13,3 @@ auto_transition_jira
 ```
 
 Every listed switch must be explicitly false when existing configuration is present. The installer rejects otherwise. Sources: `7fcaeece:.agentic/lib/agentic/installer.py:814`; `7fcaeece:AGENTS.md:14`.
-

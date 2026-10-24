@@ -23,4 +23,3 @@ Command interface: `7fcaeece:scripts/bootstrap_project.py:141`. Historical upgra
 **Application acceptance:** CONFIGURED requires the same actual installed subprocess evidence and digest matches as fresh installation. `UPGRADED` alone is only the underlying transaction result. Sources: `7fcaeece:.agentic/lib/agentic/installer.py:1971`; `7fcaeece:.agentic/lib/agentic/adoption_config.py:893`.
 
 **Failure:** retain diagnostics, original state, and recovery material. An immutable-file mismatch reports expected/actual hashes and refuses the historical upgrade. Do not rehash modified files into an apparently valid receipt. Sources: `7fcaeece:.agentic/lib/agentic/upgrade.py:198`; `9f44c2a1:.agentic/tests/test_upgrade_195_path.py:270`.
-

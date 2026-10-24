@@ -15,4 +15,3 @@
 | `7ddb195a` — AWF-54 successor | `.agentic/tests/test_reference_controller_adapter.py` | 1,634 | Matching lines only; remainder **UNVERIFIED**. |
 
 Diff/stat inventories were also inspected for the supplied heads. They do not constitute full file reads. All files outside the full-read inventory, remaining changed-file contents, and uninspected transitive callers/callees are **UNVERIFIED**. A complete per-function, per-call-site, per-hunk audit is **UNVERIFIED** and is not claimed by this runbook.
-

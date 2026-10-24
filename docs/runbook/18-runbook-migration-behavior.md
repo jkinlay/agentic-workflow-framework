@@ -7,4 +7,3 @@
 - Recognized durable state is classified/migrated. Unknown or incompatible state receives a read-only archive copy while retaining the source. Source: `7fcaeece:.agentic/lib/agentic/upgrade.py:883`.
 - **[Unmerged d2-006d branch]** Archive target naming follows runtime VERSION rather than a hard-coded 1.9.4 target. Source: `9f44c2a1:.agentic/lib/agentic/upgrade.py:21`. Integration must also derive the archive manifest’s `target_version` from runtime VERSION. In current main, both the archive root and manifest target remain hard-coded to 1.9.4; changing the archive path alone is insufficient.
 - Upgrade preserves installation identity and effective project ownership; conflicting new managed paths reject rather than overwrite project-owned files. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1776`.
-

@@ -87,4 +87,3 @@
     Sources: `7fcaeece:.agentic/lib/agentic/cli.py:141`; `7fcaeece:.agentic/lib/agentic/providers/github_status.py:640`.
 
     **Success/confirm:** exit 0, ACTIVE, accepted checkout VERIFIED. **Failure:** retain the observed state and resolve named blockers. This requires live provider evidence; no such observation was performed for this runbook.
-

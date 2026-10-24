@@ -12,4 +12,3 @@
 | First repository | Real repository identity, numeric provider ID, actual default branch, eligible code owner, and project test command. Sources: `7fcaeece:.agentic/docs/20-NEW-PROJECT-SETUP.md:25`; `7fcaeece:.agentic/lib/agentic/adoption_config.py:749`. | Supply observed values or resolve the exact configuration paths reported by bootstrap. Never invent IDs. |
 
 The pinned runtime dependency names are PyYAML, jsonschema, attrs, jsonschema-specifications, referencing, rpds-py, and typing-extensions. Use the selected release’s lock rather than copying dependency versions from this runbook. Sources: `7fcaeece:.agentic/requirements.lock:1`; `7fcaeece:.agentic/lib/agentic/adoption_config.py:52`.
-

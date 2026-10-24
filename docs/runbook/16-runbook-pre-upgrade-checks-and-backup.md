@@ -9,4 +9,3 @@
 4. Preserve an independent recoverable backup, including ignored state and recovery material. **A complete OS-specific backup/restore command is UNVERIFIED.** The installer’s `--on-conflict backup` saves changed original files under a transaction-specific backup directory; it is not demonstrated as a complete project/runtime backup. Sources: `7fcaeece:.agentic/docs/20-NEW-PROJECT-SETUP.md:21`; `7fcaeece:.agentic/lib/agentic/installer.py:1889`.
 
 5. Recover unfinished installation before planning a new upgrade. Existing intent rejects another installation. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1701`.
-

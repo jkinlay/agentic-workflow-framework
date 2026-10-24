@@ -107,4 +107,3 @@
     **Success/confirm:** exit 0, `project_state: ACTIVE`, `accepted_checkout: VERIFIED`, and recorded acceptance/default-head identities. Source: `7fcaeece:.agentic/lib/agentic/providers/github_status.py:674`.
 
     **Failure:** exit 4 means ACTIVE remains unestablished. Resolve reported trust, merge, identity, checkout, or access blockers. This step requires provider observations and **cannot be completed under the offline review restrictions used to prepare this runbook**. Missing provider access retains CONFIGURED. Source: `7fcaeece:.agentic/tests/test_adoption_status.py:963`.
-

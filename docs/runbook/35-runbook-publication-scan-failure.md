@@ -13,4 +13,3 @@ Flags and exit handling: `7fcaeece:.agentic/lib/agentic/cli.py:245`; `7fcaeece:.
 Large-file allowances require exact path/hash/reason/approver; they are not wildcard exemptions. Source: `7fcaeece:.agentic/docs/31-PUBLICATION-SAFETY.md:38`.
 
 The publication library and its complete transitive callees were not read in full; exhaustive implementation verification is **UNVERIFIED**.
-

@@ -47,4 +47,3 @@
 | `scripts/self_test.py` | 8 |
 | `scripts/tests/test_installed_self_test.py` | 163 |
 | `scripts/validate_git_checkout.py` | 475 |
-

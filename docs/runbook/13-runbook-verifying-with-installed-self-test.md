@@ -20,4 +20,3 @@ For an installed component check, source release review is `NOT_APPLICABLE`; `re
 Caught interruption/timeout produces `INTERRUPTED`, retains phase/test information, and exits 130. Other failures exit nonzero. An externally terminated run without a completed report is **UNVERIFIED**, not PASS. Sources: `7fcaeece:.agentic/scripts/self_test.py:422`; `7fcaeece:.agentic/scripts/self_test.py:451`.
 
 **[POSTSUITE-001 branch]** Any additional interruption-recovery behavior is **UNVERIFIED** because no successor revision was supplied.
-
