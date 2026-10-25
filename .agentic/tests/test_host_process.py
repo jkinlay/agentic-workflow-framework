@@ -187,13 +187,13 @@ class Launcher {
         for key, value in [('user.name', 'AWF synthetic fixture'), ('user.email', 'fixture@example.invalid'), ('commit.gpgsign', 'false')]:
             self.command('-C', str(self.worker), 'config', key, value)
         (self.worker / 'src').mkdir()
-        (self.worker / 'src/a.py').write_text('value = 1\n', encoding='utf-8')
+        (self.worker / 'src/a.py').write_text('value = 1\n', encoding='utf-8', newline='\n')
         (self.worker / '.github/workflows').mkdir(parents=True)
-        (self.worker / '.github/workflows/ci.yml').write_text('workflow\n', encoding='utf-8')
+        (self.worker / '.github/workflows/ci.yml').write_text('workflow\n', encoding='utf-8', newline='\n')
         self.command('-C', str(self.worker), 'add', '.')
         self.command('-C', str(self.worker), 'commit', '-m', 'synthetic baseline')
         self.command('-C', str(self.worker), 'checkout', '-b', 'codex/test')
-        (self.worker / 'src/a.py').write_text('value = 2\n', encoding='utf-8')
+        (self.worker / 'src/a.py').write_text('value = 2\n', encoding='utf-8', newline='\n')
         self.command('-C', str(self.worker), 'commit', '-am',
                      'synthetic candidate\n\nWriter: codex/' + CANDIDATE_CODEX_RUN_ID)
         self.remote = self.base / 'remote.git'
