@@ -1,0 +1,39 @@
+{
+  "template_for": "status-report",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "inputs_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "outstanding": {
+      "status": "UNKNOWN",
+      "reason": "UNFILLED"
+    },
+    "priority": {
+      "status": "UNKNOWN",
+      "reason": "UNFILLED"
+    },
+    "lanes": {
+      "status": "UNKNOWN",
+      "reason": "UNFILLED"
+    },
+    "lane_observations": {
+      "rejected_override": null
+    },
+    "merge_train": {
+      "status": "UNKNOWN",
+      "reason": "UNFILLED"
+    },
+    "eta": {
+      "status": "UNKNOWN",
+      "reason": "UNFILLED"
+    },
+    "release_binding": {
+      "status": "UNKNOWN",
+      "reason": "UNFILLED"
+    },
+    "routing": {
+      "status": "UNKNOWN",
+      "reason": "UNFILLED"
+    }
+  }
+}

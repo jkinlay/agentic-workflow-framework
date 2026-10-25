@@ -48,6 +48,8 @@ Adoption prepares a draft PR without rule preconditions. Explain the governance-
 
 INSTALLED is receipt-consistent bytes; CONFIGURED adds accepted adoption policy, neither independent release provenance. Bootstrap must execute isolated installed verification/validation: exit 0, integrity_valid=true/status=ACCEPTED, bound digests; host preflight rows never block. Status recomputes checks, not prior child execution. Only `workflow.py status` with independent release trust, observed receipt-changing adoption merge and accepted raw AWF/configuration/receipt/provenance bytes on the fresh default branch establishes ACTIVE; unrelated product edits may coexist. Receipt/branch/status assertions alone cannot; unverified acceptance stays CONFIGURED; ACTIVE activates no adapters.
 
+Opt-in [status reports](docs/32-ACTIVATION-STATUS.md) use explicit input/existing external state, identity admission, supplied-record verification and immutable snapshots. Unknowns retain reasons; reports preserve status exits. Automatic activation reporting remains deferred to release 1.9.6.
+
 Live Codex review, scheduling and secret-repository pushes require observed rules and qualification; live execution needs configured CI/trusted owners. Restricted pushes need owner publication or rules; local adoption proceeds without invented PRs ([adoption](docs/20-NEW-PROJECT-SETUP.md)). The [Codex review host](docs/28-EXTERNAL-REVIEW.md) requires project qualification.
 
 Continue authorized work; report results/constraints/next actions. Finish on completion, cancellation or no authorized step; name the required event. See [native coordination](docs/24-STREAM-STARTUP.md), [routing](docs/27-MODEL-ROUTING.md) and [scheduled review](docs/22-AUTOMATED-REVIEW-LOOP.md).

@@ -146,6 +146,9 @@ def main(argv=None, default_root=None):
     status_parser.add_argument("--gh", help="Trusted host GitHub CLI executable for read-only acceptance observation")
     status_parser.add_argument("--release-source", type=Path, help="Verified release source outside this project; requires an independently approved manifest pin")
     status_parser.add_argument("--expected-manifest-sha256", help="Independent approved source manifest pin; otherwise use the trusted host installed AWF skill")
+    status_parser.add_argument("--report", action="store_true", help="Append an opt-in project report to explicit existing external state")
+    status_parser.add_argument("--report-input", type=Path, help="Report-only supplied evidence JSON")
+    status_parser.add_argument("--report-store", type=Path, help="Existing external AWF state database; never created implicitly")
     doctor_parser = sub.add_parser("doctor", help="Print canonical installed runtime paths and copy/paste-safe PowerShell commands")
     doctor_parser.add_argument("--json", action="store_true", help="Print the versioned doctor result as ASCII-safe JSON")
     doctor_parser.add_argument("--handoff", type=Path,
@@ -381,12 +384,28 @@ def main(argv=None, default_root=None):
             from .providers.github_status import project_status, render_status
             output = project_status(root, adoption_pr=args.adoption_pr, gh=args.gh,
                                     release_source=args.release_source, expected_manifest_sha256=args.expected_manifest_sha256)
+            report_result = None
+            if args.report:
+                if args.report_input is None or args.report_store is None:
+                    report_result = {"status": "NOT_RUN", "reason": "REPORT_ARGUMENTS_REQUIRED: supply --report-input and --report-store"}
+                else:
+                    try:
+                        from .status_report_store import run_report
+                        report_result = run_report(root, args.report_input, args.report_store)
+                    except Exception as exc:
+                        report_result = {"status": "FAILED", "reason": render_bounded_diagnostic(
+                            str(exc), code="STATUS_REPORT_FAILED")}
+                output = {**output, "status_report": report_result}
             if args.json:
                 emit_json(output)
             else:
                 rendered = render_status(output)
                 require_ascii_line(rendered.splitlines()[0])
                 print(rendered)
+                if report_result is not None:
+                    from .status_report import render_text
+                    print("Status report: " + report_result["status"])
+                    print(render_text(report_result["report"]) if "report" in report_result else report_result["reason"])
             if args.require_active and output['project_state'] != 'ACTIVE':
                 return 4
             return 0 if output['project_state'] is not None else 2

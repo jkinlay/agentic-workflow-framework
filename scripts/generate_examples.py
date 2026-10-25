@@ -46,6 +46,8 @@ def controller_adapter_config():
                 "writer": {"model": "CHANGE_ME_APPROVED_WRITER_MODEL", "reasoning_effort": "high", "sandbox": "workspace-write"},
                 "critic": {"model": "CHANGE_ME_APPROVED_CRITIC_MODEL", "reasoning_effort": "high", "sandbox": "read-only"},
             },
+            "isolated_home": "<AWF_CODEX_HOME>",
+            "windows_sandbox": "elevated",
             "worktree_root": "<WORKTREE_ROOT>",
             "run_record_directory": "<STATE_DIR>/controller-runs",
             "timeout_seconds": 900,
@@ -428,6 +430,8 @@ def generate(output_root, source_root=ROOT):
     schemas = (catalog(include_ticket_plan=False)
                if "include_ticket_plan" in inspect.signature(catalog).parameters
                else catalog())
+    from agentic.status_report import build_report
+    write(output_root / '.agentic/examples/status-report.json', build_report({}))
     from agentic.model_routing import default_policy
     generation_policy = default_policy(
         source_root / ".agentic/tests/fixtures/routing/valid.yaml")
