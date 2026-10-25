@@ -515,7 +515,7 @@ def _priority(value, outstanding):
         if record['key'] in outstanding['tickets']:
             grouped.setdefault((record['tier'], record['cap']), []).append(record)
     _require(set(outstanding['tickets']) <= seen, 'Incomplete supplied assignments')
-    return {'status': 'KNOWN', 'groups': [dict(tier=tier, cap=cap,
+    return {'status': 'KNOWN', 'groups': [dict(tier=tier, cap=cap, count=len(records),
             tickets=sorted(r['key'] for r in records), sources=sorted({r['source'] for r in records}))
             for (tier, cap), records in sorted(grouped.items())]}
 

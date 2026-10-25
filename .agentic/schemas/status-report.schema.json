@@ -109,6 +109,7 @@
                 "required": [
                   "tier",
                   "cap",
+                  "count",
                   "tickets",
                   "sources"
                 ],
@@ -121,6 +122,11 @@
                   "cap": {
                     "type": "integer",
                     "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0,
                     "maximum": 9007199254740991
                   },
                   "tickets": {

@@ -72,8 +72,8 @@ class ProjectionTests(unittest.TestCase):
 
     def test_priority_groups_by_tier_and_cap(self):
         self.assertEqual(api().build_report(snapshot())['priority'], {'status': 'KNOWN', 'groups': [
-            {'tier': 1, 'cap': 1, 'tickets': ['AWF-1'], 'sources': ['fixture/tier1']},
-            {'tier': 2, 'cap': 4, 'tickets': ['AWF-2', 'AWF-3'],
+            {'tier': 1, 'cap': 1, 'count': 1, 'tickets': ['AWF-1'], 'sources': ['fixture/tier1']},
+            {'tier': 2, 'cap': 4, 'count': 2, 'tickets': ['AWF-2', 'AWF-3'],
              'sources': ['fixture/tier2', 'fixture/tier3']}]})
 
     def test_lanes_recommendation_without_override(self):
@@ -530,6 +530,172 @@ class OptInReportTests(unittest.TestCase):
             source.write_bytes(canonical(request))
             self.assertEqual(self.module().run_report(project, source, state_path)['status'], 'NOT_RUN')
             self.assertEqual(state.verify_chain()['sequence'], 1)
+
+
+def override_report_fixture(mode, value):
+    """Seal a supplied plan and two complete, independently authenticated decisions."""
+    from agentic.canonical import fingerprint, sha256
+    from agentic.intake_assignment import classify_ticket, _record, _seal
+    from agentic.operating import default_operating, validate_operating
+    from agentic.planning import change_owner_override, owner_override_command, verify_plan_record
+    config, request = admitted_fixture()
+    operating = validate_operating(default_operating(), config)
+    request['inventory'] = dict(status='KNOWN', source='fixture/provider', tickets=[
+        dict(key='AWF-1', status='Ready'), dict(key='AWF-2', status='Ready'),
+        dict(key='AWF-3', status='Done'), dict(key='AWF-4', status='Cancelled')])
+    request['assignments'] = [_seal(_record(ticket['key'], classify_ticket(config,
+        dict(key=ticket['key'], write_paths=['docs/example.md'])), source='fixture/intake',
+        assigned_by='controller', now=request['created_at']))
+        for ticket in request['inventory']['tickets']]
+    state, trusted = {}, {}
+
+    def authenticate(source, expected):
+        accepted = trusted[source['comment_id']]
+        if source != accepted or expected != dict(binding=accepted['binding'],
+                actor_id=accepted['actor_id'], raw_body_sha256=accepted['raw_body_sha256'],
+                requested=accepted_request[source['comment_id']], now=request['created_at']):
+            raise ValueError('unrecognized owner observation')
+        return dict(status='VERIFIED', actor_id=accepted['actor_id'], binding=accepted['binding'],
+            raw_body_sha256=accepted['raw_body_sha256'], source_id=accepted['source_id'],
+            observed_at=request['created_at'])
+
+    accepted_request = {}
+    for index, (choice, count) in enumerate([('fixed', 2), (mode, value)], 1):
+        previous = state.get('planning_override', {}).get('override_id')
+        reason = 'fixture owner decision ' + str(index)
+        command = owner_override_command(previous, choice, count, reason)
+        source = dict(channel='github_pr_comment', comment_id=index,
+            actor_id=config['github']['expected_actor_id'], binding=dict(current_override_id=previous),
+            created_at=request['created_at'], updated_at=request['created_at'],
+            raw_body=command, raw_body_sha256=sha256(command.encode()), source_id='fixture/comment/' + str(index))
+        trusted[index] = copy.deepcopy(source)
+        accepted_request[index] = dict(mode=choice, value=count)
+        current = change_owner_override(config, state, mode=choice, value=count, reason=reason,
+            now=request['created_at'], owner_source=source, verify_owner_source=authenticate)
+    capacity = dict(safe_lane_count=2, project_config_sha256=fingerprint('accepted-project-config', config),
+                    operating_hash=operating.operating_hash)
+    capacity['capacity_binding_sha256'] = fingerprint('planning_capacity_binding', capacity)
+    request['override_state'] = state
+    plan = dict(schema_version=2, created_at=request['created_at'], lane_count=min(2, value),
+        inputs=dict(capacity=capacity, jira_snapshot_sha256=fingerprint('planning_ticket_snapshot',
+            request['inventory']['tickets'])),
+        estimate=dict(capacity=copy.deepcopy(capacity), safe_lane_count=2,
+            constraints={'observed_host_capacity':2, 'resource:cpu':2, 'dependency_graph/file_overlap':3}),
+        owner_decision=dict(kind='owner_override', override_id=current['override_id'], mode=mode, value=value,
+            capacity_binding_sha256=capacity['capacity_binding_sha256'], applied_after_capacity_binding=True))
+    plan['plan_sha256'] = fingerprint('planning_audit_record', plan)
+    verify_plan_record(plan)
+    request['plan'] = plan
+    return config, request, operating, authenticate
+
+
+class VerifiedOverrideReportTests(unittest.TestCase):
+    def check_admitted(self, mode, value, effective):
+        from agentic.status_report_store import prepare_report, replay_report
+        from agentic.contracts import Contracts
+        config, request, operating, authenticate = override_report_fixture(mode, value)
+        original = copy.deepcopy(request)
+        with patch('agentic.planning.recompute_plan', side_effect=AssertionError('no replan')) as replan, \
+             patch('agentic.planning.plan_lanes', side_effect=AssertionError('no new plan')) as plan, \
+             patch('agentic.status_report_store.verify_override_state',
+                   wraps=importlib.import_module('agentic.planning').verify_override_state) as chain:
+            verifier = unittest.mock.Mock(wraps=authenticate)
+            result = prepare_report(config, request, operating=operating,
+                verify_inventory=lambda supplied, binding: copy.deepcopy(supplied), verify_owner_source=verifier)
+            chain.assert_called_once()
+            self.assertEqual([call.args[0]['comment_id'] for call in verifier.call_args_list], [1, 2])
+            replan.assert_not_called(); plan.assert_not_called()
+        self.assertEqual(result['status'], 'PREPARED')
+        lanes = result['report']['lanes']
+        current = request['override_state']['planning_override']
+        self.assertEqual(lanes['status'], 'KNOWN')
+        self.assertEqual((lanes['recommendation'], lanes['effective']), (2, effective))
+        self.assertEqual(lanes['source'], request['plan']['plan_sha256'])
+        self.assertEqual(lanes['owner_override'], dict(mode={'fixed':'fixed_count','max':'max_cap'}[mode],
+            value=value, actor=str(config['github']['expected_actor_id']), decided_at=request['created_at'],
+            source=current['override_sha256']))
+        self.assertEqual(lanes['binding_constraint'], 'observed_host_capacity')
+        self.assertEqual(lanes['binding_constraints'], ['observed_host_capacity', 'resource:cpu'])
+        self.assertEqual({row['name']:row['value'] for row in lanes['constraint_details']},
+                         request['plan']['estimate']['constraints'])
+        self.assertTrue(all(row['source'] == request['plan']['plan_sha256']
+            and row['observed_at'] == request['created_at'] for row in lanes['constraint_details']))
+        self.assertEqual(request, original)
+        self.assertEqual(replay_report(result['record']), result['report'])
+        self.assertEqual(result['record']['inputs']['request'], original)
+        # The admitted override report must also satisfy the required group-count contract.
+        self.assertEqual(result['report']['priority']['groups'][0]['count'], 2)
+        self.assertEqual(result['report']['priority']['groups'][0]['tickets'], ['AWF-1', 'AWF-2'])
+        Contracts(ROOT / '.agentic/schemas').validate('status-report', result['report'])
+
+    def test_verified_fixed_override_admission(self):
+        self.check_admitted('fixed', 1, 1)
+
+    def test_verified_max_override_admission(self):
+        for value, effective in [(1, 1), (3, 2)]:
+            with self.subTest(value=value): self.check_admitted('max', value, effective)
+
+    def test_override_absent_failed_or_different_authentication_is_coded_unknown(self):
+        from agentic.status_report_store import prepare_report
+        for mode in ['fixed', 'max']:
+            config, request, operating, authenticate = override_report_fixture(mode, 1)
+            def failed(*args):
+                raise RuntimeError('synthetic authentication failure')
+            def different(source, expected):
+                return {**authenticate(source, expected), 'source_id':'foreign'}
+            for verifier, reason in [(None, 're-authentication'), (failed, 'authentication failed'),
+                                     (different, 'differs from its controller record')]:
+                with self.subTest(mode=mode, reason=reason):
+                    original = copy.deepcopy(request)
+                    result = prepare_report(config, request, operating=operating,
+                        verify_inventory=lambda supplied, binding: copy.deepcopy(supplied),
+                        verify_owner_source=verifier)
+                    lanes = result['report']['lanes']
+                    self.assertEqual(set(lanes), {'status', 'reason'})
+                    self.assertEqual(lanes['status'], 'UNKNOWN')
+                    self.assertTrue(lanes['reason'].startswith('INVALID_PLAN:'))
+                    self.assertIn(reason, lanes['reason'])
+                    self.assertEqual(request, original)
+                    self.assertEqual(result['report']['outstanding']['count'], 2)
+
+    def test_override_decision_chain_tip_and_bindings_must_match(self):
+        from agentic.canonical import fingerprint
+        from agentic.status_report_store import prepare_report
+        for mode in ['fixed', 'max']:
+            for mismatch, reason in [('override_id','PLAN_OVERRIDE_MISMATCH'),
+                    ('mode','PLAN_OVERRIDE_MISMATCH'), ('value','PLAN_OVERRIDE_MISMATCH'),
+                    ('tip','audit-chain tip'), ('history','incomplete or out of order'),
+                    ('capacity','not bound after sealed capacity'),
+                    ('config','PLAN_CONFIGURATION_MISMATCH'), ('operating','PLAN_OPERATING_MISMATCH'),
+                    ('inventory','PLAN_INVENTORY_MISMATCH')]:
+                config, request, operating, authenticate = override_report_fixture(mode, 1)
+                plan = request['plan']; decision = plan['owner_decision']
+                if mismatch == 'override_id': decision['override_id'] = 'foreign'
+                if mismatch == 'mode': decision['mode'] = 'max' if mode == 'fixed' else 'fixed'
+                if mismatch == 'value': decision['value'] = 2
+                if mismatch == 'tip':
+                    request['override_state']['planning_override'] = request['override_state']['planning_override_history'][0]
+                if mismatch == 'history': request['override_state']['planning_override_history'] = request['override_state']['planning_override_history'][1:]
+                if mismatch == 'capacity': decision['capacity_binding_sha256'] = 'f' * 64
+                if mismatch in {'config','operating'}:
+                    capacity = plan['inputs']['capacity']
+                    capacity['project_config_sha256' if mismatch == 'config' else 'operating_hash'] = 'f' * 64
+                    capacity['capacity_binding_sha256'] = fingerprint('planning_capacity_binding',
+                        {k:v for k,v in capacity.items() if k != 'capacity_binding_sha256'})
+                    plan['estimate']['capacity'] = copy.deepcopy(capacity)
+                    decision['capacity_binding_sha256'] = capacity['capacity_binding_sha256']
+                if mismatch == 'inventory': plan['inputs']['jira_snapshot_sha256'] = 'f' * 64
+                plan['plan_sha256'] = fingerprint('planning_audit_record',
+                    {k:v for k,v in plan.items() if k != 'plan_sha256'})
+                original = copy.deepcopy(request)
+                with self.subTest(mode=mode, mismatch=mismatch):
+                    lanes = prepare_report(config, request, operating=operating,
+                        verify_inventory=lambda supplied, binding: copy.deepcopy(supplied),
+                        verify_owner_source=authenticate)['report']['lanes']
+                    self.assertEqual(lanes['status'], 'UNKNOWN')
+                    self.assertTrue(lanes['reason'].startswith('INVALID_PLAN:'))
+                    self.assertIn(reason, lanes['reason'])
+                    self.assertEqual(request, original)
 
 
 if __name__=='__main__': unittest.main()

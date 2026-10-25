@@ -199,7 +199,7 @@ def status_report_schemas():
     report = obj({'inputs_sha256': DIGEST,
         'outstanding': metric({'count': integer(), 'tickets': STRINGS, 'source': text()}),
         'priority': metric({'groups': arr(obj({'tier': integer(1, maximum=3), 'cap': integer(1),
-                                             'tickets': STRINGS, 'sources': STRINGS}))}),
+                                             'count': integer(), 'tickets': STRINGS, 'sources': STRINGS}))}),
         'lanes': metric({'recommendation': integer(), 'effective': integer(),
             'owner_override': nullable(decision), 'binding_constraint': text(), 'source': text(),
             'binding_constraints': STRINGS, 'constraint_details': arr(constraint, 1)},
