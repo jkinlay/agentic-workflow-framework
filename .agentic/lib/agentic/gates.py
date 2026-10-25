@@ -1304,6 +1304,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                 or not isinstance(observation, dict)
                 or not isinstance(context["runtime_registry"], dict)):
             raise ValidationError("Commit provenance policy/provider inputs are invalid")
+        provenance._validate_reviewed_provenance_policy(context["reviewed_policy"])
         # The legacy three-key form means no override. The extended form is
         # all-or-nothing, with an explicit null/empty/null absence representation.
         override = context.get("override")
@@ -1314,12 +1315,14 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                 or (override is not None and (not isinstance(override, dict)
                                              or not isinstance(reviewed_owners, dict)))):
             raise ValidationError("Commit provenance override runtime inputs are invalid")
-        if (observation.get("repository_id") != candidate["repository_id"]
-                or observation.get("pr") != candidate["pr_number"]
-                or observation.get("base_ref") != candidate["target_base_branch"]
-                or observation.get("base") != candidate["target_base_sha"]
-                or observation.get("head") != candidate["head_sha"]):
-            raise ValidationError("Commit provenance provider observation differs from candidate")
+        for observed, selected in (("repository_id", "repository_id"), ("pr", "pr_number"),
+                                   ("base_ref", "target_base_branch"),
+                                   ("base", "target_base_sha"), ("head", "head_sha")):
+            if (type(observation.get(observed)) is not type(candidate[selected])
+                    or observation.get(observed) != candidate[selected]):
+                raise ValidationError("Commit provenance provider observation differs from candidate")
+        if observation["base_ref"] != context["reviewed_policy"]["default_ref"].removeprefix("refs/heads/"):
+            raise ValidationError("Commit provenance provider default ref differs from reviewed policy")
         commit_provenance = provenance.check_commit_range(
             repository, candidate["merge_base_sha"], candidate["head_sha"],
             reviewed_policy=context["reviewed_policy"],

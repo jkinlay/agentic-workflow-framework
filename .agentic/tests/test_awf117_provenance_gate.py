@@ -50,7 +50,8 @@ def _rebind_posting_comment(bundle, posting, verdict, comment):
 
 
 class ProvenanceGateTests(unittest.TestCase):
-    def exercise_refusal(self, trailer, reason):
+    def exercise_refusal(self, trailer, reason, *, mutate=None, fail=True,
+                         before_result=False, after=None):
         # Imports stay inside the test: a planned production member must never
         # make this module undiscoverable.
         from agentic.canonical import canonical, fingerprint, load, sha256
@@ -118,13 +119,23 @@ class ProvenanceGateTests(unittest.TestCase):
             registry = {"generators": {"manifest-regen": {
                 "reproducer_sha256": digest, "callable": reproduce_manifest,
             }}}
+            registry["run_log_verifier"] = lambda run, commit, entries: {
+                "version": 1, "status": "ABSENT", "run_id": run,
+                "commit_sha": commit, "entries": entries,
+                "evidence_sha256": None, "reason_code": "OPTIONAL_ABSENT"}
             checked = check_commit_range(
                 repository, base, head, reviewed_policy=policy,
                 provider_observation=provider, runtime_registry=registry,
             )
-            self.assertEqual("REFUSE", checked["status"], checked)
-            self.assertEqual(head, checked["refusals"][0]["sha"])
-            self.assertIn(reason, checked["refusals"][0]["reason"])
+            if reason:
+                self.assertEqual("REFUSE", checked["status"], checked)
+                self.assertEqual(head, checked["refusals"][0]["sha"])
+                self.assertIn(reason, checked["refusals"][0]["reason"])
+            else:
+                self.assertEqual("PASS", checked["status"], checked)
+            acquisition = {"reviewed_policy": policy,
+                           "provider_observation": provider,
+                           "runtime_registry": registry}
 
             config_values = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
             self.bundle = example_bundle(config_values)
@@ -152,18 +163,18 @@ class ProvenanceGateTests(unittest.TestCase):
             class ProvenanceConfig(RuntimeAssignedGateConfig):
                 def get(inner, key, default=None):
                     value = super().get(key, default)
-                    if key == "_awf_runtime":
-                        # Doc 45 owner question 2: closed record vs recomputation
-                        # remains open. Supply the existing checker inputs through
-                        # the runtime channel, without inventing a bundle schema.
-                        value["commit_provenance"] = {
-                            "reviewed_policy": policy,
-                            "provider_observation": provider,
-                            "runtime_registry": registry,
-                        }
+                    if key == "_awf_runtime" and mutate:
+                        mutate(inner, bundle, value)
                     return value
 
-            config = ProvenanceConfig(config_values, self)
+            config = ProvenanceConfig(config_values, self,
+                commit_provenance=acquisition, repository=repository)
+            self.checked = checked
+            self.repository = repository
+            if mutate:
+                config.get("_awf_runtime")
+            from agentic.policy import policy_hash
+            bundle["contract"]["policy_hash"] = policy_hash(config, definition())
             binding = expected_binding(config, definition(), bundle)
             for name in ("dispatch", "worker", "critic", "ci", "pr"):
                 bundle[name]["binding"] = copy.deepcopy(binding)
@@ -174,29 +185,49 @@ class ProvenanceGateTests(unittest.TestCase):
             for verdict in bundle["review_verdicts"]:
                 _rebind_posting_comment(bundle, posting, verdict,
                     verdict["posting_observation"]["comment_bytes"])
-            # Doc 45 owner question 1: use the fixed merge_base..head fixture;
-            # do not decide whether an additional observed default OID is needed.
-            # Questions 3/4 (override authority/carrier location) are out of scope.
-            gate = evaluate(config, definition(), bundle,
-                Contracts(ROOT / ".agentic/schemas"), NOW,
-                repository=repository, posting_collector_registry=posting)
+            # Exercise the retained config-instance repository transport.
+            from unittest.mock import patch
+            with patch("agentic.gates.provenance.check_commit_range",
+                       wraps=check_commit_range) as checker:
+                gate = evaluate(config, definition(), bundle,
+                    Contracts(ROOT / ".agentic/schemas"), NOW,
+                    posting_collector_registry=posting)
             unrelated_failures = {name: result for name, result in gate["gates"].items()
                                   if name != "provenance"
                                   and result["result"] not in {"PASS", "N_A"}}
             self.assertEqual({}, unrelated_failures,
                              "The fixture must pass every unrelated gate")
-            self.assertEqual("FAIL", gate["gates"]["provenance"]["result"],
-                "AWF-117 missing range enforcement: offending commit " + head)
-            self.assertEqual("NOT_READY", gate["conclusion"])
-            # Owner question 2 allows either the refusal itself or a content
-            # address of the recomputed checker result. The candidate's head
-            # alone is insufficient evidence of the commit refusal.
-            retained = "\n".join(gate["gates"]["provenance"]["evidence"]
-                                 + gate["residual_risks"])
-            addresses = (fingerprint("gate-input", checked), sha256(canonical(checked)))
-            self.assertTrue((head in retained and reason in retained)
-                            or any(address in retained for address in addresses),
-                            "Provenance evidence must bind the offending commit/refusal")
+            if before_result:
+                checker.assert_not_called()
+            else:
+                checker.assert_called_once_with(repository, base, head,
+                    reviewed_policy=policy, provider_observation=provider,
+                    runtime_registry=registry, override=None,
+                    override_predecessors=[], reviewed_owner_config=None)
+            if fail:
+                self.assertEqual("FAIL", gate["gates"]["provenance"]["result"],
+                    "AWF-117 missing range enforcement: offending commit " + head)
+                self.assertEqual("NOT_READY", gate["conclusion"])
+            else:
+                self.assertEqual("PASS", gate["gates"]["provenance"]["result"])
+                self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
+            if reason:
+                # Owner question 2 allows either the refusal itself or a content
+                # address of the recomputed checker result. The candidate's head
+                # alone is insufficient evidence of the commit refusal.
+                retained = "\n".join(gate["gates"]["provenance"]["evidence"]
+                                     + gate["residual_risks"])
+                addresses = (fingerprint("gate-input", checked), sha256(canonical(checked)))
+                self.assertTrue((head in retained and reason in retained)
+                                or any(address in retained for address in addresses),
+                                "Provenance evidence must bind the offending commit/refusal")
+            actual = "urn:awf:input:commit_provenance:" + fingerprint("gate-input", checked)
+            retained_refs = [ref for ref in gate["gates"]["provenance"]["evidence"]
+                             if ref.startswith("urn:awf:input:commit_provenance:")]
+            self.assertEqual([] if before_result else [actual], retained_refs)
+            self.assertFalse(gate["execution_authority"])
+            if after:
+                after(config, bundle, posting, checked, repository)
 
     @skip_unless_source_repo("AC2/AC3 build the example bundle with the source-only generator", "scripts/generate_examples.py")
     def test_ac2_merge_gate_refuses_untagged_code_commit(self):
@@ -210,6 +241,133 @@ class ProvenanceGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeTransportTests(ProvenanceGateTests):
+    WRITER = "Writer: codex/11111111-1111-4111-8111-111111111111"
+
+    def test_runtime_policy_omission_passes(self):
+        self.exercise_refusal(self.WRITER, None, fail=False)
+
+    def test_five_provider_candidate_comparisons(self):
+        for key, value in (("repository_id", 102), ("pr", 8),
+                           ("base_ref", "other"), ("base", "a" * 40),
+                           ("head", "a" * 40)):
+            with self.subTest(field=key):
+                def mutate(config, bundle, runtime):
+                    runtime["commit_provenance"]["provider_observation"][key] = value
+                self.exercise_refusal(self.WRITER, None, mutate=mutate, before_result=True)
+
+    def test_complete_result_addressing_and_other_gates_remain_binding(self):
+        def after(config, bundle, posting, checked, repository):
+            from unittest.mock import patch
+            from agentic import ValidationError
+            from agentic.canonical import fingerprint
+            from agentic.contracts import Contracts
+            from agentic.gates import evaluate
+            from agentic.lifecycle import definition
+            from test_review_policy import NOW
+            contracts = Contracts(ROOT / ".agentic/schemas")
+            def gate():
+                return evaluate(config, definition(), bundle, contracts, NOW,
+                                repository=repository, posting_collector_registry=posting)
+            for key in checked:
+                changed = copy.deepcopy(checked)
+                if key == "commits":
+                    changed[key][0]["run_log"] = "DIFFERENT_NESTED_CONTENT"
+                elif key == "refusals":
+                    changed[key].append({"sha": checked["head"], "reason": "nested change"})
+                elif key == "status":
+                    changed[key] = "REFUSE"
+                elif isinstance(changed[key], bool):
+                    changed[key] = not changed[key]
+                else:
+                    changed[key] = "changed"
+                with self.subTest(result_field=key), patch("agentic.gates.provenance.check_commit_range", return_value=changed) as checker:
+                    result = gate()
+                    checker.assert_called_once_with(repository,
+                        bundle["candidate"]["merge_base_sha"], bundle["candidate"]["head_sha"],
+                        **config.get("_awf_runtime")["commit_provenance"],
+                        override=None, override_predecessors=[], reviewed_owner_config=None)
+                    refs = result["gates"]["provenance"]["evidence"]
+                    self.assertIn("urn:awf:input:commit_provenance:" + fingerprint("gate-input", changed), refs)
+                    self.assertEqual(["urn:awf:input:commit_provenance:" + fingerprint("gate-input", changed)],
+                        [ref for ref in refs if ref.startswith("urn:awf:input:commit_provenance:")])
+                    self.assertNotEqual(fingerprint("gate-input", checked), fingerprint("gate-input", changed))
+                    self.assertFalse(result["execution_authority"])
+            with patch("agentic.gates.provenance.check_commit_range", side_effect=ValidationError("unavailable")):
+                result = gate()
+                self.assertEqual("FAIL", result["gates"]["provenance"]["result"])
+                self.assertFalse(any(ref.startswith("urn:awf:input:commit_provenance:") for ref in result["gates"]["provenance"]["evidence"]))
+            bundle["pr"]["mergeable"] = False
+            result = gate()
+            self.assertEqual("PASS", result["gates"]["provenance"]["result"])
+            self.assertEqual("FAIL", result["gates"]["merge_compatibility"]["result"])
+            self.assertEqual("NOT_READY", result["conclusion"])
+        self.exercise_refusal(self.WRITER, None, fail=False, after=after)
+
+    def test_policy_default_and_runtime_path_semantics(self):
+        policies = [
+            {"default_ref": "refs/heads/other"},
+            {"generated_paths": ["../escape"]},
+            {"generated_paths": ["a", "A"]},
+            {"generated_paths": ["e\u0301"]},
+            {"generated_paths": ["con.txt"]},
+            {"generated_paths": ["a\x7f"]},
+            {"generated_paths": ["a/" + "x" * 256]},
+            {"generated_paths": ["\u00e9" * 2049]},
+            {"generators": {"fixture": {"paths": ["undeclared"], "reproducer_sha256": "a" * 64}}},
+        ]
+        for policy in policies:
+            with self.subTest(policy=policy):
+                def mutate(config, bundle, runtime):
+                    runtime["commit_provenance"]["reviewed_policy"].update(policy)
+                self.exercise_refusal(self.WRITER, None, mutate=mutate, before_result=True)
+
+    def test_closed_acquisition(self):
+        for key in (None, "reviewed_policy", "provider_observation", "runtime_registry", "extra"):
+            with self.subTest(field=key):
+                def mutate(config, bundle, runtime):
+                    if key is None:
+                        runtime.pop("commit_provenance", None)
+                    elif key == "extra":
+                        runtime["commit_provenance"][key] = True
+                    else:
+                        runtime["commit_provenance"].pop(key, None)
+                self.exercise_refusal(self.WRITER, None, mutate=mutate, before_result=True)
+
+    def test_provider_candidate_types_must_match(self):
+        class SameText(str):
+            pass
+        for key in ("repository_id", "pr", "base_ref", "base", "head"):
+            with self.subTest(field=key):
+                def mutate(config, bundle, runtime):
+                    provider = runtime["commit_provenance"]["provider_observation"]
+                    selected = {"repository_id": "repository_id", "pr": "pr_number",
+                                "base_ref": "target_base_branch", "base": "target_base_sha",
+                                "head": "head_sha"}[key]
+                    value = bundle["candidate"][selected]
+                    provider[key] = float(value) if type(value) is int else SameText(value)
+                self.exercise_refusal(self.WRITER, None, mutate=mutate, before_result=True)
+
+    def test_explicit_repository_precedes_runtime_repository(self):
+        def after(config, bundle, posting, checked, repository):
+            from unittest.mock import patch
+            from agentic.gates import evaluate
+            from agentic.lifecycle import definition
+            from agentic.contracts import Contracts
+            from test_review_policy import NOW
+            config.repository = repository / "not-selected"
+            with patch("agentic.gates.provenance.check_commit_range", return_value=checked) as checker:
+                result = evaluate(config, definition(), bundle,
+                    Contracts(ROOT / ".agentic/schemas"), NOW,
+                    repository=repository, posting_collector_registry=posting)
+                checker.assert_called_once_with(repository,
+                    bundle["candidate"]["merge_base_sha"], bundle["candidate"]["head_sha"],
+                    **config.commit_provenance, override=None,
+                    override_predecessors=[], reviewed_owner_config=None)
+                self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", result["conclusion"])
+        self.exercise_refusal(self.WRITER, None, fail=False, after=after)
 
 
 class MissingProvenanceTests(unittest.TestCase):
@@ -234,6 +392,61 @@ class MissingProvenanceTests(unittest.TestCase):
         self.assertEqual("NOT_READY", gate["conclusion"])
         self.assertTrue(any("Commit provenance runtime inputs are missing" in risk
                             for risk in gate["residual_risks"]))
+        self.assertEqual([], [ref for ref in gate["gates"]["provenance"]["evidence"]
+                              if ref.startswith("urn:awf:input:commit_provenance:")])
+        self.assertEqual({}, {name: result for name, result in gate["gates"].items()
+                             if name != "provenance" and result["result"] not in {"PASS", "N_A"}})
+
+
+    def test_missing_acquisition_fails_with_zero_checker_references(self):
+        from agentic.contracts import Contracts
+        from agentic.gates import evaluate
+        from agentic.lifecycle import definition
+        from agentic.canonical import load
+        from test_review_policy import (RuntimeAssignedGateConfig, bind_review_admission,
+                                        bind_production_posting_fixture, NOW)
+        from generate_examples import example_bundle
+        values = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
+        self.bundle = example_bundle(values)
+        class MissingConfig(RuntimeAssignedGateConfig):
+            def get(inner, key, default=None):
+                value = super().get(key, default)
+                if key == "_awf_runtime":
+                    value.pop("commit_provenance", None)
+                return value
+        bind_review_admission(self.bundle)
+        config = MissingConfig(values, self)
+        registry = bind_production_posting_fixture(config, self.bundle)
+        gate = evaluate(config, definition(), self.bundle,
+                        Contracts(ROOT / ".agentic/schemas"), NOW,
+                        posting_collector_registry=registry)
+        self.assertEqual("FAIL", gate["gates"]["provenance"]["result"])
+        self.assertEqual("NOT_READY", gate["conclusion"])
+        self.assertEqual([], [ref for ref in gate["gates"]["provenance"]["evidence"]
+                              if ref.startswith("urn:awf:input:commit_provenance:")])
+        self.assertEqual({}, {name: result for name, result in gate["gates"].items()
+                             if name != "provenance" and result["result"] not in {"PASS", "N_A"}})
+
+
+class ReconciliationDiscoveryTests(unittest.TestCase):
+    def test_both_missing_provenance_methods_are_discovered_once(self):
+        import ast
+        module = sys.modules[__name__]
+        expected = ["test_missing_acquisition_fails_with_zero_checker_references",
+                    "test_shared_helper_default_refuses_missing_provenance"]
+        self.assertEqual(expected, unittest.defaultTestLoader.getTestCaseNames(MissingProvenanceTests))
+        def ids(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from ids(test)
+                else:
+                    yield test.id()
+        collected = list(ids(unittest.defaultTestLoader.loadTestsFromModule(module)))
+        for method in expected:
+            self.assertEqual(1, collected.count(__name__ + ".MissingProvenanceTests." + method))
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        self.assertEqual(1, sum(isinstance(node, ast.ClassDef) and node.name == "MissingProvenanceTests"
+                                for node in tree.body))
 
 
 class RemainderGateTests(unittest.TestCase):
