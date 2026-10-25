@@ -26,6 +26,9 @@ SUITES = ('.agentic/tests', 'scripts/tests', 'global/awf/tests',
 EXPLICIT_TOP = frozenset(SUITES[:2])
 SHARDS = (0, 1, 2)
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
+from agentic.child_process import child_env  # noqa: E402
 
 
 def inventory(root):
@@ -162,7 +165,7 @@ def run_shard(root, shard, allocation):
                    '--root', str(root), '--shard', str(shard), '--_suite', suite]
         try:
             child = subprocess.run(command, cwd=root, capture_output=True, text=True,
-                                   check=False)
+                                   check=False, env=child_env())
         except OSError as error:
             print(f'{suite}: child launch failed: {error}', file=sys.stderr)
             status = status or 1
