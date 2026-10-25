@@ -16,8 +16,8 @@ LIMITATION = (
     'primitives. Publish from Windows or Linux.'
 )
 PINS = {
-    'Whats-New': '40b532bd69f07fa91f9f7eedb3609b7460991a60262c23422e6bfbaf9b8c7946',
-    'User-Interface': '01e305003c33d6d8aacab5af1cac17751b02d3ca0896b2d3692662ed6dc0eb7d',
+    'Whats-New': 'd3612a905b96063a0fe2361902c1760eb38b7c638144dbc2f27c484a2f12296f',
+    'User-Interface': '3c6e78ee044061ad8242b16bb08f3d83874b70990ee91f63c46fb20540c2c9ae',
 }
 
 

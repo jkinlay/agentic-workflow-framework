@@ -45,7 +45,7 @@ Before dispatch, admit every required external resource for the exact task, prin
 
 Release publishing is not supported on macOS in 1.9.5. The release step fails closed because the host lacks atomic no-follow release materialization primitives. Publish from Windows or Linux.
 
-The historical reference controller adapter lacks `observe_host_resources` and `verify_host_observation`, required by the cutoff cycle CLI. Successful current-controller operation, desktop permissions, independent-run facilities, live qualification and integrated release/upgrade acceptance remain UNVERIFIED. The supervised specification procedure is proposed and unexecuted; no automatic specification command is established.
+Post-#249, the reference adapter supplies the cycle CLI's planning operations and passes its adapter check on fresh installs and upgrades from 1.9.4 (#249 tests: `.agentic/tests/test_reference_controller_adapter.py:1652`, `.agentic/tests/test_reference_controller_adapter_install.py:133`, `:143`; Task 55 dry run, 25 October 2026 16:33 GMT). Successful current-controller operation, desktop permissions, independent-run facilities, live qualification and integrated release/upgrade acceptance remain UNVERIFIED. The supervised specification procedure is proposed and unexecuted; no automatic specification command is established.
 
 ## Further reading
 

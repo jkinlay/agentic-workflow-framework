@@ -38,7 +38,7 @@ Deferred 1.9.6 work includes rendered-verdict verification, controller freeze ru
 
 Release publishing is not supported on macOS in 1.9.5. The release step fails closed because the host lacks atomic no-follow release materialization primitives. Publish from Windows or Linux.
 
-The historical reference adapter lacks `observe_host_resources` and `verify_host_observation`, required by the cutoff controller CLI. Successful current-controller operation remains UNVERIFIED.
+Post-#249, the reference adapter supplies the cycle CLI's planning operations and passes its adapter check on fresh installs and upgrades from 1.9.4 (#249 tests: `.agentic/tests/test_reference_controller_adapter.py:1652`, `.agentic/tests/test_reference_controller_adapter_install.py:133`, `:143`; Task 55 dry run, 25 October 2026 16:33 GMT). Successful current-controller operation remains UNVERIFIED.
 
 Historical publication blockers include the controller assertion conflicting with cadence 600, undefined `source_external_unit`/`installed_external_unit` report inputs and complete report serialization, exact AC42 migration-delta acceptance, and uncovered required admission checks. Their current status is UNVERIFIED; preserve cadence 600. Consistent release identities, predecessor registration, reproducible outputs, final manifests, independent pins, candidate-bound reviews, platform evidence and publication acceptance remain required.
 
