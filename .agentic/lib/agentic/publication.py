@@ -40,7 +40,7 @@ from .gittree import verify_publisher_tree
 from .interaction import writer_commit_message
 from .provenance import (parse_writer_trailer, validate_commit_message,
                          validate_ref_locator)
-from .safeio import Tree, relative_parts, run_bounded
+from .safeio import ChildEnvironmentSnapshot, Tree, relative_parts, run_bounded
 
 
 # Complete canonical record.json envelope, including escaped payload and key.
@@ -446,6 +446,12 @@ def _safe_env(extra=None):
     return env
 
 
+def _runner_environment(extra_env):
+    if type(extra_env) is ChildEnvironmentSnapshot:
+        return {"environment_snapshot": extra_env}
+    return {"env": child_env(_safe_env(extra_env))}
+
+
 def _git(root, *args, input_bytes=None, extra_env=None, check=True, timeout=120):
     executable = shutil.which("git")
     if not executable:
@@ -469,7 +475,7 @@ def _git(root, *args, input_bytes=None, extra_env=None, check=True, timeout=120)
         try:
             result = run_bounded(
                 command, stdin=input_bytes,
-                env=child_env(_safe_env(extra_env)),
+                **_runner_environment(extra_env),
                 policy=GIT_RUNNER_POLICY, cancel_event=cancel_event,
             )
         finally:
@@ -671,7 +677,7 @@ def _validate_safe_regex(pattern, label):
     return compiled
 
 
-def _require_operator_local_mapping(root, path):
+def _require_operator_local_mapping(root, path, extra_env=None):
     """Reject a repository-controlled mapping before it can suppress built-ins."""
     root = Path(root).resolve()
     lexical = Path(path).absolute()
@@ -706,8 +712,8 @@ def _require_operator_local_mapping(root, path):
 
     lexical_relative = relative_to_root(lexical)
     resolved_relative = relative_to_root(resolved)
-    raw_index = _git(root, "ls-files", "-z").stdout
-    raw_head = _git(root, "ls-tree", "-rz", "--name-only", "HEAD").stdout
+    raw_index = _git(root, "ls-files", "-z", extra_env=extra_env).stdout
+    raw_head = _git(root, "ls-tree", "-rz", "--name-only", "HEAD", extra_env=extra_env).stdout
     tracked_paths = {item.decode("utf-8", "surrogateescape") for raw in (raw_index, raw_head)
                      for item in raw.split(b"\0") if item}
     key = (lambda value: value.casefold()) if os.name == "nt" else (lambda value: value)
@@ -725,12 +731,13 @@ def _require_operator_local_mapping(root, path):
         except OSError as exc:
             raise ValidationError("Tracked mapping identity could not be verified") from exc
     for relative in {item for item in (lexical_relative, resolved_relative) if item is not None}:
-        ignored = _git(root, "check-ignore", "--quiet", "--no-index", "--", relative.as_posix(), check=False)
+        ignored = _git(root, "check-ignore", "--quiet", "--no-index", "--", relative.as_posix(),
+                       extra_env=extra_env, check=False)
         if ignored.returncode != 0:
             raise ValidationError("Operator-local publication mapping must be untracked and ignored")
 
 
-def load_mapping(root, mapping_path=None):
+def load_mapping(root, mapping_path=None, *, extra_env=None):
     """Load the ignored operator-local mapping without returning private values in errors."""
     path = Path(mapping_path) if mapping_path else Path(root) / DEFAULT_MAPPING
     if not path.is_absolute():
@@ -738,7 +745,7 @@ def load_mapping(root, mapping_path=None):
     if not path.exists():
         return {"version": 1, "aliases": {}, "deny_literals": [], "deny_regexes": [],
                 "internal_hostnames": [], "builtin_allow": []}, None, path
-    _require_operator_local_mapping(root, path)
+    _require_operator_local_mapping(root, path, extra_env)
     value = _json_file(path, "operator-local publication mapping")
     allowed = {"version", "aliases", "deny_literals", "deny_regexes", "internal_hostnames", "builtin_allow"}
     if set(value) - allowed or value.get("version") != 1:
@@ -1005,7 +1012,7 @@ def _blob_sha256(root, oid, extra_env=None):
     ]
     try:
         result = run_bounded(
-            command, env=child_env(_safe_env(extra_env)),
+            command, **_runner_environment(extra_env),
             policy=GIT_RUNNER_POLICY,
         )
     except OSError as exc:
@@ -1119,12 +1126,13 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     """Scan branch history, final changed files, and prospective provider text."""
     root = Path(root).resolve()
     large_allowances = _validate_large_file_allowances(large_file_allowances)
+    extra_env = ChildEnvironmentSnapshot.capture(_safe_env(extra_env))
     base_sha = _git(root, "rev-parse", "--verify", base + "^{commit}", extra_env=extra_env).stdout.decode("ascii").strip()
     head_sha = _git(root, "rev-parse", "--verify", head + "^{commit}", extra_env=extra_env).stdout.decode("ascii").strip()
     ancestor = _git(root, "merge-base", "--is-ancestor", base_sha, head_sha, extra_env=extra_env, check=False)
     if ancestor.returncode != 0:
         raise ValidationError("Publication base must be an ancestor of head")
-    mapping, mapping_sha, mapping_file = load_mapping(root, mapping_path)
+    mapping, mapping_sha, mapping_file = load_mapping(root, mapping_path, extra_env=extra_env)
     declarations, config_sha = _head_project_declarations(root, head_sha, extra_env)
     configured_allowances = _validate_large_file_allowances(declarations.get("large_file_allowances", []))
     for path, allowance in configured_allowances.items():

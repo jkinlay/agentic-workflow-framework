@@ -101,6 +101,34 @@ class Repository:
 
 
 class PublicationScanTests(unittest.TestCase):
+    def test_runtime_environment_policy_is_resolved_once_per_scan_and_refreshed(self):
+        from agentic import child_process
+        real_loader = child_process.configured_child_env_strip_extra
+        with mock.patch.object(child_process, "configured_child_env_strip_extra",
+                               wraps=real_loader) as loader:
+            first = scan_repository(self.repo.path, self.repo.base, self.repo.base)
+            first_count = loader.call_count
+            second = scan_repository(self.repo.path, self.repo.base, self.repo.base)
+        print(f"runtime environment policy reads: first={first_count}, total={loader.call_count}")
+        self.assertEqual("PASS", first["status"])
+        self.assertEqual(first, second)
+        self.assertEqual(1, first_count)
+        self.assertEqual(2, loader.call_count)
+
+    def test_real_oversized_allowance_remains_accepted_without_raising_runner_caps(self):
+        content = b"x" * (publication.MAX_TEXT_BYTES + 1)
+        self.repo.write("existing.dat", data=content)
+        base = self.repo.commit("accepted oversized artifact", "existing.dat")
+        allowance = {"path": "existing.dat", "sha256": hashlib.sha256(content).hexdigest(),
+                     "reason": "Reviewed historical artifact", "approver": "fixture-owner"}
+        result = scan_repository(self.repo.path, base, base, large_file_allowances=[allowance])
+        self.assertEqual("PASS", result["status"], render_scan(result))
+        self.assertFalse(result["unscanned"])
+        evidence = [item for item in result["findings"] if item["source"] == "large-file-allowance"]
+        self.assertEqual(1, len(evidence))
+        self.assertEqual("PRE_EXISTING", evidence[0]["classification"])
+        self.assertIn(allowance["sha256"], evidence[0]["detector_id"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-publication-test-")
         self.repo = Repository(self.temp.name)

@@ -23,6 +23,129 @@ def _python(source, *arguments):
 
 
 class BoundedProcessTests(unittest.TestCase):
+    def test_opt_in_streaming_does_not_retain_stdout(self):
+        received = []
+        result = safeio.run_bounded(
+            _python("import sys; sys.stdout.buffer.write(b'x' * 131072)"),
+            retain_stdout=False,
+            stream_sink=lambda channel, chunk: received.append((channel, chunk)),
+        )
+        self.assertEqual(0, result.returncode)
+        self.assertEqual(b"", result.stdout)
+        self.assertEqual(b"x" * 131072, b"".join(
+            chunk for channel, chunk in received if channel == "stdout"))
+
+    def test_nonretaining_streaming_still_counts_all_output_bytes(self):
+        with self.assertRaisesRegex(ValidationError, "SUBPROCESS_STDOUT_LIMIT"):
+            safeio.run_bounded(
+                _python("import sys; sys.stdout.buffer.write(b'x' * 131072)"),
+                stdout_limit=65536, stderr_limit=65536,
+                aggregate_output_limit=131072, retain_stdout=False,
+                stream_sink=lambda _channel, _chunk: None,
+            )
+
+    def test_environment_snapshot_is_validated_immutable_and_reused(self):
+        from agentic import child_process
+        supplied = dict(os.environ, OPENAI_API_KEY="fixture-provider", CUSTOM_SECRET="fixture-extra")
+        with mock.patch.object(child_process, "configured_child_env_strip_extra",
+                               return_value=frozenset({"CUSTOM_SECRET"})) as loader:
+            snapshot = safeio.ChildEnvironmentSnapshot.capture(supplied)
+            for _ in range(2):
+                result = safeio.run_bounded(
+                    _python("import os; print('OPENAI_API_KEY' in os.environ); "
+                            "print('CUSTOM_SECRET' in os.environ)"),
+                    environment_snapshot=snapshot,
+                )
+                self.assertEqual(["False", "False"], result.stdout.decode().splitlines())
+        self.assertEqual(1, loader.call_count)
+        self.assertEqual("fixture-provider", supplied["OPENAI_API_KEY"])
+        self.assertEqual("fixture-extra", supplied["CUSTOM_SECRET"])
+        with self.assertRaises(TypeError):
+            snapshot.environment["CUSTOM_SECRET"] = "restored"
+
+    def test_streaming_options_and_snapshot_reject_unsafe_combinations_before_launch(self):
+        snapshot = safeio.ChildEnvironmentSnapshot.capture()
+        cases = (
+            {"retain_stdout": False},
+            {"retain_stdout": 0, "stream_sink": lambda *_: None},
+            {"environment_snapshot": {}},
+            {"environment_snapshot": snapshot, "env": dict(os.environ)},
+        )
+        for options in cases:
+            with self.subTest(options=list(options)), \
+                    mock.patch.object(safeio.subprocess, "Popen") as launch, \
+                    self.assertRaises(ValidationError):
+                safeio.run_bounded(_python("pass"), **options)
+            launch.assert_not_called()
+
+    def test_snapshot_capture_fails_closed_on_invalid_configuration(self):
+        from agentic import child_process
+        with mock.patch.object(child_process, "configured_child_env_strip_extra",
+                               side_effect=child_process.ChildEnvironmentError("invalid policy")):
+            with self.assertRaises(child_process.ChildEnvironmentError):
+                safeio.ChildEnvironmentSnapshot.capture()
+
+    def test_snapshot_capture_copies_values_and_resolves_fresh_policy(self):
+        from agentic import child_process
+        supplied = dict(os.environ, CUSTOM_SECRET="fixture", SNAPSHOT_VALUE="before")
+        with mock.patch.object(child_process, "configured_child_env_strip_extra",
+                               side_effect=(frozenset({"CUSTOM_SECRET"}), frozenset())) as loader:
+            first = safeio.ChildEnvironmentSnapshot.capture(supplied)
+            supplied["SNAPSHOT_VALUE"] = "after"
+            second = safeio.ChildEnvironmentSnapshot.capture(supplied)
+        self.assertEqual(2, loader.call_count)
+        self.assertNotIn("CUSTOM_SECRET", first.environment)
+        self.assertIn("CUSTOM_SECRET", second.environment)
+        self.assertEqual("before", first.environment["SNAPSHOT_VALUE"])
+        self.assertEqual("after", second.environment["SNAPSHOT_VALUE"])
+        with self.assertRaises(AttributeError):
+            first.environment = {}
+
+    def test_nonretaining_stdout_keeps_aggregate_and_shared_operation_accounting(self):
+        from agentic.child_process import OperationBudget
+        source = "import sys; sys.stdout.buffer.write(b'o' * 6); sys.stderr.buffer.write(b'e' * 6)"
+        with self.assertRaisesRegex(ValidationError, "SUBPROCESS_AGGREGATE_LIMIT"):
+            safeio.run_bounded(_python(source), stdout_limit=8, stderr_limit=8,
+                               aggregate_output_limit=10, retain_stdout=False,
+                               stream_sink=lambda *_: None)
+        budget = OperationBudget("fixture", byte_limit=10)
+        with self.assertRaisesRegex(ValidationError, "SUBPROCESS_OPERATION_BUDGET"):
+            safeio.run_bounded(_python(source), operation_budget=budget,
+                               retain_stdout=False, stream_sink=lambda *_: None)
+        self.assertEqual(1, budget.operations)
+        self.assertGreater(budget.consumed_bytes, 0)
+
+    def test_nonretaining_streaming_keeps_closed_policy_caps(self):
+        from agentic.child_process import GIT_RUNNER_POLICY
+        with mock.patch.object(safeio.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(ValidationError, "SUBPROCESS_POLICY"):
+                safeio.run_bounded(_python("pass"), policy=GIT_RUNNER_POLICY,
+                                   stdout_limit=GIT_RUNNER_POLICY.stdout_limit + 1,
+                                   retain_stdout=False, stream_sink=lambda *_: None)
+        launch.assert_not_called()
+
+    def test_nonretaining_sink_failure_reaps_owned_descendants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "streaming-grandchild-finished"
+            grandchild = (
+                "import pathlib,sys,time; time.sleep(.45); "
+                "pathlib.Path(sys.argv[1]).write_text('escaped', encoding='utf-8')"
+            )
+            parent = (
+                "import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]]); "
+                "print('ready', flush=True); time.sleep(10)"
+            )
+
+            def refuse(_channel, _chunk):
+                raise ValueError("fixture refusal")
+
+            with self.assertRaisesRegex(ValidationError, "SUBPROCESS_STREAM_SINK"):
+                safeio.run_bounded(_python(parent, grandchild, marker),
+                                   retain_stdout=False, stream_sink=refuse)
+            time.sleep(0.7)
+            self.assertFalse(marker.exists())
+
     def test_job_setup_failure_closes_already_pinned_watched_outputs(self):
         class RecordingWatcher:
             def __init__(self):
