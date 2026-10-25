@@ -207,6 +207,111 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual(before_runtime,
                          installer._runtime_tree_sha256(destination / installer.RUNTIME))
 
+    def run_awf215_recovery(self, destination):
+        """Exercise recovery in a fresh process using the library under test.
+
+        The source-only bootstrap script is absent from installed projects.
+        Keep its recovery result/error transport here so these regressions
+        exercise the same recovery implementation in either layout.
+        """
+        import subprocess
+
+        code = """
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from agentic import ValidationError
+from agentic.installer import recover
+try:
+    print(json.dumps(recover(Path(sys.argv[2])), indent=2))
+except (ValidationError, OSError, ValueError) as exc:
+    print(f"BOOTSTRAP REJECTED: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+"""
+        return subprocess.run(
+            [sys.executable, "-B", "-c", code,
+             str(Path(installer.__file__).resolve().parents[1]), str(destination)],
+            cwd=destination, capture_output=True, text=True)
+
+    def test_awf215_unproved_partial_stage_moves_to_to_delete_and_rolls_back(self):
+        destination, before, before_mode, before_runtime = (
+            self.interrupt_after_managed_after_publish())
+        journal = json.loads((destination / installer.JOURNAL).read_bytes())
+        marker = json.loads((destination / installer.MARKER).read_bytes())
+        runtime = journal["runtime"]
+        stage = destination / runtime["stage"]
+        stage.mkdir()
+        (stage / "runtime.bin").write_bytes(b"unproved partial runtime\n")
+        (stage / "nested").mkdir()
+        (stage / "nested/partial.bin").write_bytes(b"preserve these bytes\x00\xff")
+        stage_digest = installer._runtime_tree_sha256(stage)
+
+        self.assertEqual("awf-install-journal-4", journal["format"])
+        self.assertEqual("active", journal["phase"])
+        self.assertIsNotNone(journal["managed_after_sha256"])
+        self.assertEqual(before_runtime, runtime["previous_sha256"])
+        self.assertIsNone(runtime["new_sha256"])
+        self.assertIsNone(runtime["cleanup_identity"])
+        self.assertIsNone(runtime["cleanup_members"])
+        self.assertIsNone(marker["pending_journal_sha256"])
+        self.assertIsNone(marker["pending_update_kind"])
+        self.assertFalse((destination / runtime["backup"]).exists())
+        self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
+
+        result = self.run_awf215_recovery(destination)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"status": "ROLLED_BACK"}, json.loads(result.stdout))
+        self.assertFalse(stage.exists())
+        moved = list((destination / "_to_delete").iterdir())
+        self.assertEqual(1, len(moved))
+        self.assertRegex(moved[0].name, r"^" + stage.name.replace(".", r"\.") +
+                         r"-\d{8}T\d{6}\.\d{6}Z-[0-9a-f-]{36}$")
+        self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
+        self.assertIn("WARNING", result.stderr)
+        self.assertIn("Unproved partial runtime stage moved to " + str(moved[0]),
+                      result.stderr)
+        self.assertIn("bytes preserved for inspection", result.stderr)
+        restored = {path: data for path, data in self.snapshot_project(destination).items()
+                    if not path.startswith("_to_delete/")}
+        self.assertEqual(before, restored)
+        self.assertEqual(before_mode, stat.S_IMODE(
+            (destination / ".agentic/adopted-clone/0000.bin").stat().st_mode))
+        self.assertEqual(before_runtime,
+                         installer._runtime_tree_sha256(destination / installer.RUNTIME))
+        self.assertFalse((destination / installer.JOURNAL).exists())
+        self.assertFalse((destination / installer.MARKER).exists())
+        self.assertFalse((destination / runtime["backup"]).exists())
+        self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
+        self.assertEqual({"status": "NO_PENDING_INSTALL"}, installer.recover(destination))
+        self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
+
+    def test_awf215_recorded_stage_digest_mismatch_still_refuses(self):
+        destination, _before, _before_mode, _before_runtime = (
+            self.interrupt_after_managed_after_publish())
+        with installer.Tree(destination) as tree:
+            journal, _raw, _marker = installer._read_bound_journal(tree)
+            transaction = installer._RuntimeInstallTransaction(tree, journal)
+            transaction.stage.mkdir()
+            runtime_file = transaction.stage / "runtime.bin"
+            runtime_file.write_bytes(b"recorded runtime\n")
+            transaction.record_staged_runtime()
+        runtime_file.write_bytes(b"external stage edit\n")
+        before = self.snapshot_project(destination)
+        transaction_before = self.snapshot_transaction(destination)
+
+        result = self.run_awf215_recovery(destination)
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("Runtime recovery found an external edit in the staged runtime; "
+                      "journal retained", result.stderr)
+        self.assertEqual(before, self.snapshot_project(destination))
+        self.assertEqual(transaction_before, self.snapshot_transaction(destination))
+        self.assertTrue((destination / installer.JOURNAL).exists())
+        self.assertTrue((destination / installer.MARKER).exists())
+        self.assertEqual(b"external stage edit\n", runtime_file.read_bytes())
+        self.assertFalse((destination / "_to_delete").exists())
+
     def test_awf134_crash_after_runtime_stage_precommit_recovers_by_explicit_kind(self):
         destination, before, _before_mode, _before_runtime = (
             self.interrupt_after_managed_after_publish())
