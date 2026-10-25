@@ -28,7 +28,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/benchmarks/native/routine-measurement-rubric.json` | `10f074df2b7a69d7c0ad4888c4c523d4779c6ad821d2b9213d3d06393632fb94` |
 | `.agentic/benchmarks/native/routine-rubric.json` | `c9b2bf9d1953b8b1c777964c1d20e813e76f002937e22ab9b0945aa5c247c653` |
 | `.agentic/benchmarks/native/rubric.json` | `61e719369395e2721f8a7aa9a819ca8203947547dd6793ed9f6994df4442628f` |
-| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `80020eabaa5b6addabd91ed0fd256cd2a08a7494ca3a7e387ea005ae3600341b` |
+| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `d45a9e5b3927ef49d88030aa680abcf46798aee58f8f9cfe2458de4fad80f9b0` |
 | `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `017867bd395605cf5199c81b011edafa224837a47ddaf847e27d111b2202f147` |
 | `.agentic/docs/23-TICKET-LIFECYCLE.md` | `4b55b7a6da6164e2480bcd81f7f03639caac2bcaefc3477ba89888020701b3ef` |
 | `.agentic/docs/24-STREAM-STARTUP.md` | `9ebb3ea9686dc6ab133b51c7d89c6043e1fd5f2483776762d8a653a3cd1e6ac9` |
@@ -566,7 +566,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf-portable/NOTICE` | `fe352296163579d49a575f19d2a1a8f6a9870a740601da1c2e15c264423d4e6d` |
 | `global/awf-portable/SKILL.md` | `12f63da0781ddc32c07df28e2bf550d8c1275ec75d541474f2d7f275c3dcaf5f` |
 | `global/awf-portable/references/model-routing.md` | `0a3face4cc9fcc55cd587808f5b3ddd6836c37e4c30c0268b3160aa48c0da319` |
-| `global/awf-portable/references/skill-installation.md` | `9d72981add1f088abdc58e0e16b9b98ab9c644eb9bdabd1c60073a367d24077a` |
+| `global/awf-portable/references/skill-installation.md` | `897ce9bc0c0df43f47f0a543964830ae22b0e75a62548a0479a39a422527bca6` |
 | `global/awf-portable/references/update-channel.example.json` | `bf98973fda46023e0346de0c049e7e8141b7e64feb4b19308f7a44c1d9066198` |
 | `global/awf-portable/references/update-channel.md` | `4d68066e0c6c2c21d97d0d16bd4122b719b799696c966931efbeeacf5eaf273f` |
 | `global/awf-portable/references/workflow.md` | `e9a4fd5731279c58f939032d3850496abeb94879681fe217e6329822da7a3b8b` |
