@@ -345,7 +345,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		config_path = self.root / 'config.json'
 		config_path.write_text(json.dumps(self.config), encoding='utf-8')
 		adapters, loader = _load_real(self.adapter, config_path)
-		self.assertEqual(set(adapters), {'observe_issue_identity', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync'})
+		self.assertEqual(set(adapters), {'observe_issue_identity', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'})
 		loader._require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'})
 		with self.assertRaisesRegex(ValidationError, 'SHA-256 pin'):
 			loader._load_reviewed_adapters(self.adapter, '0' * 64, config_path)
@@ -1436,5 +1436,242 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_http_transport': http, '_clock': FakeClock()})
 		with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValidationError, 'credential'):
 			adapters['observe_provider_identity']()
+
+# AWF-205: real factory and authenticated planning contracts.
+import ast
+from copy import deepcopy
+ADAPTER = ROOT / ".agentic/adapters/reference_controller_adapter.py"
+CONTROLLER = ROOT / ".agentic/scripts/continuous_controller.py"
+EXAMPLE = ROOT / ".agentic/examples/reference-controller-adapter.json"
+BINDING = {"project_id": "project-1", "repository_id": "101", "scope_sha256": "a" * 64}
+
+def cycle_requirements(script):
+    """Read the actual unconditional CLI cycle set, rather than duplicating it."""
+    tree = ast.parse(Path(script).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Attribute)
+                and node.test.left.attr == "command"
+                and len(node.test.comparators) == 1
+                and isinstance(node.test.comparators[0], ast.Constant)
+                and node.test.comparators[0].value == "cycle"):
+            for statement in node.body:
+                if (isinstance(statement, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == "names" for t in statement.targets)):
+                    return ast.literal_eval(statement.value)
+    raise AssertionError("actual cycle callable contract was not found")
+
+
+class PlanningRunner(FakeRunner):
+    """FakeRunner plus open-PR listing, PR files and owner comments."""
+
+    def __init__(self, *, pulls=(), pull_files=None, comments=None, **kwargs):
+        super().__init__(**kwargs)
+        self.pulls = list(pulls)
+        self.pull_files = dict(pull_files or {})
+        self.comments = dict(comments or {})
+
+    def run(self, argv, *, cwd, env, timeout, max_bytes):
+        path = argv[-1] if argv else ""
+        if path.startswith("repos/example/project/pulls?"):
+            self.calls.append((list(argv), Path(cwd), dict(env)))
+            return {"items": self.pulls, "complete": True, "next_page": None}
+        if "/pulls/" in path and "/files" in path:
+            self.calls.append((list(argv), Path(cwd), dict(env)))
+            number = int(path.split("/pulls/")[1].split("/")[0])
+            return {"items": [{"filename": name} for name in self.pull_files[number]],
+                    "complete": True, "next_page": None}
+        if "/issues/comments/" in path:
+            self.calls.append((list(argv), Path(cwd), dict(env)))
+            return {"headers": {"ETag": '"owner"', "Date": "Fri, 09 Oct 2026 08:00:00 GMT"},
+                    "body": self.comments[int(path.rsplit("/", 1)[1])]}
+        return super().run(argv, cwd=cwd, env=env, timeout=timeout, max_bytes=max_bytes)
+
+def project_config():
+    from test_planning import config
+    value = config(1)
+    value["github"]["repository_id"] = BINDING["repository_id"]
+    value["github"]["expected_actor_id"] = 7001
+    return value
+
+def planning_request(cfg, pin):
+    binding = {**BINDING, "repository_head_sha": "a" * 40,
+               "project_config_sha256": fingerprint("accepted-project-config", cfg), "cycle_id": "cycle-205"}
+    provider = {"provider_id": "reviewed-controller", "implementation_sha256": pin,
+                "verifier_implementation_sha256": pin}
+    return {"provider": provider, "binding": binding, "observed_at": NOW}
+
+class ReferenceAdapterContractTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="awf205-adapter-")
+        self.root = Path(self.temp.name)
+        self.config = _base_config(self.root)
+        self.pin = sha256(ADAPTER.read_bytes())
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def adapters(self, runner=None, clock=None):
+        runner = runner or PlanningRunner()
+        return __import__("runpy").run_path(str(ADAPTER))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": clock or FakeClock()})
+
+    def resource_binding(self):
+        return {**BINDING, "repository_head_sha": "a" * 40, "repository_tree_sha": "b" * 40,
+                "project_config_sha256": "c" * 64, "operating_config_sha256": "d" * 64}
+
+    def test_reference_host_callbacks_produce_verified_resource_observation(self):
+        from agentic.planning import produce_planning_resource_observation
+        adapters = self.adapters()
+        self.assertTrue(all(callable(adapters.get(name)) for name in ('observe_host_resources', 'verify_host_observation')), 'base factory lacks host callbacks')
+        observed = produce_planning_resource_observation(
+            binding=self.resource_binding(), observed_at=NOW, producer_implementation_sha256=self.pin,
+            observe_host_resources=adapters["observe_host_resources"],
+            verify_host_observation=adapters["verify_host_observation"])
+        expected = min(os.cpu_count(), 1000)
+        self.assertEqual((observed["host_capacity"], observed["resources"]),
+                         (expected, [{"name": "cpu", "capacity": expected}]))
+        self.assertEqual(observed["authentication"]["producer_id"], "reference-host")
+
+    def test_reference_host_callbacks_reject_tampered_or_foreign_evidence(self):
+        from agentic.planning import _planning_resource_request
+        adapters = self.adapters()
+        self.assertTrue(all(callable(adapters.get(name)) for name in ('observe_host_resources', 'verify_host_observation')), 'base factory lacks host callbacks')
+        request = _planning_resource_request(self.resource_binding(), NOW, self.pin)
+        observed = adapters["observe_host_resources"](deepcopy(request))
+        auth = {key: observed[key] for key in ("producer_id", "evidence_id", "evidence_sha256", "request_sha256")}
+        self.assertEqual(adapters["verify_host_observation"](deepcopy(auth), deepcopy(request))["status"], "VERIFIED")
+        with self.assertRaises(ValidationError):
+            self.foreign_adapters()["verify_host_observation"](deepcopy(auth), deepcopy(request))
+        with self.assertRaises(ValidationError):
+            adapters["verify_host_observation"](deepcopy(auth), {**request, "observed_at": "2026-10-09T08:00:01Z"})
+        with self.assertRaises(ValidationError):
+            adapters["observe_host_resources"]({**request, "binding": {**request["binding"], "project_id": "foreign"}})
+        for key, value in (("producer_id", "foreign"), ("evidence_id", "../host"),
+                           ("evidence_sha256", "f" * 64), ("request_sha256", "e" * 64)):
+            with self.subTest(authentication=key), self.assertRaises(ValidationError):
+                adapters["verify_host_observation"]({**auth, key: value}, deepcopy(request))
+        for key in request["binding"]:
+            changed = deepcopy(request)
+            changed["binding"][key] = "foreign"
+            with self.subTest(binding=key), self.assertRaises(ValidationError):
+                adapters["verify_host_observation"](deepcopy(auth), changed)
+        from agentic.planning import produce_planning_resource_observation
+        for key, value in (("host_capacity", observed["host_capacity"] + 1),
+                           ("resources", [{"name": "cpu", "capacity": 0}]),
+                           ("producer_id", "foreign"),
+                           ("observed_at", "2026-10-09T08:00:01Z"),
+                           ("request_sha256", "f" * 64)):
+            def forged(request, key=key, value=value):
+                return {**adapters["observe_host_resources"](request), key: value}
+            with self.subTest(claim=key), self.assertRaises(ValidationError):
+                produce_planning_resource_observation(
+                    binding=self.resource_binding(), observed_at=NOW,
+                    producer_implementation_sha256=self.pin,
+                    observe_host_resources=forged,
+                    verify_host_observation=adapters["verify_host_observation"])
+        original = deepcopy(request)
+        adapters["observe_host_resources"](request)
+        self.assertEqual(original, request)
+        evidence = self.root / "runs" / "planning-evidence" / (auth["evidence_id"] + ".json")
+        evidence.write_bytes(evidence.read_bytes().replace(b'"host_capacity":', b'"host_capacity": '))
+        with self.assertRaises(ValidationError):
+            adapters["verify_host_observation"](deepcopy(auth), deepcopy(request))
+
+    def test_backlog_passes_provider_snapshot_reader_with_pr_attribution(self):
+        from agentic.planning import tickets_from_provider_snapshot
+        runner = PlanningRunner(inventory=[_ticket("tracked.txt")],
+                                pulls=[{"number": 7, "head": {"ref": "codex/AWF-32-awf-32", "repo": {"id": 101}}},
+                                       {"number": 8, "head": {"ref": "codex/AWF-32-awf-32", "repo": {"id": 999}}}],
+                                pull_files={7: ["tracked.txt"]})
+        adapters = self.adapters(runner)
+        cfg = project_config()
+        request = planning_request(cfg, self.pin)
+        snapshot = adapters["observe_planning_backlog"](deepcopy(request))
+        tickets = tickets_from_provider_snapshot(
+            snapshot, cfg, expected_binding=request["binding"], expected_provider=request["provider"],
+            now=NOW, verify_provider_snapshot=adapters["verify_planning_backlog"])
+        self.assertEqual([(item["key"], item["status"], item["write_paths"], item["open_pr_files"], item["worktree_diff"])
+                          for item in tickets], [("AWF-32", "open", ["tracked.txt"], ["tracked.txt"], [])])
+        with self.assertRaises(ValidationError):
+            self.foreign_adapters()["verify_planning_backlog"](deepcopy(snapshot["authentication"]), deepcopy(request))
+        forged = deepcopy(snapshot)
+        forged["tickets"][0]["components"][0]["files"] = ["other.txt"]
+        with self.assertRaises(ValidationError):
+            tickets_from_provider_snapshot(
+                forged, cfg, expected_binding=request["binding"], expected_provider=request["provider"],
+                now=NOW, verify_provider_snapshot=adapters["verify_planning_backlog"])
+        with self.assertRaises(ValidationError):
+            adapters["observe_planning_backlog"]({**request, "binding": {**request["binding"], "scope_sha256": "f" * 64}})
+
+    def test_events_match_the_controller_closed_shape_and_verifier(self):
+        adapters = self.adapters()
+        request = planning_request(project_config(), self.pin)
+        observed = adapters["observe_planning_events"](deepcopy(request))
+        self.assertEqual(set(observed), {"binding", "observed_at", "events", "authentication"})
+        self.assertEqual((observed["binding"], observed["observed_at"], observed["events"]),
+                         (request["binding"], NOW, []))
+        auth = observed["authentication"]
+        self.assertEqual(set(auth), {"evidence_id"})
+        verified = adapters["verify_planning_events"](deepcopy(auth), deepcopy(request))
+        self.assertEqual(verified, {"status": "VERIFIED", "evidence_id": auth["evidence_id"],
+                                    "snapshot": {key: value for key, value in observed.items() if key != "authentication"}})
+        with self.assertRaises(ValidationError):
+            self.foreign_adapters()["verify_planning_events"](deepcopy(auth), deepcopy(request))
+        with self.assertRaises(ValidationError):
+            adapters["verify_planning_events"](deepcopy(auth), {**request, "observed_at": "2026-10-09T08:00:01Z"})
+
+    def test_owner_verifier_reauthenticates_an_immutable_github_comment(self):
+        from agentic.planning import change_owner_override, owner_override_command, verify_override_state
+        cfg = project_config()
+        reason = "hold one lane during the release"
+        command = owner_override_command(None, "max", 1, reason)
+        comment = {"id": 9205, "node_id": "IC_owner_9205", "user": {"id": 7001, "login": "owner"},
+                   "created_at": "2026-10-09T07:59:00Z", "updated_at": "2026-10-09T07:59:00Z", "body": command}
+        source = {"channel": "github_pr_comment", "comment_id": 9205, "actor_id": 7001, "actor_login": "owner",
+                  "created_at": comment["created_at"], "updated_at": comment["updated_at"],
+                  "binding": {"current_override_id": None}, "raw_body": command,
+                  "raw_body_sha256": sha256(command.encode("utf-8"))}
+        adapters = self.adapters(PlanningRunner(comments={9205: comment}))
+        state = {}
+        change_owner_override(cfg, state, mode="max", value=1, reason=reason, now=NOW,
+                              owner_source=source, verify_owner_source=adapters["verify_planning_owner"])
+        self.assertEqual(state["planning_override"]["owner_verification"]["source_id"], "github-comment:IC_owner_9205")
+        self.assertEqual(verify_override_state(cfg, state, adapters["verify_planning_owner"])["value"], 1)
+        edited = self.adapters(PlanningRunner(comments={9205: {**comment, "updated_at": NOW}}))
+        with self.assertRaises(ValidationError):
+            verify_override_state(cfg, state, edited["verify_planning_owner"])
+
+
+    def foreign_adapters(self):
+        config = deepcopy(self.config)
+        config["github"]["project_id"] = "foreign-project"
+        return __import__("runpy").run_path(str(ADAPTER))["build_adapters"](
+            {**config, "_runner": PlanningRunner(), "_clock": FakeClock()})
+
+    def test_reference_factory_satisfies_cycle_contract(self):
+        config = self.root / "load.json"
+        config.write_text(json.dumps(self.config), encoding="utf-8")
+        adapters, loader = _load_real(ADAPTER, config)
+        required = cycle_requirements(CONTROLLER)
+        self.assertEqual(13, len(required))
+        self.assertEqual(required, set(loader._require_adapters(adapters, required)))
+
+    def test_instantiated_shipped_example_loads_for_cycle(self):
+        value = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        self.assertLessEqual(
+            {"executable", "roles", "isolated_home", "windows_sandbox",
+             "worktree_root", "run_record_directory"}, set(value["codex"]),
+            "shipped example omits required isolation fields")
+        # Substitute documented example fields only; never insert a missing key.
+        for section in ("codex", "github", "jira", "outbox"):
+            for key in list(value[section]):
+                if key in self.config[section]:
+                    value[section][key] = deepcopy(self.config[section][key])
+        config = self.root / "example.json"
+        config.write_text(json.dumps(value), encoding="utf-8")
+        adapters, loader = _load_real(ADAPTER, config)
+        loader._require_adapters(adapters, cycle_requirements(CONTROLLER))
+
 if __name__ == '__main__':
 	unittest.main()
