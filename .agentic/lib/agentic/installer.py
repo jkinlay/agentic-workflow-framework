@@ -596,7 +596,10 @@ def _verify_compact_old_endpoint(tree, journal, context):
             mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
             if mode != item["old_mode"]:
                 raise ValidationError(f"Transaction old file mode differs at {item['path']}")
-    _verify_runtime_state(tree, _validated_runtime_journal(journal), "old", require_cleanup=True)
+    _verify_runtime_state(
+        tree, _validated_runtime_journal(journal), "old", require_cleanup=True,
+        preserve_partial_stage=(journal["phase"] == "rollback_cleanup" and
+                                journal["managed_after_sha256"] is not None))
 
 
 def _finalize_compact_rollback(tree, journal, *, marker_present):
@@ -1187,7 +1190,7 @@ def _validate_transaction_journal(journal):
     return journal
 
 
-def _rollback_runtime(tree, runtime):
+def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
     if runtime is None:
         return
     root = tree.root
@@ -1202,6 +1205,11 @@ def _rollback_runtime(tree, runtime):
         raise ValidationError("Runtime recovery found an unauthenticated cleanup path; journal retained")
     if stage.exists() or stage.is_symlink():
         if proposed is None:
+            if preserve_partial_stage:
+                _verify_runtime_state(
+                    tree, runtime, "old", require_cleanup=True,
+                    preserve_partial_stage=True)
+                return
             raise ValidationError("Runtime recovery cannot prove ownership of the staged runtime; journal retained")
         if _runtime_tree_sha256(stage) != proposed:
             raise ValidationError("Runtime recovery found an external edit in the staged runtime; journal retained")
@@ -1301,7 +1309,11 @@ def rollback(tree, journal):
             raise ValidationError("Recovery backup contains an external file; marker retained")
     # Restore or remove the canonical runtime before changing the managed files
     # that it executes. A runtime proof failure retains the whole transaction.
-    _rollback_runtime(tree, runtime)
+    _rollback_runtime(
+        tree, runtime,
+        preserve_partial_stage=(_compact_journal(journal) and
+                                journal["phase"] == "active" and
+                                journal["managed_after_sha256"] is not None))
     for item in reversed(journal["files"]):
         old = _old_file_bytes(journal, item, recovery_objects)
         if old is None:
@@ -1395,7 +1407,8 @@ def _verify_file_state(tree, journal, which):
                 raise ValidationError(f"Transaction {which} file mode differs at {item['path']}")
 
 
-def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False):
+def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False,
+                          preserve_partial_stage=False):
     if runtime is None:
         return
     canonical = tree.root / runtime["path"]
@@ -1409,11 +1422,42 @@ def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False):
             raise ValidationError(f"Canonical runtime differs from the exact {which} state")
     elif not present or _runtime_tree_sha256(canonical) != expected:
         raise ValidationError(f"Canonical runtime differs from the exact {which} state")
-    if stage.exists() or stage.is_symlink():
-        raise ValidationError("Runtime staging path remains after transaction finalization")
+    stage_present = stage.exists() or stage.is_symlink()
+    if stage_present:
+        if not (preserve_partial_stage and require_cleanup and which == "old" and
+                runtime["previous_sha256"] is not None and
+                runtime["new_sha256"] is None and
+                runtime.get("cleanup_identity") is None and
+                runtime.get("cleanup_members") is None):
+            raise ValidationError("Runtime staging path remains after transaction finalization")
+        info = os.lstat(stage)
+        reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        junction = getattr(stage, "is_junction", lambda: False)()
+        if stat.S_ISLNK(info.st_mode) or reparse or junction or not stat.S_ISDIR(info.st_mode):
+            raise ValidationError("Unproved partial runtime stage is unsafe; journal retained")
     if require_cleanup and (backup.exists() or backup.is_symlink() or
                             cleanup.exists() or cleanup.is_symlink()):
         raise ValidationError("Prior runtime backup or authenticated cleanup path remains after transaction cleanup")
+    if stage_present:
+        # This proves only the old endpoint, never ownership of the stage bytes.
+        # Preserve the entire directory without traversing or deleting its contents.
+        import logging
+
+        timestamp = now_text().replace("-", "").replace(":", "")
+        relative = f"_to_delete/{stage.name}-{timestamp}-{uuid.uuid4()}"
+        parent, handle, name = tree.parent(relative, create=True)
+        if tree.inspect(relative) is not None:
+            raise ValidationError("Partial runtime preservation path already exists; journal retained")
+        retained = parent / name
+        _stage_parent, stage_handle, stage_name = tree.parent(runtime["stage"])
+        if os.name == "nt":
+            os.rename(stage, retained)
+        else:
+            os.rename(stage_name, name, src_dir_fd=stage_handle, dst_dir_fd=handle)
+            os.fsync(stage_handle)
+            os.fsync(handle)
+        logging.warning("Unproved partial runtime stage moved to %s; bytes preserved for inspection",
+                        retained)
 
 
 def _cleanup_committed_runtime(tree, journal):
