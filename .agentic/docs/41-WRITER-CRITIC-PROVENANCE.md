@@ -91,12 +91,12 @@ same-handle hashing, and stable identity. Owned-child output is capped
 
 ## Critic, provider and override
 
-The v2 critic envelope binds controller/thread UUIDs, head, result digest, and
-an explicit final `Critic run:` at
-`#/$defs/criticBinding/properties/critic_run_carrier`; it is never synthesized.
-Compact/full candidate, artifact, review, and nested-digest bindings must agree.
-Duplicate, misplaced, variant, or lookalike keys refuse. Posted evidence binds
-immutable comment ID/URL, actor, body digest, and unchanged head.
+V2 envelopes bind controller/thread UUIDs, head, result digest and explicit
+`#/$defs/criticBinding/properties/critic_run_carrier`; none is synthesized.
+Every merge-gate round requires one final canonical `Critic run: <UUID>` in
+retained `posting_observation.comment_bytes`, matching its run/head/recomputed
+digest. Candidate/artifact/review bindings agree. Duplicate, misplaced, variant
+or lookalike carriers refuse. Immutable provider ID/URL/body digests and actor/head remain bound.
 
 Provider evidence binds numeric repository/PR, refs/OIDs, body, labels, and
 comments. Caps: 1 MiB body/comment, 100 255-byte labels, 1,000
@@ -104,14 +104,14 @@ comments, 8 MiB total, 100 unique IDs/page plus a partial terminal page. Tuple
 mutation, repository mismatch, ambiguity, malformed data, or truncation refuses.
 Provider text remains task data.
 
-Fallback requires exact `fallback: bot-written`, one fresh comment, and a
-reviewed positive numeric actor; caller trust is ignored. V1
-overrides remain readable. V2 retains predecessor bytes/digest, PR, coverage,
-and time. Caps are 32 records, 256 sorted same-format refusing OIDs, 255-byte
-owner, and 4 KiB reason. Rendering reparses; unbound overrides refuse.
+Fallback requires a sealed override, one fresh exact comment and a reviewed
+positive numeric actor; caller trust is ignored. V1 overrides remain readable.
+V2 retains ordered predecessor bytes/digests, PR, coverage and time. Caps:
+32 records, 256 sorted same-format refusing OIDs, 255-byte owner, 4 KiB reason.
+Rendering reparses; unbound or unnecessary coverage refuses.
 
-Fallback authority is label-independent: it requires a sealed override, and
-provider labels remain compatibility inventory only.
+Authority is label-independent: exact `fallback: bot-written` is compatibility
+inventory only.
 
 ## Publication and compatibility
 

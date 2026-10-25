@@ -188,16 +188,17 @@ def bind_review_round_receipt(bundle, verdict, critic, completion_snapshot=None)
         f"{bundle['candidate']['host']}/{bundle['candidate']['repository']}/pull/"
         f"{bundle['candidate']['pr_number']}#issuecomment-{comment_id}"
     )
+    provider_comment = verdict_json + "\n\nCritic run: " + verdict["run_id"]
     provider_response = canonical({"comment_id": comment_id,
-        "comment_url": verdict["pr_comment_url"], "comment_body": verdict_json,
+        "comment_url": verdict["pr_comment_url"], "comment_body": provider_comment,
         "pr_body": body_bytes})
     observation.update(source="host_observation", observed_at=verdict["created_at"],
         provider_kind="github", critic_artifact_binding=copy.deepcopy(artifact_binding),
         review_verdict_record_id=verdict["record_id"], review_verdict_sha256=verdict_sha256,
         repository_id=bundle["candidate"]["repository_id"],
         pr_number=bundle["candidate"]["pr_number"], comment_id=comment_id,
-        comment_url=verdict["pr_comment_url"], comment_bytes=verdict_json,
-        comment_sha256=sha256(verdict_json.encode("utf-8")),
+        comment_url=verdict["pr_comment_url"], comment_bytes=provider_comment,
+        comment_sha256=sha256(provider_comment.encode("utf-8")),
         body_link=verdict["pr_body_link"], body_bytes=body_bytes,
         body_sha256=sha256(body_bytes.encode("utf-8")),
         provider_response_bytes=base64_bytes(provider_response),
