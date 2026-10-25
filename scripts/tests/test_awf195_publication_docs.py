@@ -17,7 +17,7 @@ LIMITATION = (
 )
 PINS = {
     'Whats-New': '40b532bd69f07fa91f9f7eedb3609b7460991a60262c23422e6bfbaf9b8c7946',
-    'User-Interface': '447d1c3a55451fbbaf2fb37e9c6a74b10eb5ab09d6a2ed1e37b57e7d41e1fcb3',
+    'User-Interface': '01e305003c33d6d8aacab5af1cac17751b02d3ca0896b2d3692662ed6dc0eb7d',
 }
 
 

@@ -1,6 +1,6 @@
-**Interface:** AWF uses a Codex host conversation, skills and CLI tools; desktop-specific operation is **UNVERIFIED**. (`7fcaeec:global/CODEX_HOME_AGENTS.md:3`; `7fcaeec:.agentic/lib/agentic/cli.py:133`)  
-**Roles:** Implemented adapters launch separate ephemeral `codex exec` runs; writer and critic must have independent contexts. (`7fcaeec:.agentic/lib/agentic/providers/github_review_host.py:1409`; `7fcaeec:.agentic/docs/28-EXTERNAL-REVIEW.md:11`)  
-**Specification work:** AWF supplies reusable separation and review mechanisms, but a ready-made three-round specification command is **UNVERIFIED**. (`7fcaeec:ADR-DESIGN-FIRST-TRIAL.md:15`; `7fcaeec:.agentic/scripts/review_loop.py:34`)  
+**Interface:** AWF uses a Codex host conversation, skills and CLI tools; desktop-specific operation is **UNVERIFIED**. (`7fcaeec:global/CODEX_HOME_AGENTS.md:3`; `7fcaeec:.agentic/lib/agentic/cli.py:133`)\
+**Roles:** Implemented adapters launch separate ephemeral `codex exec` runs; writer and critic must have independent contexts. (`7fcaeec:.agentic/lib/agentic/providers/github_review_host.py:1409`; `7fcaeec:.agentic/docs/28-EXTERNAL-REVIEW.md:11`)\
+**Specification work:** AWF supplies reusable separation and review mechanisms, but a ready-made three-round specification command is **UNVERIFIED**. (`7fcaeec:ADR-DESIGN-FIRST-TRIAL.md:15`; `7fcaeec:.agentic/scripts/review_loop.py:34`)\
 **Release qualification:** This pinned tree identifies itself as **1.9.4**; post-1.9.5 desktop execution cannot be established from it. (`7fcaeec:VERSION:1`; `7fcaeec:.agentic/lib/agentic/__init__.py:2`)
 
 # AWF 1.9.5 - User Interface Q&A
