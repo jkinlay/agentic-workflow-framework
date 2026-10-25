@@ -37,6 +37,8 @@ Worker COMPLETE leads to branch/draft-PR publication, validation, mark-ready and
 
 See [changes](CHANGELOG.md), [direct 1.9.4 migration](MIGRATION-to-v1.9.4.md), [1.9.3 step notes](MIGRATION-v1.9.3-to-v1.9.4.md), [previous disposition](RED-TEAM-DISPOSITION-v1.8.7.md), [operating migration](MIGRATION-v1.8.6-to-v1.8.7.md) and [security](SECURITY.md). A release owner sets the canonical repository before publication. Legacy history is preserved. Its split model/publisher adapter remains inside this core. Project-specific qualification remains required.
 
+[1.9.5 changes](docs/AWF-1.9.5-Whats-New.md) [UI](docs/AWF-1.9.5-User-Interface.md)
+
 With Python 3.11+ and hash-locked dependencies, regenerate via `scripts/generate_prompts.py`, build via `scripts/build_release.py`, and validate with `scripts/validate_archive.py --help`. `scripts/build_skill_distribution.py --help` packages the portable skill. The clean-commit draft publication and tagged-asset verification commands are documented in [release publication](.agentic/docs/32-RELEASE-PUBLISHING.md). Keep outputs/reports outside the source. Builds enforce per-file documentation/version budgets and report totals; acceptance tests verify installation, preserved configuration, Git bytes and reproducibility. Offline fixtures do not qualify live services. The self-reported structured-decision smoke harness checks supplied observations against a public rubric; it runs no model and does not measure prompt quality.
 
 This release is unsigned. Compare downloaded archives with an independently obtained pin; co-delivered hashes alone do not authenticate the publisher. Signing remains deferred until key custody and verification are established.
