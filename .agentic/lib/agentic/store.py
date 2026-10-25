@@ -13,6 +13,7 @@ import uuid
 
 from . import ValidationError
 from .canonical import canonical, fingerprint, loads, now_text, timestamp
+from .controller_state import restrict_state_permissions
 from .lifecycle import transition
 from .path_containment import is_within
 
@@ -121,6 +122,8 @@ class Store:
             except BaseException:
                 db.execute('ROLLBACK')
                 raise
+
+        restrict_state_permissions(self.path)
 
     @staticmethod
     def _planning_record(record):

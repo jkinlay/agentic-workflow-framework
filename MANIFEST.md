@@ -28,7 +28,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/benchmarks/native/routine-measurement-rubric.json` | `10f074df2b7a69d7c0ad4888c4c523d4779c6ad821d2b9213d3d06393632fb94` |
 | `.agentic/benchmarks/native/routine-rubric.json` | `c9b2bf9d1953b8b1c777964c1d20e813e76f002937e22ab9b0945aa5c247c653` |
 | `.agentic/benchmarks/native/rubric.json` | `61e719369395e2721f8a7aa9a819ca8203947547dd6793ed9f6994df4442628f` |
-| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `aca5a0aa3a39a6e0e18097d528187555367f3081339ee7e67e8af47a8c77f3f3` |
+| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `80020eabaa5b6addabd91ed0fd256cd2a08a7494ca3a7e387ea005ae3600341b` |
 | `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `017867bd395605cf5199c81b011edafa224837a47ddaf847e27d111b2202f147` |
 | `.agentic/docs/23-TICKET-LIFECYCLE.md` | `4b55b7a6da6164e2480bcd81f7f03639caac2bcaefc3477ba89888020701b3ef` |
 | `.agentic/docs/24-STREAM-STARTUP.md` | `9ebb3ea9686dc6ab133b51c7d89c6043e1fd5f2483776762d8a653a3cd1e6ac9` |
@@ -42,7 +42,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `2e7049857d2b88645f1a6ec92601d2e8ba0e10ac607653da03ea1b118b8a2925` |
 | `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `6efd5b17d388a7bb4f0de5d0320c15b3a7e72abef1d8a8b1f53daea02cd66d16` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `d8fed51697f646564bae3f31b9f626b3f08d59685aba46ecd61e1529bd0d3ee7` |
-| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `17a33c5e1bdcc5e2fe0deb1330d1900a6362e8551deb218c5e227eaacd63b7fb` |
+| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `53eed73198e35fbca5ffe2a7acd0f561002e7ef88c0f651df0dff453c4e7cf46` |
 | `.agentic/docs/35-RULES-ACTIVATION.md` | `698a4f8ddce5cd6c9e3c244d3af1a3252c2a125e2779bbfe2fe09434cf035ede` |
 | `.agentic/docs/36-FIVE-SLOT-ACCELERATION.md` | `4b390505ce780985684ce4724e379104c31d0498ba4e0ee18c05bfb298113ab9` |
 | `.agentic/docs/37-PRIVATE-DENY-SCAN.md` | `54aee43783e6bed3fa25a08f4e0e1d28553fed92d7b71c9e97d8f47ab9db0e6c` |
@@ -90,8 +90,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `3a25f1260af3e9a34bc47ba4b224dcf8bb5db32482711ea1795372e77f392025` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `360fe845aa2b4da1808d74827c37c8d5a59cdf8a9672304e259b799e99d2ec5a` |
-| `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
+| `.agentic/lib/agentic/continuous_controller.py` | `cf8736d6943573d54d57d2087bb589e093ffca1b703bece1b1d4849a987fe628` |
+| `.agentic/lib/agentic/contracts.py` | `3097ad3ffc9cf2d59d39ac763d281a2930cc6319bd6fc9cae1273cd16fe9e4e1` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
 | `.agentic/lib/agentic/external_resources.py` | `f3fdfa2b1933d34a321a84668de93fe2b999168c0486063a797cc54287bc7747` |
@@ -114,12 +114,12 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/lifecycle.py` | `e178cc145d5181cd12f1a829044e1599e3555cec3088626280148e3c82260af7` |
 | `.agentic/lib/agentic/merge_train.py` | `9586b01daca94606fb0f97c608e9e667baac4a68b86af5142d54dbe6ad4e85b7` |
 | `.agentic/lib/agentic/model_routing.py` | `5adb1172fa6da948ac29c75b3d0b12bcf8f81c52b2c7416fe9d947e704113522` |
-| `.agentic/lib/agentic/operating.py` | `ff82da67583903294585ff673bd86093eef32d23f2c0473a3495caf48114299a` |
+| `.agentic/lib/agentic/operating.py` | `8cd20790a3b6772fd72fde6abffd2cb79dbab14249946b9a70aae516beb1571c` |
 | `.agentic/lib/agentic/operating_status.py` | `d10c1289dd3172034adf6b5b52399e0f3dc590f9c601a6ebdfa71d8e703eb17d` |
 | `.agentic/lib/agentic/output.py` | `f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b` |
 | `.agentic/lib/agentic/owner_publication.py` | `a64337186ced78f05a13125542f6d83e45c1ae464467cf657c55afc861fb3e30` |
 | `.agentic/lib/agentic/path_containment.py` | `4be54130cfcca72bf384faa56d14d39f365ba5ff4d84fc69d97d7a6816609c15` |
-| `.agentic/lib/agentic/planning.py` | `d6a1c0e0a6b755cf58276884a9dc381efceb65e7da93d521797051dfd3efee9c` |
+| `.agentic/lib/agentic/planning.py` | `d590537c427570fa47714a7fe838405a3e837ed0c4bfa64f5e1bab2445f464f0` |
 | `.agentic/lib/agentic/planning_graph.py` | `c16ecb51b8ce16ec24508ab728af3bcb55be6d358e6962a545a8236fde8a6239` |
 | `.agentic/lib/agentic/policy.py` | `0d3516af5ff5045e50f9d260758243289d0de21d3f1868355dde36d77e38d5f5` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
@@ -145,7 +145,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
 | `.agentic/lib/agentic/safeio.py` | `9ca7563029855fd5bf611c5e57f0464e1d473bd90338e5f8eb4f55afca5e73cf` |
-| `.agentic/lib/agentic/store.py` | `68616f578dd4a5ba5013b5161472a1df0479dffae3445344b28aa92b1ab792fd` |
+| `.agentic/lib/agentic/status_report.py` | `aaa7c07c45291f3b26b8e43b41a5fd25411b4c582b84c32339f764df8c99df2d` |
+| `.agentic/lib/agentic/store.py` | `26e500f0f675820f9900c7edd965ebcd25bf8d915ab14686ea003b776529652a` |
 | `.agentic/lib/agentic/streams.py` | `e30cc2b0a58d0ff86d2ece527cd2d4df337ebbe354c7ff1116f87587d8f2f64c` |
 | `.agentic/lib/agentic/upgrade.py` | `f1814d9bfc02e8e1a5336fd0d84c94ead1a017a6bae7f3f40305c28e48ad6988` |
 | `.agentic/prompts/amendment.md` | `bcea716185a20e57099349458c3974304c8e2dd635fefd1270ae6389dbc2f532` |
@@ -193,7 +194,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/merge-attempt.schema.json` | `a3aa129652b705649fdb6c5e50f1915854017e89c180f7716acadb24e9fa36ba` |
 | `.agentic/schemas/merge-result.schema.json` | `b36d8ce3bcab84525ab0d63f685280c92d53b83262de23a5da4267435eb2aabd` |
 | `.agentic/schemas/operating-change.schema.json` | `fd835900c288494850f8ce4aeafd1102ea6a8b1042e2af1bf9193749b1a503b0` |
-| `.agentic/schemas/operating-config.schema.json` | `d98e924e3960eb6956247c48ba35009334b8d223cafad35d4c85c28df27c6cb9` |
+| `.agentic/schemas/operating-config.schema.json` | `3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883` |
 | `.agentic/schemas/operating-epics.schema.json` | `64b87be3760a1c31fa2656682052896cbd3897ec19a53dde6fbc4ff6f03dc3db` |
 | `.agentic/schemas/operating-recommendation.schema.json` | `2ce179328ab6996c745829165147872652631fe1e36d8189684be9a7d6661e24` |
 | `.agentic/schemas/owner-authorization.schema.json` | `f05d3b05fc4e9910084e3b370aa131380abdbfa23bd54aa8ac032bcdbea00150` |
@@ -202,7 +203,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/pr-snapshot.schema.json` | `a51558e568d233c67e125efab398287060aaae4addf77b7f3418e0dc01fdce55` |
 | `.agentic/schemas/private-deny-baseline-authorization.schema.json` | `97b068534a24606566d3d1b8adc63a4c87a05246f2abb3ef78d06e5d84c81918` |
 | `.agentic/schemas/private-deny-scan.schema.json` | `a9b49b7362a683b393354fe71b31e9fb667bb104b88d4bfd67c1304fd9523915` |
-| `.agentic/schemas/project-config.schema.json` | `62cf37a91b1e51eb5babcd609fe392950574e7d9b359cd7dbd08ea5869044283` |
+| `.agentic/schemas/project-config.schema.json` | `a774cc15d698500495d536fac29f54f094dd3c20b29173ef9b0ed41cfd4bcc6d` |
 | `.agentic/schemas/project-state.schema.json` | `65f3f9045b57ac87255c5868d8bf1bb6e7a616e99ffd7f2f3f77131991d5bb6a` |
 | `.agentic/schemas/publication-scan.schema.json` | `710595e572ab37354d4e54e15d067abc8f67bdbdeee98091db0213b060857585` |
 | `.agentic/schemas/reconciliation.schema.json` | `37a89eb37109fa811a7736d164eb442fc6c11cbae7595b0dbd20a827724dbd7c` |
@@ -224,7 +225,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/work-dispatch.schema.json` | `b940a50a8a6ae1106ed4acf6893bdf4477c2c056d1f843cb7835043ae2c708a4` |
 | `.agentic/schemas/worker-result.schema.json` | `9f4b5c212459ba9fc90e1c83fadf8961eed89fe53e11ec24e72b3c70acb1e013` |
 | `.agentic/scripts/benchmark_native.py` | `27e423c7459c202e404156d78bfba95af554ef6a6e438896d2afca844ed018d2` |
-| `.agentic/scripts/continuous_controller.py` | `99bfeade1fcdbadc9bb5be583fa78988474843b29f5e7eceadb94d6b26830551` |
+| `.agentic/scripts/continuous_controller.py` | `e4add4627c8f33b18f4d754cb22e6096228f1e84c6e53f5e29fc15c9c8734c5d` |
 | `.agentic/scripts/evaluate_native.py` | `bf5bacc4cc19e8a39c672d91174c310fda48d477dce3af490b3f0bdcea2a9fa3` |
 | `.agentic/scripts/external_resources.py` | `10c20b51ed8bacf667a7f02b88e8b7177fa80feed307f04af5110987c9fcd810` |
 | `.agentic/scripts/five_slot_acceleration.py` | `805bbbdf0947939a0deebffd8b515d2c16c616cdf2789fbced6ebb36c97635d5` |
@@ -282,7 +283,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/merge-attempt.yaml` | `a13f2ce39311bdd8d1be10cdad8cc755ee4b9e59d470ca4408fba18721b9d37d` |
 | `.agentic/templates/merge-authorization.md` | `5efdff601b57f67c5fe8be1948b4cfed8e630b49cecc9d37f8a25c0755f6ae54` |
 | `.agentic/templates/merge-result.yaml` | `10d4706b329ab2669e9bb8eb4774ef0732a18963a749621b8ed4b5edc405652c` |
-| `.agentic/templates/operating.gitignore` | `69e14c79dc4be2c6debe91062b1c1f227a1bf5275d745e291312ebae2c54fb6f` |
+| `.agentic/templates/operating.gitignore` | `47bf80531643a361a97e60db147db1fb7ae7c9ff38e9b7ffabc9aab7612066aa` |
 | `.agentic/templates/owner-authorization.yaml` | `2092b457d2dae2924769876acd7f16e0bbe168678e170db62a011912361e535f` |
 | `.agentic/templates/owner-closure.yaml` | `d450f5237ac510580f72f47e2423acfe30ca3e49e15e216b1c110c299e81e919` |
 | `.agentic/templates/posting-collector-registration.yaml` | `8e020643c500b3c286fc9d7d7c1cc63a185e5c445aa90150380aa73c580f9c5a` |
@@ -369,6 +370,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_heavy_validation.py` | `fb89a68095c82f96c2f31f38fd4322426193fd094599ef6429944342d3d165bb` |
 | `.agentic/tests/test_host_preflight_split_root.py` | `71d996b32ae2ef3744786fee6bc56c65cd4fc71ec0299706ead251df6a320d89` |
 | `.agentic/tests/test_host_process.py` | `0da0de3462d0568a363058476e672b10e7a1e2dba45a31d541c473c33b71776a` |
+| `.agentic/tests/test_installation_hygiene_awf206.py` | `3ff91748d614c9ce72216662c52bcdf5a21cad9418d95414c23a8c40551595a1` |
 | `.agentic/tests/test_intake_assignment.py` | `c518d8bdd68af2f5fbdd7c2a5e60b4c7697df3e89f53bfdc7a2e9566dc459a11` |
 | `.agentic/tests/test_integration_build.py` | `eef506016c4f0bc1a88bf615ea19d41409e0306861a1090f00921eba440d4de2` |
 | `.agentic/tests/test_integration_queue.py` | `06000a6001e1e5264b8e2930323af52af3dd084561455491ffd065b2d642e78e` |
@@ -393,12 +395,12 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_native_decision_contract.py` | `b0b8f27b3315bf411a808bb5e10e2f87b00de9d623cee901782273359bda95e3` |
 | `.agentic/tests/test_native_evaluation.py` | `3bdce12e48889dbe9836072fc179f41b10533890c54c15a77829caba313f4bbd` |
 | `.agentic/tests/test_native_routine.py` | `6ef94b350432c618174dcaed5f922c3d22189c69400fb42f33fff9e00c9b9c10` |
-| `.agentic/tests/test_operating.py` | `35903379894851ab36b7999eeb199680c778bd28554648e7857f05268bf97f0c` |
+| `.agentic/tests/test_operating.py` | `014f10c9b323acfe453293adfd12f637b7429ceb289d7060c2aa04211c58f4a7` |
 | `.agentic/tests/test_operating_integration.py` | `a703730c1cdfe807f98205a1751f02d2072a3cf13a1e1476bfe7d36ba19b7513` |
 | `.agentic/tests/test_owner_publication.py` | `98d4f785a021e9deb1f36b992207ad4c5e0c0c95ef08bc8066f93bf51d989a47` |
 | `.agentic/tests/test_path_containment.py` | `18cb0c113915b08d88ff94e067f1d4c5fbe9a7dab7fecec75e0e2ad59b8dbf67` |
 | `.agentic/tests/test_plan_streams.py` | `d301e9d1d49e7907db560f4f5de0b83979040a0ad278716d8b36bf80db35fd52` |
-| `.agentic/tests/test_planning.py` | `99dd6bf4143a78e4639e9e56c91e6d93c5fd2492700c54fac177126ddf86cbf0` |
+| `.agentic/tests/test_planning.py` | `d4eeed615758d99ea7fca485d7a9f3979de2113a2ad03189ccb8ce2280b7c9cb` |
 | `.agentic/tests/test_planning_graph.py` | `4cf3eb0767f1a29d73a4b6567de439f42d1618e2bed3f0318757e8af13719173` |
 | `.agentic/tests/test_planning_overlap_allowances.py` | `966b013dceedfa4aa48cac294a274f0e482181486c9bc5bfcd5358c545d6e448` |
 | `.agentic/tests/test_posting_collector_awf60.py` | `fecc95adba72920bc822f9aecac32eeb2eae594cfefe45f3bf38e6c94049b845` |
@@ -441,7 +443,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_safeio_unlink.py` | `86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f` |
 | `.agentic/tests/test_safeio_windows_errors.py` | `e497029ec9a4a339995425a988c5a9b81ebeea2d5b24209f9c5845af02a0690c` |
 | `.agentic/tests/test_source_only.py` | `ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3` |
-| `.agentic/tests/test_store_planning_history.py` | `5e051bd848445e34de220a061a402ae4c8127a7193758313ecfe3fbdf2d6fac1` |
+| `.agentic/tests/test_status_report.py` | `24be3ecd4c1c838750b81e46993186db224878d0d366e89dcb52102104c8bd28` |
+| `.agentic/tests/test_status_report_contract_boundaries.py` | `33158fbf8c324105a095312b0a2ba71f5815f67cb106a556eed468be31ab12a3` |
+| `.agentic/tests/test_store_planning_history.py` | `b56c97f44efc4928bfca884eef39e588363bd36eeb2712bd78632370e8dae5f1` |
 | `.agentic/tests/test_store_regressions.py` | `340df570120f78d77ef33c3e9c8f315ec72b0a3e49bd7e053a5a5ef24679111f` |
 | `.agentic/tests/test_streams.py` | `12f28b018c24b63d362e441bae318aff47a6bb576967758c654b16d0034eedb1` |
 | `.agentic/tests/test_upgrade_194.py` | `9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53` |
@@ -468,7 +472,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `ADR-TIER3-CAP-EXTENSION.md` | `1e730fa828682a456e7f7768f2db8d002c2b9b227dbe8521dd6c96565275763b` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
-| `CHANGELOG.md` | `1e7a333cae4ed4fbd0a9a9e5b4146c076c26cb9167548566f3ff3e7e2afc466d` |
+| `CHANGELOG.md` | `d0b51b115a451f483a8950bd37bce718368ac1a874d83e3115d7691808b83fd9` |
 | `Claude outputs/AWF-1.9.1-Showcase-Presentation.html` | `5dbf524af67adee2327b33ac12064f63b5fc2314645e0a6cf306abccc8124386` |
 | `Claude outputs/AWF-1.9.2-Speaker-Script.md` | `335b8ff56c006166f155973bac8be8f52614fa78f6454230a3efa73576e35327` |
 | `Claude outputs/awf192-critic-prompt.md` | `77a12deaefd9029554b8ac718efed2da370fd3dc91b80c225bca80cbbaa8877c` |
@@ -513,6 +517,48 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `VERSION` | `db99cdaafbc939f297091cf6577ce73a1f8e041792b32d86e04eb07c9563726b` |
 | `docs/AWF-1.9.2-Showcase-Presentation.html` | `e22beff2c81e6672bb171a824d53755efcda0b13d2090e30a42b1b7989b8b57a` |
 | `docs/AWF-1.9.2-Speaker-Script.md` | `1defc7b9c2e59e59d62a65f54883f81076bf67a1fa418b409c4f65af370b1f3b` |
+| `docs/runbook/00-runbook-introduction.md` | `75a442d54b01878d933d3e71eaa8556fb94b407b5a30666c6b84fc28d8325589` |
+| `docs/runbook/01-runbook-prerequisites.md` | `a4620b3898181d9e7aa1cf6dc1ebb6f2a7a6c2cbfd9e30fc385da34fb5e587c2` |
+| `docs/runbook/02-runbook-required-inputs.md` | `06558040d03486d24a49177a90696254796b29a1a562be5281eb22adb735e65e` |
+| `docs/runbook/03-runbook-placeholder-convention.md` | `598c4dbbac58c0389400996df504dddb030567aaf35fd58ebfad033794951f56` |
+| `docs/runbook/04-runbook-authority-and-quiescence.md` | `c6b0351821f1787f12402861d40baadbb449b987e1289a42715dc25a4975d6ab` |
+| `docs/runbook/05-runbook-getting-v195.md` | `bb82a1219a0247bebee303bd69e7d126eaa30fae71cd1086c45f1d7b3184bc0e` |
+| `docs/runbook/06-runbook-publication-checkpoint.md` | `ee4d213ce0f52dd079caa42f6945644afb63aa69620de80ad332f95d52ddcb27` |
+| `docs/runbook/07-runbook-distribution-and-source-preparation.md` | `72376d8ff74e9a123facbeff49be9c1cf90a008ed180063a9e166910ee9b4a63` |
+| `docs/runbook/08-runbook-install-to-active.md` | `2a1e2b5eccb501c77a25b764b95e0dbee0d172fe6ad4876ae4ba586b004f74c2` |
+| `docs/runbook/09-runbook-repository-states-and-installation-results.md` | `342f6fc491f7e95958f83115c7265d152a6c57c86416a32295b53742f7ab448e` |
+| `docs/runbook/10-runbook-windows-powershell.md` | `638bb0447df367800b3a9280dd0aac9e182b3b984b2d03bd754b829bd9526fd1` |
+| `docs/runbook/11-runbook-macos-posix-shell.md` | `1e3c74492ca454a040e75185328a26f86321a1a1aac8e4073db4bb78648992f2` |
+| `docs/runbook/12-runbook-linux-posix-shell.md` | `be686be8bd277a1dee7501d59fb25769ec7cf8f4b886dd3ab061ae1f908d67b1` |
+| `docs/runbook/13-runbook-verifying-with-installed-self-test.md` | `a2e869c5c2ff35bd0051ec01662bc088dd12c2811047367aff6788b19b7acfed` |
+| `docs/runbook/14-runbook-upgrade.md` | `40362e097e26bc2142d3fb08d1ecd6834cb7838b3f87e86010bc325dfcd45ae3` |
+| `docs/runbook/15-runbook-supported-starting-installations.md` | `43c6e02b24834e347b1fe3a793c740be33a134fcc88d1d4744b9f4092fe21eef` |
+| `docs/runbook/16-runbook-pre-upgrade-checks-and-backup.md` | `8bef61d6fa96c8e42300fc98b16a6efe5efd2ff494de64947b96362aa14d096d` |
+| `docs/runbook/17-runbook-upgrade-commands.md` | `d6ac564d68c2ca53b1317b16e64f81f2f354317db88225ede55ede19094ed188` |
+| `docs/runbook/18-runbook-migration-behavior.md` | `41e0efb0889594a6d48bc2f3f8388b4e900a50f44717178c3061fe2d81713b67` |
+| `docs/runbook/19-runbook-journal-recovery.md` | `81d734304eca70788d8fdeba9ea070b3df5efd6bd0a82d63b9641100e51e2e7f` |
+| `docs/runbook/20-runbook-post-upgrade-verification-and-reactivation.md` | `28dfbd61e4ecc0bc1002e0fe8b3aa2e93f40fae78478d26b5110534c281e7f84` |
+| `docs/runbook/21-runbook-upgrade-rollback.md` | `d9e8e246fbc0ea57fa506f75acccdc4efe4209fb62324b74dd8ac81745f43d64` |
+| `docs/runbook/22-runbook-post-adoption-checks.md` | `fb79c0ad2232c41afaa22a3ece609fe43016f817b9a2ba27abf8d45e30013a07` |
+| `docs/runbook/23-runbook-rollback-install-adoption.md` | `4de0048b535480ca6c3558369b793df5165818909f635bd038b53bb4b5a626f5` |
+| `docs/runbook/24-runbook-portable-skill.md` | `efdad609f37596410919ea4175f71abdd9a6fafcecd60886bd55c0f4ac2def13` |
+| `docs/runbook/25-runbook-project-installation.md` | `e899287ae3631df179b8959a8cf790158446f041a430439ee43d38e043bfd062` |
+| `docs/runbook/26-runbook-troubleshooting.md` | `107a6009b480bfdf409f39ba8d6709dc00565f90e3b47e41b6a8dd986984a2d8` |
+| `docs/runbook/27-runbook-windows-short-name-aliases.md` | `e794b239e5a4a4ff94d6ea81726a2b2c6548a821b9dc403e68260b6a29bc154d` |
+| `docs/runbook/28-runbook-winerror-1314-symlink-privilege.md` | `32c9963ede2bad6147aca50e97a1057d48aa0bfcb78ec6a24e340b1313b178c8` |
+| `docs/runbook/29-runbook-orig-head-lock-or-sandbox-refusal.md` | `1698f7ca2fb20f24bdb754b2d6e038f9ea46bea82955dc4c77df9a3e5ddf85eb` |
+| `docs/runbook/30-runbook-missing-or-incompatible-wheelhouse.md` | `f0f28b3f529b4935a576e35eb585058989f92cdfc88210d31e8ce70409014f27` |
+| `docs/runbook/31-runbook-unexpected-import-files-or-bytecode.md` | `b22161397914e3c5aad886f0cdfeae33a1979424b316cebefa01a64da964a18a` |
+| `docs/runbook/32-runbook-configured-never-becomes-active.md` | `49a0290e5f34d1f6f97b9ed3795d53b3b52f5c31cb9a52d47595588b0a3110f1` |
+| `docs/runbook/33-runbook-check-manifest-failure.md` | `f7915259267d6bdeb74d989bb65aa1106a518a60771b773a8cc919388820cd0d` |
+| `docs/runbook/34-runbook-release-hygiene-failure.md` | `84d2ccfe2c26d1f40062ea2671b817f718693c48de9aa6fc8da8de5a6d9a35bb` |
+| `docs/runbook/35-runbook-publication-scan-failure.md` | `2debd36f9d14eea64a70489564c49c8acf0aa34337ce29960e751e9bd74a2259` |
+| `docs/runbook/36-runbook-pre-push-gate-failure.md` | `29fc2d82fc8fe9db5de2871c4e293505153b8ac90df72e52e1889caa05c03d53` |
+| `docs/runbook/37-runbook-appendix-a-source-read-inventory.md` | `1f3f1fe168d341c24741dff26060f92f82fc618422e7e0793bb3cac32dbfcc5b` |
+| `docs/runbook/38-runbook-full-reads-at-7fcaeece.md` | `56ce2312839e12a8c3c45888bd7279e4c9271d9f98ea0aeaaf5c6518272f1dc7` |
+| `docs/runbook/39-runbook-other-revisions-and-partial-coverage.md` | `8bfdb936babb1bafcad512f72bfd0e4f08f4ced1691edfe24dd6370defac2ad5` |
+| `docs/runbook/40-runbook-unverified-until-publish.md` | `836a1e60f46997fff4b5786ef103cb67e6a35a1dd8b6b06b3ff336061480636b` |
+| `docs/runbook/INDEX.md` | `454e3f14c1cc625cfcc656f8b1c2345042aac2a87e7ae971376a57285b934143` |
 | `global/CODEX_HOME_AGENTS.md` | `c63799016e161aa478b1476e682bd5712229732bc1f003e1190117acb91f18be` |
 | `global/HOST_BROKER.md` | `3b9059a08f373fa9de0a40bfd6555a2bf9249a8551224fe6635943e806ec9db3` |
 | `global/HOST_BROKER_CONFIG.yaml` | `94103755fa24318da6e02dafffaec1ec8bcd7dbb5812de8fafb22bed24592502` |
@@ -546,7 +592,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/bootstrap_project.py` | `d072d1a02183eba4eb967a90f65ae3bdcb67396f685e11fc72623a1bf006ce56` |
 | `scripts/build_release.py` | `9e4fe036247a99f6f1b15a13579a25bebfc16eda8ce97d6812ec2041edcdefc5` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
-| `scripts/generate_contracts.py` | `ec69b85dbb1c747110eaca13b44ef7a4be26065f5256580b88117da5ecbcf292` |
+| `scripts/generate_contracts.py` | `c219c7230625b7e13100fa389bb92ee32105a2ddcee78a4e36944c5c9694ac57` |
 | `scripts/generate_examples.py` | `b0ed05d794ef438bd7544b43f07c1b2b2e39734b45d394422f70ca9e5fcc1c29` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
@@ -571,7 +617,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
-| `scripts/tests/test_awf88_resource_ceilings.py` | `06d6f41c47bda0ce78cfbe1c989c6c4956ec4f7c41142b7c636f7ec77df0e51c` |
+| `scripts/tests/test_awf88_resource_ceilings.py` | `593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `8b37406758f5165c74b841f9e9b54c434fd6974aa13d288c799b31b47b6409ef` |
 | `scripts/tests/test_ci_suite_coverage.py` | `46d04a5bced736858e27ece727fe9a8b339b826f6ba322237ccfc44ba2e7fba2` |
 | `scripts/tests/test_ci_windows_final_candidate.py` | `b24641b80b683d0f7909ba93c26c0e49128f6e3aceaa56c04c71eef6b2895c91` |
@@ -597,3 +643,4 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/validate_archive.py` | `6ec77671ce0fcbb13e22eccbbe965ea905da186416deedac67ca54da1e99488b` |
 | `scripts/validate_git_checkout.py` | `da31f52ab345e19cf580171bef96404958795217d88535c112c4e36278bea174` |
 | `tools/windows/Invoke-AC42.ps1` | `f466b43973c26d2d9b4e74efbc7371c1be2bbae27780160dfe909e10eb0b1e3b` |
+| `tools/windows/pre-push-gate.ps1` | `00fec1816b2d15a33fba4224c66527403a073cc934eacc3729287a68c036e0f1` |
