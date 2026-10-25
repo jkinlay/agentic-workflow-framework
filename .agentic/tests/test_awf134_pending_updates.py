@@ -207,9 +207,34 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual(before_runtime,
                          installer._runtime_tree_sha256(destination / installer.RUNTIME))
 
-    def test_awf215_unproved_partial_stage_moves_to_to_delete_and_rolls_back(self):
+    def run_awf215_recovery(self, destination):
+        """Exercise recovery in a fresh process using the library under test.
+
+        The source-only bootstrap script is absent from installed projects.
+        Keep its recovery result/error transport here so these regressions
+        exercise the same recovery implementation in either layout.
+        """
         import subprocess
 
+        code = """
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from agentic import ValidationError
+from agentic.installer import recover
+try:
+    print(json.dumps(recover(Path(sys.argv[2])), indent=2))
+except (ValidationError, OSError, ValueError) as exc:
+    print(f"BOOTSTRAP REJECTED: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+"""
+        return subprocess.run(
+            [sys.executable, "-B", "-c", code,
+             str(Path(installer.__file__).resolve().parents[1]), str(destination)],
+            cwd=destination, capture_output=True, text=True)
+
+    def test_awf215_unproved_partial_stage_moves_to_to_delete_and_rolls_back(self):
         destination, before, before_mode, before_runtime = (
             self.interrupt_after_managed_after_publish())
         journal = json.loads((destination / installer.JOURNAL).read_bytes())
@@ -234,10 +259,7 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertFalse((destination / runtime["backup"]).exists())
         self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
 
-        result = subprocess.run(
-            [sys.executable, "-B", str(ROOT / "scripts/bootstrap_project.py"),
-             "--dest", str(destination), "--recover"],
-            cwd=ROOT, capture_output=True, text=True)
+        result = self.run_awf215_recovery(destination)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual({"status": "ROLLED_BACK"}, json.loads(result.stdout))
         self.assertFalse(stage.exists())
@@ -265,8 +287,6 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
 
     def test_awf215_recorded_stage_digest_mismatch_still_refuses(self):
-        import subprocess
-
         destination, _before, _before_mode, _before_runtime = (
             self.interrupt_after_managed_after_publish())
         with installer.Tree(destination) as tree:
@@ -280,10 +300,7 @@ class PendingJournalUpdateTests(unittest.TestCase):
         before = self.snapshot_project(destination)
         transaction_before = self.snapshot_transaction(destination)
 
-        result = subprocess.run(
-            [sys.executable, "-B", str(ROOT / "scripts/bootstrap_project.py"),
-             "--dest", str(destination), "--recover"],
-            cwd=ROOT, capture_output=True, text=True)
+        result = self.run_awf215_recovery(destination)
         self.assertEqual(2, result.returncode)
         self.assertEqual("", result.stdout)
         self.assertIn("Runtime recovery found an external edit in the staged runtime; "

@@ -333,7 +333,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf110_collector_overcap.py` | `2b71626e00c6ddadb15b8bd437b6b992fb7567d10bf601008cb060c55e8acbfd` |
 | `.agentic/tests/test_awf117_provenance_gate.py` | `81420d45a5663891552bd19d19d665af7a4746e8761e4a3105246003525b6275` |
 | `.agentic/tests/test_awf134_installer_journal.py` | `67f8f62b752df22890b0f791bf092e436aa183e8862f0105c559ed5f3c72244d` |
-| `.agentic/tests/test_awf134_pending_updates.py` | `5edfdd90ae08dbbcfdb114f26768d729087cc774e9f666c4794ce19af861fb5c` |
+| `.agentic/tests/test_awf134_pending_updates.py` | `d22b11194e7d3085451f10b02b0f08b00188868922c661bc37acfb952e8d66bd` |
 | `.agentic/tests/test_awf134_recovery_lifecycle.py` | `5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a` |
 | `.agentic/tests/test_awf140_marker_validation.py` | `0bf5131678c191b2fc2313db23105656aac8f73e86bb57d8ee034d1f238aea61` |
 | `.agentic/tests/test_awf154_large_file_allowances.py` | `f1633d7a2a3d7ffd339cfb7c0ce60b50b9cc18ca879bfd66af2aa7573f54c546` |
