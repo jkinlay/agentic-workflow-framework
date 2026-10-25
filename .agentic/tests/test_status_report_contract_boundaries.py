@@ -154,6 +154,12 @@ class BoundaryTests(unittest.TestCase):
             with self.assertRaises(ValidationError): module.build_report(data)
 
 
+class OptInUnknownRoutingTests(unittest.TestCase):
+    def test_coded_unknown_routing_remains_unknown_in_projection(self):
+        unknown = dict(status='UNKNOWN', reason='INVALID_ROUTING: incomplete configuration')
+        self.assertEqual(api().build_report({'routing':unknown})['routing'], unknown)
+
+
 class RevisionBoundaryTests(unittest.TestCase):
     def test_forecast_utc_unrepresentable_anchors_raise_validation_error(self):
         from test_status_report import snapshot
@@ -282,6 +288,49 @@ class RevisionBoundaryTests(unittest.TestCase):
                 for category, path, guard in guards:
                     with self.subTest(category=category, seam=path):
                         guard.assert_not_called()
+
+
+class GroupCountContractTests(unittest.TestCase):
+    def test_generated_contract_requires_bounded_integer_count_in_each_group(self):
+        from test_status_report import snapshot
+        report = api().build_report(snapshot())
+        # Supply the required values independently of production projection.
+        for group, count in zip(report['priority']['groups'], [1, 2]):
+            group['count'] = count
+        contracts = Contracts(ROOT / '.agentic/schemas')
+        contracts.validate('status-report', report)
+        for index in [0, 1]:
+            for invalid in ['missing', True, -1, 0.5, 2**53, '2', None]:
+                bad = copy.deepcopy(report)
+                group = bad['priority']['groups'][index]
+                if invalid == 'missing': group.pop('count')
+                else: group['count'] = invalid
+                with self.subTest(index=index, invalid=invalid), self.assertRaises(ValidationError):
+                    contracts.validate('status-report', bad)
+
+    def test_counts_equal_membership_exclude_terminal_assignments_and_render_in_both_forms(self):
+        from test_status_report import snapshot
+        data = snapshot()
+        data['assignments']['records'].extend([
+            dict(key='AWF-4', tier=1, cap=1, source='fixture/done'),
+            dict(key='AWF-5', tier=3, cap=3, source='fixture/cancelled')])
+        for terminal in [False, True]:
+            with self.subTest(terminal=terminal):
+                if terminal: data['inventory']['tickets'][0]['status'] = 'DONE'
+                report = api().build_report(data)
+                groups = report['priority']['groups']
+                self.assertEqual([group['count'] for group in groups], [1, 1 if terminal else 2])
+                self.assertEqual(sum(group['count'] for group in groups), report['outstanding']['count'])
+                for group in groups:
+                    self.assertEqual(group['count'], len(group['tickets']))
+                    self.assertTrue(set(group['tickets']).isdisjoint({'AWF-4', 'AWF-5'}))
+                    self.assertTrue(set(group['sources']).isdisjoint({'fixture/done', 'fixture/cancelled'}))
+                self.assertEqual(json.loads(api().render_json(report))['priority'], report['priority'])
+                text = {line.split(': ', 1)[0]:json.loads(line.split(': ', 1)[1])
+                        for line in api().render_text(report).splitlines()}
+                self.assertEqual(text['priority'], report['priority'])
+        for ticket in data['inventory']['tickets']: ticket['status'] = 'DONE'
+        self.assertEqual(api().build_report(data)['priority'], dict(status='KNOWN', groups=[]))
 
 
 if __name__=='__main__': unittest.main()

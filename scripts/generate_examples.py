@@ -320,9 +320,10 @@ def example_bundle(cfg, operating=None):
                f"review-verdict:1:{verdict['record_id']}:{verdict_sha256}\n")
     pr["body_sha256"] = sha256(pr_body.encode("utf-8"))
     publication_scan["pr_body_sha256"] = pr["body_sha256"]
+    provider_comment = verdict_json + "\n\nCritic run: " + verdict["run_id"]
     provider_response = canonical({
         "comment_id": 1, "comment_url": verdict["pr_comment_url"],
-        "comment_body": verdict_json, "pr_body": pr_body,
+        "comment_body": provider_comment, "pr_body": pr_body,
     })
     posting = {"source": "host_observation", "observed_at": NOW,
         "producer_id": "fixture-collector",
@@ -332,7 +333,7 @@ def example_bundle(cfg, operating=None):
         "review_verdict_sha256": verdict_sha256,
         "repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
         "comment_id": 1, "comment_url": verdict["pr_comment_url"],
-        "comment_bytes": verdict_json, "comment_sha256": sha256(verdict_json.encode("utf-8")),
+        "comment_bytes": provider_comment, "comment_sha256": sha256(provider_comment.encode("utf-8")),
         "body_link": verdict["pr_body_link"], "body_bytes": pr_body,
         "body_sha256": pr["body_sha256"],
         "provider_response_bytes": base64_bytes(provider_response),
@@ -427,6 +428,8 @@ def generate(output_root, source_root=ROOT):
     schemas = (catalog(include_ticket_plan=False)
                if "include_ticket_plan" in inspect.signature(catalog).parameters
                else catalog())
+    from agentic.status_report import build_report
+    write(output_root / '.agentic/examples/status-report.json', build_report({}))
     from agentic.model_routing import default_policy
     generation_policy = default_policy(
         source_root / ".agentic/tests/fixtures/routing/valid.yaml")

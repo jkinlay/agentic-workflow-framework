@@ -972,8 +972,25 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
             and receipt["posting_observation_sha256"] == sha256(observation_bytes)
         )
         run_binding_matches = run is not None and run.get("binding") == verdict["binding"]
+        # The carrier is explicit provider text, retained with this round's
+        # observation. Never manufacture it from an already-present UUID.
+        observation = verdict.get("posting_observation")
+        carrier_bound = False
+        try:
+            provenance.validate_critic_run_binding({
+                **verdict,
+                "result_sha256": result_sha256,
+                "critic_run_carrier": (observation.get("comment_bytes")
+                                       if isinstance(observation, dict) else None),
+            }, reviewed_head=verdict["head_sha"])
+        except ValidationError:
+            pass
+        else:
+            carrier_bound = True
+        posting_evidence_ok = posting_evidence_ok and carrier_bound
         artifact_bound = (
             canonical_result
+            and carrier_bound
             and artifact_binding == receipt["critic_artifact_binding"]
             and artifact_binding == {
                 "critic_run_id": verdict["run_id"],
@@ -1271,17 +1288,32 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     repository = repository or runtime_repository or Path(__file__).resolve().parents[3]
     # Recompute from local Git objects; candidate-supplied summaries cannot
     # establish commit provenance. Runtime inputs only narrow the checker and
-    # register reviewed reproducers, never fallback/override authority.
+    # register reviewed reproducers. Overrides still require the checker's
+    # digest-bound reviewed owners, provider comment and exact refusing range.
     commit_provenance = None
     try:
         runtime = config.get("_awf_runtime", {})
         context = runtime.get("commit_provenance") if isinstance(runtime, dict) else None
-        if not isinstance(context, dict) or set(context) != {
-                "reviewed_policy", "provider_observation", "runtime_registry"}:
+        context_fields = {"reviewed_policy", "provider_observation", "runtime_registry"}
+        override_fields = {"override", "override_predecessors", "reviewed_owner_config"}
+        if (not isinstance(context, dict)
+                or set(context) not in (context_fields, context_fields | override_fields)):
             raise ValidationError("Commit provenance runtime inputs are missing or invalid")
         observation = context["provider_observation"]
-        if not isinstance(context["reviewed_policy"], dict) or not isinstance(observation, dict):
+        if (not isinstance(context["reviewed_policy"], dict)
+                or not isinstance(observation, dict)
+                or not isinstance(context["runtime_registry"], dict)):
             raise ValidationError("Commit provenance policy/provider inputs are invalid")
+        # The legacy three-key form means no override. The extended form is
+        # all-or-nothing, with an explicit null/empty/null absence representation.
+        override = context.get("override")
+        predecessors = context.get("override_predecessors", [])
+        reviewed_owners = context.get("reviewed_owner_config")
+        if (not isinstance(predecessors, list)
+                or (override is None and (predecessors or reviewed_owners is not None))
+                or (override is not None and (not isinstance(override, dict)
+                                             or not isinstance(reviewed_owners, dict)))):
+            raise ValidationError("Commit provenance override runtime inputs are invalid")
         if (observation.get("repository_id") != candidate["repository_id"]
                 or observation.get("pr") != candidate["pr_number"]
                 or observation.get("base_ref") != candidate["target_base_branch"]
@@ -1293,6 +1325,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
             reviewed_policy=context["reviewed_policy"],
             provider_observation=observation,
             runtime_registry=context["runtime_registry"],
+            override=override,
+            override_predecessors=predecessors,
+            reviewed_owner_config=reviewed_owners,
         )
         if commit_provenance["status"] != "PASS":
             provenance_problems.extend(

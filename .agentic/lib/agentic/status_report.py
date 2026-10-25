@@ -69,7 +69,7 @@ def validate_report_value(value):
             allowed = {('eta', 'confidence', 'quantiles', 0): 0.5,
                        ('eta', 'confidence', 'quantiles', 1): 0.8}
             _require(path in allowed and current == allowed[path],
-                     'Only exact report quantile fractions are supported')
+                     'Only integer numbers or exact report quantile fractions are supported')
         elif isinstance(current, dict):
             for key, child in current.items():
                 _require(isinstance(key, str), 'Mapping keys must be strings')
@@ -302,6 +302,8 @@ def _scope(value):
 def _routing(value):
     if value is None:
         return _unknown('MISSING_ROUTING')
+    if _is_unknown(value):
+        return deepcopy(value)
     _shape(value, 'binding declarations proposals observations')
     _binding(value['binding'])
     result = deepcopy(value)
@@ -513,7 +515,7 @@ def _priority(value, outstanding):
         if record['key'] in outstanding['tickets']:
             grouped.setdefault((record['tier'], record['cap']), []).append(record)
     _require(set(outstanding['tickets']) <= seen, 'Incomplete supplied assignments')
-    return {'status': 'KNOWN', 'groups': [dict(tier=tier, cap=cap,
+    return {'status': 'KNOWN', 'groups': [dict(tier=tier, cap=cap, count=len(records),
             tickets=sorted(r['key'] for r in records), sources=sorted({r['source'] for r in records}))
             for (tier, cap), records in sorted(grouped.items())]}
 
