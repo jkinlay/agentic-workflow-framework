@@ -873,13 +873,14 @@ class ContinuousControllerStore:
 			append_plan_record(state_store, result['record'])
 		return result
 
-	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False):
+	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False, migrate_streams=False):
 		self.worktree_roots = tuple((Path(root).resolve(strict=False) for root in worktree_roots))
 		self.path = protected_state_path(path, self.worktree_roots)
 		_require(isinstance(stream_ids, (list, tuple)) and stream_ids and (len(stream_ids) == len(set(stream_ids))) and all((isinstance(item, str) and item.strip() for item in stream_ids)), 'Configured stream identities must be unique nonempty strings')
 		_require(type(cadence_seconds) is int and cadence_seconds > 0, 'Status cadence must be positive seconds')
 		_require(type(periodic_status_enabled) is bool, 'Periodic status enablement must be boolean')
 		_require(type(migrate_cadence) is bool, 'Cadence migration choice must be boolean')
+		_require(type(migrate_streams) is bool, 'Stream migration choice must be boolean')
 		self.periodic_status_enabled = periodic_status_enabled
 		self.path.parent.mkdir(parents=True, exist_ok=True)
 		with self._initialization_connection() as db:
@@ -896,7 +897,13 @@ class ContinuousControllerStore:
 				self._migrate_dispatch_rows(db)
 				configured = canonical(sorted(stream_ids)).decode()
 				old = db.execute("SELECT value FROM controller_meta WHERE key='streams'").fetchone()
-				_require(old is None or old[0] == configured, 'Configured stream set changed; perform explicit controller migration')
+				if old is not None and old[0] != configured and migrate_streams:
+					recorded = sorted(row[0] for row in db.execute('SELECT stream_id FROM stream_status'))
+					_require(recorded and old[0] == canonical(recorded).decode() and set(recorded) < set(stream_ids),
+						'Stream migration only permits adding streams to the recorded set')
+					db.execute("UPDATE controller_meta SET value=? WHERE key='streams'", (configured,))
+				else:
+					_require(old is None or old[0] == configured, 'Configured stream set changed; perform explicit controller migration')
 				for key, value in (('streams', configured), ('cadence_seconds', str(cadence_seconds)), ('revision', '0'), ('last_regular_digest', ''), ('last_digest_revision', '-1')):
 					db.execute('INSERT OR IGNORE INTO controller_meta VALUES(?,?)', (key, value))
 				stored_cadence = int(self._meta(db, 'cadence_seconds'))

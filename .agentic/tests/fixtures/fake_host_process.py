@@ -153,7 +153,7 @@ def main():
         print('Synthetic model failure')
         return 9
     if role == 'worker':
-        (checkout / 'src/a.py').write_text('value = 3\n', encoding='utf-8')
+        (checkout / 'src/a.py').write_text('value = 3\n', encoding='utf-8', newline='\n')
         result['outcome'] = 'CHANGED'
     else:
         if config.get('agent_mode') == 'mutate_checkout':
