@@ -33,7 +33,7 @@ def integer(minimum=0, **extra):
 def capacity(minimum=0):
     # Match planning's authenticated host/resource observation limit. This is
     # a serialization safety ceiling, not evidence of available host capacity.
-    # Native operating streams retain their stricter six-stream bound.
+    # Native operating streams retain their stricter twelve-stream bound.
     return integer(minimum, maximum=1000)
 
 
@@ -287,7 +287,7 @@ def catalog(*, include_ticket_plan=True):
         "properties": {
         "streams": {
             "type": "object", "minProperties": 1,
-            "patternProperties": {"^[A-F]$": operating_epic_stream},
+            "patternProperties": {"^[A-L]$": operating_epic_stream},
             "additionalProperties": False,
         },
         "controller": {"$ref": "#/properties/controller"},
@@ -297,11 +297,11 @@ def catalog(*, include_ticket_plan=True):
         "additionalProperties": False,
     }
     operating_streams = obj({
-        "count": integer(1, maximum=6),
-        **{label: operating_stream for label in "ABCDEF"},
+        "count": integer(1, maximum=12),
+        **{label: operating_stream for label in "ABCDEFGHIJKL"},
     }, required=["count"])
     reviewer_requirements = []
-    for count, label in enumerate("ABCDEF", 1):
+    for count, label in enumerate("ABCDEFGHIJKL", 1):
         reviewer_requirements.append({
             "if": {"properties": {"streams": {"properties": {
                 "count": {"minimum": count},
@@ -878,6 +878,7 @@ def catalog(*, include_ticket_plan=True):
            "base_branch": text(), "branch_pattern": text(), "merge_method": enum("merge", "squash", "rebase"),
            "draft_pr_first": TRUE, "one_repository_per_controller": TRUE}),
         "execution": obj({"profile": const("manual_reference"), "max_parallel_tickets": capacity(1),
+           "max_lanes": integer(1, maximum=12),
            "child_env_strip_extra": arr(text(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), 0, uniqueItems=True),
            "native_streams": obj({"enabled": BOOL, "dispatch_policy": const("ready_independent")}),
            "max_parallel_tickets_per_stream": capacity(1), "max_agent_runs_per_ticket": integer(1),
@@ -925,7 +926,7 @@ def catalog(*, include_ticket_plan=True):
     # Current governance keys are optional for upgraded 1.8.9 configurations; the
     # code applies the documented defaults when they are absent. Bootstrap writes them.
     execution = schemas["project-config"]["properties"]["execution"]
-    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities", "child_env_strip_extra"]),
+    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities", "child_env_strip_extra", "max_lanes"]),
                             (execution["properties"]["host_broker"], ["resources"]),
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):

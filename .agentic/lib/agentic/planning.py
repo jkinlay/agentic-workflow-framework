@@ -14,7 +14,7 @@ import uuid
 from . import ValidationError
 from .canonical import fingerprint, sha256, timestamp
 from .intake_assignment import classify_ticket, _canonical_repo_path
-from .operating import DEFAULT_MAX_LANES, operating_ceiling, stream_labels, validate_snapshot
+from .operating import configured_lane_ceiling, operating_ceiling, stream_labels, validate_snapshot
 
 
 MANIFEST_OUTPUTS = {"MANIFEST.json", "MANIFEST.md"}
@@ -130,7 +130,7 @@ BACKLOG_TICKET_KEYS = {
 
 def tickets_from_provider_snapshot(
         snapshot, config, *, expected_binding, expected_provider, now,
-        verify_provider_snapshot=None):
+        verify_provider_snapshot=None, rejected=None, observed_pr_paths=None):
     """Return attributed tickets only after exact-cycle authentication.
 
     The trusted host supplies reviewed provider/verifier pins, controller-known
@@ -142,7 +142,22 @@ def tickets_from_provider_snapshot(
     explicitly attest no files; omitted components are incomplete evidence.
     Call build_backlog_graph only after this reader succeeds. No live I/O or
     adapter registration occurs here.
+
+    Optional dictionary collectors are updated only after all global checks
+    pass. With rejected supplied, authenticated ticket-content errors omit that
+    ticket and map its key to the validation reason; the default still raises.
+    observed_pr_paths maps each authenticated key to {"paths": [...],
+    "complete": bool}, retaining exact PR paths (including manifests) even for
+    rejected tickets. Unsafe PR entries make coverage incomplete; known paths
+    alone cannot establish a complete safety hold. Missing evidence is never
+    an assertion of an empty PR, and this evidence grants no admission authority.
     """
+    for name, collector in (("rejected", rejected), ("observed_pr_paths", observed_pr_paths)):
+        if collector is not None and not isinstance(collector, dict):
+            raise ValidationError(f"Backlog {name} collector must be a dictionary")
+    if rejected is not None and observed_pr_paths is rejected:
+        raise ValidationError("Backlog rejection and PR evidence collectors must be distinct")
+    staged_rejections, staged_pr_paths = {}, {}
     snapshot = copy.deepcopy(snapshot)
     expected_binding = copy.deepcopy(expected_binding)
     expected_provider = copy.deepcopy(expected_provider)
@@ -226,15 +241,34 @@ def tickets_from_provider_snapshot(
             field = {"brief": "write_paths", "open_pr": "open_pr_files",
                      "worktree_diff": "worktree_diff"}[kind]
             collected[field] = copy.deepcopy(component["files"])
-        # Reuse the graph's exact path validation and source collection. Keep
-        # separate lists so build_backlog_graph retains each observed source.
-        paths = _ticket_paths(collected)
-        if not paths:
-            raise ValidationError(f"Backlog ticket {key} has no observed exact write files")
-        for field in ("write_paths", "open_pr_files", "worktree_diff"):
-            collected[field] = sorted({_path(raw) for raw in collected[field]
-                                       if _path_identity(_path(raw)) not in MANIFEST_OUTPUT_IDENTITIES})
+        # Capture authenticated PR coverage before ticket or manifest filtering.
+        if observed_pr_paths is not None:
+            pr_paths, complete = set(), True
+            for raw in collected["open_pr_files"]:
+                try:
+                    pr_paths.add(_path(raw))
+                except ValidationError:
+                    complete = False
+            staged_pr_paths[key] = {"paths": sorted(pr_paths), "complete": complete}
+        # Only authenticated, attributed content validation is ticket-local.
+        # Keep separate lists so the graph retains each observed source.
+        try:
+            paths = _ticket_paths(collected)
+            if not paths:
+                raise ValidationError(f"Backlog ticket {key} has no observed exact write files")
+            for field in ("write_paths", "open_pr_files", "worktree_diff"):
+                collected[field] = sorted({_path(raw) for raw in collected[field]
+                                           if _path_identity(_path(raw)) not in MANIFEST_OUTPUT_IDENTITIES})
+        except ValidationError as exc:
+            if rejected is None:
+                raise
+            staged_rejections[key] = str(exc)
+            continue
         tickets.append(collected)
+    if rejected is not None:
+        rejected.update(staged_rejections)
+    if observed_pr_paths is not None:
+        observed_pr_paths.update(staged_pr_paths)
     return tickets
 
 
@@ -837,7 +871,7 @@ def _estimate(graph, config, independent_count, capacity_inputs):
     execution = config["execution"]
     constraints = {
         "dependency_graph/file_overlap": independent_count,
-        "configured_ceiling": execution.get("max_lanes", DEFAULT_MAX_LANES),
+        "configured_ceiling": configured_lane_ceiling(config),
         "max_parallel_tickets": execution["max_parallel_tickets"],
     }
     broker = execution.get("host_broker")
