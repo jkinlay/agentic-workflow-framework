@@ -428,6 +428,8 @@ def generate(output_root, source_root=ROOT):
     schemas = (catalog(include_ticket_plan=False)
                if "include_ticket_plan" in inspect.signature(catalog).parameters
                else catalog())
+    from agentic.status_report import build_report
+    write(output_root / '.agentic/examples/status-report.json', build_report({}))
     from agentic.model_routing import default_policy
     generation_policy = default_policy(
         source_root / ".agentic/tests/fixtures/routing/valid.yaml")

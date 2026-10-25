@@ -1,0 +1,26 @@
+{
+  "template_for": "status-report-input",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "binding": {
+      "project_id": "UNFILLED",
+      "repository_id": 1,
+      "repository": "UNFILLED",
+      "cloud_id": "UNFILLED",
+      "provider_project_id": "UNFILLED",
+      "project_key": "UNFILLED",
+      "release_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "github_identity": null,
+    "jira_connections": null,
+    "inventory": null,
+    "assignments": null,
+    "plan": null,
+    "override_state": null,
+    "planning_graph": null,
+    "merge_train": null
+  }
+}

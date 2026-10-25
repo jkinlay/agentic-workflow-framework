@@ -29,6 +29,40 @@ from agentic.installer import CONFIG, INSTALLED, PROVENANCE, json_bytes
 from agentic.lifecycle import definition
 
 
+class OptInStatusCompatibilityTests(unittest.TestCase):
+    def test_opt_in_preserves_active_nonactive_null_state_legacy_exit_matrix(self):
+        from agentic.cli import main
+        from contextlib import redirect_stderr
+        for state, ordinary, required in [('ACTIVE',0,0),('CONFIGURED',0,4),(None,2,4)]:
+            legacy = dict(line='AWF status '+str(state), project_state=state, next_action=None)
+            for require, expected in [(False,ordinary),(True,required)]:
+                for report_result in [dict(status='RECORDED', report={'inputs_sha256':'a'*64}),
+                                      dict(status='NOT_RUN', reason='IDENTITY_UNOBSERVED')]:
+                    args = ['--root',str(ROOT),'status','--json','--report',
+                            '--report-input','fixture-input.json','--report-store','fixture-state.db']
+                    if require: args.append('--require-active')
+                    out = io.StringIO()
+                    with patch.object(status,'project_status',return_value=copy.deepcopy(legacy)), \
+                         patch('agentic.status_report_store.run_report',return_value=report_result), \
+                         redirect_stdout(out):
+                        self.assertEqual(main(args), expected)
+                    self.assertEqual(json.loads(out.getvalue()), {**legacy,'status_report':report_result})
+                out = io.StringIO(); err = io.StringIO()
+                with patch.object(status,'project_status',return_value=copy.deepcopy(legacy)), \
+                     patch('agentic.status_report_store.run_report',side_effect=OSError('synthetic failure')), \
+                     redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(main(args), expected)
+                self.assertEqual(json.loads(out.getvalue())['status_report']['status'], 'FAILED')
+
+    def test_report_requires_explicit_input_and_store_without_affecting_status_exit(self):
+        from agentic.cli import main
+        legacy = dict(line='AWF ACTIVE', project_state='ACTIVE', next_action=None)
+        out = io.StringIO()
+        with patch.object(status,'project_status',return_value=legacy), redirect_stdout(out):
+            self.assertEqual(main(['--root',str(ROOT),'status','--json','--report']), 0)
+        self.assertEqual(json.loads(out.getvalue())['status_report']['status'], 'NOT_RUN')
+
+
 class AdoptionStatusTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -282,6 +316,26 @@ class AdoptionStatusTests(unittest.TestCase):
                     mode, kind, _oid = metadata.decode('ascii').split(' ')
                     self.assertEqual(kind, 'blob')
                     mode_files[raw_path.decode('utf-8')] = mode
+            # D-1025-04 round 2 approves this retained fixture correction.
+            # The copied source is the tested working tree: apply Git's raw
+            # mode delta, including additions, to the baseline mode inventory.
+            # No default mode may hide a member absent from Git's inventory.
+            raw_changes = subprocess.run(
+                [self.git, '--no-replace-objects', '-c', 'core.useReplaceRefs=false', '-C', str(ROOT),
+                 'diff', '--raw', '-z', '--no-renames', '--no-abbrev', 'HEAD'],
+                capture_output=True, check=True).stdout
+            changes = iter(raw_changes.split(b'\0'))
+            for metadata in changes:
+                if not metadata:
+                    continue
+                raw_path = next(changes)
+                _old_mode, mode, _old_oid, _oid, _change = metadata[1:].decode('ascii').split(' ')
+                path = raw_path.decode('utf-8')
+                if mode == '000000':
+                    del mode_files[path]
+                else:
+                    self.assertIn(mode, {'100644', '100755'})
+                    mode_files[path] = mode
             mode_manifest = profile / 'git-modes.json'
             mode_manifest.write_text(json.dumps({'format': 'awf-raw-git-modes-1',
                                                   'files': mode_files}, indent=2, sort_keys=True) + '\n',
