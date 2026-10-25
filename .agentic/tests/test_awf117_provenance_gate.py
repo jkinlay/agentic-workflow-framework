@@ -59,7 +59,6 @@ class ProvenanceGateTests(unittest.TestCase):
         from agentic.gates import evaluate, expected_binding
         from agentic.lifecycle import definition
         from agentic.provenance import check_commit_range
-        from generate_examples import example_bundle
         from test_review_policy import (
             NOW, RuntimeAssignedGateConfig, bind_production_posting_fixture,
             bind_review_admission,
@@ -138,7 +137,8 @@ class ProvenanceGateTests(unittest.TestCase):
                            "runtime_registry": registry}
 
             config_values = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
-            self.bundle = example_bundle(config_values)
+            # Use the shipped fixture in source and manifest-only installations.
+            self.bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
             candidate = self.bundle["candidate"]
             candidate.update(head_sha=head, target_base_sha=base,
                              merge_base_sha=base, head_tree_sha=tree,
@@ -405,9 +405,8 @@ class MissingProvenanceTests(unittest.TestCase):
         from agentic.canonical import load
         from test_review_policy import (RuntimeAssignedGateConfig, bind_review_admission,
                                         bind_production_posting_fixture, NOW)
-        from generate_examples import example_bundle
         values = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
-        self.bundle = example_bundle(values)
+        self.bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
         class MissingConfig(RuntimeAssignedGateConfig):
             def get(inner, key, default=None):
                 value = super().get(key, default)

@@ -331,7 +331,7 @@
     ".agentic/tests/test_authorization_awf98.py": "5ea3afdd03cd7625a14d7cc38fe8df6c52d10542659a0772404b95d8bdc004ae",
     ".agentic/tests/test_awf107_routing_config.py": "031ddf873c365b7524b8987f2586c1b14e74f7ce6a64096ba4bf3017cd791051",
     ".agentic/tests/test_awf110_collector_overcap.py": "f44eb8097df0ff58ec7a23288b93be00ef4fc5864c928e299c70a333d9d571d3",
-    ".agentic/tests/test_awf117_provenance_gate.py": "64a0294fd2cb36a530360431b09169120ab2f61b9fb265851f181375424443e5",
+    ".agentic/tests/test_awf117_provenance_gate.py": "2ef92de706ed4fd6e4636e3a465152773b10290a4149458862da4b23d77d3a26",
     ".agentic/tests/test_awf134_installer_journal.py": "67f8f62b752df22890b0f791bf092e436aa183e8862f0105c559ed5f3c72244d",
     ".agentic/tests/test_awf134_pending_updates.py": "d22b11194e7d3085451f10b02b0f08b00188868922c661bc37acfb952e8d66bd",
     ".agentic/tests/test_awf134_recovery_lifecycle.py": "5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a",
