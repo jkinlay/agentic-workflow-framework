@@ -1673,5 +1673,87 @@ class ReferenceAdapterContractTests(unittest.TestCase):
         adapters, loader = _load_real(ADAPTER, config)
         loader._require_adapters(adapters, cycle_requirements(CONTROLLER))
 
+class ControllerAdapterDocumentationTests(unittest.TestCase):
+
+	def setUp(self):
+		self.doc = (ROOT / '.agentic/docs/34-CONTINUOUS-CONTROLLER.md').read_text(encoding='utf-8')
+
+	def _required_operations_section(self):
+		heading = '### Required adapter operations'
+		self.assertIn(heading, self.doc, 'Doc 34 must contain the adapter contract table')
+		return self.doc.split(heading, 1)[1].split('\n## ', 1)[0]
+
+	def test_doc_required_operations_table_covers_exact_command_sets(self):
+		import re
+		section = self._required_operations_section()
+		rows = []
+		for line in section.splitlines():
+			if line.startswith('| `'):
+				cells = [cell.strip() for cell in line.strip('|').split('|')]
+				self.assertEqual(3, len(cells), line)
+				rows.append(cells)
+		expected = {
+			'cycle': {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'},
+			'jira-lifecycle': {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'},
+			'merge-observed': {'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation'},
+			'owner-publication-prepare': {'authorize_owner_publication'},
+			'owner-publication-resume': {'observe_identity', 'observe_remote_heads', 'create_draft_pr', 'observe_draft_pr'},
+			'owner-publication-status': set(),
+			'batch-operation': {'batch_coordinator'},
+			'batch-closeout': {'batch_coordinator', 'observe_batch_merge', 'observe_issue_identity', 'observe_issue_policy', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition'},
+			'snapshot': set(),
+			'planning-state prune': set(),
+		}
+		self.assertEqual(len(expected), len(rows), 'One row per executable command form')
+		actual = {row[0].strip('`'): row for row in rows}
+		self.assertEqual(set(expected), set(actual))
+		for command, operations in expected.items():
+			with self.subTest(command=command):
+				cell = actual[command][1]
+				self.assertEqual(operations, set(re.findall(r'`([a-z_]+)`', cell)))
+				if not operations:
+					self.assertEqual('None', cell)
+		merge = actual['merge-observed'][1]
+		self.assertRegex(merge, r'additionally `observe_jira_reconciliation` when accepted project configuration has `jira.enabled is True`')
+
+	def test_doc_cycle_flag_requirements_describe_supplied_flags(self):
+		section = ' '.join(self._required_operations_section().split())
+		for flag, operation in (('--overlap-allowances', 'observe_overlap_allowance'), ('--replan-request', 'observe_replan_trigger')):
+			with self.subTest(flag=flag):
+				self.assertIn(f'`cycle {flag}` additionally requires `{operation}`', section)
+		self.assertIn('flag was supplied', section)
+		self.assertIn('even an empty loaded list', section)
+
+	def test_doc_overlap_callbacks_have_separate_runtime_conditions(self):
+		import re
+		section = self._required_operations_section()
+		self.assertIn('forwards these additional callbacks when callable', section)
+		conditions = {
+			'observe_overlap_conflict': 'expired allowance conflict observation',
+			'observe_overlap_sync_inventory': 'post-sync provider PR-head observation',
+			'sync_writer': 'confirmed conflict execution',
+			'reconcile_overlap_sync': 'UNKNOWN receipt-only recovery',
+			'observe_dispatch_quiescence': 'terminal proof for accepted dispatches',
+		}
+		for operation, condition in conditions.items():
+			with self.subTest(operation=operation):
+				self.assertRegex(section, r'(?m)^- `' + operation + r'`: ' + re.escape(condition) + r'\.$')
+		self.assertIn('Runtime overlap paths require the corresponding callback', section)
+
+	def test_doc_distinguishes_controller_contract_from_reference_support(self):
+		section = ' '.join(self._required_operations_section().split())
+		for phrase in ('reviewed, SHA-pinned module', '`build_adapters(config)`', 'callable operations', 'None means no reviewed adapter operations', 'state/configuration requirements or effects', 'controller contract', 'reference adapter lacks owner-publication and batch operations'):
+			with self.subTest(phrase=phrase):
+				self.assertIn(phrase, section)
+
+	def test_doc_workflow_controller_isolated_mode_guidance(self):
+		prose = ' '.join(self.doc.split())
+		self.assertIn('Do not use `python -B -I .agentic/scripts/workflow.py controller', prose)
+		self.assertIn('today', prose)
+		self.assertIn('fails under isolated mode (AWF-207)', prose)
+		self.assertIn('without `-I`; `-B` may be retained', prose)
+		self.assertIn('No fix release is promised', prose)
+
+
 if __name__ == '__main__':
 	unittest.main()
