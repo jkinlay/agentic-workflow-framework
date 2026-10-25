@@ -628,7 +628,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_generate_examples_schema_refs.py` | `acd329623a932ba4b7485fe1b544dc6729631ad5a5a20f73901e093571f84b17` |
 | `scripts/tests/test_generate_examples_ticket_plan.py` | `6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2` |
 | `scripts/tests/test_generate_workflow_blob_sha.py` | `305ca808de3384f905ef546dd384a4c8ee1da4b0bc05fdfde1e7afb8ecae34e6` |
-| `scripts/tests/test_installed_self_test.py` | `9f4b4433f5492d13df657f3dd54baf1d933c88dcbe128ebe30245c04b60cd987` |
+| `scripts/tests/test_installed_self_test.py` | `083e749a159bb6798bf13b31fb08017f87bc0ec2824bd3f4e021f8fccec8219c` |
 | `scripts/tests/test_manifest_conflicts.py` | `6a9b19eded244de59583346b28d344b72f77c8d916f71a7426f61f09302c8a09` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
