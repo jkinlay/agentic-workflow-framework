@@ -938,13 +938,39 @@ class HostDriver:
 
     def api_post(self, suffix, payload):
         endpoint = f'repos/{self.c["repository"]}/{suffix}'
-        raw = (json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
-               + '\n').encode('utf-8')
-        require(len(raw) <= 1024 * 1024,
-                'Provider write request exceeds 1 MiB')
+        maximum = 1024 * 1024
+
+        def check_strings(value):
+            # iterencode emits an entire string at once. Bound each input
+            # scalar (including keys) before allowing that allocation.
+            if isinstance(value, str):
+                require(len(value) <= maximum,
+                        'Provider write request exceeds 1 MiB')
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    check_strings(key)
+                    check_strings(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    check_strings(item)
+
+        try:
+            check_strings(payload)
+            encoder = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))
+            raw = bytearray()
+            for chunk in encoder.iterencode(payload):
+                encoded = chunk.encode('utf-8')
+                require(len(raw) + len(encoded) + 1 <= maximum,
+                        'Provider write request exceeds 1 MiB')
+                raw.extend(encoded)
+            raw.extend(b'\n')
+        except ValidationError:
+            raise
+        except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+            raise ValidationError('Provider write request is not valid JSON') from exc
         return loads(self.run(
             'gh', ['api', '--hostname', 'github.com', '--method', 'POST',
-                   endpoint, '--input', '-'], stdin=raw, binary=False))
+                   endpoint, '--input', '-'], stdin=bytes(raw), binary=False))
 
     def _provider_read(self, suffix, *, operation_budget=None):
         """Preserve bounded replay for collectors recorded before budget keywords."""
@@ -1115,6 +1141,17 @@ class HostDriver:
 
     def publish_critic_evidence(self, binding):
         """Publish then freshly reread the immutable critic carrier."""
+        # This channel has only structured identities, not free-form Markdown.
+        # Refuse hostile data before formatting; never sanitize it into authority.
+        require(isinstance(binding, dict), 'Critic publication binding is invalid')
+        for field, length, pattern in (
+                ('head_sha', 40, r'[0-9a-f]{40}'),
+                ('result_sha256', 64, r'[0-9a-f]{64}'),
+                ('critic_run_carrier', 48, r'Critic run: [0-9a-f-]{36}')):
+            value = binding.get(field)
+            require(isinstance(value, str) and len(value) == length
+                    and re.fullmatch(pattern, value) is not None,
+                    f'Critic publication {field} is invalid')
         body = ('AWF critic evidence v1\n'
                 f'Head: {binding["head_sha"]}\n'
                 f'Result sha256: {binding["result_sha256"]}\n\n'
