@@ -52,6 +52,9 @@ class GitHubTransportDouble:
     def api(self, suffix):
         return copy.deepcopy(self.responses[suffix])
 
+    def posting_pull(self, number):
+        return copy.deepcopy(self.responses[f"pulls/{number}"])
+
 
 class CollectorOvercapApprovalTests(Fixture):
     def setUp(self):
@@ -115,6 +118,11 @@ class CollectorOvercapApprovalTests(Fixture):
             "number": candidate["pr_number"],
             "html_url": prefix,
             "body": pr_body,
+            # Independently supplied rendered targets for every retained round.
+            "body_html": "\n".join(
+                f'<a id="review-verdict-{v["round"]}-{v["record_id"]}"></a>'
+                for v in self.bundle["review_verdicts"]
+            ),
             "head": {"sha": candidate["head_sha"]},
             "base": {
                 "sha": candidate["target_base_sha"],

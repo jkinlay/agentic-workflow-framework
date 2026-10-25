@@ -42,6 +42,9 @@ OVERRIDE_KEYS = {'windows.sandbox'}
 CODEX_LOG_LIMIT = 64 * 1024 * 1024
 CODEX_RESULT_LIMIT = 1024 * 1024
 MANIFEST_PATHS = ('MANIFEST.json', 'MANIFEST.md')
+# D-1025-06: one response supplies both UTF-8 fields. Live provider behavior
+# remains UNVERIFIED; never infer another media type or assemble split reads.
+POSTING_PULL_CONTRACT = ('application/vnd.github.full+json', ('body', 'body_html'))
 ROUTING_SOURCE = '.agentic/tests/fixtures/routing/valid.yaml'
 _SUBPROCESS_RUN = subprocess.run
 
@@ -935,6 +938,47 @@ class HostDriver:
                         'SUBPROCESS_OPERATION_BUDGET: shared operation budget exceeded'
                     ) from exc
         return loads(raw)
+
+    def posting_pull(self, number, *, operation_budget=None):
+        """Read the enrolled posting PR under the fixed D-1025-06 contract."""
+        require(type(number) is int and number > 0 and number == self.c['pr'],
+                'Posting PR number differs from the enrolled pull request')
+        media_type, fields = POSTING_PULL_CONTRACT
+        arguments = ['api', '--hostname', 'github.com', '--method', 'GET',
+                     f'repos/{self.c["repository"]}/pulls/{number}',
+                     '--header', 'Accept: ' + media_type]
+        parameters = inspect.signature(self.run).parameters.values()
+        accepts_budget = any(item.name == 'operation_budget'
+                             or item.kind is inspect.Parameter.VAR_KEYWORD
+                             for item in parameters)
+        raw = (self.run('gh', arguments, operation_budget=operation_budget)
+               if accepts_budget else self.run('gh', arguments))
+        require(isinstance(raw, str), 'Posting provider response is not text')
+        try:
+            encoded = raw.encode('utf-8', 'strict')
+        except UnicodeError as exc:
+            raise ValidationError('Posting provider response is not strict UTF-8') from exc
+        require(len(encoded) <= HOST_PROVIDER_RUNNER_POLICY.stdout_limit,
+                'HOST_STDOUT_LIMIT: host provider output exceeded its cap')
+        if not accepts_budget and operation_budget is not None:
+            try:
+                operation_budget.start_operation()
+                operation_budget.consume(len(encoded))
+            except ChildProcessPolicyError as exc:
+                raise ValidationError(
+                    'SUBPROCESS_OPERATION_BUDGET: shared operation budget exceeded') from exc
+        pull = loads(raw)
+        base = pull.get('base') if isinstance(pull, dict) else None
+        repository = base.get('repo') if isinstance(base, dict) else None
+        require(isinstance(pull, dict) and type(pull.get('number')) is int
+                and pull['number'] == number
+                and pull.get('html_url') == f'https://github.com/{self.c["repository"]}/pull/{number}'
+                and isinstance(repository, dict) and type(repository.get('id')) is int
+                and repository['id'] == self.c['repository_id'],
+                'Posting PR/repository identity differs from enrollment')
+        require(all(isinstance(pull.get(field), str) for field in fields),
+                'Posting provider must return body and body_html as UTF-8 strings')
+        return pull
 
     def api_post(self, suffix, payload):
         endpoint = f'repos/{self.c["repository"]}/{suffix}'

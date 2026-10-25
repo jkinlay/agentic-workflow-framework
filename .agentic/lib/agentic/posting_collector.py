@@ -15,6 +15,7 @@ import copy
 import json
 from pathlib import Path
 import re
+import subprocess
 import uuid
 
 from . import ValidationError
@@ -27,6 +28,21 @@ from .providers.github_review_host import HostDriver, load_config
 
 COLLECTOR_ID = "github-production-posting-collector"
 PROVIDER_KIND = "github"
+# D-1025-06, empty-prefix literal targets only. Live rendering is UNVERIFIED;
+# unsupported rewrites must refuse collection rather than infer a new mapping.
+_RENDERED_TARGET_CONTRACT = ('id', 'name')
+_RENDERED_TAG = re.compile(
+    r'<(?P<close>/)?(?P<tag>[a-z][a-z0-9]*)'
+    r'(?P<attrs>(?: [a-z][a-z0-9-]*="[^"<>\x00-\x1f]*")*)>'
+)
+_RENDERED_VISIBLE = frozenset({
+    'div', 'p', 'span', 'blockquote', 'strong', 'em', 'b', 'i', 's', 'del',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+})
+_RENDERED_INERT = frozenset({
+    'code', 'pre', 'script', 'style', 'textarea', 'template', 'title', 'xmp',
+    'iframe', 'noscript', 'svg', 'math', 'details', 'summary',
+})
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _TOP_LEVEL_FENCE = re.compile(r"^(?P<indent> {0,3})(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 _LIST_FENCE = re.compile(
@@ -124,7 +140,7 @@ def _gate_entry(registration):
 
 
 def _provider_response(comment_id, comment_url, comment_body, pr_body,
-                       owner_approval=None):
+                       owner_approval=None, *, pr_body_html):
     # Retain only the provider fields used by the gate.  This deliberately
     # excludes actor profiles, headers and other unrelated provider data.
     response = {
@@ -132,6 +148,7 @@ def _provider_response(comment_id, comment_url, comment_body, pr_body,
         "comment_url": comment_url,
         "comment_body": comment_body,
         "pr_body": pr_body,
+        "pr_body_html": pr_body_html,
     }
     if owner_approval is not None:
         response["owner_approval"] = owner_approval
@@ -418,6 +435,61 @@ def _defines_fragment(body, fragment):
     return found
 
 
+def _defines_rendered_fragment(body_html, fragment):
+    """Recognise a literal target in a conservative, balanced HTML subset.
+
+    This is independent of Markdown/source recognition. Unknown markup and
+    browser repair ambiguities refuse; attributes on ancestors are supported
+    only for the ordinary ``dir="auto"`` rendering wrapper.
+    """
+    stack = []
+    found = 0
+    cursor = 0
+    targets = {f'<a {attribute}="{fragment}"></a>'
+               for attribute in _RENDERED_TARGET_CONTRACT}
+    while cursor < len(body_html):
+        start = body_html.find('<', cursor)
+        if start < 0:
+            break
+        if body_html.startswith('<!--', start):
+            end = body_html.find('-->', start + 4)
+            if end < 0 or '--' in body_html[start + 4:end]:
+                return False
+            cursor = end + 3
+            continue
+        match = _RENDERED_TAG.match(body_html, start)
+        if match is None:
+            return False
+        tag, attrs = match.group('tag', 'attrs')
+        cursor = match.end()
+        if match.group('close'):
+            if attrs or not stack or stack[-1][0] != tag:
+                return False
+            stack.pop()
+            continue
+        if tag not in _RENDERED_VISIBLE | _RENDERED_INERT | {'a', 'br', 'hr', 'img', 'wbr'}:
+            return False
+        if tag == 'a' and any(parent == 'a' for parent, _blocked in stack):
+            return False
+        if any(parent == 'p' for parent, _blocked in stack) and tag not in {
+                'a', 'span', 'strong', 'em', 'b', 'i', 's', 'del', 'code', 'br', 'img', 'wbr'}:
+            return False
+        definitions = re.findall(r' (?:id|name)="([^"]*)"', attrs)
+        # Entity-rewritten definitions can alias a literal target in a browser.
+        if any('&' in value for value in definitions):
+            return False
+        if fragment in definitions:
+            if (len(definitions) != 1
+                    or body_html[start:cursor + 4] not in targets
+                    or any(blocked for _parent, blocked in stack)):
+                return False
+            found += 1
+        if tag not in {'br', 'hr', 'img', 'wbr'}:
+            blocked = tag not in _RENDERED_VISIBLE or attrs not in {'', ' dir="auto"'}
+            stack.append((tag, blocked))
+    return found == 1 and not stack
+
+
 def collect_posting_observation(review_host, *, candidate, verdict,
                                 review_round_receipt, collector_run_id,
                                 observed_at, release_sha256, owner_review=None):
@@ -456,13 +528,21 @@ def collect_posting_observation(review_host, *, candidate, verdict,
                   "verdict PR-body link does not identify its round and record")
 
     comment = review_host.api(f"issues/comments/{comment_id}")
-    pull = review_host.api(f"pulls/{candidate['pr_number']}")
     if (not isinstance(comment, dict) or comment.get("id") != comment_id
             or comment.get("html_url") != verdict["pr_comment_url"]
             or not isinstance(comment.get("body"), str)
             or verdict_json not in comment["body"]):
         _mismatch("POSTING_COMMENT_MISMATCH",
                   "live immutable comment identity, URL or exact body differs")
+    posting_pull = getattr(review_host, "posting_pull", None)
+    if not callable(posting_pull):
+        _mismatch("POSTING_PROVIDER_UNAVAILABLE", "fixed posting PR read is unavailable")
+    try:
+        pull = posting_pull(candidate['pr_number'])
+    except (ValidationError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise PostingCollectorMismatch(
+            "POSTING_PROVIDER_UNAVAILABLE: fixed posting PR read failed"
+        ) from exc
     base = pull.get("base") if isinstance(pull, dict) else None
     base_repository = base.get("repo") if isinstance(base, dict) else None
     if (not isinstance(pull, dict) or pull.get("number") != candidate["pr_number"]
@@ -472,8 +552,14 @@ def collect_posting_observation(review_host, *, candidate, verdict,
         _mismatch("POSTING_BODY_MISMATCH",
                   "live pull request identity differs from the candidate")
     body = pull.get("body")
-    if not isinstance(body, str):
-        _mismatch("POSTING_BODY_MISMATCH", "live pull request body is not text")
+    body_html = pull.get("body_html")
+    if not isinstance(body, str) or not isinstance(body_html, str):
+        _mismatch("POSTING_BODY_MISMATCH", "live pull request body/body_html is not text")
+    try:
+        body.encode("utf-8", "strict")
+        body_html.encode("utf-8", "strict")
+    except UnicodeError:
+        _mismatch("POSTING_BODY_MISMATCH", "live pull request body/body_html is not UTF-8")
     fragment = f"review-verdict-{verdict['round']}-{verdict['record_id']}"
     if not _defines_fragment(body, fragment):
         _mismatch("POSTING_ANCHOR_MISMATCH",
@@ -482,12 +568,16 @@ def collect_posting_observation(review_host, *, candidate, verdict,
     if anchor not in body:
         _mismatch("POSTING_ANCHOR_MISMATCH",
                   "live pull request body omits the exact verdict anchor")
+    if not _defines_rendered_fragment(body_html, fragment):
+        _mismatch("POSTING_RENDERED_ANCHOR_MISMATCH",
+                  "live rendered pull request body does not define the linked verdict fragment")
 
     owner_approval = (_formal_owner_approval(
         review_host, candidate, owner_review, pull
     ) if owner_review is not None else None)
     provider_response = _provider_response(
-        comment_id, comment["html_url"], comment["body"], body, owner_approval
+        comment_id, comment["html_url"], comment["body"], body, owner_approval,
+        pr_body_html=body_html,
     )
     registration = _registration(release_sha256, candidate["repository_id"])
     observation = {

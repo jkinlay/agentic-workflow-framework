@@ -5,9 +5,11 @@ import base64
 import copy
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -19,9 +21,12 @@ from agentic import ValidationError
 from agentic import posting_collector
 from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.cli import main as workflow_main
-from agentic.gates import evaluate, review_round_receipt_sha256
+from agentic.gates import evaluate, review_round_receipt_sha256, review_verdict_json
 from agentic.intake_assignment import assign_intake
 from agentic.lifecycle import definition
+from agentic.child_process import HOST_PROVIDER_RUNNER_POLICY
+from agentic.providers import github_review_host
+from agentic.providers.github_review_host import HostDriver
 from agentic.posting_collector import (
     COLLECTOR_ID,
     PostingCollectorMismatch,
@@ -48,6 +53,7 @@ class TestOnlyReviewHost:
 
     def __init__(self, bundle):
         self.responses = {}
+        self.posting_calls = []
         candidate = bundle["candidate"]
         for verdict in bundle["review_verdicts"]:
             observation = verdict["posting_observation"]
@@ -64,11 +70,20 @@ class TestOnlyReviewHost:
                 f"{candidate['pr_number']}"
             ),
             "body": terminal["posting_observation"]["body_bytes"],
+            # Independent provider-rendered fixture, never derived from raw body.
+            "body_html": "\n".join(
+                f'<a id="review-verdict-{v["round"]}-{v["record_id"]}"></a>'
+                for v in bundle["review_verdicts"]
+            ),
             "base": {"repo": {"id": candidate["repository_id"]}},
         }
 
     def api(self, suffix):
         return copy.deepcopy(self.responses[suffix])
+
+    def posting_pull(self, number):
+        self.posting_calls.append(number)
+        return copy.deepcopy(self.responses[f"pulls/{number}"])
 
 
 class PostingCollectorTests(Fixture):
@@ -201,6 +216,355 @@ class PostingCollectorTests(Fixture):
                 self._install_runtime_observations()
         finally:
             self.host.responses[pr_suffix]["body"] = body
+
+    def _collect_terminal(self):
+        verdict = self.bundle["review_verdicts"][-1]
+        return collect_posting_observation(
+            self.host, candidate=self.bundle["candidate"], verdict=verdict,
+            review_round_receipt=self.bundle["review_round_receipts"][-1],
+            collector_run_id=verdict["posting_observation"]["run_id"],
+            observed_at=verdict["posting_observation"]["observed_at"],
+            release_sha256=RELEASE_SHA256,
+        )
+
+    def test_awf67_a1_to_a12_a29_rendered_negatives_preserve_valid_raw(self):
+        suffix, raw, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "A1 absent": "<p>Provider omitted the target.</p>",
+            "A4 empty": "",
+            "A5 round": anchor.replace("review-verdict-1-", "review-verdict-99-"),
+            "A6 record": anchor.replace(fragment, "review-verdict-1-other-record"),
+            "A7 text": fragment,
+            "A7 escaped": anchor.replace("<", "&lt;").replace(">", "&gt;"),
+            "A7 entities": f'&lt;a id=&quot;{fragment}&quot;&gt;&lt;/a&gt;',
+            "A8 comment": f"<!-- {anchor} -->",
+            "A10 href": f'<a href="#{fragment}">verdict</a>',
+            "A11 div id": f'<div id="{fragment}"></div>',
+            "A11 span name": f'<span name="{fragment}"></span>',
+            "A11 unrelated": f'<a title="{fragment}"></a>',
+            "A11 extra attribute": f'<a id="{fragment}" title="verdict"></a>',
+            "A11 self closing": f'<a id="{fragment}"/>',
+            "A11 uppercase": f'<A ID="{fragment}"></A>',
+            "A11 encoded id": anchor.replace("review-verdict", "review&#45;verdict"),
+            "A12 unclosed": f'<a id="{fragment}">',
+            "A12 mismatched": f'<a id="{fragment}"></div>',
+            "A12 unclosed parent": f"<div>{anchor}",
+            "A12 stray closer": f"</div>{anchor}",
+            "A12 duplicate target": anchor + anchor,
+            "A12 duplicate attributes": f'<a id="{fragment}" id="{fragment}"></a>',
+            "A12 both attributes": f'<a id="{fragment}" name="{fragment}"></a>',
+            "A12 malformed after valid": anchor + "<broken",
+            "A12 unclosed comment after valid": anchor + "<!--",
+            "A12 nested anchor": f'<a href="elsewhere">{anchor}</a>',
+        }
+        for tag in ("code", "pre", "script", "style", "textarea", "template",
+                    "title", "xmp", "iframe", "noscript", "svg", "math"):
+            cases[f"A9 {tag}"] = f"<{tag}>{anchor}</{tag}>"
+        for attrs in ('hidden', 'style="display:none"', 'aria-hidden="true"'):
+            cases[f"A9 {attrs}"] = f"<div {attrs}>{anchor}</div>"
+        for prefix in ("user-content-", "another-prefix-"):
+            for attribute in ("id", "name"):
+                cases[f"A29 {prefix} {attribute}"] = (
+                    f'<a {attribute}="{prefix}{fragment}"></a>'
+                )
+        for label, rendered in cases.items():
+            with self.subTest(case=label):
+                self.host.responses[suffix]["body_html"] = rendered
+                self.assertEqual(raw, self.host.responses[suffix]["body"])
+                with self.assertRaisesRegex(PostingCollectorMismatch, "POSTING_RENDERED"):
+                    self._collect_terminal()
+
+    def test_awf67_a2_a3_missing_or_non_text_rendered_fails_closed(self):
+        suffix, _raw, _anchor, _fragment = self._terminal_fragment_fixture()
+        pull = self.host.responses[suffix]
+        for value in (None, [], {}, 1, True, b"bytes", "\ud800"):
+            with self.subTest(value=repr(value)):
+                pull["body_html"] = value
+                with self.assertRaises(ValidationError):
+                    self._collect_terminal()
+        del pull["body_html"]
+        with self.assertRaises(ValidationError):
+            self._collect_terminal()
+
+    def test_awf67_a14_a15_and_a22_literal_mapping_and_dedicated_read(self):
+        suffix, raw, anchor, fragment = self._terminal_fragment_fixture()
+        for attribute in ("id", "name"):
+            with self.subTest(attribute=attribute):
+                target = f'<a {attribute}="{fragment}"></a>'
+                self.host.responses[suffix]["body"] = raw.replace(anchor, target)
+                self.host.responses[suffix]["body_html"] = (
+                    f'<p dir="auto">Independent rendered summary.</p>\n{target}'
+                )
+                self.host.posting_calls.clear()
+                registrations, registry = self._install_runtime_observations()
+                self.assertTrue(registrations)
+                self.assertIn(COLLECTOR_ID, registry)
+                self.assertEqual([self.bundle["candidate"]["pr_number"]] * 2,
+                                 self.host.posting_calls)
+
+    def test_awf67_a23_rendered_bytes_are_retained_and_digest_bound(self):
+        suffix, _raw, _anchor, _fragment = self._terminal_fragment_fixture()
+        first = self._collect_terminal()["observation"]
+        provider = json.loads(base64.b64decode(first["provider_response_bytes"]["data"]))
+        self.assertEqual(self.host.responses[suffix]["body_html"], provider["pr_body_html"])
+        self.assertEqual(first["body_bytes"], provider["pr_body"])
+        self.host.responses[suffix]["body_html"] += "\n<p>Rendered change.</p>"
+        second = self._collect_terminal()["observation"]
+        self.assertEqual(first["body_sha256"], second["body_sha256"])
+        self.assertNotEqual(first["provider_response_sha256"],
+                            second["provider_response_sha256"])
+        self.assertNotEqual(first["collector_receipt_sha256"],
+                            second["collector_receipt_sha256"])
+
+    def test_awf67_a24_a27_retained_tampering_and_raw_only_envelope_refused(self):
+        self._install_runtime_observations()
+        for omit in (False, True):
+            with self.subTest(raw_only=omit):
+                changed = copy.deepcopy(self.bundle)
+                observation = changed["review_verdicts"][-1]["posting_observation"]
+                provider = json.loads(base64.b64decode(
+                    observation["provider_response_bytes"]["data"]))
+                if omit:
+                    provider.pop("pr_body_html", None)
+                else:
+                    provider["pr_body_html"] = "<p>Retained tampering.</p>"
+                wire = canonical(provider)
+                observation["provider_response_bytes"]["data"] = base64.b64encode(wire).decode("ascii")
+                observation["provider_response_sha256"] = sha256(wire)
+                with self.assertRaisesRegex(PostingCollectorMismatch, "POSTING_PROVIDER_RESPONSE_MISMATCH"):
+                    registry_from_review_host(self.host, changed, release_sha256=RELEASE_SHA256)
+
+    def test_awf67_a25_live_rendered_target_disappears(self):
+        self._install_runtime_observations()
+        suffix, raw, _anchor, _fragment = self._terminal_fragment_fixture()
+        self.host.responses[suffix]["body_html"] = "<p>Target disappeared.</p>"
+        with self.assertRaisesRegex(PostingCollectorMismatch, "POSTING_RENDERED"):
+            registry_from_review_host(self.host, self.bundle, release_sha256=RELEASE_SHA256)
+        self.assertEqual(raw, self.host.responses[suffix]["body"])
+
+    def test_awf67_a26_every_retained_round_needs_its_rendered_target(self):
+        # A second complete collector claim, with its own record/run/receipt.
+        second = copy.deepcopy(self.bundle["review_verdicts"][0])
+        second.update(round=2, record_id=str(uuid.uuid4()))
+        second["critic_artifact_binding"]["round"] = 2
+        prefix = f'{self.bundle["candidate"]["host"]}/{self.bundle["candidate"]["repository"]}/pull/{self.bundle["candidate"]["pr_number"]}'
+        second["pr_comment_url"] = prefix + "#issuecomment-2"
+        second["pr_body_link"] = prefix + f'#review-verdict-2-{second["record_id"]}'
+        run = copy.deepcopy(next(r for r in self.bundle["runs"]
+                                 if r["run_id"] == second["posting_observation"]["run_id"]))
+        run.update(run_id=str(uuid.uuid4()), record_id=str(uuid.uuid4()), context_id=str(uuid.uuid4()))
+        second["posting_observation"].update(run_id=run["run_id"], comment_id=2,
+            comment_url=second["pr_comment_url"], comment_bytes=review_verdict_json(second))
+        receipt = copy.deepcopy(self.bundle["review_round_receipts"][0])
+        receipt.update(critic_artifact_binding=copy.deepcopy(second["critic_artifact_binding"]),
+            review_verdict_json=review_verdict_json(second))
+        receipt["review_verdict_sha256"] = sha256(receipt["review_verdict_json"].encode("utf-8"))
+        self.bundle["runs"].append(run)
+        self.bundle["review_verdicts"].append(second)
+        self.bundle["review_round_receipts"].append(receipt)
+        self.bundle["evidence_registry"].append({
+            "uri": "urn:awf:review-round-receipt:2", "sha256": "0" * 64})
+        self._rebuild_host()
+        suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
+        pull = self.host.responses[suffix]
+        # Independently assemble all raw round markers and literal source targets.
+        pull["body"] = "\n".join(
+            f'<a id="review-verdict-{v["round"]}-{v["record_id"]}"></a>\n'
+            f'review-verdict:{v["round"]}:{v["record_id"]}:{r["review_verdict_sha256"]}'
+            for v, r in zip(self.bundle["review_verdicts"], self.bundle["review_round_receipts"])
+        )
+        self._install_runtime_observations()
+        earlier, terminal = self.bundle["review_verdicts"]
+        earlier_target = f'<a id="review-verdict-{earlier["round"]}-{earlier["record_id"]}"></a>'
+        terminal_target = f'<a id="review-verdict-{terminal["round"]}-{terminal["record_id"]}"></a>'
+        pull["body_html"] = pull["body_html"].replace(earlier_target, "")
+        self.assertIn(terminal_target, pull["body_html"])
+        with self.assertRaisesRegex(PostingCollectorMismatch, "POSTING_RENDERED"):
+            registry_from_review_host(self.host, self.bundle, release_sha256=RELEASE_SHA256)
+
+    def _production_transport(self, directory):
+        candidate = self.bundle["candidate"]
+        config_path = Path(directory) / "host.json"
+        config_path.write_bytes(b"{}\n")
+        executable = Path(sys.executable).resolve()
+        driver = HostDriver.__new__(HostDriver)
+        driver.c = {
+            "repository": candidate["repository"], "repository_id": candidate["repository_id"],
+            "pr": candidate["pr_number"], "_config_path": str(config_path),
+            "config_hash": sha256(config_path.read_bytes()), "command_timeout_seconds": 120,
+            "executables": {"gh": {"path": str(executable), "sha256": sha256(executable.read_bytes())}},
+        }
+        return driver
+
+    def test_awf67_a16_to_a22_a29_fixed_production_read_and_failures(self):
+        suffix, _raw, _anchor, _fragment = self._terminal_fragment_fixture()
+        pull = copy.deepcopy(self.host.responses[suffix])
+        pull["html_url"] = f'https://github.com/{self.bundle["candidate"]["repository"]}/{suffix.replace("pulls/", "pull/")}'
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self._production_transport(directory)
+            wire = json.dumps(pull).encode("utf-8")
+            completed = subprocess.CompletedProcess([], 0, wire, b"")
+            budget = HOST_PROVIDER_RUNNER_POLICY.make_budget("posting-test")
+            with mock.patch.object(github_review_host, "run_bounded", return_value=completed) as runner:
+                self.assertEqual(pull, driver.posting_pull(driver.c["pr"], operation_budget=budget))
+            runner.assert_called_once()
+            self.assertEqual([
+                driver.c["executables"]["gh"]["path"], "api", "--hostname", "github.com",
+                "--method", "GET", f'repos/{driver.c["repository"]}/{suffix}',
+                "--header", "Accept: application/vnd.github.full+json",
+            ], runner.call_args.args[0])
+            self.assertIs(HOST_PROVIDER_RUNNER_POLICY, runner.call_args.kwargs["policy"])
+            self.assertIs(budget, runner.call_args.kwargs["operation_budget"])
+            self.assertIsNone(runner.call_args.kwargs["stdin"])
+            failures = (
+                OSError("provider unavailable"),
+                ValidationError("SUBPROCESS_TIMEOUT: child timed out"),
+                ValidationError("SUBPROCESS_STDOUT_LIMIT: output exceeded"),
+                subprocess.CompletedProcess([], 1, b"", b"access denied"),
+                subprocess.CompletedProcess([], 0, b"not JSON", b""),
+                subprocess.CompletedProcess([], 0, b"\xff", b""),
+            )
+            for result in failures:
+                with self.subTest(failure=repr(result)):
+                    options = ({"side_effect": result} if isinstance(result, Exception)
+                               else {"return_value": result})
+                    with mock.patch.object(github_review_host, "run_bounded", **options) as runner:
+                        with self.assertRaises((ValidationError, OSError)):
+                            driver.posting_pull(driver.c["pr"])
+                    runner.assert_called_once()
+
+    def test_awf67_a2_a3_a21_provider_rejects_shape_types_and_identity(self):
+        suffix, _raw, _anchor, _fragment = self._terminal_fragment_fixture()
+        valid = copy.deepcopy(self.host.responses[suffix])
+        valid["html_url"] = f'https://github.com/{self.bundle["candidate"]["repository"]}/pull/{valid["number"]}'
+        cases = [None, [], {}, dict(valid, number=valid["number"] + 1),
+                 dict(valid, number=True), dict(valid, html_url="https://github.com/other/project/pull/7"),
+                 dict(valid, base={"repo": {"id": valid["base"]["repo"]["id"] + 1}}),
+                 dict(valid, base=None), dict(valid, base={"repo": []})]
+        for field in ("body", "body_html"):
+            missing = copy.deepcopy(valid)
+            del missing[field]
+            cases.append(missing)
+            cases.extend(dict(valid, **{field: value}) for value in (None, [], {}, 3, True, "\ud800"))
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self._production_transport(directory)
+            for value in cases:
+                with self.subTest(value=repr(value)):
+                    driver.run = mock.Mock(return_value=json.dumps(value))
+                    with self.assertRaises(ValidationError):
+                        driver.posting_pull(driver.c["pr"])
+                    driver.run.assert_called_once()
+            driver.run = mock.Mock()
+            for number in (0, -1, True, "7", driver.c["pr"] + 1):
+                with self.subTest(requested_pr=number):
+                    with self.assertRaises(ValidationError):
+                        driver.posting_pull(number)
+            driver.run.assert_not_called()
+
+    def test_awf67_a20_a30_recorded_driver_caps_and_generic_api_unchanged(self):
+        suffix, _raw, _anchor, _fragment = self._terminal_fragment_fixture()
+        value = copy.deepcopy(self.host.responses[suffix])
+        value["html_url"] = f'https://github.com/{self.bundle["candidate"]["repository"]}/pull/{value["number"]}'
+        wire = json.dumps(value)
+        calls = []
+
+        def recorded_run(name, arguments):
+            calls.append((name, arguments))
+            return wire
+
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self._production_transport(directory)
+            driver.run = recorded_run
+            budget = HOST_PROVIDER_RUNNER_POLICY.make_budget("posting-replay")
+            self.assertEqual(value, driver.posting_pull(driver.c["pr"], operation_budget=budget))
+            self.assertEqual(1, budget.operations)
+            self.assertEqual(len(wire.encode("utf-8")), budget.consumed_bytes)
+            self.assertEqual(value, driver.api(suffix, operation_budget=budget))
+            self.assertEqual(2, budget.operations)
+            self.assertEqual(2 * len(wire.encode("utf-8")), budget.consumed_bytes)
+            self.assertEqual(["api", "--hostname", "github.com", "--method", "GET",
+                              f'repos/{driver.c["repository"]}/{suffix}'], calls[-1][1])
+            budget.consume(budget.remaining_bytes)
+            with self.assertRaisesRegex(ValidationError, "OPERATION_BUDGET"):
+                driver.posting_pull(driver.c["pr"], operation_budget=budget)
+            driver.run = lambda name, arguments: "x" * (HOST_PROVIDER_RUNNER_POLICY.stdout_limit + 1)
+            with self.assertRaisesRegex(ValidationError, "HOST_STDOUT_LIMIT"):
+                driver.posting_pull(driver.c["pr"])
+
+    def test_awf67_a31_actual_provider_collector_cli_and_gate(self):
+        self.config["github"]["host"] = "https://github.com"
+        self.bundle["candidate"]["host"] = "https://github.com"
+        self.rebind()
+        bind_review_admission(self.bundle)
+        bind_production_posting_fixture(self.config, self.bundle)
+        self._rebuild_host()
+        self._install_runtime_observations()
+        suffix, _raw, _anchor, _fragment = self._terminal_fragment_fixture()
+        provenance_runtime = self.config.get("_awf_runtime")
+
+        def evaluate_with_provenance(config, *args, **kwargs):
+            config.get("_awf_runtime").update(commit_provenance=provenance_runtime["commit_provenance"])
+            kwargs["repository"] = provenance_runtime["repository"]
+            return evaluate(config, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = ROOT
+            driver = self._production_transport(directory)
+            bundle_path = Path(directory) / "bundle.json"
+            config_path = Path(directory) / "project.json"
+            state_path = Path(directory) / "assignment.json"
+            config_path.write_text(json.dumps(self.config), encoding="utf-8")
+            assignment_config = copy.deepcopy(self.config)
+            assignment_config["jira"]["enabled"] = False
+            state = {}
+            assign_intake(assignment_config,
+                {"key": self.bundle["contract"]["ticket"], "summary": "Moderate source change",
+                 "description": "", "write_paths": ["src/example.py"], "risk_flags": []},
+                state, None, now=NOW, controller_actor_id=assignment_config["jira"]["controller_actor_id"])
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            for failure in (None, "target", "unavailable", "timeout", "denied", "json", "utf8", "limit"):
+                with self.subTest(failure=failure):
+                    bundle_path.write_text(json.dumps(self.bundle), encoding="utf-8")
+
+                    def transport(command, **kwargs):
+                        endpoint = command[command.index("--method") + 2]
+                        requested = endpoint.removeprefix(f'repos/{driver.c["repository"]}/')
+                        response = copy.deepcopy(self.host.responses[requested])
+                        if requested == suffix:
+                            if failure == "unavailable":
+                                raise OSError("offline provider")
+                            if failure == "timeout":
+                                raise ValidationError("SUBPROCESS_TIMEOUT: timed out")
+                            if failure == "limit":
+                                raise ValidationError("SUBPROCESS_STDOUT_LIMIT: cap")
+                            if failure == "denied":
+                                return subprocess.CompletedProcess(command, 1, b"", b"denied")
+                            if failure in {"json", "utf8"}:
+                                return subprocess.CompletedProcess(command, 0,
+                                    b"bad JSON" if failure == "json" else b"\xff", b"")
+                            if failure == "target":
+                                response["body_html"] = "<p>Missing rendered target.</p>"
+                        return subprocess.CompletedProcess(command, 0,
+                            json.dumps(response).encode("utf-8"), b"")
+
+                    stdout = io.StringIO()
+                    with mock.patch.object(posting_collector, "load_config", return_value=driver.c), \
+                            mock.patch.object(posting_collector, "HostDriver", return_value=driver), \
+                            mock.patch.object(github_review_host, "run_bounded", side_effect=transport), \
+                            mock.patch("agentic.cli.verify_installed", return_value=RELEASE_SHA256), \
+                            mock.patch("agentic.cli.evaluate", side_effect=evaluate_with_provenance), \
+                            redirect_stdout(stdout):
+                        exit_code = workflow_main([
+                            "--root", str(runtime), "evaluate", str(bundle_path),
+                            "--config", str(config_path), "--assignment-state", str(state_path),
+                            "--posting-collector-host-config", str(Path(directory) / "host.json"),
+                            "--now", NOW,
+                        ])
+                    self.assertEqual(0, exit_code)
+                    gate = json.loads(stdout.getvalue())
+                    self.assertEqual("READY_FOR_OWNER_AUTHORIZATION" if failure is None else "NOT_READY",
+                                     gate["conclusion"])
+                    self.assertEqual("PASS" if failure is None else "FAIL", gate["gates"]["verdict_posting"]["result"])
 
     def test_ac1_live_observation_and_runtime_registry_reach_owner_authorization(self):
         registrations, registry = self._install_runtime_observations()
