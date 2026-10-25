@@ -128,7 +128,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/provider_identity.py` | `5a9e3e4b9a525edfcca125fcd902152d22639e4e43e39ac51943a772a4ca1271` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
-| `.agentic/lib/agentic/providers/github_review_host.py` | `cda4f1c6ff43dc0cb340ade24e6cade2510e2b0860ed1f4966c814dca7316f42` |
+| `.agentic/lib/agentic/providers/github_review_host.py` | `65430203f98665b3bf2cc5c6994acd63a13c95cb3d4022b471c440ccf16af1f7` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
 | `.agentic/lib/agentic/publication.py` | `36ad638866d76ff5ec5cea364ae7ab5a4fdcb006b20c8dd0942254820a51f2b3` |
@@ -364,7 +364,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_gates_workflow_sha.py` | `1d82cfe03fec326046d4992168ce3c30cc4ad0e72bc491efcf5ea4dd949ce363` |
 | `.agentic/tests/test_git_isolation_safe_directory.py` | `0525174fa096b799130b43a147e01e6d1d7fab1a687a610144bc25cef93b1243` |
 | `.agentic/tests/test_github_review_host_observed_inputs.py` | `47b95a628b5de1d0ca02fcb26acf9d1169d4ee72bf0c89c6b3e1e59d5c8520be` |
-| `.agentic/tests/test_github_review_host_provenance.py` | `0b2a3c8fbbeb40abd19c1a9065cf7b7e8fb49f4a16942735dc8e2c093d5764eb` |
+| `.agentic/tests/test_github_review_host_provenance.py` | `3030ee0d6a06fde30b65d1d73f1ba3e9f31348d41e3583f4930ff6824aade128` |
 | `.agentic/tests/test_gittree.py` | `0e0ad6e18da3cc1638f66df688c87f8be729f041ad51d6f59824be1990e3da95` |
 | `.agentic/tests/test_handoff.py` | `c76eb1c485e516ab771764cff82ffddeac13e1342752442f5dcbad2932fea157` |
 | `.agentic/tests/test_heavy_validation.py` | `fb89a68095c82f96c2f31f38fd4322426193fd094599ef6429944342d3d165bb` |
