@@ -1,6 +1,6 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.4; AWF-16 ships in 1.9.5. Code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative.
+Version 1.9.5; AWF-16 ships in 1.9.5. Code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative.
 
 ## Risk tiers
 

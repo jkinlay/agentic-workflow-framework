@@ -32,7 +32,7 @@ after that schema update. Schema acceptance grants no dispatch authority.
 | `host-lease` | `heavy_slots`, `gpu_slots` | 0–1000 |
 | `host-lease`, `run-attestation` | `resources_held[].slots` | 1–1000 |
 
-`OPERATING_CONFIG.yaml` holds unprotected project choices. AWF 1.9.4 defaults to three `gpt-5.6-luna` / medium workers, one shared `gpt-5.6-sol` / high critic/adversarial handler, `gpt-5.6-sol` / high controller and specialist routes, and `gpt-5.6-luna` / low simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
+`OPERATING_CONFIG.yaml` holds unprotected project choices. AWF 1.9.5 defaults to three `gpt-5.6-luna` / medium workers, one shared `gpt-5.6-sol` / high critic/adversarial handler, `gpt-5.6-sol` / high controller and specialist routes, and `gpt-5.6-luna` / low simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
 
 `independent_reviewers.allocation: shared_critic` uses one reviewer slot. Legacy `one_per_stream` and fixed counts remain binding. `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
 
