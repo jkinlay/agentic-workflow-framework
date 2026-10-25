@@ -228,3 +228,54 @@ jobs:
             ${{ runner.temp }}\awf-installed-self-test-artifacts\self-test.json
             ${{ runner.temp }}\awf-installed-self-test-artifacts\installer.log
           if-no-files-found: warn
+
+  windows_unittests:
+    name: Windows unit tests (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+        shard: [0, 1, 2]
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/awf windows
+    steps:
+      - name: Configure production-like Windows Git before checkout
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config --global core.autocrlf true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git config --global core.longpaths true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git config --global user.name "awf-ci"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git config --global user.email "awf-ci@users.noreply.github.com"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: awf windows
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Resolve non-alias interpreter (framework refuses symlinked Python)
+        run: |
+          $python = & "${{ steps.python.outputs.python-path }}" -B -c "import os,sys; print(os.path.realpath(sys.executable))"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PY=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install hash-locked dependencies
+        run: |
+          & $env:PY -B -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Guard complete module allocation and list this shard
+        run: |
+          & $env:PY -B scripts/run_windows_unittests.py --shard ${{ matrix.shard }} --list
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run all four suites for this shard
+        run: |
+          & $env:PY -B scripts/run_windows_unittests.py --shard ${{ matrix.shard }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
