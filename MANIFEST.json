@@ -71,7 +71,7 @@
     ".agentic/examples/status-report.json": "f29307d27985e040a9d4dc017cba0789a35199d4dfcf424844c9e78c83149b8c",
     ".agentic/examples/stream-input.json": "37097f3c73d5de9941dbd049fa29c7e9f659b7fb02b882b2978916f7d3c9cc33",
     ".agentic/examples/unconfigured-project.yaml": "60a4ff371642dbe19eec6210c7b468c4d4fafe8c3d64cdf76795fdab60fad081",
-    ".agentic/examples/workflow-content-binding-project.yaml": "b4ebfb8172df63b44e530cc0e37328200662edf7d83371ea1d5c53ca0cc85e76",
+    ".agentic/examples/workflow-content-binding-project.yaml": "518caef2bed36a4c1e9257dcf33121455bd77a22c9f6d260cf3d48958741a8a6",
     ".agentic/launch-surfaces.json": "10a85af93c9b5e224b30e37232cc6e30e265e10e54dd46f74db739293ce86e8b",
     ".agentic/lib/agentic/__init__.py": "90d15a9106615d2ffcfca40655ebbe3e3dfe3d3f357652a5c20c935d51f8d7e8",
     ".agentic/lib/agentic/activation.py": "ebb73dee3a03be049b46cb11787c77ace16965e938bb2fc371e07851ad00deb7",
