@@ -620,7 +620,7 @@
     "scripts/tests/test_ac42_e2e.py": "ea8b2909cf3c928e8c21f49afcb85000bb7d9f78269069f877926965784e4548",
     "scripts/tests/test_adoptable_source.py": "4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745",
     "scripts/tests/test_autocrlf_scope.py": "d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3",
-    "scripts/tests/test_awf195_publication_docs.py": "a0c3821f12d06fd4e2c1c33b0213bf32d102f6b01ccc9a1d5842c753fda1bfec",
+    "scripts/tests/test_awf195_publication_docs.py": "29f7d9286cfc678ba6f21d7510a4ff7c73808656e1f0db0edcdef95d1c2a7c9f",
     "scripts/tests/test_awf36_controller_config_generation.py": "88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f",
     "scripts/tests/test_awf88_resource_ceilings.py": "593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7",
     "scripts/tests/test_build_release_adoptable_source.py": "8b37406758f5165c74b841f9e9b54c434fd6974aa13d288c799b31b47b6409ef",

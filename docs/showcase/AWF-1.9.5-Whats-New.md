@@ -156,9 +156,9 @@ These changes can reject inputs or workflows previously accepted:
 
 ## Upgrade notes
 
-Use the supplied [AWF 1.9.5 Install and Adoption Runbook draft](runbook-195-generic-ro__PLAN-runbook-195-generic-ro.md). Its final publication path remains **UNVERIFIED**.
+Use the supplied [AWF 1.9.5 Install and Adoption Runbook draft](../runbook/INDEX.md). Its final publication path remains **UNVERIFIED**.
 
-The companion runbook draft is supplied in this corrections package. It describes conditional interfaces and pending work; it does not certify an integrated, published 1.9.5 upgrade (`runbook-195-generic-ro__PLAN-runbook-195-generic-ro.md:3`). Historically, the runbook was not supplied to the cutoff review and was not found in its inspected `7fcaeec` tree; the pending d2-006d revision was unavailable in that review's permitted checkout. The companion's branch descriptions do not establish integration into the supplied snapshot. Complete 1.9.4-to-1.9.5 upgrade acceptance remains **UNVERIFIED**.
+The companion runbook is supplied as repository parts through the index above. It describes conditional interfaces and pending work; it does not certify an integrated, published 1.9.5 upgrade. Historically, the runbook was not supplied to the cutoff review and was not found in its inspected `7fcaeec` tree; the pending d2-006d revision was unavailable in that review's permitted checkout. The companion's branch descriptions do not establish integration into the supplied snapshot. Complete 1.9.4-to-1.9.5 upgrade acceptance remains **UNVERIFIED**.
 
 The available sources support these preparation steps:
 
@@ -292,6 +292,6 @@ Repository files are at `7fcaeec` unless otherwise noted. Line counts include bl
 
 The cutoff diff contains **330 changed files**, approximately **74,927 added lines** and **4,547 removed lines**. The remaining files were not fully read. Complete caller/callee traversal and the requested one-row-per-function, call-site, and hunk tables were **not completed — UNVERIFIED**.
 
-Second-source implementation verification is also incomplete for entries supported only by release metadata or PR descriptions. Historical test totals in PR bodies were not reproduced. The companion install/adoption runbook is supplied in this package (`runbook-195-generic-ro__PLAN-runbook-195-generic-ro.md:1`); its final publication path remains **UNVERIFIED**. This review does not independently establish the pending d2-006d implementation or a POSTSUITE-001 successor. The companion's branch descriptions do not establish integration into the supplied snapshot. Integrated upgrade acceptance and final 1.9.5 release artifacts remain **UNVERIFIED**.
+Second-source implementation verification is also incomplete for entries supported only by release metadata or PR descriptions. Historical test totals in PR bodies were not reproduced. The companion install/adoption runbook is supplied as repository parts through [the runbook index](../runbook/INDEX.md); its final publication path remains **UNVERIFIED**. This review does not independently establish the pending d2-006d implementation or a POSTSUITE-001 successor. The companion's branch descriptions do not establish integration into the supplied snapshot. Integrated upgrade acceptance and final 1.9.5 release artifacts remain **UNVERIFIED**.
 
 **STATUS: GAPS**
