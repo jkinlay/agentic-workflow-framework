@@ -300,4 +300,236 @@ class ProjectionTests(unittest.TestCase):
         self.assertTrue(all(not x.startswith('/') and '\\' not in x for x in [data['inventory']['source'],data['eta_inputs']['scenarios']['p50']['source']]))
 
 
+def admitted_fixture():
+    from agentic.canonical import load
+    config = load(ROOT / '.agentic/examples/PROJECT_CONFIG.yaml')
+    release = dict(project_id=config['project']['id'],
+        workflow_version=config['template']['expected_workflow_version'],
+        jira_enabled=True, scope_selector=config['jira']['scope'])
+    request = dict(record_id='ec4d418f-fbec-4fd2-bb89-e84fba56a19c',
+        created_at='2026-10-25T09:00:00Z',
+        binding=dict(project_id=config['project']['id'],
+            repository_id=config['github']['repository_id'],
+            repository=config['github']['repository'], cloud_id=config['jira']['cloud_id'],
+            provider_project_id=config['jira']['provider_project_id'],
+            project_key=config['jira']['project_key'], release_sha256=api().inputs_sha256(release)),
+        github_identity=dict(actor_id=config['github']['expected_actor_id'],
+            actor_login=config['github']['expected_actor_login'],
+            auth_profile=config['github']['auth_profile'],
+            repository_id=config['github']['repository_id'], repository=config['github']['repository'],
+            readable=True, protocol='https', observed_at='2026-10-25T09:00:00Z'),
+        jira_connections=[dict(connection_id='fixture-connection', cloud_id=config['jira']['cloud_id'],
+            site=config['jira']['site'], account_id=config['jira']['controller_actor_id'],
+            account_login='fixture-controller', observed_at='2026-10-25T09:00:00Z',
+            projects=[dict(project_id=config['jira']['provider_project_id'],
+                project_key=config['jira']['project_key'], browse=True)])])
+    return config, request
+
+
+class OptInReportTests(unittest.TestCase):
+    def module(self):
+        return importlib.import_module('agentic.status_report_store')
+
+    def test_identity_binding_preflights_reject_unobserved_mismatch_and_disabled_jira(self):
+        config, request = admitted_fixture()
+        for change, reason in [('github', 'IDENTITY_UNOBSERVED'), ('jira', 'IDENTITY_UNOBSERVED'),
+                               ('binding', 'REPORT_BINDING_MISMATCH'), ('actor', 'IDENTITY_MISMATCH'),
+                               ('disabled', 'JIRA_DISABLED')]:
+            cfg, data = copy.deepcopy(config), copy.deepcopy(request)
+            if change == 'github': data['github_identity'] = None
+            if change == 'jira': data['jira_connections'] = None
+            if change == 'binding': data['binding']['release_sha256'] = 'f' * 64
+            if change == 'actor': data['github_identity']['actor_id'] += 1
+            if change == 'disabled': cfg['jira']['enabled'] = False
+            with self.subTest(change=change):
+                result = self.module().prepare_report(cfg, data)
+                self.assertEqual(result['status'], 'NOT_RUN')
+                self.assertIn(reason, result['reason'])
+                self.assertNotIn('record', result)
+
+    def test_admitted_unknowns_preserve_original_snapshot_and_replay(self):
+        config, request = admitted_fixture()
+        original = copy.deepcopy(request)
+        result = self.module().prepare_report(config, request)
+        self.assertEqual(result['status'], 'PREPARED')
+        record = result['record']
+        self.assertEqual(record['inputs']['request'], original)
+        self.assertEqual(record['inputs']['configuration'], config)
+        self.assertEqual(record['inputs_sha256'], api().inputs_sha256(record['inputs']))
+        self.assertEqual(self.module().replay_report(record), result['report'])
+        self.assertEqual(result['report']['outstanding']['status'], 'UNKNOWN')
+        self.assertEqual(result['report']['eta']['status'], 'UNKNOWN')
+        self.assertEqual(record['source_mode'], 'SUPPLIED_RECORDS_ONLY')
+        self.assertEqual(request, original)
+        record['inputs']['request']['binding']['project_id'] = 'changed'
+        with self.assertRaises(ValidationError): self.module().replay_report(record)
+
+    def test_replay_rechecks_identity_even_if_caller_rehashes_modified_inputs(self):
+        config, request = admitted_fixture()
+        record = self.module().prepare_report(config, request)['record']
+        record['inputs']['request']['github_identity']['actor_id'] += 1
+        record['inputs_sha256'] = api().inputs_sha256(record['inputs'])
+        values = json.loads(record['values_json']); values['inputs_sha256'] = record['inputs_sha256']
+        record['values_json'] = api().render_json(values)
+        with self.assertRaisesRegex(ValidationError, 'IDENTITY_MISMATCH'):
+            self.module().replay_report(record)
+
+    def test_caller_inventory_and_train_assertions_need_independent_verifiers(self):
+        config, request = admitted_fixture()
+        request['inventory'] = snapshot()['inventory']
+        request['merge_train'] = snapshot()['merge_train']
+        result = self.module().prepare_report(config, request)
+        self.assertEqual(result['report']['outstanding']['reason'], 'UNVERIFIED_INVENTORY')
+        self.assertEqual(result['report']['merge_train']['reason'], 'UNVERIFIED_MERGE_TRAIN')
+        accepted = self.module().prepare_report(config, request,
+            verify_inventory=lambda value, binding: copy.deepcopy(value),
+            verify_merge_train=lambda value, binding: copy.deepcopy(value))
+        self.assertEqual(accepted['report']['outstanding']['count'], 3)
+        self.assertEqual(accepted['report']['merge_train']['cadence_minutes'], 15)
+        for verifier in [lambda *args: True, lambda value, binding: {**value, 'source':'foreign'}]:
+            refused = self.module().prepare_report(config, request, verify_inventory=verifier)
+            self.assertEqual(refused['report']['outstanding']['status'], 'UNKNOWN')
+
+    def test_inventory_normalizes_only_exact_terminal_labels_and_verifier_failures_are_unknown(self):
+        config, request = admitted_fixture()
+        request['inventory'] = dict(status='KNOWN', source='fixture/provider', tickets=[
+            dict(key='AWF-1', status=config['jira']['status_map']['done']),
+            dict(key='AWF-2', status='Cancelled'), dict(key='AWF-3', status='done'),
+            dict(key='AWF-4', status='READY')])
+        result = self.module().prepare_report(config, request,
+            verify_inventory=lambda value, binding: copy.deepcopy(value))
+        self.assertEqual(result['report']['outstanding']['tickets'], ['AWF-3','AWF-4'])
+        def unavailable(*args):
+            raise RuntimeError('synthetic source unavailable')
+        result = self.module().prepare_report(config, request, verify_inventory=unavailable)
+        self.assertEqual(result['report']['outstanding']['status'], 'UNKNOWN')
+        self.assertIn('VERIFIER_FAILED', result['report']['outstanding']['reason'])
+
+    def test_models_per_agent_type_from_defaults_and_overrides_with_source(self):
+        from agentic.operating import default_operating, validate_operating
+        config, request = admitted_fixture()
+        operating = default_operating()
+        operating['streams']['A']['worker'] = dict(model='gpt-5.6-sol', reasoning_effort='high')
+        checked = validate_operating(operating, config)
+        result = self.module().prepare_report(config, request, operating=checked)
+        routing = result['report']['routing']
+        self.assertEqual({row['role'] for row in routing['declarations']},
+                         {'controller','worker','critic','specialist','simple_worker'})
+        stream = next(row for row in routing['declarations'] if row['scope']['stream'] == 'A'
+                      and row['role'] == 'worker')
+        self.assertEqual((stream['model'], stream['reasoning_effort']), ('gpt-5.6-sol','high'))
+        self.assertIn('OPERATING_CONFIG.yaml', stream['source'])
+        self.assertTrue(all(row['value']['status'] == 'UNKNOWN' for row in routing['proposals']))
+        self.assertEqual(result['record']['inputs']['operating'], operating)
+
+    def test_bad_assignment_plan_graph_records_are_unknown_without_recompute(self):
+        config, request = admitted_fixture()
+        request.update(assignments=[{'tier':1,'round_cap':1}], plan={'lane_count':99},
+                       planning_graph={'p50':{},'p80':{}})
+        with patch('agentic.planning.recompute_plan', side_effect=AssertionError('no replan')):
+            result = self.module().prepare_report(config, request)
+        for metric in ['priority', 'lanes', 'eta']:
+            self.assertEqual(result['report'][metric]['status'], 'UNKNOWN')
+            self.assertIn('INVALID_', result['report'][metric]['reason'])
+
+    def test_state_record_immutable_retry_collision_delete_and_no_implicit_creation(self):
+        import sqlite3
+        import tempfile
+        from agentic.store import Store
+        config, request = admitted_fixture()
+        prepared = self.module().prepare_report(config, request)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'state.db'
+            with self.assertRaises(ValidationError): self.module().ReportStore(path, config['project']['id'])
+            self.assertFalse(path.exists())
+            state = Store(path, config['project']['id'])
+            before = state.verify_chain()['sequence']
+            reports = self.module().ReportStore(path, config['project']['id'])
+            self.assertEqual(reports.append(prepared['record']), reports.append(prepared['record']))
+            self.assertEqual(state.verify_chain()['sequence'], before + 1)
+            from contextlib import closing
+            with closing(sqlite3.connect(path)) as db:
+                for sql in ['UPDATE events SET payload=payload', 'DELETE FROM events']:
+                    with self.assertRaises(sqlite3.IntegrityError): db.execute(sql)
+                for table in ['tickets','operations','reservations']:
+                    self.assertEqual(db.execute('SELECT count(*) FROM '+table).fetchone()[0], 0)
+            changed = copy.deepcopy(prepared['record']); changed['trigger'] = 'activation'
+            with self.assertRaises(ValidationError): reports.append(changed)
+            next_request = copy.deepcopy(request)
+            next_request['record_id'] = '3061ccda-dafd-4fab-ab01-fbfcfb2688d4'
+            next_record = self.module().prepare_report(config, next_request)['record']
+            self.assertEqual(reports.append(next_record), before + 2)
+            self.assertEqual(state.verify_chain()['sequence'], before + 2)
+            with self.assertRaises(ValidationError): self.module().ReportStore(path, 'other-project')
+            with self.assertRaises(ValidationError): self.module().ReportStore(path, config['project']['id'], worktree_roots=[Path(directory)])
+
+    def test_verified_assignment_plan_and_graph_project_without_replanning(self):
+        from agentic.canonical import fingerprint
+        from agentic.intake_assignment import classify_ticket, _record, _seal
+        from agentic.operating import default_operating, validate_operating
+        from agentic.planning_graph import build_ticket_plan
+        config, request = admitted_fixture()
+        operating = validate_operating(default_operating(), config)
+        ticket = dict(key='AWF-1', dependencies=[], write_paths=['docs/example.md'],
+            duration_minutes=20, risk_tier=1, round_cap=1, owner_review_window=None,
+            lane_class='feeder', owner_lane='A', blockers=[], idle_lane_reason=None,
+            phase='work', status='ready', in_lane=False)
+        graph = build_ticket_plan([ticket], lane_cap=1, start_gap_minutes=0,
+                                  tier3_round_cap=3, generator_order=[])
+        request['inventory'] = dict(status='KNOWN', source='fixture/inventory',
+                                   tickets=[dict(key='AWF-1',status='READY')])
+        classification = classify_ticket(config, dict(key='AWF-1', write_paths=['docs/example.md']))
+        request['assignments'] = [_seal(_record('AWF-1', classification, source='fixture/intake',
+            assigned_by='controller', now=request['created_at']))]
+        capacity = dict(safe_lane_count=1, project_config_sha256=fingerprint('accepted-project-config', config),
+                        operating_hash=operating.operating_hash)
+        capacity['capacity_binding_sha256'] = fingerprint('planning_capacity_binding', capacity)
+        plan = dict(schema_version=2, created_at=request['created_at'], lane_count=1,
+            inputs=dict(capacity=capacity, jira_snapshot_sha256=fingerprint('planning_ticket_snapshot',
+                request['inventory']['tickets'])),
+            estimate=dict(capacity=copy.deepcopy(capacity), safe_lane_count=1, constraints={'observed_host_capacity':1}),
+            owner_decision=dict(kind='accepted_default',value=1))
+        plan['plan_sha256'] = fingerprint('planning_audit_record', plan)
+        request['plan'] = plan
+        request['planning_graph'] = dict(p50=graph, p80=copy.deepcopy(graph),
+            rounds=[dict(key='AWF-1', rounds=1, round_minutes=15, owner_touchpoint_minutes=5)],
+            forecast_anchor_at=request['created_at'])
+        with patch('agentic.planning.recompute_plan', side_effect=AssertionError('no replan')):
+            result = self.module().prepare_report(config, request, operating=operating,
+                verify_inventory=lambda value, binding: copy.deepcopy(value))
+        self.assertEqual(result['report']['priority']['groups'][0]['cap'], 1)
+        self.assertEqual(result['report']['lanes']['effective'], 1)
+        self.assertEqual(result['report']['eta']['p50_minutes'], 20)
+        self.assertEqual(self.module().replay_report(result['record']), result['report'])
+        graph80 = build_ticket_plan([{**ticket, 'duration_minutes':30}], lane_cap=1,
+                                   start_gap_minutes=0, tier3_round_cap=3, generator_order=[])
+        request['planning_graph'].update(p80=graph80, rounds={
+            'p50':request['planning_graph']['rounds'],
+            'p80':[dict(key='AWF-1', rounds=1, round_minutes=25, owner_touchpoint_minutes=5)]})
+        quantiles = self.module().prepare_report(config, request, operating=operating,
+            verify_inventory=lambda value, binding: copy.deepcopy(value))['report']['eta']
+        self.assertEqual((quantiles['p50_minutes'], quantiles['p80_minutes']), (20,30))
+        request['plan']['inputs']['capacity']['safe_lane_count'] = 999
+        self.assertEqual(self.module().prepare_report(config, request, operating=operating)['report']['lanes']['status'], 'UNKNOWN')
+
+    def test_run_report_validates_and_appends_only_after_identity_admission(self):
+        import tempfile
+        from agentic.store import Store
+        from agentic.canonical import canonical
+        config, request = admitted_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory); project = folder / 'project'
+            (project / '.agentic').mkdir(parents=True)
+            (project / '.agentic/PROJECT_CONFIG.yaml').write_bytes(canonical(config))
+            source = folder / 'input.json'; source.write_bytes(canonical(request))
+            state_path = folder / 'state.db'; state = Store(state_path, config['project']['id'])
+            result = self.module().run_report(project, source, state_path)
+            self.assertEqual(result['status'], 'RECORDED')
+            self.assertEqual(state.verify_chain()['sequence'], 1)
+            request['github_identity']['repository_id'] += 1
+            source.write_bytes(canonical(request))
+            self.assertEqual(self.module().run_report(project, source, state_path)['status'], 'NOT_RUN')
+            self.assertEqual(state.verify_chain()['sequence'], 1)
+
+
 if __name__=='__main__': unittest.main()

@@ -154,6 +154,12 @@ class BoundaryTests(unittest.TestCase):
             with self.assertRaises(ValidationError): module.build_report(data)
 
 
+class OptInUnknownRoutingTests(unittest.TestCase):
+    def test_coded_unknown_routing_remains_unknown_in_projection(self):
+        unknown = dict(status='UNKNOWN', reason='INVALID_ROUTING: incomplete configuration')
+        self.assertEqual(api().build_report({'routing':unknown})['routing'], unknown)
+
+
 class RevisionBoundaryTests(unittest.TestCase):
     def test_forecast_utc_unrepresentable_anchors_raise_validation_error(self):
         from test_status_report import snapshot
