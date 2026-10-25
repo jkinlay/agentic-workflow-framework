@@ -244,6 +244,114 @@ class ValidationTests(unittest.TestCase):
             contracts.validate("operating-config", value)
 
 
+class LaneCeilingRegressionTests(unittest.TestCase):
+    invalid_ceilings = (13, 20, 2**53 - 1, 10**100, None, 0, -1, 1.5,
+                        6.0, "6", "invalid", True, False, [], {})
+
+    def lane_governance(self, ceiling):
+        gov = governance()
+        gov["execution"].update(max_parallel_tickets=20, max_lanes=ceiling)
+        gov["execution"]["host_broker"]["enabled"] = False
+        return gov
+
+    def assert_lane_refusal(self, error, configured):
+        self.assertTrue(any(item["path"] == "$.streams.count"
+                            and item["governance_path"] == "$.execution.max_lanes"
+                            and item["governance_value"] == configured
+                            and "1..12" in item["reason"]
+                            for item in error.refusals), error.refusals)
+
+    def test_runtime_hard_maximum_and_exact_integer_input(self):
+        for configured in self.invalid_ceilings:
+            with self.subTest(configured=configured):
+                gov = self.lane_governance(configured)
+                with self.assertRaises(op.OperatingError) as caught:
+                    op.operating_ceiling(gov)
+                self.assert_lane_refusal(caught.exception, configured)
+
+    def test_dynamic_schema_rejects_invalid_ceiling_before_label_generation(self):
+        value = op.default_operating()
+        for configured in self.invalid_ceilings:
+            with self.subTest(configured=configured), patch.object(
+                    op, "stream_labels", side_effect=AssertionError("Invalid ceiling reached label generation")) as labels:
+                with self.assertRaises(op.OperatingError) as caught:
+                    op._schema("operating-config", value, stream_ceiling=configured)
+                self.assert_lane_refusal(caught.exception, configured)
+                labels.assert_not_called()
+
+    def test_dynamic_schema_preserves_valid_route_closure_and_reviewers(self):
+        for ceiling in (1, 6, 12):
+            gov = self.lane_governance(ceiling)
+            value = op.default_operating()
+            value["streams"] = {"count": ceiling, **{
+                label: op._stream() for label in op.stream_labels(ceiling)}}
+            value["epic_overrides"] = {"FIX-1": {"streams": {
+                op.stream_labels(ceiling)[-1]: op._stream()}}}
+            with self.subTest(ceiling=ceiling):
+                self.assertEqual([], op._schema("operating-config", value, stream_ceiling=ceiling))
+                self.assertEqual(ceiling, op.validate_operating(value, gov).count)
+                for scope in ("global", "epic"):
+                    changed = deepcopy(value)
+                    streams = (changed["streams"] if scope == "global" else
+                               changed["epic_overrides"]["FIX-1"]["streams"])
+                    streams[op.stream_labels(ceiling + 1)[-1]] = op._stream()
+                    with self.subTest(scope=scope):
+                        self.assertTrue(op._schema("operating-config", changed, stream_ceiling=ceiling))
+                legacy = deepcopy(value)
+                del legacy["critic"]
+                for label in op.stream_labels(ceiling):
+                    legacy["streams"][label]["reviewer"] = deepcopy(value["critic"])
+                self.assertEqual([], op._schema("operating-config", legacy, stream_ceiling=ceiling))
+                del legacy["streams"][op.stream_labels(ceiling)[-1]]["reviewer"]
+                self.assertTrue(op._schema("operating-config", legacy, stream_ceiling=ceiling))
+
+    def test_invalid_governance_rejected_by_direct_load_read_and_inspect_without_mutation(self):
+        for configured in self.invalid_ceilings:
+            with self.subTest(configured=configured), tempfile.TemporaryDirectory(prefix="awf-lanes-") as directory:
+                root = Path(directory)
+                gov = self.lane_governance(12)
+                (root / ".agentic").mkdir()
+                (root / op.GOVERNANCE).write_bytes(op._json(gov))
+                op.initialize_operating(root, gov)
+                gov["execution"]["max_lanes"] = configured
+                (root / op.GOVERNANCE).write_bytes(op._json(gov))
+                value = op.default_operating()
+                if configured in (13, 20):
+                    value["streams"] = {"count": configured, **{
+                        label: op._stream() for label in op.stream_labels(configured)}}
+                    (root / op.CONFIG).write_bytes(op._json(value))
+                before = {p.relative_to(root).as_posix(): p.read_bytes()
+                          for p in root.rglob("*") if p.is_file()}
+                canonical_reason = ("Only JSON values with integer numbers are supported"
+                                    if type(configured) is float else
+                                    "Integer exceeds interoperable JSON range"
+                                    if type(configured) is int and configured > 2**53 - 1 else None)
+                # Never let the defective baseline allocate enormous label sets.
+                with patch.object(op, "stream_labels", side_effect=AssertionError("Invalid ceiling reached label generation")):
+                    for loader in (op.validate_operating, op.load_operating, op.read_operating):
+                        with self.subTest(loader=loader.__name__):
+                            if canonical_reason and loader is not op.validate_operating:
+                                # On-disk parsing rejects noncanonical numbers before governance binding.
+                                with self.assertRaises(ValidationError) as caught:
+                                    loader(root, gov)
+                                self.assertEqual(canonical_reason, str(caught.exception))
+                            else:
+                                with self.assertRaises(op.OperatingError) as caught:
+                                    loader(value if loader is op.validate_operating else root, gov)
+                                self.assert_lane_refusal(caught.exception, configured)
+                    result = op.inspect_operating(root, gov)
+                self.assertEqual("REJECTED", result["status"])
+                self.assertIsNone(result["hash"])
+                self.assertIsNone(result["streams"])
+                if canonical_reason:
+                    self.assertEqual([op.refusal("$", canonical_reason)], result["refusals"])
+                else:
+                    self.assert_lane_refusal(op.OperatingError(result["refusals"]), configured)
+                self.assertEqual(before, {p.relative_to(root).as_posix(): p.read_bytes()
+                                         for p in root.rglob("*") if p.is_file()})
+                self.assertFalse((root / op.JOURNAL).exists())
+
+
 class RecommendationTests(unittest.TestCase):
     def setUp(self):
         self.gov = governance()
@@ -525,6 +633,46 @@ class OperatingFileTests(unittest.TestCase):
 
     def events(self):
         return [json.loads(p.read_text()) for p in sorted((self.root / op.STATE / "changes").glob("*.json"))]
+
+    def test_cli_validates_complete_project_config_before_every_subcommand(self):
+        self.gov["execution"]["max_parallel_tickets_per_stream"] = 0
+        (self.root / op.GOVERNANCE).write_bytes(op._json(self.gov))
+        before = {p.relative_to(self.root).as_posix(): p.read_bytes()
+                  for p in self.root.rglob("*") if p.is_file()}
+        commands = ((["show"], "read_operating"),
+                    (["set", "--instruction", "keep", "--set", "streams.count=3"], "set_operating"),
+                    (["recommend", "--epics", str(self.root / "absent.json")], "save_recommendation"),
+                    (["recover", "--expected-journal-sha256", "0" * 64], "recover_operating"))
+        for arguments, function in commands:
+            output = io.StringIO()
+            with self.subTest(command=arguments[0]), patch("sys.stdout", output), patch.object(
+                    op, function, side_effect=AssertionError("Subcommand ran before project validation")) as invoked:
+                self.assertEqual(2, op.main(["--root", str(self.root), *arguments, "--json"]))
+                invoked.assert_not_called()
+                result = json.loads(output.getvalue())
+                self.assertEqual("REJECTED", result["status"])
+                self.assertIn("max_parallel_tickets_per_stream", str(result["refusals"]))
+            self.assertEqual(before, {p.relative_to(self.root).as_posix(): p.read_bytes()
+                                     for p in self.root.rglob("*") if p.is_file()})
+
+    def test_cli_rejects_invalid_lane_governance_without_mutation(self):
+        for configured in (13, 20, None, True, False, 6.0, "6", [], {}):
+            self.gov["execution"]["max_lanes"] = configured
+            (self.root / op.GOVERNANCE).write_bytes(op._json(self.gov))
+            before = {p.relative_to(self.root).as_posix(): p.read_bytes()
+                      for p in self.root.rglob("*") if p.is_file()}
+            output = io.StringIO()
+            with self.subTest(configured=configured), patch("sys.stdout", output):
+                self.assertEqual(2, op.main(["--root", str(self.root), "show", "--json"]))
+                result = json.loads(output.getvalue())
+                self.assertEqual("REJECTED", result["status"])
+                if type(configured) is float:
+                    self.assertEqual([op.refusal("$", "Only JSON values with integer numbers are supported")],
+                                     result["refusals"])
+                else:
+                    self.assertIn("max_lanes", str(result["refusals"]))
+            self.assertEqual(before, {p.relative_to(self.root).as_posix(): p.read_bytes()
+                                     for p in self.root.rglob("*") if p.is_file()})
 
     def test_show_and_status_report_shared_ceiling_and_enabled_broker_repair(self):
         current = op.set_operating(self.root, self.gov, "Use four streams", ["streams.count=4"])

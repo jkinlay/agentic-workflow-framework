@@ -1,5 +1,7 @@
 # Change history
 
+1.9.5: AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
+
 ## 1.9.4 — 8 October 2026
 
 AWF-15 (#56) binds closeout records to the merge SHA. AWF-29 fixes protected-path refusal, critic-schema compatibility, and sandbox/effort pass-through. AWF-40 (#68) fixes doc 22 guidance. AWF-16 and AWF-30 are deferred to 1.9.5; AWF-41 remains an owner-review check. The 1.9.3 → 1.9.4 fallback is version-only and ships no tier-3 review configuration.

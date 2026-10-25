@@ -8,7 +8,7 @@ Contracts declare justified `risk_tier` 1-3; uncertain is Tier 2. Tier 1 require
 
 Tier 1 uses one critic; findings advise. Tier 2 has three rounds, then tickets P2s and routes P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI, is capped at three, and requires candidate-bound owner review. Boundaries always block.
 
-Each `critic_artifact_binding` identifies run, canonical `result.json`, head and round; its receipt retains those bytes and frozen completion identities. Gates reparse artifacts. Unchanged diffs retain history; changed diffs require a current round. Tier 2 over-cap needs authenticated owner disposition. Tier 3 round N needs this preceding PR comment from the posting actor's trusted owner:
+Each `critic_artifact_binding` binds run/head/round and recomputed `result.json` digest; receipts retain artifact/completion bytes. Provider comments end with one canonical `Critic run: <UUID>` matching that round, including history. Missing/invalid carriers refuse. Changed diffs require re-review. Tier 2 over-cap needs authenticated owner disposition. Tier 3 round N needs this preceding PR comment from the posting actor's trusted owner:
 
 `AWF-OVERCAP-APPROVAL: round N of cap M, approver <owner>, ruling <time>`
 

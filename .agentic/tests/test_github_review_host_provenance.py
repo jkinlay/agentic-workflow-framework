@@ -394,6 +394,212 @@ class ProviderProvenanceTests(unittest.TestCase):
                 runner.call_args.kwargs.get('policy'))
 
 
+class OutboundCriticChannelTests(unittest.TestCase):
+    """AWF-97 IN-41 channel behavior, complementing the B26 contract metadata.
+
+    The ticket's IN-41 output-channel label differs from the metadata's IN-41
+    external-file-read label. Keep all five named contract tests unchanged;
+    these assertions exercise publication and its actual JSON wire boundary.
+    """
+
+    def publication(self):
+        driver = ProviderProvenanceTests.driver(self)
+        binding = {'head_sha': 'a' * 40, 'result_sha256': 'b' * 64,
+                   'critic_run_carrier': 'Critic run: ' + CODEX_THREAD_ID}
+        calls, reads = [], []
+
+        def run(name, args, **kwargs):
+            calls.append((name, args, kwargs))
+            body = json.loads(kwargs['stdin'])['body']
+            return json.dumps({'id': 91, 'body': body, 'user': {'id': 7001},
+                               'html_url': 'https://github.com/fixture/project/'
+                                           'issues/7#issuecomment-91'})
+
+        def observation():
+            reads.append(True)
+            body = json.loads(calls[-1][2]['stdin'])['body']
+            return {'head': binding['head_sha'], 'comments': [{
+                'kind': 'issue', 'id': 91, 'actor_id': 7001,
+                'url': 'https://github.com/fixture/project/issues/7#issuecomment-91',
+                'body': body,
+                'body_sha256': github_review_host.sha256(body.encode('utf-8')),
+            }]}
+
+        driver.run = run
+        driver.collect_provenance_observation = observation
+        return driver, binding, calls, reads
+
+    def test_publication_uses_real_serialization_and_exact_trusted_carrier(self):
+        driver, binding, calls, reads = self.publication()
+        observed = driver.publish_critic_evidence(binding)
+        body = ('AWF critic evidence v1\nHead: ' + binding['head_sha']
+                + '\nResult sha256: ' + binding['result_sha256'] + '\n\n'
+                + binding['critic_run_carrier'])
+        expected = (json.dumps({'body': body}, ensure_ascii=False,
+                               separators=(',', ':')) + '\n').encode('utf-8')
+        self.assertEqual(calls, [('gh', [
+            'api', '--hostname', 'github.com', '--method', 'POST',
+            'repos/fixture/project/issues/7/comments', '--input', '-'],
+            {'stdin': expected, 'binary': False})])
+        self.assertEqual(reads, [True])
+        self.assertEqual(github_review_host.parse_critic_run_carrier(body),
+                         {'run_id': CODEX_THREAD_ID,
+                          'line': binding['critic_run_carrier']})
+        self.assertEqual(observed, {
+            'provider_comment_id': 91, 'provider_actor_id': 7001,
+            'provider_comment_url': 'https://github.com/fixture/project/'
+                                    'issues/7#issuecomment-91',
+            'provider_body_sha256': github_review_host.sha256(body.encode('utf-8')),
+        })
+
+    def test_structured_fields_reject_markdown_html_and_controls_before_transport(self):
+        hostile = ('[click](https://example.invalid)', '<img src=x onerror=alert(1)>',
+                   '<!-- hidden -->', '*bold* `code`', '\nInjected: value',
+                   '\r\nInjected: value', '\x00', '\x1b[31m', '\u202e', '\u0085')
+        for field in ('head_sha', 'result_sha256', 'critic_run_carrier'):
+            for suffix in hostile:
+                with self.subTest(field=field, suffix=ascii(suffix)):
+                    driver, binding, calls, reads = self.publication()
+                    binding[field] += suffix
+                    with self.assertRaises(ValidationError):
+                        driver.publish_critic_evidence(binding)
+                    self.assertEqual(calls, [])
+                    self.assertEqual(reads, [])
+
+    def test_credentials_and_paths_cannot_escape_structured_fields(self):
+        slash, backslash = chr(47), chr(92)
+        sentinels = ('ghp_SYNTHETIC_OUTBOUND_SECRET',
+                     'Bearer SYNTHETIC_OUTBOUND_SECRET',
+                     'C' + chr(58) + backslash + backslash.join(
+                         ('Users', 'synthetic-private', 'secret.txt')),
+                     slash.join(('', 'home', 'synthetic-private', 'secret.txt')))
+        for field in ('head_sha', 'result_sha256', 'critic_run_carrier'):
+            for sentinel in sentinels:
+                with self.subTest(field=field, sentinel=sentinel):
+                    driver, binding, calls, reads = self.publication()
+                    binding[field] = sentinel + '\n' + binding[field]
+                    with self.assertRaises(ValidationError) as caught:
+                        driver.publish_critic_evidence(binding)
+                    self.assertNotIn(sentinel, str(caught.exception))
+                    self.assertEqual(calls, [])
+                    self.assertEqual(reads, [])
+
+    def test_invalid_identity_is_rejected_instead_of_sanitized(self):
+        cases = {
+            'head_sha': (None, 12, {}, 'a' * 39, 'a' * 41, 'A' * 40,
+                         ' ' + 'a' * 40, 'a' * 40 + '\n'),
+            'result_sha256': (None, 12, {}, 'b' * 63, 'b' * 65, 'B' * 64,
+                              'b' * 64 + ' '),
+            'critic_run_carrier': (None, 12, {},
+                                   'Critic run: ' + CODEX_THREAD_ID.upper(),
+                                   'Critic run: 00000000-0000-0000-0000-000000000000',
+                                   'Critic run: ' + CODEX_THREAD_ID + '\n',
+                                   'untrusted prefix\nCritic run: ' + CODEX_THREAD_ID),
+        }
+        for field, values in cases.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    driver, binding, calls, reads = self.publication()
+                    binding[field] = value
+                    with self.assertRaises(ValidationError):
+                        driver.publish_critic_evidence(binding)
+                    self.assertEqual(calls, [])
+                    self.assertEqual(reads, [])
+
+    def test_oversized_identity_is_refused_before_body_construction(self):
+        class Unformattable(str):
+            def __format__(self, spec):
+                raise AssertionError('oversized field reached complete body construction')
+
+        for field in ('head_sha', 'result_sha256', 'critic_run_carrier'):
+            with self.subTest(field=field):
+                driver, binding, calls, reads = self.publication()
+                binding[field] = Unformattable('x' * (1024 * 1024 + 1))
+                with self.assertRaises(ValidationError):
+                    driver.publish_critic_evidence(binding)
+                self.assertEqual(calls, [])
+                self.assertEqual(reads, [])
+
+    def test_complete_serialized_request_has_inclusive_one_mib_cap(self):
+        maximum = 1_048_576
+        for character in ('x', '\u20ac', '\U0001f642', '"', '\\', '\x00', '\n'):
+            unit = json.dumps(character, ensure_ascii=False)[1:-1].encode('utf-8')
+            overhead = len(b'{"body":""}\n')
+            count, padding = divmod(maximum - overhead, len(unit))
+            text = character * count + 'x' * padding
+            for extra in ('', 'x'):
+                with self.subTest(character=ascii(character), extra=len(extra)):
+                    driver = ProviderProvenanceTests.driver(self)
+                    calls = []
+                    driver.run = lambda *args, **kwargs: calls.append(
+                        (args, kwargs)) or '{}'
+                    payload = {'body': text + extra}
+                    wire = (json.dumps(payload, ensure_ascii=False,
+                                       separators=(',', ':')) + '\n').encode('utf-8')
+                    self.assertEqual(len(wire), maximum + len(extra))
+                    if extra:
+                        with self.assertRaisesRegex(ValidationError, '1 MiB'):
+                            driver.api_post('issues/7/comments', payload)
+                        self.assertEqual(calls, [])
+                    else:
+                        self.assertEqual(driver.api_post('issues/7/comments', payload), {})
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(calls[0][1]['stdin'], wire)
+
+    def test_oversized_request_never_builds_a_complete_unbounded_json_payload(self):
+        maximum = 1_048_576
+        encode_string = json.encoder.encode_basestring
+
+        def bounded_string(value):
+            self.assertLessEqual(len(value), maximum,
+                                 'oversized scalar reached JSON string construction')
+            return encode_string(value)
+
+        for payload in ({'body': 'x' * (maximum + 1)},
+                        {'x' * (maximum + 1): ''},
+                        {'body': ['x' * 1024] * 1024}):
+            with self.subTest(kind=type(payload.get('body')).__name__):
+                driver = ProviderProvenanceTests.driver(self)
+                calls = []
+                driver.run = lambda *args, **kwargs: calls.append((args, kwargs)) or '{}'
+                with patch.object(json, 'dumps', side_effect=AssertionError(
+                        'complete-payload serialization attempted')), \
+                        patch.object(json.encoder, 'encode_basestring', bounded_string):
+                    with self.assertRaisesRegex(ValidationError, '1 MiB'):
+                        driver.api_post('issues/7/comments', payload)
+                self.assertEqual(calls, [])
+
+    def test_fresh_readback_refuses_body_digest_identity_actor_url_and_head_mismatch(self):
+        for field in ('body', 'body_sha256', 'id', 'actor_id', 'url', 'head',
+                      'kind', 'missing', 'duplicate'):
+            with self.subTest(field=field):
+                driver, binding, calls, reads = self.publication()
+                observe = driver.collect_provenance_observation
+
+                def changed_observation():
+                    value = observe()
+                    if field == 'head':
+                        value['head'] = 'c' * 40
+                    elif field == 'missing':
+                        value['comments'] = []
+                    elif field == 'duplicate':
+                        value['comments'] *= 2
+                    else:
+                        value['comments'][0][field] = {
+                            'body': 'changed', 'body_sha256': 'c' * 64,
+                            'id': 92, 'actor_id': 7002,
+                            'url': 'https://github.com/fixture/project/issues/7#other',
+                            'kind': 'review',
+                        }[field]
+                    return value
+
+                driver.collect_provenance_observation = changed_observation
+                with self.assertRaisesRegex(ValidationError, 'Fresh provider readback'):
+                    driver.publish_critic_evidence(binding)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(reads, [True])
+
+
 class CodexIdentityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -523,12 +729,12 @@ class AmendmentWriterTests(unittest.TestCase):
         command(self.worker, 'config', 'user.email', 'fixture@example.invalid')
         command(self.worker, 'config', 'commit.gpgsign', 'false')
         command(self.worker, 'remote', 'add', 'origin', str(self.remote))
-        (self.worker / 'a.txt').write_text('base\n', encoding='utf-8')
+        (self.worker / 'a.txt').write_text('base\n', encoding='utf-8', newline='\n')
         command(self.worker, 'add', 'a.txt')
         command(self.worker, 'commit', '-m', 'base')
         self.base = command(self.worker, 'rev-parse', 'HEAD')
         command(self.worker, 'checkout', '-b', 'codex/test')
-        (self.worker / 'a.txt').write_text('candidate\n', encoding='utf-8')
+        (self.worker / 'a.txt').write_text('candidate\n', encoding='utf-8', newline='\n')
         command(self.worker, 'commit', '-am', 'candidate')
         self.head = command(self.worker, 'rev-parse', 'HEAD')
         command(self.worker, '-c', 'protocol.file.allow=always', 'push', 'origin',
@@ -578,7 +784,7 @@ class AmendmentWriterTests(unittest.TestCase):
             CONTROLLER_RUN_ID, self.run, self.run, result)
 
     def _agent(self, role, candidate, findings, run_id, files=None):
-        (self.worker / 'a.txt').write_text('amended\n', encoding='utf-8')
+        (self.worker / 'a.txt').write_text('amended\n', encoding='utf-8', newline='\n')
         return {'candidate': candidate, 'outcome': 'CHANGED', 'summary': 'changed'}
 
     def test_amendment_commit_uses_observed_codex_identity(self):

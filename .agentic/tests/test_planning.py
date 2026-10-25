@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import fingerprint, load, sha256
+from agentic.contracts import Contracts
 from agentic.operating import operating_ceiling, stream_labels, validate_operating
 from agentic import planning
 
@@ -123,6 +124,166 @@ def capacity_kwargs(cfg, host_capacity=12, resources=None, stream_capacity=None)
 def plan(tickets, cfg, **capacity):
     return planning.plan_lanes(
         planning.build_backlog_graph(tickets, cfg), cfg, **capacity_kwargs(cfg, **capacity))
+
+
+class SchemaLaneTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.contracts = Contracts(ROOT / ".agentic/schemas")
+
+    def inputs(self, count=12):
+        cfg = load(ROOT / ".agentic/PROJECT_CONFIG.yaml")
+        cfg["execution"]["max_parallel_tickets"] = 12
+        cfg["execution"]["max_lanes"] = 12
+        cfg["execution"]["host_broker"].update(enabled=False, max_workers=12)
+        cfg["github"]["repository_id"] = 123
+        cfg["github"]["expected_actor_id"] = 101
+        cfg["merge_gate"]["trusted_owner_ids"] = [101, 202]
+        operating = load(ROOT / "OPERATING_CONFIG.yaml")
+        route = deepcopy(operating["streams"]["A"])
+        operating["streams"] = {
+            "count": count,
+            **{chr(ord("A") + i): deepcopy(route) for i in range(count)},
+        }
+        return cfg, operating
+
+    def assert_schema_valid(self, name, value):
+        try:
+            self.contracts.validate(name, value)
+        except ValidationError as exc:
+            self.fail(str(exc))
+
+    def validated_plan(self, cfg, operating, **capacity):
+        for name, value in (("project-config", cfg), ("operating-config", operating)):
+            with self.subTest(schema=name):
+                self.assert_schema_valid(name, value)
+        snapshot = validate_operating(operating, cfg)
+        kwargs = capacity_kwargs(cfg, stream_capacity=snapshot.count, **capacity)
+        self.assertEqual(snapshot.operating_hash, kwargs["operating_snapshot"].operating_hash)
+        tickets = [ticket(f"AWF-{i}", f"src/{i}.py") for i in range(1, 13)]
+        return planning.plan_lanes(planning.build_backlog_graph(tickets, cfg), cfg, **kwargs)
+
+    def test_t1_seven_streams_validate_and_plan(self):
+        cfg, operating = self.inputs(7)
+        result = self.validated_plan(cfg, operating)
+        self.assertEqual(tuple("ABCDEFG"), stream_labels(7))
+        self.assertEqual(7, result["lane_count"])
+        self.assertEqual(7, result["estimate"]["constraints"]["reviewed_operating_streams"])
+
+    def test_t2_twelve_streams_validate_and_plan(self):
+        cfg, operating = self.inputs()
+        result = self.validated_plan(cfg, operating)
+        self.assertEqual(tuple("ABCDEFGHIJKL"), stream_labels(12))
+        self.assertEqual(12, result["lane_count"])
+        self.assertEqual(12, len(result["lanes"]))
+
+    def test_t3_optional_max_lanes_preserves_six_lane_fallback(self):
+        for configured in (True, False):
+            with self.subTest(configured=configured):
+                expected = 12 if configured else 6
+                cfg, operating = self.inputs(expected)
+                if not configured:
+                    del cfg["execution"]["max_lanes"]
+                result = self.validated_plan(cfg, operating)
+                self.assertEqual(expected, operating_ceiling(cfg)["effective_ceiling"])
+                self.assertEqual(expected, result["estimate"]["constraints"]["configured_ceiling"])
+                self.assertEqual(expected, result["lane_count"])
+                self.assertEqual(configured, "max_lanes" in cfg["execution"])
+                _, excessive = self.inputs(expected + 1)
+                with self.assertRaisesRegex(ValidationError, r"\$\.streams.count.*1\.\." + str(expected)):
+                    validate_operating(excessive, cfg)
+
+    def test_t4_above_six_configuration_retains_broker_limit(self):
+        cfg, operating = self.inputs(4)
+        cfg["execution"]["host_broker"].update(enabled=True, max_workers=4)
+        result = self.validated_plan(cfg, operating)
+        self.assertEqual(4, result["lane_count"])
+        self.assertEqual(12, result["estimate"]["constraints"]["configured_ceiling"])
+        self.assertEqual(4, result["estimate"]["constraints"]["host_broker"])
+        self.assertIn("host_broker", result["estimate"]["binding_constraints"])
+
+    def test_t5_above_six_configuration_retains_host_and_resource_limits(self):
+        for capacity, expected, constraint in (
+                ({"host_capacity": 3}, 3, "observed_host_capacity"),
+                ({"resources": [{"name": "cpu", "capacity": 2}]}, 2, "resource:cpu")):
+            with self.subTest(constraint=constraint):
+                cfg, operating = self.inputs()
+                result = self.validated_plan(cfg, operating, **capacity)
+                self.assertEqual(expected, result["lane_count"])
+                self.assertEqual(expected, result["estimate"]["safe_lane_count"])
+                self.assertIn(constraint, result["estimate"]["binding_constraints"])
+
+    def test_t6_epic_overrides_accept_g_through_l_and_preserve_route_checks(self):
+        for label in "GHIJKL":
+            with self.subTest(label=label):
+                cfg, operating = self.inputs(3)
+                route = deepcopy(operating["streams"]["A"])
+                operating["epic_overrides"] = {"AWF-50": {"streams": {label: route}}}
+                with self.subTest(valid=True):
+                    self.assert_schema_valid("operating-config", operating)
+                    self.assertEqual(operating, validate_operating(operating, cfg).config)
+                for invalid in ("model", "reasoning_effort", "extra"):
+                    with self.subTest(invalid=invalid):
+                        changed = deepcopy(operating)
+                        worker = changed["epic_overrides"]["AWF-50"]["streams"][label]["worker"]
+                        worker[invalid] = "unsupported"
+                        with self.assertRaises(ValidationError):
+                            validate_operating(changed, cfg)
+                with self.subTest(extra_property=True):
+                    changed = deepcopy(operating)
+                    changed["epic_overrides"]["AWF-50"]["streams"][label]["extra"] = True
+                    with self.assertRaises(ValidationError):
+                        self.contracts.validate("operating-config", changed)
+        for label in ("M", "AA", "GG", "g"):
+            with self.subTest(invalid_label=label):
+                _, operating = self.inputs(3)
+                operating["epic_overrides"] = {"AWF-50": {"streams": {
+                    label: deepcopy(operating["streams"]["A"])}}}
+                with self.assertRaises(ValidationError):
+                    self.contracts.validate("operating-config", operating)
+
+    def test_t7_above_six_reviewers_and_shared_critic(self):
+        for shared in (True, False):
+            with self.subTest(shared=shared):
+                cfg, operating = self.inputs()
+                reviewer = deepcopy(operating["critic"])
+                if not shared:
+                    del operating["critic"]
+                    for label in "ABCDEFGHIJKL":
+                        operating["streams"][label]["reviewer"] = deepcopy(reviewer)
+                with self.subTest(valid=True):
+                    self.assert_schema_valid("operating-config", operating)
+                    self.assertEqual(12, validate_operating(operating, cfg).count)
+                if not shared:
+                    for label in "GHIJKL":
+                        with self.subTest(missing_reviewer=label):
+                            changed = deepcopy(operating)
+                            del changed["streams"][label]["reviewer"]
+                            with self.assertRaisesRegex(ValidationError, label + ".*reviewer"):
+                                self.contracts.validate("operating-config", changed)
+                            with self.assertRaisesRegex(ValidationError, label + ".*reviewer"):
+                                validate_operating(changed, cfg)
+
+    def test_t8_invalid_lane_values_remain_rejected(self):
+        for value in (0, -1, 13, 20, 2**53 - 1, 10**100, True, False,
+                      1.5, 6.0, None, "12", "invalid", [], {}):
+            with self.subTest(value=value):
+                cfg, operating = self.inputs(3)
+                cfg["execution"]["max_lanes"] = value
+                with self.assertRaises(ValidationError):
+                    self.contracts.validate("project-config", cfg)
+                with self.assertRaisesRegex(ValidationError, r"\$\.execution.max_lanes"):
+                    operating_ceiling(cfg)
+                # Keep huge invalid inputs away from the defective baseline's label expansion.
+                with patch("agentic.operating.stream_labels", side_effect=AssertionError("Invalid ceiling reached label generation")):
+                    with self.assertRaisesRegex(ValidationError, r"\$\.execution.max_lanes"):
+                        validate_operating(operating, cfg)
+        for count in (1, 12):
+            with self.subTest(valid_boundary=count):
+                cfg, operating = self.inputs(count)
+                cfg["execution"]["max_lanes"] = count
+                # Both boundaries remain accepted through the runtime contract.
+                self.assertEqual(count, validate_operating(operating, cfg).count)
 
 
 class ProviderSnapshotTests(unittest.TestCase):
@@ -284,6 +445,179 @@ class ProviderSnapshotTests(unittest.TestCase):
         for verifier in (unavailable, wrong_identity):
             with self.subTest(verifier=verifier), self.assertRaises(ValidationError):
                 self.read(verifier=verifier)
+
+    def test_rejected_collector_isolates_empty_attribution_and_preserves_sibling(self):
+        snapshot = deepcopy(self.snapshot)
+        sibling = deepcopy(snapshot["tickets"][0])
+        sibling["ticket"]["key"] = "AWF-2"
+        for component in sibling["components"]:
+            component["ticket_key"] = "AWF-2"
+        snapshot["tickets"].append(sibling)
+        for component in snapshot["tickets"][0]["components"]:
+            component["files"] = []
+        self.trusted = self.body(snapshot)
+        original = deepcopy(snapshot)
+        rejected, evidence = {}, {}
+        tickets = self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+        self.assertEqual(["AWF-2"], [item["key"] for item in tickets])
+        self.assertEqual({"AWF-1": "Backlog ticket AWF-1 has no observed exact write files"}, rejected)
+        self.assertEqual({"paths": [], "complete": True}, evidence["AWF-1"])
+        self.assertEqual(original, snapshot)
+        tickets[0]["write_paths"].append("src/later.py")
+        evidence["AWF-2"]["paths"].append("src/later.py")
+        self.assertEqual(original, snapshot)
+
+    def test_rejected_collector_isolates_inexact_component_paths(self):
+        for field in (0, 2):  # brief and diff; the PR remains complete and safe.
+            for invalid in ("src/*.py", "src/", "/outside.py", "../outside.py", "", None, 7, {}):
+                with self.subTest(field=field, invalid=invalid):
+                    snapshot = deepcopy(self.snapshot)
+                    sibling = deepcopy(snapshot["tickets"][0])
+                    sibling["ticket"]["key"] = "AWF-2"
+                    for component in sibling["components"]:
+                        component["ticket_key"] = "AWF-2"
+                    snapshot["tickets"].append(sibling)
+                    snapshot["tickets"][0]["components"][field]["files"] = [invalid]
+                    self.trusted = self.body(snapshot)
+                    with self.assertRaises(ValidationError) as strict:
+                        self.read(snapshot)
+                    rejected, evidence = {}, {}
+                    tickets = self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+                    self.assertEqual(["AWF-2"], [item["key"] for item in tickets])
+                    self.assertEqual({"AWF-1": str(strict.exception)}, rejected)
+                    self.assertEqual({"paths": ["src/pr.py"], "complete": True}, evidence["AWF-1"])
+
+    def test_rejected_collector_continues_validation_and_detects_later_duplicate_or_forgery(self):
+        for case in ("duplicate", "wrong-attribution", "foreign", "stale", "missing",
+                     "duplicate-component", "unknown-component", "non-list", "metadata", "forged"):
+            with self.subTest(case=case):
+                snapshot = deepcopy(self.snapshot)
+                valid = deepcopy(snapshot["tickets"][0])
+                valid["ticket"]["key"] = "AWF-2"
+                for component in valid["components"]:
+                    component["ticket_key"] = "AWF-2"
+                later = deepcopy(valid)
+                snapshot["tickets"].extend([valid, later])
+                for component in snapshot["tickets"][0]["components"]:
+                    component["files"] = []
+                later["ticket"]["key"] = "AWF-1" if case == "duplicate" else "AWF-3"
+                for component in later["components"]:
+                    component["ticket_key"] = later["ticket"]["key"]
+                component = later["components"][1]
+                if case == "wrong-attribution":
+                    component["ticket_key"] = "AWF-99"
+                elif case == "foreign":
+                    component["binding"]["repository_id"] = "456"
+                elif case == "stale":
+                    component["observed_at"] = "2026-10-11T12:00:00Z"
+                elif case == "missing":
+                    later["components"].pop()
+                elif case == "duplicate-component":
+                    component["kind"] = "brief"
+                elif case == "unknown-component":
+                    component["kind"] = "other"
+                elif case == "non-list":
+                    component["files"] = "src/pr.py"
+                elif case == "metadata":
+                    later["ticket"]["open_pr_files"] = ["src/injected.py"]
+                self.trusted = self.body(snapshot)
+                if case == "forged":
+                    component["files"] = ["src/forged.py"]
+                rejected = {"previous": "unchanged"}
+                evidence = {"previous": {"paths": ["prior.py"], "complete": True}}
+                original = deepcopy((snapshot, rejected, evidence))
+                with self.assertRaises(ValidationError):
+                    self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+                self.assertEqual(original, (snapshot, rejected, evidence))
+
+    def test_pr_evidence_survives_rejected_brief_or_diff(self):
+        paths = [f"src/pr-{index}.py" for index in range(15)]
+        for field in (0, 2):
+            with self.subTest(field=field):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["components"][field]["files"] = ["../invalid.py"]
+                snapshot["tickets"][0]["components"][1]["files"] = paths
+                self.trusted = self.body(snapshot)
+                rejected, evidence = {}, {}
+                self.assertEqual([], self.read(snapshot, rejected=rejected, observed_pr_paths=evidence))
+                self.assertEqual({"AWF-1"}, set(rejected))
+                self.assertEqual({"AWF-1": {"paths": sorted(paths), "complete": True}}, evidence)
+
+    def test_pr_evidence_retains_all_files_before_manifest_filtering(self):
+        # Also covers the plan's unsafe-PR completeness acceptance row.
+        paths = ["MANIFEST.json", "MANIFEST.md", "src/pr.py"]
+        for extra in ([], ["src/*.py"], ["src/"], ["/outside.py"], ["../outside.py"],
+                      [None], [7], [""], [{}]):
+            with self.subTest(extra=extra):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["components"][1]["files"] = paths[:1] + extra + paths[1:]
+                self.trusted = self.body(snapshot)
+                original = deepcopy(snapshot)
+                rejected, evidence = {}, {}
+                tickets = self.read(snapshot, rejected=rejected, observed_pr_paths=evidence)
+                self.assertEqual({"AWF-1": {"paths": sorted(paths), "complete": not bool(extra)}}, evidence)
+                if extra:
+                    self.assertEqual([], tickets)
+                    self.assertEqual({"AWF-1"}, set(rejected))
+                else:
+                    self.assertEqual(self.read(snapshot), tickets)
+                    self.assertEqual(["src/pr.py"], tickets[0]["open_pr_files"])
+                    self.assertEqual({}, rejected)
+                self.assertEqual(original, snapshot)
+
+    def test_snapshot_collectors_reject_invalid_types_and_shared_dictionary(self):
+        for name in ("rejected", "observed_pr_paths"):
+            for invalid in ([], "invalid", False, 1):
+                with self.subTest(name=name, invalid=invalid):
+                    with self.assertRaisesRegex(ValidationError, "collector.*dictionary"):
+                        self.read(**{name: invalid})
+        collector = {}
+        with self.assertRaisesRegex(ValidationError, "distinct"):
+            self.read(rejected=collector, observed_pr_paths=collector)
+        self.assertEqual({}, collector)
+
+    def test_snapshot_collectors_do_not_weaken_authentication(self):
+        for case in ("unsigned", "partial", "stale", "foreign", "unverified", "unavailable"):
+            with self.subTest(case=case):
+                snapshot = deepcopy(self.snapshot)
+                overrides = {}
+                if case == "unsigned":
+                    del snapshot["authentication"]
+                elif case == "partial":
+                    snapshot["complete"] = False
+                elif case == "stale":
+                    snapshot["observed_at"] = "2026-10-11T12:00:00Z"
+                elif case == "foreign":
+                    snapshot["binding"]["repository_id"] = "456"
+                elif case == "unverified":
+                    overrides["verify_provider_snapshot"] = lambda *_: {"status": "UNVERIFIED"}
+                else:
+                    def unavailable(*_):
+                        raise RuntimeError("provider unavailable")
+                    overrides["verify_provider_snapshot"] = unavailable
+                rejected, evidence = {}, {}
+                with self.assertRaises(ValidationError):
+                    self.read(snapshot, rejected=rejected, observed_pr_paths=evidence, **overrides)
+                self.assertEqual(({}, {}), (rejected, evidence))
+
+    def test_snapshot_collectors_preserve_strict_default_and_manifest_only_rejection(self):
+        for files in ([], ["MANIFEST.json", "MANIFEST.md"]):
+            with self.subTest(files=files):
+                snapshot = deepcopy(self.snapshot)
+                for component in snapshot["tickets"][0]["components"]:
+                    component["files"] = files
+                self.trusted = self.body(snapshot)
+                evidence = {}
+                with self.assertRaisesRegex(ValidationError, "no observed exact write files"):
+                    self.read(snapshot, observed_pr_paths=evidence)
+                self.assertEqual({}, evidence)
+                rejected = {}
+                self.assertEqual([], self.read(snapshot, rejected=rejected, observed_pr_paths=evidence))
+                self.assertEqual({"AWF-1": {"paths": sorted(files), "complete": True}}, evidence)
+                self.assertEqual({"AWF-1": "Backlog ticket AWF-1 has no observed exact write files"}, rejected)
+        # The rejection collector is also usable without the evidence collector.
+        self.trusted = self.body(self.snapshot)
+        self.assertEqual(self.read(), self.read(rejected={}))
 
     def test_operating_doc_covers_max_lanes_overrides_and_migration(self):
         doc = (ROOT / ".agentic/docs/29-OPERATING-CONFIGURATION.md").read_text(encoding="utf-8")

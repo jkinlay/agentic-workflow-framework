@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib
 import inspect
+import json
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import timedelta
@@ -14,7 +15,7 @@ import unicodedata
 import uuid
 from . import ValidationError
 from .child_process import child_env
-from .canonical import canonical, loads, now_text, timestamp
+from .canonical import MAX_DOCUMENT_BYTES, _pairs, canonical, loads, now_text, timestamp, validate_value
 from .controller_state import STATE_SCHEMA_VERSION, configure_database, protected_state_path, restrict_state_permissions
 STREAM_STATES = {'WORKING', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 TICKET_STATES = {'ELIGIBLE', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
@@ -23,6 +24,11 @@ DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 1096238641
 DISPATCH_SCHEMA_VERSION = 2
 REPLAN_TRIGGER_SCHEMA_VERSION = 2
+PRODUCTION_PLANNING_MAX_BYTES = 4 * 1024 * 1024
+PRODUCTION_PLANNING_MAX_EVENTS = 4000
+PRODUCTION_PLANNING_RECOVERY_MAX_BYTES = 16 * 1024 * 1024
+PRODUCTION_PLANNING_SEEN_RETENTION = 4096
+PRODUCTION_PLANNING_SCHEMA_VERSION = 2
 DDL = '\nCREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS stream_status(\n stream_id TEXT PRIMARY KEY,state TEXT NOT NULL,ticket TEXT,actor TEXT NOT NULL,\n reason TEXT NOT NULL,next_action TEXT NOT NULL,resume_trigger TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,\n reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,\n jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_outbox(\n delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,\n observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_dispatch(\n dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,\n receipt_json TEXT,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_dispatch_waiver(\n waiver_id TEXT PRIMARY KEY,dispatch_id TEXT NOT NULL,allowance_id TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,\n UNIQUE(dispatch_id,allowance_id));\nCREATE TABLE IF NOT EXISTS controller_replan_seal(\n seal_id TEXT PRIMARY KEY,trigger_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,consumed_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_ticket_authority(\n ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,\n lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,\n PRIMARY KEY(ticket,exact_tuple));\nCREATE TABLE IF NOT EXISTS controller_overlap_allowance(\n allowance_id TEXT PRIMARY KEY,source_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL,\n cycle_id TEXT NOT NULL,path TEXT NOT NULL,tickets_json TEXT NOT NULL,\n pull_requests_json TEXT NOT NULL,heads_json TEXT NOT NULL,expires_at TEXT NOT NULL,\n status TEXT NOT NULL,record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_overlap_sync_gate(\n gate_id TEXT PRIMARY KEY,allowance_id TEXT NOT NULL,status TEXT NOT NULL,\n record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_overlap_gate_allowance\n ON controller_overlap_sync_gate(allowance_id,status);\nCREATE TABLE IF NOT EXISTS controller_jira_operation(\n operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,\n intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,\n operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_jira_issue ON controller_jira_operation(issue_id,status);\n'
 
 BATCH_JIRA_DDL = '''CREATE TABLE IF NOT EXISTS controller_batch_jira_operation(
@@ -63,6 +69,113 @@ BATCH_AUDIT_DDL = (
 def _require(condition, message):
 	if not condition:
 		raise ValidationError(message)
+
+def _planning_state(state, *, migrate=False):
+	"""Validate retention metadata without discarding unfamiliar planning fields."""
+	from .planning import RECOMPUTE_TRIGGERS, verify_plan_record
+	_require(isinstance(state, dict) and {'pending', 'seen', 'overrides', 'candidate', 'observation'} <= set(state), 'Malformed production planning state')
+	version = state.get('schema_version', 1)
+	_require(type(version) is int and version in (1, PRODUCTION_PLANNING_SCHEMA_VERSION), 'Unsupported production planning format version')
+	sequence = state.get('cycle_sequence', 0) if version == 1 else state.get('cycle_sequence')
+	_require(type(sequence) is int and 0 <= sequence <= 2**53 - 1, 'Invalid production planning cycle sequence')
+	_require(isinstance(state['seen'], dict) and isinstance(state['pending'], list) and isinstance(state['overrides'], dict), 'Malformed production planning collections')
+	_require(state['candidate'] is None or isinstance(state['candidate'], dict), 'Malformed retained planning candidate')
+	if state['candidate'] is not None:
+		verify_plan_record(state['candidate'])
+	for key in ('observation', 'candidate_observation'):
+		value = state.get(key)
+		_require(value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None, 'Malformed planning observation')
+	if 'candidate_source_ids' in state:
+		_require(isinstance(state['candidate_source_ids'], list) and all(isinstance(source, str) and 0 < len(source) <= 256 for source in state['candidate_source_ids']), 'Malformed retained candidate sources')
+	for source, entry in state['seen'].items():
+		_require(isinstance(source, str) and 0 < len(source) <= 256, 'Invalid retained planning source identity')
+		if version == 1:
+			digest, age = entry, 0
+		else:
+			_require(isinstance(entry, list) and len(entry) == 2, 'Malformed retained planning digest and age')
+			digest, age = entry
+		_require(isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest) is not None, 'Invalid retained planning digest')
+		_require(type(age) is int and 0 <= age <= sequence, 'Invalid retained planning age')
+	for event in state['pending']:
+		_require(isinstance(event, dict) and set(event) == {'source_id', 'trigger', 'override'} and isinstance(event['source_id'], str) and 0 < len(event['source_id']) <= 256, 'Malformed pending planning event')
+		_require(isinstance(event['trigger'], str) and event['trigger'] in RECOMPUTE_TRIGGERS and (event['override'] is None or isinstance(event['override'], dict)), 'Malformed pending planning trigger or override')
+	if migrate:
+		if version == 1:
+			state['seen'] = {source: [digest, 0] for source, digest in state['seen'].items()}
+		state['schema_version'] = PRODUCTION_PLANNING_SCHEMA_VERSION
+		state['cycle_sequence'] = sequence
+	return state
+
+def _planning_eviction_order(state):
+	pinned = {event['source_id'] for event in state['pending']}
+	return sorted((source for source in state['seen'] if source not in pinned),
+		key=lambda source: (state['seen'][source][1] if isinstance(state['seen'][source], list) else 0, source))
+
+def _encode_production_planning(state, *, recovery=False):
+	"""Retain pending sources and store exactly the canonical bytes checked here."""
+	_planning_state(state)
+	eligible = _planning_eviction_order(state)
+	count = min(max(0, len(state['seen']) - PRODUCTION_PLANNING_SEEN_RETENTION), len(eligible))
+	for source in eligible[:count]:
+		del state['seen'][source]
+	encoded = canonical(state)
+	if recovery and len(encoded) > PRODUCTION_PLANNING_MAX_BYTES:
+		# Account for each canonical entry and its comma, then encode the final
+		# reduced state once more. This avoids quadratic re-encoding during repair.
+		size = len(encoded)
+		for source in eligible[count:]:
+			entry_size = len(canonical({source: state['seen'][source]})) - 2
+			size -= entry_size + (1 if len(state['seen']) > 1 else 0)
+			del state['seen'][source]
+			if size <= PRODUCTION_PLANNING_MAX_BYTES:
+				break
+		encoded = canonical(state)
+	_require(len(encoded) <= PRODUCTION_PLANNING_MAX_BYTES,
+		"Production planning state exceeds 4 MiB; pending/preserved fields cannot fit. Stop cycles and run planning-state prune on the primary controller database; if refused, reach a round boundary or reduce the provider event window")
+	return encoded
+
+def prune_production_planning_state(path, *, worktree_roots=(), forget_sources=()):
+	"""Repair only the existing primary planning key. Operators must stop cycles."""
+	_require(Path(path).is_file(), 'Planning recovery requires an existing controller database')
+	path = protected_state_path(path, worktree_roots)
+	_require(isinstance(forget_sources, (list, tuple)) and all(isinstance(source, str) and source for source in forget_sources), 'Invalid source identities to forget')
+	# mode=rw prevents a missing file from becoming a new database. No ordinary
+	# constructor, migration, journal configuration, adapter, or provider runs.
+	db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=10, isolation_level=None)
+	try:
+		db.execute('BEGIN IMMEDIATE')
+		_require(db.execute('PRAGMA application_id').fetchone()[0] == STATE_APPLICATION_ID,
+			'Planning recovery requires the primary controller database identity')
+		_require(db.execute('PRAGMA user_version').fetchone()[0] == STATE_SCHEMA_VERSION,
+			'Planning recovery requires the established controller schema version')
+		_require(db.execute('PRAGMA quick_check').fetchone()[0] == 'ok', 'Controller state integrity check failed')
+		row = db.execute("SELECT length(CAST(value AS BLOB)) FROM controller_meta WHERE key='production_planning'").fetchone()
+		_require(row is not None, "Missing controller_meta['production_planning']; recovery does not initialize state")
+		before_bytes = row[0]
+		_require(before_bytes <= PRODUCTION_PLANNING_RECOVERY_MAX_BYTES, 'Planning recovery input exceeds the finite 16 MiB allowance')
+		raw = db.execute("SELECT value FROM controller_meta WHERE key='production_planning'").fetchone()[0]
+		try:
+			state = json.loads(raw, object_pairs_hook=_pairs)
+			validate_value(state)
+		except (ValueError, RecursionError) as exc:
+			raise ValidationError(f'Invalid recovery JSON: {exc}') from exc
+		_planning_state(state)
+		before_count = len(state['seen'])
+		pinned = {event['source_id'] for event in state['pending']}
+		_require(not pinned.intersection(forget_sources), 'Cannot forget a pending planning source')
+		for source in forget_sources:
+			state['seen'].pop(source, None)
+		encoded = _encode_production_planning(state, recovery=True)
+		db.execute("UPDATE controller_meta SET value=? WHERE key='production_planning'", (encoded.decode('utf-8'),))
+		db.execute('COMMIT')
+		return {'status': 'PRUNED', 'before_bytes': before_bytes, 'after_bytes': len(encoded),
+			'retained': len(state['seen']), 'removed': before_count - len(state['seen'])}
+	except BaseException:
+		if db.in_transaction:
+			db.execute('ROLLBACK')
+		raise
+	finally:
+		db.close()
 
 def _reviewer_counts(counts):
 	required = {'required', 'completed', 'acceptable', 'failed', 'stale', 'outstanding'}
@@ -615,11 +728,18 @@ class ContinuousControllerStore:
 	def production_planning_state(self):
 		with self.connection() as db:
 			row = db.execute("SELECT value FROM controller_meta WHERE key='production_planning'").fetchone()
-		return loads(row[0]) if row else {'pending': [], 'seen': {}, 'overrides': {}, 'candidate': None, 'observation': None}
+		if row and len(row[0].encode('utf-8')) > MAX_DOCUMENT_BYTES:
+			raise ValidationError("controller_meta['production_planning'] exceeds 8 MiB; ordinary cycle loading cannot repair it. Stop cycles and run planning-state prune on the primary controller database")
+		state = loads(row[0]) if row else {'pending': [], 'seen': {}, 'overrides': {}, 'candidate': None, 'observation': None}
+		return _planning_state(state, migrate=True)
 
 	def _save_production_planning(self, state):
+		encoded = _encode_production_planning(state)
 		with self.transaction() as db:
-			db.execute("INSERT OR REPLACE INTO controller_meta VALUES('production_planning',?)", (canonical(state).decode(),))
+			db.execute("INSERT OR REPLACE INTO controller_meta VALUES('production_planning',?)", (encoded.decode('utf-8'),))
+
+	def prune_production_planning(self, *, forget_sources=()):
+		return prune_production_planning_state(self.path, worktree_roots=self.worktree_roots, forget_sources=forget_sources)
 
 	def plan_production_cycle(self, state_store, tickets, config, *, backlog, events,
 			verify_owner_source, resource_observation, expected_resource_binding,
@@ -630,6 +750,8 @@ class ContinuousControllerStore:
 		from . import planning
 		from .canonical import fingerprint
 		state = self.production_planning_state()
+		_require(state['cycle_sequence'] < 2**53 - 1, 'Production planning cycle sequence exhausted')
+		state['cycle_sequence'] += 1
 		planning.verify_override_state(config, state['overrides'], verify_owner_source)
 		for event in events:
 			_require(isinstance(event, dict) and set(event) == {'source_id', 'trigger', 'override'}, 'Planning event must be a closed observation')
@@ -637,8 +759,9 @@ class ContinuousControllerStore:
 			_require(event['trigger'] in planning.RECOMPUTE_TRIGGERS, 'Unknown planning event trigger')
 			digest = fingerprint('controller-planning-event', event)
 			prior = state['seen'].get(event['source_id'])
-			_require(prior is None or prior == digest, 'Planning event source identity was reused with changed bytes')
+			_require(prior is None or prior[0] == digest, f"Planning event source identity was reused with changed bytes: {event['source_id']}")
 			if prior is not None:
+				prior[1] = state['cycle_sequence']
 				continue
 			if event['override'] is not None:
 				_require(event['trigger'] == 'override_changed', 'Only an override event may carry an owner chain')
@@ -648,7 +771,7 @@ class ContinuousControllerStore:
 				new = incoming.get('planning_override_history', [])
 				_require(len(new) > len(old) and new[:len(old)] == old, 'Planning owner chain replay or rollback')
 				state['overrides'] = deepcopy(incoming)
-			state['seen'][event['source_id']] = digest
+			state['seen'][event['source_id']] = [digest, state['cycle_sequence']]
 			state['pending'].append(deepcopy(event))
 		# Content changes are controller-derived only after independent authentication.
 		observed = fingerprint('controller-planning-input', {'backlog': backlog,
@@ -659,6 +782,10 @@ class ContinuousControllerStore:
 		if state['observation'] != observed and not state['pending']:
 			trigger = 'project_start' if state['observation'] is None else 'files_changed'
 			state['pending'].append({'source_id': observed, 'trigger': trigger, 'override': None})
+		if len(events) > PRODUCTION_PLANNING_MAX_EVENTS:
+			# Check staged bytes first, but refuse the batch before any durable save.
+			_encode_production_planning(state)
+			raise ValidationError('Production planning cycle exceeds 4,000 events; reduce the provider event window')
 		self._save_production_planning(state)
 		if not boundary_ready:
 			return None
@@ -746,13 +873,14 @@ class ContinuousControllerStore:
 			append_plan_record(state_store, result['record'])
 		return result
 
-	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False):
+	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False, migrate_streams=False):
 		self.worktree_roots = tuple((Path(root).resolve(strict=False) for root in worktree_roots))
 		self.path = protected_state_path(path, self.worktree_roots)
 		_require(isinstance(stream_ids, (list, tuple)) and stream_ids and (len(stream_ids) == len(set(stream_ids))) and all((isinstance(item, str) and item.strip() for item in stream_ids)), 'Configured stream identities must be unique nonempty strings')
 		_require(type(cadence_seconds) is int and cadence_seconds > 0, 'Status cadence must be positive seconds')
 		_require(type(periodic_status_enabled) is bool, 'Periodic status enablement must be boolean')
 		_require(type(migrate_cadence) is bool, 'Cadence migration choice must be boolean')
+		_require(type(migrate_streams) is bool, 'Stream migration choice must be boolean')
 		self.periodic_status_enabled = periodic_status_enabled
 		self.path.parent.mkdir(parents=True, exist_ok=True)
 		with self._initialization_connection() as db:
@@ -769,7 +897,13 @@ class ContinuousControllerStore:
 				self._migrate_dispatch_rows(db)
 				configured = canonical(sorted(stream_ids)).decode()
 				old = db.execute("SELECT value FROM controller_meta WHERE key='streams'").fetchone()
-				_require(old is None or old[0] == configured, 'Configured stream set changed; perform explicit controller migration')
+				if old is not None and old[0] != configured and migrate_streams:
+					recorded = sorted(row[0] for row in db.execute('SELECT stream_id FROM stream_status'))
+					_require(recorded and old[0] == canonical(recorded).decode() and set(recorded) < set(stream_ids),
+						'Stream migration only permits adding streams to the recorded set')
+					db.execute("UPDATE controller_meta SET value=? WHERE key='streams'", (configured,))
+				else:
+					_require(old is None or old[0] == configured, 'Configured stream set changed; perform explicit controller migration')
 				for key, value in (('streams', configured), ('cadence_seconds', str(cadence_seconds)), ('revision', '0'), ('last_regular_digest', ''), ('last_digest_revision', '-1')):
 					db.execute('INSERT OR IGNORE INTO controller_meta VALUES(?,?)', (key, value))
 				stored_cadence = int(self._meta(db, 'cadence_seconds'))

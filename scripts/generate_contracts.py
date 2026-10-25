@@ -33,7 +33,7 @@ def integer(minimum=0, **extra):
 def capacity(minimum=0):
     # Match planning's authenticated host/resource observation limit. This is
     # a serialization safety ceiling, not evidence of available host capacity.
-    # Native operating streams retain their stricter six-stream bound.
+    # Native operating streams retain their stricter twelve-stream bound.
     return integer(minimum, maximum=1000)
 
 
@@ -148,6 +148,95 @@ GATE_NAMES = ["review_completion", "verdict_posting", "acceptance_criteria", "sc
               "required_ci", "ci_candidate_binding", "blocking_threads_zero", "dependencies",
               "merge_compatibility", "ticket_snapshot_current", "review_coverage", "provenance", "local_ci_parity",
               "publication_safety"]
+
+
+def status_report_schemas():
+    """Report-only contracts; producer records retain their own verifiers."""
+    unknown = obj({'status': const('UNKNOWN'), 'reason': text()})
+
+    def metric(properties, **options):
+        return {'oneOf': [unknown, obj({'status': const('KNOWN'), **properties}, **options)]}
+
+    decision = obj({'mode': enum('fixed_count', 'max_cap'), 'value': integer(1),
+                    'actor': text(), 'decided_at': TIME, 'source': text()})
+    rejected = obj({**decision['properties'], 'reason': text()})
+    constraint = obj({'name': text(), 'value': integer(), 'actor': nullable(text()),
+                      'observed_at': nullable(TIME), 'source': text(), 'reason': text()})
+    schedule = {'oneOf': [obj({'kind': const('UNKNOWN'), 'reason': text()}),
+        obj({'kind': const('INTERVAL'), 'minutes': integer(1)}),
+        obj({'kind': const('UTC_DAILY_SLOTS'), 'timezone': const('UTC'),
+             'slots': arr(text(pattern=r'^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'), 1, uniqueItems=True)})]}
+    window = nullable(obj({'opens_at_minute': integer(), 'closes_at_minute': integer()}))
+    task = obj({'key': text(), 'predecessors': STRINGS, 'scheduled_start_minute': integer(),
+                'rounds': integer(1), 'round_minutes': integer(1),
+                'owner_touchpoint_minutes': integer(), 'owner_review_window': window})
+    scenario = obj({'source': text(), 'tasks': arr(task)})
+    eta_inputs = obj({'scenario_format': const('AWF55_INTEGER_SCENARIOS_V1'),
+        'effective_lanes': integer(1), 'start_gap_minutes': integer(),
+        'scenarios': obj({'p50': scenario, 'p80': scenario}),
+        'forecast_anchor_at': nullable(TIME)},
+        required=['scenario_format','effective_lanes','start_gap_minutes','scenarios'])
+    selector = obj({'allow_entire_project': BOOL, 'selector_mode': text(),
+        'included_epics': STRINGS, 'labels_any': STRINGS, 'components_any': STRINGS,
+        'additional_jql': text(0), 'ownership_required': BOOL})
+    release = obj({'project_id': text(), 'workflow_version': text(), 'jira_enabled': BOOL,
+                   'scope_selector': nullable(selector)})
+    route_binding = nullable(obj({'project_id': text(), 'ticket_id': text(), 'head': text(),
+                                  'policy_sha256': DIGEST, 'operating_hash': nullable(DIGEST)}))
+    scope = obj({'kind': enum('role','tier','stream','epic_stream','agent','ticket'),
+                 'id': nullable(text()), 'stream': nullable(text())})
+    roles = enum('controller','worker','critic','specialist','simple_worker','design','spec_review')
+    declaration = obj({'role': roles, 'scope': scope, 'model': text(),
+        'reasoning_effort': text(), 'source': text(), 'pinned': nullable(BOOL), 'enabled': nullable(BOOL)})
+    proposal = metric({'model': text(), 'reasoning_effort': text(), 'dispatch_performed': FALSE})
+    observation = metric({**{key: text() for key in ('run_id','requested_model','requested_effort',
+        'observed_model','observed_effort','codex_cli_version','outcome')},
+        'tokens': {'oneOf': [integer(), const('unknown')]}, 'authentication': const('CALLER_ASSERTED')})
+
+    def route_records(value):
+        return arr(obj({'role': roles, 'source': text(), 'binding': route_binding, 'value': value}))
+
+    report = obj({'inputs_sha256': DIGEST,
+        'outstanding': metric({'count': integer(), 'tickets': STRINGS, 'source': text()}),
+        'priority': metric({'groups': arr(obj({'tier': integer(1, maximum=3), 'cap': integer(1),
+                                             'count': integer(), 'tickets': STRINGS, 'sources': STRINGS}))}),
+        'lanes': metric({'recommendation': integer(), 'effective': integer(),
+            'owner_override': nullable(decision), 'binding_constraint': text(), 'source': text(),
+            'binding_constraints': STRINGS, 'constraint_details': arr(constraint, 1)},
+            required=['status','recommendation','effective','owner_override','binding_constraint','source']),
+        'lane_observations': obj({'rejected_override': nullable(rejected)}),
+        'merge_train': metric({'enabled': BOOL, 'cadence_minutes': nullable(integer(1)),
+            'source': text(), 'source_owner_review': const('normal_tier_final_gate'), 'schedule': schedule},
+            required=['status','enabled','cadence_minutes','source','source_owner_review']),
+        'eta': metric({'p50_minutes': integer(), 'p80_minutes': integer(), 'basis': eta_inputs,
+            'confidence': obj({'quantiles': {'type':'array', 'items':{'type':'number'},
+                                            'minItems':2, 'maxItems':2}, 'source': const('supplied_integer_scenarios')}),
+            'forecast': metric({'anchor_at': TIME, 'p50_completion_at': TIME, 'p80_completion_at': TIME})}),
+        'release_binding': metric({'inputs': release, 'sha256': DIGEST}),
+        'routing': metric({'binding': route_binding, 'declarations': arr(declaration),
+                           'proposals': route_records(proposal), 'observations': route_records(observation)})},
+        required=['inputs_sha256','outstanding','priority','lanes','merge_train','eta','release_binding','routing'])
+    # Producer-owned record shapes evolve independently of this projection.
+    # Runtime admission uses AWF-48/50/115 semantic verifiers, never this object
+    # placeholder as authority. The request and projected metrics are closed.
+    producer_record = {'type': 'object', '$comment': 'Requires the producer semantic verifier before projection.'}
+    github = obj({'actor_id': integer(1), 'actor_login': text(), 'auth_profile': nullable(text()),
+        'repository_id': integer(1), 'repository': text(), 'readable': BOOL,
+        'protocol': enum('https','ssh'), 'observed_at': TIME})
+    jira = obj({'connection_id': text(), 'cloud_id': text(), 'site': text(format='uri'),
+        'account_id': text(), 'account_login': text(), 'observed_at': TIME,
+        'projects': arr(obj({'project_id': text(), 'project_key': text(), 'browse': BOOL}))})
+    request = obj({'record_id': UUID, 'created_at': TIME,
+        'binding': obj({'project_id': text(), 'repository_id': integer(1), 'repository': text(),
+            'cloud_id': text(), 'provider_project_id': text(), 'project_key': text(), 'release_sha256': DIGEST}),
+        'github_identity': nullable(github), 'jira_connections': nullable(arr(jira)),
+        'inventory': nullable(obj({'status': const('KNOWN'), 'source': text(),
+            'tickets': arr(producer_record)})),
+        'assignments': nullable(arr(producer_record)), 'plan': nullable(producer_record),
+        'override_state': nullable(producer_record), 'planning_graph': nullable(producer_record),
+        'merge_train': nullable(report['properties']['merge_train'])},
+        required=['record_id','created_at','binding','github_identity','jira_connections'])
+    return {'status-report': report, 'status-report-input': request}
 
 
 def catalog(*, include_ticket_plan=True):
@@ -287,7 +376,7 @@ def catalog(*, include_ticket_plan=True):
         "properties": {
         "streams": {
             "type": "object", "minProperties": 1,
-            "patternProperties": {"^[A-F]$": operating_epic_stream},
+            "patternProperties": {"^[A-L]$": operating_epic_stream},
             "additionalProperties": False,
         },
         "controller": {"$ref": "#/properties/controller"},
@@ -297,11 +386,11 @@ def catalog(*, include_ticket_plan=True):
         "additionalProperties": False,
     }
     operating_streams = obj({
-        "count": integer(1, maximum=6),
-        **{label: operating_stream for label in "ABCDEF"},
+        "count": integer(1, maximum=12),
+        **{label: operating_stream for label in "ABCDEFGHIJKL"},
     }, required=["count"])
     reviewer_requirements = []
-    for count, label in enumerate("ABCDEF", 1):
+    for count, label in enumerate("ABCDEFGHIJKL", 1):
         reviewer_requirements.append({
             "if": {"properties": {"streams": {"properties": {
                 "count": {"minimum": count},
@@ -878,6 +967,7 @@ def catalog(*, include_ticket_plan=True):
            "base_branch": text(), "branch_pattern": text(), "merge_method": enum("merge", "squash", "rebase"),
            "draft_pr_first": TRUE, "one_repository_per_controller": TRUE}),
         "execution": obj({"profile": const("manual_reference"), "max_parallel_tickets": capacity(1),
+           "max_lanes": integer(1, maximum=12),
            "child_env_strip_extra": arr(text(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), 0, uniqueItems=True),
            "native_streams": obj({"enabled": BOOL, "dispatch_policy": const("ready_independent")}),
            "max_parallel_tickets_per_stream": capacity(1), "max_agent_runs_per_ticket": integer(1),
@@ -925,7 +1015,7 @@ def catalog(*, include_ticket_plan=True):
     # Current governance keys are optional for upgraded 1.8.9 configurations; the
     # code applies the documented defaults when they are absent. Bootstrap writes them.
     execution = schemas["project-config"]["properties"]["execution"]
-    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities", "child_env_strip_extra"]),
+    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities", "child_env_strip_extra", "max_lanes"]),
                             (execution["properties"]["host_broker"], ["resources"]),
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):
@@ -1091,6 +1181,7 @@ def catalog(*, include_ticket_plan=True):
     # snapshot; historical records can remain absent/null, never relabelled.
     for name in ("work-dispatch", "specialist-dispatch"):
         schemas[name]["properties"]["operating_hash"] = nullable(DIGEST)
+    schemas.update(status_report_schemas())
     for name, schema in schemas.items():
         schema.update({"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": f"urn:awf:1.2:{name}",
                        "title": f"Agentic Workflow 1.2 — {name}"})
