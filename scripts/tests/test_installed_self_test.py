@@ -2,6 +2,11 @@
 
 Source-only tests must skip (via .agentic/tests/source_only.py), never error,
 when scripts/, tools/, root documents and historical fixtures are absent.
+
+Full Windows runs may select an approved budget with
+AWF_INSTALLED_SELF_TEST_TIMEOUT_SECONDS: ASCII decimal seconds, 3600 through
+86400 inclusive (default 3600). Any outer watchdog needs sufficient approved
+time for that budget and setup. The installed suite and its assertions stay whole.
 """
 from __future__ import annotations
 from contextlib import redirect_stderr, redirect_stdout
@@ -45,6 +50,23 @@ def install_timeout_seconds(observed_seconds):
 INSTALL_TIMEOUT_SECONDS = install_timeout_seconds(96.3)
 
 
+def installed_self_test_timeout_seconds(environ):
+    """Validate the installed-suite override before any expensive setup."""
+    name = "AWF_INSTALLED_SELF_TEST_TIMEOUT_SECONDS"
+    if name not in environ:
+        return 3600
+    value = environ[name]
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        try:
+            seconds = int(value.lstrip("0") or "0")
+        except ValueError:
+            pass
+        else:
+            if 3600 <= seconds <= 86400:
+                return seconds
+    raise ValueError(f"{name} must be an ASCII decimal integer from 3600 through 86400")
+
+
 def run_with_timeout(command, *, timeout, evidence_parent=None, **kwargs):
     # Only the installed self-test opts into bounded, durable evidence. Other
     # callers retain subprocess.run semantics and complete output reporting.
@@ -81,6 +103,61 @@ def run_with_timeout(command, *, timeout, evidence_parent=None, **kwargs):
 
 
 class InstallSubprocessTimeoutTests(unittest.TestCase):
+    def test_installed_self_test_budget_defaults_to_one_hour_and_accepts_a_validated_override(self):
+        name = "AWF_INSTALLED_SELF_TEST_TIMEOUT_SECONDS"
+        self.assertEqual(3600, installed_self_test_timeout_seconds({}))
+        for value, expected in (("3600", 3600), ("21600", 21600), ("86400", 86400),
+                                ("0003600", 3600), ("0" * 5000 + "3600", 3600)):
+            with self.subTest(value=repr(value)[:80]):
+                self.assertEqual(expected, installed_self_test_timeout_seconds({name: value}))
+
+    def test_installed_self_test_budget_rejects_invalid_overrides(self):
+        name = "AWF_INSTALLED_SELF_TEST_TIMEOUT_SECONDS"
+        invalid = ("0", "-1", "3599", "86401", "1e4", " 7200", "abc", "",
+                   "+7200", "7200.0", "7200 ", "7200\n", "\t7200", "7_200",
+                   "\u0667\u0662\u0660\u0660", "\uff17\uff12\uff10\uff10",
+                   None, 7200, 7200.0, True, b"7200", "9" * 5000)
+        for value in invalid:
+            with self.subTest(value=repr(value)[:80]):
+                with self.assertRaisesRegex(ValueError, name):
+                    installed_self_test_timeout_seconds({name: value})
+
+    def test_installed_self_test_budget_is_validated_before_setup(self):
+        with mock.patch.dict(os.environ, AWF_INSTALLED_SELF_TEST_TIMEOUT_SECONDS="invalid"), \
+                mock.patch(__name__ + ".install") as installer, \
+                mock.patch(__name__ + ".run_with_timeout") as runner:
+            case = InstalledSelfTestTests(
+                "test_manifest_only_install_self_test_has_no_failures_or_errors")
+            with self.assertRaisesRegex(ValueError, "AWF_INSTALLED_SELF_TEST_TIMEOUT_SECONDS"):
+                case.test_manifest_only_install_self_test_has_no_failures_or_errors()
+        installer.assert_not_called()
+        runner.assert_not_called()
+
+    def test_installed_self_test_budget_reaches_only_the_suite_invocation(self):
+        def completed(command, **kwargs):
+            if "--checks-only" in command:
+                report = {"status": "PASS", "tests": {"failures": 0, "errors": 0,
+                    "skipped": [{"test": module + ".fixture", "reason": "requires committed HEAD"}
+                                for module in ("test_continuous_controller", "test_heavy_validation")]}}
+                Path(command[command.index("--report") + 1]).write_text(
+                    json.dumps(report), encoding="utf-8")
+            unborn_probe = command[-3:] == ["rev-parse", "--verify", "HEAD"]
+            return subprocess.CompletedProcess(command, 1 if unborn_probe else 0, "", "")
+
+        with mock.patch.dict(os.environ, AWF_INSTALLED_SELF_TEST_TIMEOUT_SECONDS="21600"), \
+                mock.patch(__name__ + ".install"), \
+                mock.patch(__name__ + ".installed_paths", return_value=(None, Path(sys.executable), None)), \
+                mock.patch(__name__ + ".run_with_timeout", side_effect=completed) as runner:
+            case = InstalledSelfTestTests(
+                "test_manifest_only_install_self_test_has_no_failures_or_errors")
+            case.test_manifest_only_install_self_test_has_no_failures_or_errors()
+        self.assertEqual([600, 1200, INSTALL_TIMEOUT_SECONDS, INSTALL_TIMEOUT_SECONDS, 21600],
+                         [call.kwargs["timeout"] for call in runner.call_args_list])
+        suite_call = runner.call_args_list[-1]
+        self.assertIn("--checks-only", suite_call.args[0])
+        self.assertEqual(ROOT / ".tmp-tests/installed-self-test-evidence",
+                         suite_call.kwargs["evidence_parent"])
+
     def capture_child(self, parent, code, timeout=3, **kwargs):
         # Before the implementation, exercise the original helper without a new
         # keyword: RED must demonstrate missing evidence, never a missing API.
@@ -488,6 +565,7 @@ class InstalledSelfTestTests(unittest.TestCase):
         self.assertNotEqual(0, head.returncode, "fixture unexpectedly has a commit")
 
     def test_manifest_only_install_self_test_has_no_failures_or_errors(self):
+        suite_timeout = installed_self_test_timeout_seconds(os.environ)
         pin = hashlib.sha256((ROOT / "MANIFEST.json").read_bytes()).hexdigest()
         with tempfile.TemporaryDirectory(prefix="awf-installed-self-test-") as raw:
             project = Path(raw) / "project"
@@ -524,7 +602,7 @@ class InstalledSelfTestTests(unittest.TestCase):
             done = run_with_timeout(
                 [str(interpreter), "-B", str(project / ".agentic/scripts/self_test.py"),
                  "--checks-only", "--report", str(report_path)], cwd=project,
-                capture_output=True, text=True, timeout=3600,
+                capture_output=True, text=True, timeout=suite_timeout,
                 evidence_parent=ROOT / '.tmp-tests/installed-self-test-evidence',
                 env=child_env(dict(os.environ, PYTHONDONTWRITEBYTECODE="1")))
             report = json.loads(report_path.read_text(encoding="utf-8"))
