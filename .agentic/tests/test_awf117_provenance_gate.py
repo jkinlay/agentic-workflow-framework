@@ -17,6 +17,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from source_only import skip_unless_source_repo
 
 
+def _rebind_posting_comment(bundle, posting, verdict, comment):
+    import base64
+    from agentic.canonical import canonical, loads, sha256
+    from agentic.gates import (
+        posting_collector_receipt_sha256, review_round_receipt_sha256,
+    )
+    observation = verdict["posting_observation"]
+    observation.update(comment_bytes=comment,
+                       comment_sha256=sha256(comment.encode("utf-8")))
+    provider = loads(base64.b64decode(
+        observation["provider_response_bytes"]["data"]).decode("utf-8"))
+    provider["comment_body"] = comment
+    raw = canonical(provider)
+    observation.update(provider_response_bytes={"encoding": "base64",
+        "data": base64.b64encode(raw).decode("ascii")},
+        provider_response_sha256=sha256(raw), collector_receipt_sha256="0" * 64)
+    registration = posting[observation["producer_id"]]
+    digest = posting_collector_receipt_sha256(
+        observation, sha256(canonical(observation)), registration)
+    observation["collector_receipt_sha256"] = digest
+    registration["receipts"][observation["run_id"]] = digest
+    receipt = next(item for item in bundle["review_round_receipts"]
+                   if item["critic_artifact_binding"]["round"] == verdict["round"])
+    raw = canonical(observation)
+    receipt.update(posting_observation_json={"encoding": "base64",
+        "data": base64.b64encode(raw).decode("ascii")},
+        posting_observation_sha256=sha256(raw))
+    entry = next(item for item in bundle["evidence_registry"]
+                 if item["uri"] == f"urn:awf:review-round-receipt:{verdict['round']}")
+    entry["sha256"] = review_round_receipt_sha256(receipt)
+
+
 class ProvenanceGateTests(unittest.TestCase):
     def exercise_refusal(self, trailer, reason):
         # Imports stay inside the test: a planned production member must never
@@ -139,6 +171,9 @@ class ProvenanceGateTests(unittest.TestCase):
                 record["binding"] = copy.deepcopy(binding)
             bind_review_admission(bundle)
             posting = bind_production_posting_fixture(config, bundle)
+            for verdict in bundle["review_verdicts"]:
+                _rebind_posting_comment(bundle, posting, verdict,
+                    verdict["posting_observation"]["comment_bytes"])
             # Doc 45 owner question 1: use the fixed merge_base..head fixture;
             # do not decide whether an additional observed default OID is needed.
             # Questions 3/4 (override authority/carrier location) are out of scope.
@@ -199,3 +234,311 @@ class MissingProvenanceTests(unittest.TestCase):
         self.assertEqual("NOT_READY", gate["conclusion"])
         self.assertTrue(any("Commit provenance runtime inputs are missing" in risk
                             for risk in gate["residual_risks"]))
+
+
+class RemainderGateTests(unittest.TestCase):
+    """AC4/AC5 use real commit objects and fully rebound posting receipts."""
+
+    def prepare(self, *, rounds=1):
+        from test_review_policy import (
+            Fixture, bind_production_posting_fixture, bind_review_admission,
+        )
+        Fixture.setUpClass()
+        self.fixture = Fixture(methodName="runTest")
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.setUp()
+        self.bundle = self.fixture.bundle
+        self.config = self.fixture.config
+        if rounds > 1:
+            from test_review_tiers_195_gates import ReviewTiers195GateTests
+            ReviewTiers195GateTests._review_history(self.fixture, rounds)
+        bind_review_admission(self.bundle)
+        self.posting = bind_production_posting_fixture(self.config, self.bundle)
+        for verdict in self.bundle["review_verdicts"]:
+            self.set_comment(verdict, verdict["posting_observation"]["comment_bytes"])
+
+    def set_comment(self, verdict, comment):
+        _rebind_posting_comment(self.bundle, self.posting, verdict, comment)
+
+    def gate(self):
+        from agentic.gates import evaluate
+        from agentic.lifecycle import definition
+        from test_review_policy import NOW
+        return evaluate(self.config, definition(), self.bundle,
+                        self.fixture.contracts, NOW,
+                        posting_collector_registry=self.posting)
+
+    def assert_ready(self):
+        gate = self.gate()
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"], gate)
+        return gate
+
+    def assert_carrier_refused(self):
+        gate = self.gate()
+        self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
+        self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
+        self.assertEqual("NOT_READY", gate["conclusion"])
+        self.assertEqual("PASS", gate["gates"]["provenance"]["result"])
+
+    def test_ac4_matching_carriers_accept_historical_heads(self):
+        self.prepare(rounds=2)
+        self.assertNotEqual(self.bundle["candidate"]["head_sha"],
+                            self.bundle["review_verdicts"][0]["head_sha"])
+        self.assert_ready()
+
+    def test_ac4_missing_terminal_carrier_refuses_rebound_evidence(self):
+        self.prepare()
+        self.assert_ready()
+        verdict = self.bundle["review_verdicts"][-1]
+        self.set_comment(verdict, self.bundle["review_round_receipts"][-1]["review_verdict_json"])
+        self.assert_carrier_refused()
+
+    def test_ac4_missing_nonterminal_carrier_refuses_rebound_evidence(self):
+        self.prepare(rounds=2)
+        self.assert_ready()
+        verdict = self.bundle["review_verdicts"][0]
+        self.set_comment(verdict, self.bundle["review_round_receipts"][0]["review_verdict_json"])
+        self.assert_carrier_refused()
+
+    def test_ac4_wrong_uuid_duplicate_misplaced_and_lookalike_carriers(self):
+        self.prepare(rounds=2)
+        self.assert_ready()
+        verdict = self.bundle["review_verdicts"][0]
+        text = self.bundle["review_round_receipts"][0]["review_verdict_json"]
+        carrier = "Critic run: " + verdict["run_id"]
+        variants = {
+            "wrong_uuid": text + "\n\nCritic run: 11111111-1111-4111-8111-111111111111",
+            "duplicate": text + "\n\n" + carrier + "\n" + carrier,
+            "misplaced": carrier + "\n\n" + text,
+            "lookalike": text + "\n\n" + carrier.replace("Critic", "Cr\u0456tic"),
+            "variant": text + "\n\n" + carrier.replace("Critic", "critic"),
+            "nil_uuid": text + "\n\nCritic run: 00000000-0000-0000-0000-000000000000",
+        }
+        for name, comment in variants.items():
+            with self.subTest(case=name):
+                self.set_comment(verdict, comment)
+                self.assert_carrier_refused()
+
+    def test_ac4_missing_run_id_already_refuses(self):
+        from agentic import ValidationError
+        self.prepare()
+        self.assert_ready()
+        del self.bundle["review_verdicts"][0]["run_id"]
+        with self.assertRaises(ValidationError):
+            self.gate()
+
+    def test_ac4_wrong_head_or_result_digest_already_refuses(self):
+        for field, value in (("head_sha", "9" * 40), ("result_sha256", "f" * 64)):
+            with self.subTest(field=field):
+                self.prepare()
+                self.assert_ready()
+                self.bundle["review_verdicts"][0]["critic_artifact_binding"][field] = value
+                self.assertEqual("NOT_READY", self.gate()["conclusion"])
+
+    def prepare_override(self, *, superseding=False, labels=True, refusing=True):
+        from agentic.canonical import fingerprint
+        from agentic.provenance import (
+            check_commit_range, record_owner_override,
+            supersede_owner_override,
+        )
+        from test_review_policy import bind_production_posting_fixture, bind_review_admission
+        self.prepare()
+        self.context = self.config.commit_provenance
+        self.repository = self.config.repository
+        candidate = self.bundle["candidate"]
+        if refusing:
+            environment = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                GIT_AUTHOR_NAME="AWF Fixture", GIT_COMMITTER_NAME="AWF Fixture",
+                GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+                GIT_AUTHOR_DATE="2026-09-09T11:00:00Z", GIT_COMMITTER_DATE="2026-09-09T11:00:00Z")
+            result = subprocess.run(["git", "commit-tree", candidate["head_tree_sha"],
+                "-p", candidate["merge_base_sha"], "-m", "Untagged fixture implementation"],
+                cwd=self.repository, env=environment, check=True, capture_output=True,
+                text=True, timeout=30)
+            head = result.stdout.strip()
+            candidate.update(head_sha=head, tested_merge_sha=head)
+            self.context["provider_observation"]["head"] = head
+            self.bundle["ci"]["checks"][0]["tested_commit_sha"] = head
+            self.bundle["publication_scan"].update(head_sha=head, commits_scanned=[head])
+            for verdict in self.bundle["review_verdicts"]:
+                verdict["head_sha"] = head
+                verdict["candidate_binding"]["head_sha"] = head
+            self.fixture.rebind()
+            bind_review_admission(self.bundle)
+            self.posting = bind_production_posting_fixture(self.config, self.bundle)
+            verdict = self.bundle["review_verdicts"][0]
+            self.set_comment(verdict, verdict["posting_observation"]["comment_bytes"])
+        checked = check_commit_range(self.repository, candidate["merge_base_sha"],
+                                    candidate["head_sha"], **self.context)
+        self.assertEqual("REFUSE" if refusing else "PASS", checked["status"])
+        if refusing:
+            self.assertIn("missing Writer trailer", checked["refusals"][0]["reason"])
+        payload = {"config_sha256": "a" * 64, "trusted_owner_ids": [1001]}
+        self.owner_config = {**payload,
+            "binding_sha256": fingerprint("provenance_owner_config", payload)}
+        state = {}
+        record = record_owner_override(state, who=1001, when="2026-09-09T11:30:00Z",
+            why="Reviewed exceptional provenance", pr=candidate["pr_number"],
+            covered_shas=[candidate["head_sha"]], reviewed_owner_config=self.owner_config)
+        predecessors = []
+        if superseding:
+            predecessors = [record]
+            record = supersede_owner_override(state, who=1001, when="2026-09-09T11:40:00Z",
+                why="Reviewed superseding provenance", pr=candidate["pr_number"],
+                covered_shas=[candidate["head_sha"]], supersedes=record["override_sha256"],
+                reviewed_owner_config=self.owner_config)
+        self.context.update(override=record, override_predecessors=predecessors,
+                            reviewed_owner_config=self.owner_config)
+        provider = self.context["provider_observation"]
+        provider.update(config_sha256=payload["config_sha256"], trusted_owner_ids=[9999],
+                        labels=["fallback: bot-written"] if labels else [])
+        self.refresh_override_comment()
+
+    def refresh_override_comment(self):
+        from agentic.canonical import sha256
+        from agentic.provenance import render_owner_override
+        body = render_owner_override(self.context["override"])
+        self.context["provider_observation"]["comments"] = [{
+            "id": 501, "url": "https://github.com/fixture/example/pull/7#issuecomment-501",
+            "actor_id": self.context["override"]["who"], "body": body,
+            "body_sha256": sha256(body.encode("utf-8")),
+        }]
+
+    def reseal_override(self):
+        from agentic.canonical import fingerprint
+        record = self.context["override"]
+        record["override_sha256"] = fingerprint("provenance_override",
+            {key: value for key, value in record.items() if key != "override_sha256"})
+        self.refresh_override_comment()
+
+    def assert_override_refused(self):
+        gate = self.gate()
+        self.assertEqual("FAIL", gate["gates"]["provenance"]["result"], gate)
+        self.assertEqual("NOT_READY", gate["conclusion"])
+        self.assertTrue(all(value["result"] in {"PASS", "N_A"}
+                            for name, value in gate["gates"].items() if name != "provenance"), gate)
+
+    def test_ac5_recorded_provider_override_passes_real_refusal(self):
+        self.prepare_override()
+        from agentic.canonical import fingerprint
+        from agentic.provenance import check_commit_range
+        candidate = self.bundle["candidate"]
+        checked = check_commit_range(self.repository, candidate["merge_base_sha"],
+                                    candidate["head_sha"], **self.context)
+        self.assertEqual("PASS", checked["status"])
+        self.assertEqual("OVERRIDDEN", checked["commits"][0]["status"])
+        gate = self.assert_ready()
+        self.assertIn("urn:awf:input:commit_provenance:" + fingerprint("gate-input", checked),
+                      gate["gates"]["provenance"]["evidence"])
+
+    def test_ac5_override_authority_remains_label_independent(self):
+        self.prepare_override(labels=False)
+        self.assert_ready()
+
+    def test_ac5_ordered_supersession_chain_passes(self):
+        self.prepare_override(superseding=True)
+        self.assert_ready()
+
+    def test_ac5_closed_explicit_no_override_context_passes(self):
+        self.prepare()
+        self.config.commit_provenance.update(override=None, override_predecessors=[],
+                                             reviewed_owner_config=None)
+        self.assert_ready()
+
+    def test_ac5_exact_fallback_label_alone_refuses(self):
+        self.prepare_override()
+        for key in ("override", "override_predecessors", "reviewed_owner_config"):
+            del self.context[key]
+        self.assert_override_refused()
+
+    def test_ac5_invalid_authority_and_coverage_refuse(self):
+        cases = ("stale_digest", "malformed_digest", "wrong_pr", "wrong_repository",
+                 "untrusted_actor", "missing_comment", "ambiguous_comment",
+                 "comment_digest", "owner_binding", "owner_config_mismatch",
+                 "caller_owner_list", "missing_owner_config", "outside_range",
+                 "unnecessary_coverage", "unknown_context_key", "partial_context",
+                 "orphan_predecessors", "nonlist_predecessors")
+        for case in cases:
+            with self.subTest(case=case):
+                self.prepare_override(refusing=case != "unnecessary_coverage")
+                record = self.context["override"]
+                provider = self.context["provider_observation"]
+                if case in {"stale_digest", "malformed_digest"}:
+                    record["override_sha256"] = "f" * 64 if case == "stale_digest" else "invalid"
+                elif case in {"wrong_pr", "untrusted_actor", "outside_range"}:
+                    field, value = {"wrong_pr": ("pr", 8), "untrusted_actor": ("who", 9999),
+                                    "outside_range": ("covered_shas", ["9" * 40])}[case]
+                    record[field] = value
+                    self.reseal_override()
+                elif case == "wrong_repository":
+                    provider["repository_id"] += 1
+                elif case == "missing_comment":
+                    provider["comments"] = []
+                elif case == "ambiguous_comment":
+                    provider["comments"].append(dict(provider["comments"][0], id=502))
+                elif case == "comment_digest":
+                    provider["comments"][0]["body_sha256"] = "f" * 64
+                elif case == "owner_binding":
+                    self.owner_config["binding_sha256"] = "f" * 64
+                elif case == "owner_config_mismatch":
+                    provider["config_sha256"] = "b" * 64
+                elif case == "caller_owner_list":
+                    self.context["trusted_owner_ids"] = [1001]
+                elif case == "missing_owner_config":
+                    self.context["reviewed_owner_config"] = None
+                elif case == "unknown_context_key":
+                    self.context["candidate_summary"] = {"status": "PASS"}
+                elif case == "partial_context":
+                    del self.context["override_predecessors"]
+                elif case == "orphan_predecessors":
+                    self.context.update(override=None, override_predecessors=[record])
+                elif case == "nonlist_predecessors":
+                    self.context["override_predecessors"] = {}
+                self.assert_override_refused()
+
+    def test_ac5_invalid_predecessor_chain_refuses(self):
+        for case in ("missing", "wrong_link", "stale_predecessor", "reversed"):
+            with self.subTest(case=case):
+                self.prepare_override(superseding=True)
+                if case == "missing":
+                    self.context["override_predecessors"] = []
+                elif case == "wrong_link":
+                    self.context["override"]["supersedes"] = "f" * 64
+                    self.reseal_override()
+                elif case == "stale_predecessor":
+                    self.context["override_predecessors"][0]["why"] = "Changed after sealing"
+                elif case == "reversed":
+                    self.context["override_predecessors"] = [self.context["override"],
+                        self.context["override_predecessors"][0]]
+                self.assert_override_refused()
+
+    def test_ac5_valid_override_keeps_unrelated_ci_gate_required(self):
+        self.prepare_override()
+        self.bundle["ci"]["checks"][0]["conclusion"] = "failure"
+        gate = self.gate()
+        self.assertEqual("PASS", gate["gates"]["provenance"]["result"])
+        self.assertEqual("FAIL", gate["gates"]["required_ci"]["result"])
+        self.assertEqual("NOT_READY", gate["conclusion"])
+
+
+class GeneratedProvenanceParityTests(unittest.TestCase):
+    @skip_unless_source_repo("AC6 compares source producers with generated contracts", "scripts/generate_contracts.py")
+    def test_ac6_inspected_schema_template_and_envelope_parity(self):
+        import json
+        from generate_contracts import catalog
+        from generate_examples import sample
+        schemas = catalog()
+        for name in ("evidence-bundle", "final-gate", "review-cap-disposition",
+                     "review-completion", "review-verdict"):
+            with self.subTest(schema=name):
+                self.assertEqual(schemas[name], json.loads(
+                    (ROOT / f".agentic/schemas/{name}.schema.json").read_text(encoding="utf-8")))
+        for name in ("review-verdict", "review-cap-disposition"):
+            with self.subTest(template=name):
+                template = json.loads((ROOT / f".agentic/templates/{name}.yaml").read_text(encoding="utf-8"))
+                self.assertEqual("UNFILLED", template["status"])
+                self.assertEqual(sample(schemas[name], schemas), template["record"])
+        envelope = json.loads((ROOT / ".agentic/review-loop/critic-result.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual("#/$defs/criticBinding/properties/critic_run_carrier",
+                         envelope["x-awf-sole-critic-run-carrier"])
+        self.assertIn("critic_run_carrier", envelope["$defs"]["criticBinding"]["required"])

@@ -97,7 +97,8 @@ class CollectorOvercapApprovalTests(Fixture):
             self.host.responses[f"issues/comments/{comment_id}"] = {
                 "id": comment_id,
                 "html_url": comment_url,
-                "body": receipt["review_verdict_json"],
+                "body": (receipt["review_verdict_json"]
+                         + "\n\nCritic run: " + verdict["run_id"]),
             }
             body_lines.extend([
                 f'<a id="review-verdict-{verdict["round"]}-{verdict["record_id"]}"></a>',
@@ -248,6 +249,18 @@ class CollectorOvercapApprovalTests(Fixture):
                 NOW,
                 posting_collector_registry={},
             )
+
+    def test_carrierless_provider_comment_is_refused(self):
+        verdict = self.bundle["review_verdicts"][0]
+        receipt = self.bundle["review_round_receipts"][0]
+        self.host.responses[f"issues/comments/{verdict['round']}"]["body"] = (
+            receipt["review_verdict_json"])
+        # Recollect and reseal the actual provider bytes so only the carrier is missing.
+        self._install_real_posting_observations()
+        gate = self._collect_and_gate()
+        self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
+        self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
+        self.assertEqual("NOT_READY", gate["conclusion"])
 
     def test_real_collector_without_approval_still_fails_closed(self):
         self.host.responses[
