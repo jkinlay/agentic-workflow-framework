@@ -503,7 +503,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `NOTICE` | `778aa28d13e57cd0626adeb12099588fe0cf5e3eaa40e059b2409e855931ac57` |
 | `OPERATING_CONFIG.yaml` | `77dd1812782ef4ee7aeb5a53336da92fc8841cc9c621db3d21f17b00be4b64fe` |
 | `PUBLISHER.json` | `721657a4273781e068d71a7365644a09ba152a00bd0b97ab1789843c3086f481` |
-| `README.md` | `0eaa04da072cdccf6c28a388af50985b7f39a022289f281ab09d2a760adce637` |
+| `README.md` | `b9dd30fe5d89daacb3e94492a0e41bde5081ef6fb37a6cf47554d386a57bceaa` |
 | `RED-TEAM-DISPOSITION-v1.8.1.md` | `6d48090d6c3372a1eb8017573ab41c1afd5f11e4230ad309087844e4bde5f084` |
 | `RED-TEAM-DISPOSITION-v1.8.2.md` | `50b16e15fa959cc4391157b6642aa49cb831b4b85f76bbbc70809154a4110a39` |
 | `RED-TEAM-DISPOSITION-v1.8.3.md` | `6722c30e02300a4db6a5bb32012a419aba543822541d7c865e669a515dc3343c` |
@@ -517,6 +517,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `VERSION` | `db99cdaafbc939f297091cf6577ce73a1f8e041792b32d86e04eb07c9563726b` |
 | `docs/AWF-1.9.2-Showcase-Presentation.html` | `e22beff2c81e6672bb171a824d53755efcda0b13d2090e30a42b1b7989b8b57a` |
 | `docs/AWF-1.9.2-Speaker-Script.md` | `1defc7b9c2e59e59d62a65f54883f81076bf67a1fa418b409c4f65af370b1f3b` |
+| `docs/AWF-1.9.5-User-Interface.md` | `12358a8e7bb5e209f0da8e3abf3b05f8e4a732afbfa7e93effcf98a652fac6ea` |
+| `docs/AWF-1.9.5-Whats-New.md` | `8ff7384718a0012076bc3b94eea39330d66e495d4cbddbab121b27c40767b831` |
 | `docs/runbook/00-runbook-introduction.md` | `75a442d54b01878d933d3e71eaa8556fb94b407b5a30666c6b84fc28d8325589` |
 | `docs/runbook/01-runbook-prerequisites.md` | `a4620b3898181d9e7aa1cf6dc1ebb6f2a7a6c2cbfd9e30fc385da34fb5e587c2` |
 | `docs/runbook/02-runbook-required-inputs.md` | `06558040d03486d24a49177a90696254796b29a1a562be5281eb22adb735e65e` |
@@ -616,6 +618,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_ac42_e2e.py` | `ea8b2909cf3c928e8c21f49afcb85000bb7d9f78269069f877926965784e4548` |
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
+| `scripts/tests/test_awf195_publication_docs.py` | `d927c7d764ad5a976d7f679e82e0c4fe179c02dfbbb025e39ed821d98a263edf` |
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
 | `scripts/tests/test_awf88_resource_ceilings.py` | `593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `8b37406758f5165c74b841f9e9b54c434fd6974aa13d288c799b31b47b6409ef` |
