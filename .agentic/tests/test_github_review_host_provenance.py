@@ -523,12 +523,12 @@ class AmendmentWriterTests(unittest.TestCase):
         command(self.worker, 'config', 'user.email', 'fixture@example.invalid')
         command(self.worker, 'config', 'commit.gpgsign', 'false')
         command(self.worker, 'remote', 'add', 'origin', str(self.remote))
-        (self.worker / 'a.txt').write_text('base\n', encoding='utf-8')
+        (self.worker / 'a.txt').write_text('base\n', encoding='utf-8', newline='\n')
         command(self.worker, 'add', 'a.txt')
         command(self.worker, 'commit', '-m', 'base')
         self.base = command(self.worker, 'rev-parse', 'HEAD')
         command(self.worker, 'checkout', '-b', 'codex/test')
-        (self.worker / 'a.txt').write_text('candidate\n', encoding='utf-8')
+        (self.worker / 'a.txt').write_text('candidate\n', encoding='utf-8', newline='\n')
         command(self.worker, 'commit', '-am', 'candidate')
         self.head = command(self.worker, 'rev-parse', 'HEAD')
         command(self.worker, '-c', 'protocol.file.allow=always', 'push', 'origin',
@@ -578,7 +578,7 @@ class AmendmentWriterTests(unittest.TestCase):
             CONTROLLER_RUN_ID, self.run, self.run, result)
 
     def _agent(self, role, candidate, findings, run_id, files=None):
-        (self.worker / 'a.txt').write_text('amended\n', encoding='utf-8')
+        (self.worker / 'a.txt').write_text('amended\n', encoding='utf-8', newline='\n')
         return {'candidate': candidate, 'outcome': 'CHANGED', 'summary': 'changed'}
 
     def test_amendment_commit_uses_observed_codex_identity(self):

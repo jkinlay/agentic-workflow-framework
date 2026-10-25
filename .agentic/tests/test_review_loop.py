@@ -499,11 +499,11 @@ class HostTests(unittest.TestCase):
         command('-C',str(worker),'config','user.name','AWF fixture')
         command('-C',str(worker),'config','user.email','fixture@example.invalid')
         command('-C',str(worker),'config','commit.gpgsign','false')
-        (worker/'src').mkdir(); (worker/'src/a.py').write_text('value = 1\n')
+        (worker/'src').mkdir(); (worker/'src/a.py').write_text('value = 1\n', newline='\n')
         command('-C',str(worker),'add','src/a.py'); command('-C',str(worker),'commit','-m','fixture baseline')
         base=command('-C',str(worker),'rev-parse','HEAD')
         command('-C',str(worker),'checkout','-b','codex/test')
-        (worker/'src/a.py').write_text('value = 2\n')
+        (worker/'src/a.py').write_text('value = 2\n', newline='\n')
         command('-C',str(worker),'commit','-am','fixture candidate')
         head=command('-C',str(worker),'rev-parse','HEAD')
         command('init','--bare',str(remote))
@@ -539,7 +539,7 @@ class HostTests(unittest.TestCase):
         }
         driver.validate_local_provenance = lambda *args, **kwargs: {'status': 'PASS'}
         def agent(role,current,findings,run_id,files=None):
-            (worker/'src/a.py').write_text('value = 3\n')
+            (worker/'src/a.py').write_text('value = 3\n', newline='\n')
             record_fixture_codex_identity(driver, run_id)
             return {'candidate':current,'outcome':'CHANGED','summary':'Synthetic file edit; no model called'}
         driver.agent=agent
