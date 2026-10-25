@@ -707,27 +707,53 @@ def release_member(path):
 
 
 def merge_operating_ignores(existing, required):
-    """Append the narrow release block without rewriting project-owned bytes."""
+    """Replace complete AWF blocks while preserving every outside project byte."""
     if not required.endswith(b"\n") or b"\x00" in required:
         raise ValidationError("Invalid operating ignore template")
     if existing is None:
         return required
-    # Keep this block last: earlier project negations cannot unignore locks.
-    # A later owner edit is preserved, with a fresh block appended on adoption.
-    if existing.endswith(required):
-        return existing
+    header = b"# AWF operating recovery files are local; changes/ is versioned audit evidence."
+    terminal = b".awf-*.tmp"
+    spans = []
+    start = None
+    # Match only LF/CRLF lines, without decoding or normalizing owner bytes.
+    for match in re.finditer(rb"[^\n]*\n|[^\n]+$", existing):
+        raw = match.group()
+        line = raw[:-1].removesuffix(b"\r") if raw.endswith(b"\n") else raw
+        if line == header:
+            if start is not None:
+                raise ValidationError("Nested AWF operating ignore block; preserve project bytes and repair boundaries")
+            start = match.start()
+        elif line.startswith(header) or (line.startswith(b"# AWF ") and header.startswith(line)):
+            raise ValidationError("Partial AWF operating ignore header; preserve project bytes and repair boundaries")
+        elif line == terminal and start is not None:
+            spans.append((start, match.end()))
+            start = None
+    if start is not None:
+        raise ValidationError("Incomplete AWF operating ignore block; preserve project bytes and repair boundaries")
+    if spans:
+        parts = []
+        previous = 0
+        for index, (start, end) in enumerate(spans):
+            parts.append(existing[previous:start])
+            if index == 0:
+                parts.append(required)
+            previous = end
+        parts.append(existing[previous:])
+        return b"".join(parts)
+    # Without a recognized block, append after existing project negations.
     return existing + (b"\n" if existing and not existing.endswith(b"\n") else b"") + required
 
 
 def operating_ignore_plan(existing, required):
     """Return the byte-exact project-owned ignore merge and its noninstalling plan."""
     proposed = merge_operating_ignores(existing, required)
-    appended = proposed if existing is None else proposed[len(existing):]
+    payload = required if proposed != existing else b""
     report = {
         "status": "SEEDED" if existing is None else "UNCHANGED" if proposed == existing else "MERGED",
         "previous_sha256": None if existing is None else sha256(existing),
         "proposed_sha256": sha256(proposed),
-        "added_lines": appended.decode("utf-8").splitlines(),
+        "added_lines": payload.decode("utf-8").splitlines(),
     }
     return proposed, report
 
