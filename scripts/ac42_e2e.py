@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -165,6 +166,75 @@ def owner_blob(project, commit, name, max_bytes=OWNER_BLOB_MAX_BYTES):
     if done.returncode != 0 or len(done.stdout) != int(size.stdout):
         raise RuntimeError(f"{name} at {commit} could not be read completely")
     return done.stdout
+
+
+def expected_project_config(raw):
+    """Derive the exact bytes after the documented additive config edits."""
+    version_pattern = re.compile(
+        rb'(?P<prefix>["\']?expected_workflow_version["\']?[ \t]*:[ \t]*)'
+        rb'(?P<quote>["\']?)[0-9]+\.[0-9]+\.[0-9]+(?P=quote)')
+    expected, count = version_pattern.subn(
+        lambda match: match.group("prefix") + match.group("quote")
+        + VERSION.encode("ascii") + match.group("quote"), raw)
+    if count != 1:
+        return None
+
+    newline = b"\r\n" if b"\r\n" in expected else b"\r" if b"\r" in expected else b"\n"
+    identity_fields = ("cloud_id", "provider_project_id", "controller_actor_id")
+    missing = [name for name in identity_fields if not re.search(
+        rb'(?m)^[ \t]*["\']?' + name.encode("ascii") + rb'["\']?[ \t]*:', expected)]
+    if missing:
+        site_pattern = re.compile(rb'(?m)^(?P<indent>[ \t]*)["\']?site["\']?[ \t]*:')
+        sites = list(site_pattern.finditer(expected))
+        if len(sites) != 1:
+            return None
+        indent = sites[0].group("indent")
+        block = b"".join(indent + b'"' + name.encode("ascii") + b'": null,' + newline
+                         for name in missing)
+        expected = expected[:sites[0].start()] + block + expected[sites[0].start():]
+
+    tier_pattern = re.compile(rb'(?m)^[ \t]*["\']?tier3_review["\']?[ \t]*:')
+    if not tier_pattern.search(expected):
+        tier = (b"tier3_review: {roles: [critic, specialist], findings: blocking, "
+                b"max_rounds: 3}")
+        risk_pattern = re.compile(
+            rb'(?m)^[ \t]*["\']?risk_tiers["\']?[ \t]*:[ \t]*\{')
+        risks = list(risk_pattern.finditer(expected))
+        if len(risks) == 1:
+            insertion = risks[0].end()
+            expected = expected[:insertion] + tier + b", " + expected[insertion:]
+        else:
+            execution_pattern = re.compile(
+                rb'(?m)^[ \t]*["\']?execution["\']?[ \t]*:[ \t]*\{')
+            executions = list(execution_pattern.finditer(expected))
+            if risks or len(executions) != 1:
+                return None
+            insertion = executions[0].end()
+            expected = (expected[:insertion] + b"risk_tiers: {" + tier
+                        + b"}, " + expected[insertion:])
+    return expected
+
+
+def project_values_preserved(owner_before, owner_after, config, installed):
+    """Return the exact owner-file preservation result and diagnostic evidence."""
+    changed = {}
+    for name, raw in owner_before.items():
+        after = owner_after.get(name)
+        if after != raw:
+            changed[name] = list(difflib.unified_diff(
+                (raw or b"").decode("utf-8", "replace").splitlines(),
+                (after or b"").decode("utf-8", "replace").splitlines(),
+                lineterm="", n=0))[2:40]
+    # AWF-managed records and the documented append-only .gitignore block.
+    allowed = {config, installed, ".agentic/workflow-version.yaml", ".gitignore"}
+    ignore_after = owner_after.get(".gitignore")
+    ignore_ok = ".gitignore" not in owner_before or (
+        ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
+    expected_config = expected_project_config(owner_before.get(config, b""))
+    config_ok = expected_config is not None and owner_after.get(config) == expected_config
+    ok = set(changed) <= allowed and config_ok and ignore_ok
+    return ok, {"changed": changed, "project_config_exact": config_ok,
+                "gitignore_prefix_preserved": ignore_ok}
 
 
 class Gate:
@@ -398,22 +468,10 @@ def main(argv=None):
         owner_before = {name: blob(base_commit, name) for name in owner_before}
         if any(raw is None for raw in owner_before.values()):
             raise RuntimeError("owner file absent from the base commit")
-        changed = {}
-        for name, raw in owner_before.items():
-            after = blob("HEAD", name)
-            if after != raw:
-                changed[name] = list(difflib.unified_diff((raw or b"").decode("utf-8", "replace").splitlines(),
-                    (after or b"").decode("utf-8", "replace").splitlines(), lineterm="", n=0))[2:40]
-        # AWF-managed records and the documented append-only .gitignore block.
-        allowed = {CONFIG, INSTALLED, ".agentic/workflow-version.yaml", ".gitignore"}
-        ignore_after = blob("HEAD", ".gitignore") if ".gitignore" in owner_before else None
-        ignore_ok = ".gitignore" not in owner_before or (
-            ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
-        config_lines = [line for line in changed.get(CONFIG, []) if line[:1] in "+-"]
-        config_ok = all("expected_workflow_version" in line or line.strip("+- ").startswith(
-            ('"cloud_id"', '"provider_project_id"', '"controller_actor_id"')) for line in config_lines)
-        gate.record("project_values_preserved", set(changed) <= allowed and config_ok and ignore_ok,
-                    {"changed": changed, "gitignore_prefix_preserved": ignore_ok})
+        owner_after = {name: blob("HEAD", name) for name in owner_before}
+        values_ok, values_evidence = project_values_preserved(
+            owner_before, owner_after, CONFIG, INSTALLED)
+        gate.record("project_values_preserved", values_ok, values_evidence)
         gate.record("external_data_unchanged", tree_digest(external) == external_before, external_before)
 
         clone = work / "fresh-clone"
