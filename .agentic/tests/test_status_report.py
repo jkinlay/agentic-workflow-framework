@@ -343,6 +343,46 @@ class OptInReportTests(unittest.TestCase):
     def module(self):
         return importlib.import_module('agentic.status_report_store')
 
+    def assert_identity_reason(self, prepared, code, forbidden):
+        reason = prepared['record']['projection']['identity_failure']
+        self.assertTrue(reason.startswith(code + ': '))
+        self.assertNotIn(forbidden, reason)
+        self.assertEqual(prepared['report']['reason'], reason)
+        for family in ('outstanding', 'priority', 'lanes', 'merge_train', 'eta', 'routing'):
+            self.assertEqual(prepared['report'][family], {'status': 'UNKNOWN', 'reason': reason})
+            self.assertNotIn(forbidden, prepared['report'][family]['reason'])
+        self.assertNotIn(forbidden, prepared['record']['values_json'])
+        self.assertEqual(self.module().replay_report(prepared['record']), prepared['report'])
+
+    def test_provider_identity_reason_redacts_credential_before_projection(self):
+        from agentic.provider_identity import ProviderIdentityError
+        config, request = admitted_fixture()
+        token = 'ghp_' + 'a' * 36
+        error = ProviderIdentityError('IDENTITY_MISMATCH', 'synthetic credential ' + token)
+        with patch.object(self.module(), 'github_identity_preflight', side_effect=error):
+            prepared = self.module().prepare_report(config, request)
+            self.assert_identity_reason(prepared, error.code, token)
+        with patch.object(self.module(), 'github_identity_preflight', side_effect=error), \
+                patch('agentic.child_process.render_diagnostic', side_effect=RuntimeError('synthetic failure')):
+            prepared = self.module().prepare_report(config, request)
+            self.assertEqual(prepared['record']['projection']['identity_failure'],
+                             'IDENTITY_MISMATCH: <redacted>')
+            self.assertEqual(self.module().replay_report(prepared['record']), prepared['report'])
+
+    def test_provider_identity_reason_bounds_oversize_message_before_projection(self):
+        from agentic.provider_identity import ProviderIdentityError
+        config, request = admitted_fixture()
+        tail = 'OVERSIZE_MESSAGE_TAIL_MUST_NOT_PERSIST'
+        message = 'synthetic oversize ' + 'x' * 5000 + tail
+        error = ProviderIdentityError('ACCESS_DENIED', message)
+        with patch.object(self.module(), 'github_identity_preflight', side_effect=error):
+            prepared = self.module().prepare_report(config, request)
+            self.assert_identity_reason(prepared, error.code, tail)
+        reason = prepared['record']['projection']['identity_failure']
+        self.assertNotIn(message, reason)
+        self.assertLessEqual(len(reason.encode('utf-8')), 4096)
+        self.assertTrue(reason.endswith('<truncated>'))
+
     def test_identity_binding_preflights_reject_unobserved_mismatch_and_disabled_jira(self):
         config, request = admitted_fixture()
         for change, reason in [('github', 'IDENTITY_UNOBSERVED'), ('jira', 'IDENTITY_UNOBSERVED'),

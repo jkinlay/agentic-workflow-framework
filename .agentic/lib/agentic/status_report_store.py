@@ -14,6 +14,7 @@ import uuid
 
 from . import ValidationError
 from .canonical import MAX_DOCUMENT_BYTES, canonical, fingerprint, load, loads, timestamp
+from .child_process import render_bounded_diagnostic
 from .contracts import Contracts
 from .intake_assignment import verify_assignment_record
 from .operating import read_operating, validate_snapshot
@@ -62,7 +63,10 @@ def _identity(config, request):
         github_identity_preflight(config, request['github_identity'])
         jira_identity_preflight(config, request['jira_connections'])
     except ProviderIdentityError as exc:
-        return exc.code + ': ' + str(exc)
+        try:
+            return render_bounded_diagnostic(str(exc), code=exc.code)
+        except Exception:
+            return exc.code + ': <redacted>'
     return None
 
 
