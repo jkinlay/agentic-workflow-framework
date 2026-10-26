@@ -1790,6 +1790,7 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 		self.assertIn('For an overlap allowance,', prose)
 		self.assertIn('Its digest binds the dispatch, ticket, stream, exact tuple, allowance, shared path, observation and persistence time.', prose)
 		document_prose = ' '.join(self.doc.split())
+		self.assertIn('ordinary reads cap at 8 MiB', document_prose)
 		for sentence in (
 			'reduce event windows before they accumulate.',
 			'Restart observation must carry the same digest and never relaunch the session.',

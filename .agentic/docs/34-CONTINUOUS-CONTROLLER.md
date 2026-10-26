@@ -26,7 +26,7 @@ Format 2 retains `cycle_sequence` and `seen` digest/last-cycle pairs. Legacy
 digests migrate to age zero; identical observations refresh age. Above 4096,
 evict oldest `(last_cycle, source_id)`, pinning pending sources beyond target.
 Evicted sources may recompute; identical plans never duplicate history.
-Each save checks canonical UTF-8 against 4 MiB; reads cap at 8 MiB.
+Each save checks canonical UTF-8 against 4 MiB; ordinary reads cap at 8 MiB.
 Excess pinned/preserved fields refuse before writing, preserving previous bytes;
 earlier saves/history may persist. Cycles accept at most 4,000 provider events,
 including repeats; excess refuses before state/history writes or dispatch.
@@ -177,7 +177,7 @@ master and its own switch. Disabled paths record
 Missing or non-boolean values refuse the cycle before recovery or provider
 calls. The CLI passes the exact reviewed `controller` mapping to the cycle.
 Disabling automation cancels never-started pending work; uncertain launches
-still reconcile by observation without relaunching.
+reconcile by observation without relaunching.
 
 Install and upgrade require all five automation switches, including
 `auto_transition_jira`, to be false. Operators enable the four dispatch switches
