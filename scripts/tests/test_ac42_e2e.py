@@ -152,10 +152,23 @@ class ProjectValuesPreservedTests(unittest.TestCase):
         self.assertTrue(self.decision(self.AFTER))
 
     def test_non_null_jira_binding_mutation_is_rejected(self):
-        without_tier = self.AFTER.replace(
-            b'{tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}, ', b'{')
-        mutated = without_tier.replace(b'"cloud_id": null', b'"cloud_id": "changed"')
+        mutated = self.AFTER.replace(b'"cloud_id": null', b'"cloud_id": "changed"')
         self.assertFalse(self.decision(mutated))
+
+    def test_existing_non_null_jira_binding_is_preserved_and_mutation_rejected(self):
+        before = self.BEFORE.replace(
+            b'    "enabled": false,\n',
+            b'    "enabled": false,\n'
+            b'    "cloud_id": "abc123",\n')
+        after = self.AFTER.replace(b'"cloud_id": null', b'"cloud_id": "abc123"')
+        harness = _load_harness()
+        expected = harness.expected_project_config(before)
+        self.assertEqual(after, expected)
+        self.assertTrue(harness.project_values_preserved(
+            {self.CONFIG: before}, {self.CONFIG: after}, self.CONFIG, self.INSTALLED)[0])
+        mutated = after.replace(b'"cloud_id": "abc123"', b'"cloud_id": "changed"')
+        self.assertFalse(harness.project_values_preserved(
+            {self.CONFIG: before}, {self.CONFIG: mutated}, self.CONFIG, self.INSTALLED)[0])
 
     def test_comments_and_formatting_outside_exact_edits_are_kept(self):
         self.assertTrue(self.decision(self.AFTER))

@@ -623,7 +623,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/run_windows_unittests.py` | `7dbba35db3a9d8d1ff2cbe34257c912ba479cde2663bcf5494c2821f057798ef` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
-| `scripts/tests/test_ac42_e2e.py` | `e91874388e9f527a56e3ac2020ad5f7ad739d61e11264fa921983afbb27ecadf` |
+| `scripts/tests/test_ac42_e2e.py` | `90e46f02d560103043ffb3c76f4b33db4e1a048c98b218d5b44ce83836861bed` |
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
 | `scripts/tests/test_awf195_publication_docs.py` | `29f7d9286cfc678ba6f21d7510a4ff7c73808656e1f0db0edcdef95d1c2a7c9f` |
