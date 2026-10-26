@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   AC42 release gate (AWF-11): Windows end-to-end upgrade of a recorded AWF
-  installation fixture to this 1.9.4 candidate, with an evidence file.
+  installation fixture to this 1.9.5 candidate, with an evidence file.
 
 .DESCRIPTION
   Run from the root of a fresh clone of the candidate commit, on a Windows

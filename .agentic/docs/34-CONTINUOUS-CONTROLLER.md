@@ -1,6 +1,6 @@
 # Continuous controller contract
 
-Version 1.9.4. Continue until complete, blocked or owner-stopped.
+Version 1.9.5. Continue until complete, blocked or owner-stopped.
 
 ## Production cycle
 

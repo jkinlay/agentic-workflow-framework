@@ -52,6 +52,7 @@ SHOWCASE_PATHS = {
     'Claude outputs/AWF-1.9.2-Speaker-Script.md',
 }
 HISTORICAL_RELEASE_ARTIFACTS = {
+    '.agentic/validation/five-slot-adversarial-regressions.json',  # Historical inventory ID; jk-slack-0606 item 1
     'Claude outputs/awf192-critic-prompt.md',
     'Claude outputs/awf192-fix1-prompt.md',
     'Claude outputs/awf192-fix2-prompt.md',

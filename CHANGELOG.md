@@ -1,5 +1,9 @@
 # Change history
 
+## 1.9.5 (unreleased)
+
+AWF-210: version bump.
+
 1.9.5: AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
 
 ## 1.9.4 — 8 October 2026
@@ -30,7 +34,6 @@ Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--rep
 
 ### Known issues (1.9.4)
 
-- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
 - AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
 - AWF-20 (#47): Source-repo detection: a downstream project with a root `MANIFEST.json` is treated as the AWF source.
 - AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
