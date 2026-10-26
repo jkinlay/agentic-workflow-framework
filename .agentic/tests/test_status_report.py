@@ -364,6 +364,43 @@ class OptInReportTests(unittest.TestCase):
         record['inputs']['request']['binding']['project_id'] = 'changed'
         with self.assertRaises(ValidationError): self.module().replay_report(record)
 
+    def test_library_activation_and_on_demand_formats_and_replay_agree(self):
+        from agentic.operating import default_operating, validate_operating
+        config, request = admitted_fixture()
+        request['inventory'] = snapshot()['inventory']
+        request['merge_train'] = snapshot()['merge_train']
+        operating = validate_operating(default_operating(), config)
+        original = copy.deepcopy((config, request, operating.config))
+        results = []
+        for trigger in ['activation', 'on-demand']:
+            with self.subTest(trigger=trigger):
+                result = self.module().prepare_report(config, request, operating=operating,
+                    verify_inventory=lambda value, binding: copy.deepcopy(value),
+                    verify_merge_train=lambda value, binding: copy.deepcopy(value), trigger=trigger)
+                self.assertEqual(result['status'], 'PREPARED')
+                report, record = result['report'], result['record']
+                self.assertEqual(report['outstanding']['count'], 3)
+                self.assertEqual(report['merge_train']['cadence_minutes'], 15)
+                self.assertEqual(record['trigger'], trigger)
+                self.assertEqual(set(record), {'format', 'record_id', 'created_at', 'trigger',
+                    'project_id', 'source_mode', 'inputs', 'inputs_sha256', 'projection', 'values_json'})
+                self.assertEqual(record['inputs'], dict(configuration=config, request=request,
+                                                       operating=operating.config))
+                self.assertEqual(record['inputs_sha256'], api().inputs_sha256(record['inputs']))
+                self.assertEqual(record['values_json'], api().render_json(report))
+                self.assertEqual(self.module().replay_report(record), report)
+                self.assertEqual(json.loads(api().render_json(report)), report)
+                self.assertEqual({line.split(': ', 1)[0]: json.loads(line.split(': ', 1)[1])
+                                  for line in api().render_text(report).splitlines()}, report)
+                self.assertEqual((config, request, operating.config), original)
+                results.append(result)
+        activation, on_demand = results
+        self.assertEqual(activation['report'], on_demand['report'])
+        self.assertEqual(api().render_text(activation['report']), api().render_text(on_demand['report']))
+        self.assertEqual(api().render_json(activation['report']), api().render_json(on_demand['report']))
+        self.assertEqual({key: value for key, value in activation['record'].items() if key != 'trigger'},
+                         {key: value for key, value in on_demand['record'].items() if key != 'trigger'})
+
     def test_replay_rechecks_identity_even_if_caller_rehashes_modified_inputs(self):
         config, request = admitted_fixture()
         record = self.module().prepare_report(config, request)['record']
