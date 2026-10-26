@@ -972,7 +972,7 @@ class OperatingFileTests(unittest.TestCase):
                     self.stream.flush()
                     raise OSError("injected partial event write")
                 return self.stream.write(raw)
-        def fdopen(fd, mode, buffering=-1, *args, **kwargs):
+        def fdopen(fd, mode="r", buffering=-1, *args, **kwargs):
             stream = original(fd, mode, buffering, *args, **kwargs)
             return PartialWrite(stream) if mode == "wb" else stream
         with patch.object(op.os, "fdopen", fdopen), self.assertRaisesRegex(OSError, "partial event"):

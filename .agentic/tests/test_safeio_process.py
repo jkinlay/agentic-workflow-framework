@@ -789,6 +789,37 @@ class MetadataSnapshotContractTests(unittest.TestCase):
                         pass
         self.assertFalse(Path(directory).exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows native handle assertion")
+    def test_snapshot_descriptor_conversion_failure_closes_native_handle(self):
+        captured = []
+        close_handle = None
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"snapshot")
+            real_close = safeio.kernel.CloseHandle
+
+            def reject(raw, _flags):
+                captured.append(raw)
+                raise OSError("open_osfhandle failure")
+
+            try:
+                with mock.patch.object(
+                        safeio.msvcrt, "open_osfhandle", side_effect=reject), \
+                        mock.patch.object(
+                            safeio.kernel, "CloseHandle", wraps=real_close,
+                        ) as close_handle:
+                    with self.assertRaisesRegex(OSError, "open_osfhandle failure"):
+                        with safeio.Tree(path.parent) as tree:
+                            safeio.snapshot_file(tree, path.name, maximum=8)
+                    self.assertEqual(1, len(captured))
+                    self.assertEqual(
+                        1, close_handle.call_args_list.count(mock.call(captured[0])))
+            finally:
+                if (captured and close_handle is not None
+                        and mock.call(captured[0]) not in close_handle.call_args_list):
+                    real_close(captured[0])
+        self.assertFalse(Path(directory).exists())
+
     def test_snapshot_size_refusal_is_typed_and_closes_handles(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config"

@@ -779,7 +779,11 @@ class Tree:
         parent, handle, name = self.parent(relative)
         if os.name == "nt":
             raw = win_open(parent / name, allow_hardlinks=allow_hardlinks)
-            fd = msvcrt.open_osfhandle(raw, os.O_RDONLY | os.O_BINARY)
+            try:
+                fd = msvcrt.open_osfhandle(raw, os.O_RDONLY | os.O_BINARY)
+            except BaseException:
+                kernel.CloseHandle(raw)
+                raise
         else:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=handle)
         try:
