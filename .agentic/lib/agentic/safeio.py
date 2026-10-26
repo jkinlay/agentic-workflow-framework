@@ -1100,6 +1100,7 @@ def _inspect_codex_jsonl(raw, credentials):
         if not lines or any(not line.strip() for line in lines):
             raise ValueError
         # Validate syntax first so malformed/duplicate input has a fixed code.
+        values = []
         for line in lines:
             value = json.loads(line, object_pairs_hook=_json_pairs,
                                parse_constant=_json_constant, parse_float=_json_float)
@@ -1113,6 +1114,18 @@ def _inspect_codex_jsonl(raw, credentials):
                 if isinstance(item, str):
                     if any(0xD800 <= ord(character) <= 0xDFFF for character in item):
                         raise ValueError
+                elif isinstance(item, dict):
+                    for key, child in item.items():
+                        pending.append((key, depth + 1))
+                        pending.append((child, depth + 1))
+                elif isinstance(item, list):
+                    pending.extend((child, depth + 1) for child in item)
+            values.append(value)
+        for value in values:
+            pending = [value]
+            while pending:
+                item = pending.pop()
+                if isinstance(item, str):
                     if child_process.contains_credentials(item, credentials=credentials):
                         raise ValidationError("CODEX_LOG_CREDENTIAL")
                 elif isinstance(item, dict):
@@ -1121,10 +1134,10 @@ def _inspect_codex_jsonl(raw, credentials):
                         # assignment even if JSON escaped its spelling/value.
                         if child_process.contains_credentials(key + ": <value>"):
                             raise ValidationError("CODEX_LOG_CREDENTIAL")
-                        pending.append((key, depth + 1))
-                        pending.append((child, depth + 1))
+                        pending.append(key)
+                        pending.append(child)
                 elif isinstance(item, list):
-                    pending.extend((child, depth + 1) for child in item)
+                    pending.extend(item)
         if child_process.contains_credentials(text, credentials=credentials):
             raise ValidationError("CODEX_LOG_CREDENTIAL")
     except ValidationError as exc:

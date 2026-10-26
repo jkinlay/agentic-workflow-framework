@@ -627,6 +627,18 @@ class CodexRetentionTests(unittest.TestCase):
                     self.invoke(self.machine("é" + "x" * size + " sk-SYNTHETIC123"))
                 self.assert_no_retention()
 
+    def test_c1_10a_invalid_record_wins_over_credentials_in_any_record_order(self):
+        cases = (
+            (b'{"text":"ghp_SYNTHETIC123"}\nnot-json\n', "CODEX_LOG_INVALID"),
+            (b'not-json\n{"text":"ghp_SYNTHETIC123"}\n', "CODEX_LOG_INVALID"),
+            (b'{"text":"ghp_SYNTHETIC123"}\n', "CODEX_LOG_CREDENTIAL"),
+        )
+        for raw, code in cases:
+            with self.subTest(raw=raw, code=code):
+                with self.assertRaisesRegex(ValidationError, "^" + code + "$"):
+                    self.invoke(raw)
+                self.assert_no_retention()
+
     def test_c1_11_invalid_machine_input_fails_closed_content_free(self):
         payloads = (b'\xff', b'{"text":"synthetic-invalid"', b'\n', b'null\n',
                     b'{"text":"\\ud800"}\n', b'{"number":NaN}\n',
