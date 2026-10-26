@@ -1,26 +1,26 @@
 # Change history
 
-1.9.5: AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
+## 1.9.5 (unreleased)
+
+CONDITIONAL (#245): AWF-210 version bump.
+
+AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
+
+Ticket-level merged inventory: AWF-5,AWF-8,AWF-10,AWF-14,AWF-16,AWF-17,AWF-18,AWF-19,AWF-20,AWF-22,AWF-23,AWF-24,AWF-26,AWF-28,AWF-30,AWF-31,AWF-32,AWF-33,AWF-34,AWF-35,AWF-36,AWF-37,AWF-41,AWF-42,AWF-43,AWF-44,AWF-45,AWF-47,AWF-48,AWF-50,AWF-51,AWF-52,AWF-53,AWF-54,AWF-55,AWF-57,AWF-58,AWF-59,AWF-60,AWF-61,AWF-62,AWF-63,AWF-64,AWF-65,AWF-66,AWF-68,AWF-69,AWF-70,AWF-71,AWF-72,AWF-73,AWF-74,AWF-75,AWF-76,AWF-77,AWF-78,AWF-79,AWF-80,AWF-81,AWF-82,AWF-87,AWF-88,AWF-89,AWF-91,AWF-93,AWF-94,AWF-96,AWF-97,AWF-100,AWF-101,AWF-107,AWF-110,AWF-115,AWF-117,AWF-131,AWF-132,AWF-140,AWF-145,AWF-148,AWF-150,AWF-151,AWF-154,AWF-157,AWF-158,AWF-177,AWF-178,AWF-181,AWF-182,AWF-185,AWF-195,AWF-201,AWF-205,AWF-206,AWF-208,AWF-212,AWF-213,AWF-214,AWF-215,AWF-217. These changes cover planning and controller operation, bounded review/publication and provenance, installation and upgrade safety, Windows portability, diagnostics, manifests, and release documentation. First-parent entries without ticket IDs are the Windows pre-push gate (#230), batch merge #81, and ADR merges #134, #135, and #137; their detailed history remains in the release’s first-parent log.
+
+Runner #262 and C2 #263 are merged into main at `604d1922` under D-1026-28. CONDITIONAL: #245, #257, #259, C1, and AWF-55 remain; #251 is outside the D-1026-25 order.
+
+### Known issues (1.9.5)
+
+No listed issue remains open on supplied commit evidence.
+
+Fixed in 1.9.5: AWF-18 (#63), AWF-19 (#88), AWF-21 (#61), AWF-22 (#75), AWF-23 (#82), AWF-24 (#52), AWF-31 (#80), AWF-32 (#78/#83/#190), AWF-33 (#102), AWF-34 (#131/#218), and AWF-35 (#113).
 
 ## 1.9.4 — 8 October 2026
 
 AWF-15 (#56) binds closeout records to the merge SHA. AWF-29 fixes protected-path refusal, critic-schema compatibility, and sandbox/effort pass-through. AWF-40 (#68) fixes doc 22 guidance. AWF-16 and AWF-30 are deferred to 1.9.5; AWF-41 remains an owner-review check. The 1.9.3 → 1.9.4 fallback is version-only and ships no tier-3 review configuration.
 
-### Known issues (1.9.5)
-
-- AWF-24 (#52): AC42 Windows fixes moved to 1.9.5; the caveat still applies.
-- AWF-31: operator qualification flags.
-- AWF-32: missing controller adapter.
-- AWF-33: sessions can pick up an older skill.
-- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
-- AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
-- AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
-- AWF-22 (#51): AC42 can pass without the admission check; ACTIVE check uses the source checkout, not the installed `workflow.py`.
-- AWF-23: Heavy validation: support POSIX hosts and symlinked managed-venv interpreters (`.agentic/.venv/bin/python`).
-- AWF-34: Publication scan can never PASS on a repo with an existing tracked file over 32 MB: add a recorded allowance or baseline.
-- AWF-35: self_test fails on project-owned scripts not listed in install-pinned .agentic/launch-surfaces.json.
-
-Known issues: AWF-34 and AWF-35 (accepted for 1.9.4 installs, fix in 1.9.5).
+Known in 1.9.4: AWF-34 and AWF-35; fixed in 1.9.5 by #131/#218 and #113.
 
 ## 1.9.3 — 8 October 2026
 
@@ -30,7 +30,6 @@ Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--rep
 
 ### Known issues (1.9.4)
 
-- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
 - AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
 - AWF-20 (#47): Source-repo detection: a downstream project with a root `MANIFEST.json` is treated as the AWF source.
 - AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
