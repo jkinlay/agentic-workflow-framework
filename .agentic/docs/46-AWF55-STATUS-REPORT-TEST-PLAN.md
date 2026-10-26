@@ -5,8 +5,8 @@ writer approved, scoped to PLAN F978EC87 only, including the PR2 template wideni
 for the exact files and sections the plan names; no cap may be raised.
 Pinned writer template: `B052B510`. Tier 3, round 2 of 3 permits the retained AC34
 packaging fixture to derive modes from the tested tree; all its assertions remain.
-Other existing tests stay unchanged. Automatic activation stays open for 1.9.6;
-the AWF-192 legacy ETA fixture is excluded. The hashed plan remains historical.
+D-1026-04: persist identity-failure UNKNOWN; preserve protections. Activation deferred to 1.9.6;
+AWF-192's legacy ETA fixture excluded.
 
 ## Acceptance criteria
 
@@ -43,7 +43,7 @@ Fixtures use `TemporaryDirectory` and POSIX-style member names. `S` means
 | T7 | Existing disabled/default train projections and normal-tier review policy. | No inferred live state. |
 | T8 | Existing graph arithmetic; AWF-115 replay, per-quantile rounds/touchpoints. | Graph/lane/inventory/cap must agree. |
 | T9 | Original snapshot hash, detached projection and record replay. | Missing anchor remains UNKNOWN. |
-| T10 | Identity missing/mismatch/disabled Jira, invalid source/verifier failures. | No fallback admission. |
+| T10 | Identity failures append reasoned UNKNOWN; replay rejects promotion. | No fallback authority. |
 | T11 | Generated closed report/request boundaries, exact float pointers, independent text parity. | Producer records need semantic verifiers. |
 | T12 | Opt-in report shape; activation trigger is library-only. | Automatic emission deferred. |
 | T13 | Existing AWF event journal, immutable update/delete triggers, stable retry/collision. | No implicit database creation. |
@@ -80,7 +80,7 @@ critic; no push. The writer makes no commit.
 
 See [activation status](32-ACTIVATION-STATUS.md).
 CLI: `status --report --report-input --report-store`;
-NOT_RUN/FAILED never change legacy exits. Records carry `SUPPLIED_RECORDS_ONLY`.
+Identity UNKNOWN retains reasons; argument omissions stay NOT_RUN. Legacy exits and `SUPPLIED_RECORDS_ONLY` remain.
 No live collectors, authenticators, retention purge or automatic hooks. Additional
 operating/controller/schema-reference/changelog paths require owner scope
 approval. Linux qualification and exact-commit review remain external.
