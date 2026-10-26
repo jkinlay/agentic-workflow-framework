@@ -30,6 +30,22 @@ ROOT = Path(__file__).resolve().parents[2]
 # in an adopting project, scripts/ is project-owned code (self_test.py uses the same test).
 LAUNCH_METHODS = {"run", "Popen", "check_output", "check_call"}
 
+_GITHUB_TOKEN = "gh" + "p_" + "0123456789abcdefghijklmnop"
+_GITHUB_PAT = "github_" + "pat_" + "0123456789abcdefghijklmnop"
+_SK_TOKEN = "s" + "k-" + "abcdefghijklmnopqrst"
+_SLACK_BOT_TOKEN = "xox" + "b-" + "0123456789" + "-" + "abcdefghijklmnop"
+_AUTH_BEARER_20 = "Authorization: " + "Bearer " + "abcdefghijklmnopqrst"
+_AUTH_BEARER_16 = "Authorization: " + "Bearer " + "abcdefghijklmnop"
+_AUTH_TOKEN_16 = "Authorization: " + "token " + "abcdefghijklmnop"
+_AUTH_BASIC_16 = "Authorization: " + "Basic " + "abcdefghijklmnop"
+_URL_SECRET = "https://user:" + "secret@example.com/path"
+_URL_PASSWORD = "https://user:" + "password@example.com/x"
+_AUTH_SYNTHETIC_HEADER = "Authorization: " + "Bearer " + "synthetic-header"
+_URL_SYNTHETIC_PASSWORD = "https://fixture:" + "synthetic-password@example.invalid/a"
+_GITHUB_PAT_SYNTHETIC = "github_" + "pat_SYNTHETIC123"
+_GITHUB_TOKEN_SYNTHETIC = "gh" + "p_SYNTHETIC123"
+_AUTH_SYNTHETIC_BOUNDARY = " Authorization: " + "Bearer " + "synthetic-boundary"
+
 
 class ChildEnvironmentTests(unittest.TestCase):
     def test_helper_copies_filters_and_preserves_site_specific_values(self):
@@ -181,6 +197,79 @@ class ChildEnvironmentTests(unittest.TestCase):
         launch_lines = [line for line in source.splitlines() if "subprocess.call(" in line]
         self.assertTrue(launch_lines)
         self.assertTrue(all("env=child_env(" in line for line in launch_lines))
+
+
+class CredentialDetectionTests(unittest.TestCase):
+    def test_machine_log_scanner_uses_only_the_approved_high_confidence_grammar(self):
+        from agentic import child_process
+        scanner = getattr(child_process, "contains_machine_log_credentials", None)
+        self.assertTrue(callable(scanner), "machine-log retention needs its own detector")
+        prose = (
+            "strips API/GitHub-token variables", "the token budget is 4000",
+            "Bearer of bad news", "Authorization: header is removed",
+            "token: 4000 used", "password: see the runbook", "api_key: null",
+            "Set OPENAI_API_KEY=<redacted> in the env", 'VERSION_TOKEN = r"..."',
+            "PROVIDER_API_KEY_ENV_VARS = frozenset(", "--token-file path",
+            "sk-learn is a library", "https://user@example.com/x",
+            "password: hunter2", "--client-secret=V3ryS3cret_9x",
+        )
+        for value in prose:
+            with self.subTest(kind="accepted-prose", value=value):
+                self.assertFalse(scanner(value))
+
+        refused = (
+            _GITHUB_TOKEN, _GITHUB_PAT,
+            _SK_TOKEN, _SLACK_BOT_TOKEN,
+            _AUTH_BEARER_20,
+            _AUTH_TOKEN_16,
+            _AUTH_BASIC_16,
+            _URL_SECRET, "opaque-fixture-value",
+        )
+        for value in refused:
+            with self.subTest(kind="refused", value=value):
+                self.assertTrue(scanner(value, credentials=("opaque-fixture-value",)))
+
+        boundaries = (
+            ("sk-abcdefghijklmnopqrs", False),
+            (_SK_TOKEN, True),
+            ("Authorization: Bearer abcdefghijklmno", False),
+            (_AUTH_BEARER_16, True),
+            ("https://user@example.com/x", False),
+            (_URL_PASSWORD, True),
+            ("xoxr-1234567890-secret", False),
+        )
+        for value, expected in boundaries:
+            with self.subTest(kind="boundary", value=value):
+                self.assertEqual(expected, scanner(value))
+
+    def test_retention_scanner_shares_credential_grammar_without_treating_paths_as_secrets(self):
+        from agentic import child_process
+        scanner = getattr(child_process, "contains_credentials", None)
+        self.assertTrue(callable(scanner), "retention needs a shared credential detector")
+        secrets = (
+            _AUTH_SYNTHETIC_HEADER, "Authorization: synthetic-scheme value",
+            'api_key="synthetic assignment"', "--client-secret synthetic-cli",
+            _URL_SYNTHETIC_PASSWORD,
+            _GITHUB_PAT_SYNTHETIC, _GITHUB_TOKEN_SYNTHETIC, "sk-SYNTHETIC123",
+            "Bearer synthetic-bare", "token synthetic-bare", "opaque-fixture-value",
+        )
+        for value in secrets:
+            with self.subTest(value=value):
+                self.assertTrue(scanner(value, credentials=("opaque-fixture-value",)))
+        for value in ("ordinary Unicode café 漢字 🚀", "/home/fixture/a", r"C:\fixture\a",
+                      r"\\fixture\share\a", "escaped controls \\n \\u001b", "token", "keynote"):
+            with self.subTest(value=value):
+                self.assertFalse(scanner(value))
+
+    def test_retention_scanner_matches_credentials_across_read_boundaries(self):
+        from agentic import child_process
+        scanner = getattr(child_process, "contains_credentials", None)
+        self.assertTrue(callable(scanner), "retention needs a complete-input scanner")
+        for size in (65530, 65535, 65536, 131069):
+            with self.subTest(size=size):
+                value = "é" + "x" * size + _AUTH_SYNTHETIC_BOUNDARY
+                self.assertTrue(scanner(value))
+        self.assertFalse(scanner("", credentials=("", b"")))
 
 
 if __name__ == "__main__":

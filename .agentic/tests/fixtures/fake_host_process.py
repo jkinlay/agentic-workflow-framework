@@ -150,7 +150,7 @@ def main():
     assert args[args.index('--model') + 1] == 'fixture-' + role
     result = {'candidate': payload['candidate'], 'summary': 'Synthetic child-process result; no model called'}
     if config.get('agent_mode') == 'nonzero':
-        print('Synthetic model failure')
+        print(json.dumps({'type': 'synthetic.failed', 'message': 'Synthetic model failure'}))
         return 9
     if role == 'worker':
         (checkout / 'src/a.py').write_text('value = 3\n', encoding='utf-8', newline='\n')
