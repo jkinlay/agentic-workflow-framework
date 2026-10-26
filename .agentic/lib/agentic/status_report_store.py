@@ -64,7 +64,15 @@ def _identity(config, request):
         jira_identity_preflight(config, request['jira_connections'])
     except ProviderIdentityError as exc:
         try:
-            return render_bounded_diagnostic(str(exc), code=exc.code)
+            return render_bounded_diagnostic(str(exc), code=exc.code, paths=tuple(
+                source for source in (
+                    (request.get('inventory') or {}).get('source')
+                    if isinstance(request.get('inventory'), dict) else None,
+                    (request.get('merge_train') or {}).get('source')
+                    if isinstance(request.get('merge_train'), dict) else None,
+                    *(record.get('source') for record in (request.get('assignments') or [])
+                      if isinstance(record, dict)))
+                if isinstance(source, (str, bytes)) and source))
         except Exception:
             return exc.code + ': <redacted>'
     return None

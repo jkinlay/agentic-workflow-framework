@@ -394,7 +394,10 @@ def main(argv=None, default_root=None):
                         report_result = run_report(root, args.report_input, args.report_store)
                     except Exception as exc:
                         report_result = {"status": "FAILED", "reason": render_bounded_diagnostic(
-                            str(exc), code="STATUS_REPORT_FAILED")}
+                            str(exc), code="STATUS_REPORT_FAILED", paths=(
+                                root, root / ".agentic/PROJECT_CONFIG.yaml",
+                                args.report_input, args.report_input.absolute(),
+                                args.report_store, args.report_store.absolute()))}
                 if report_result["status"] == "NOT_RUN":
                     print(render_bounded_diagnostic(report_result["reason"],
                           code="STATUS_REPORT_NOT_RUN"), file=sys.stderr)

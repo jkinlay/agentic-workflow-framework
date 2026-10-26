@@ -21,6 +21,38 @@ def fractions(): return {'eta':{'confidence':{'quantiles':[0.5,0.8]}}}
 
 
 class BoundaryTests(unittest.TestCase):
+    def check_cli_relative_report_path_redaction(self, relative_path):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest.mock import patch
+        from agentic.cli import main
+        from agentic.providers import github_status
+        from agentic import status_report_store
+
+        status = dict(line='AWF 1.9.4: ACTIVE', project_state='ACTIVE', next_action=None)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        unrelated = 'ordinary words remain visible'
+        args = ['--root', 'project', 'status', '--json', '--report',
+                '--report-input', relative_path, '--report-store', 'private/state.db']
+        with patch.object(github_status, 'project_status', return_value=status), \
+                patch.object(status_report_store, 'run_report', side_effect=RuntimeError(
+                    'unable to read ' + relative_path + ' ' + unrelated)), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(main(args), 0)
+        self.assertNotIn(relative_path, stderr.getvalue())
+        self.assertNotIn(relative_path, stdout.getvalue())
+        self.assertIn('unable to read', stderr.getvalue())
+        self.assertIn(unrelated, stderr.getvalue())
+        self.assertIn('<redacted-path>', stderr.getvalue())
+        self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+        self.assertLessEqual(len(stderr.getvalue().rstrip('\n').encode('utf-8')), 4096)
+
+    def test_cli_failure_redacts_forward_relative_report_path(self):
+        self.check_cli_relative_report_path_redaction('private/identity.txt')
+
+    def test_cli_failure_redacts_backward_relative_report_path(self):
+        self.check_cli_relative_report_path_redaction(r'private\identity.txt')
+
     def test_identity_unknown_schema_is_closed_and_cannot_claim_success(self):
         from test_status_report import admitted_fixture, identity_unknown_report, snapshot
         config, request = admitted_fixture(); request['github_identity'] = None

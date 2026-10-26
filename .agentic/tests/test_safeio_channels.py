@@ -104,6 +104,23 @@ class StrictJsonTests(unittest.TestCase):
 
 
 class SafeWriteAndDiagnosticTests(unittest.TestCase):
+    def test_bounded_diagnostic_redacts_both_separators_for_explicit_path(self):
+        forward = "private/identity.txt"
+        backward = r"private\identity.txt"
+        unrelated = "ordinary words remain visible"
+        for supplied in (forward, backward):
+            with self.subTest(supplied=supplied):
+                rendered = child_process.render_bounded_diagnostic(
+                    "unable to read " + forward + " or " + backward + " "
+                    + unrelated + " " + "x" * 5000,
+                    code="AWF_DIAGNOSTIC", paths=(supplied,))
+                self.assertNotIn(forward, rendered)
+                self.assertNotIn(backward, rendered)
+                self.assertIn(unrelated, rendered)
+                self.assertIn("<redacted-path>", rendered)
+                self.assertTrue(rendered.endswith("<truncated>"))
+                self.assertLessEqual(len(rendered.encode("utf-8")), 4096)
+
     def test_bounded_diagnostic_caps_utf8_after_redaction_and_framing(self):
         code = "AWF_DIAGNOSTIC"
         frame = code + ": "

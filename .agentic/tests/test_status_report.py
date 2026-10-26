@@ -354,6 +354,28 @@ class OptInReportTests(unittest.TestCase):
         self.assertNotIn(forbidden, prepared['record']['values_json'])
         self.assertEqual(self.module().replay_report(prepared['record']), prepared['report'])
 
+    def check_provider_identity_relative_path_redaction(self, relative_path):
+        from agentic.provider_identity import ProviderIdentityError
+        config, request = admitted_fixture()
+        request['inventory'] = {'status': 'KNOWN', 'source': relative_path, 'tickets': []}
+        unrelated = 'ordinary words remain visible'
+        error = ProviderIdentityError(
+            'ACCESS_DENIED', 'unable to read ' + relative_path + ' ' + unrelated)
+        with patch.object(self.module(), 'github_identity_preflight', side_effect=error):
+            prepared = self.module().prepare_report(config, request)
+            self.assert_identity_reason(prepared, error.code, relative_path)
+        reason = prepared['record']['projection']['identity_failure']
+        self.assertIn('unable to read', reason)
+        self.assertIn(unrelated, reason)
+        self.assertIn('<redacted-path>', reason)
+        self.assertLessEqual(len(reason.encode('utf-8')), 4096)
+
+    def test_provider_identity_reason_redacts_forward_relative_request_path(self):
+        self.check_provider_identity_relative_path_redaction('private/identity.txt')
+
+    def test_provider_identity_reason_redacts_backward_relative_request_path(self):
+        self.check_provider_identity_relative_path_redaction(r'private\identity.txt')
+
     def test_provider_identity_reason_redacts_credential_before_projection(self):
         from agentic.provider_identity import ProviderIdentityError
         config, request = admitted_fixture()
