@@ -34,7 +34,7 @@ from ..provenance import (format_writer_trailer, parse_critic_run_carrier,
                           _Git, _commit_details)
 from ..review_loop import ValidationError, require
 from .. import review_qualification
-from ..safeio import Tree, require_record_bytes, run_bounded
+from ..safeio import Tree, require_record_bytes, retain_codex_log, run_bounded
 
 
 PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattributes','.gitmodules','.lfsconfig'}
@@ -647,6 +647,12 @@ class HostDriver:
             enforce_pinned_awf_skill(
                 self.root, launch_directory, env,
                 record_path=selection_path)
+        credential_values = tuple(sorted({
+            value for key, value in env.items()
+            if (isinstance(key, str) and isinstance(value, str) and value
+                and (review_qualification.is_host_auth_environment_name(key)
+                     or review_qualification.CREDENTIAL_ENVIRONMENT_NAME.search(key)))
+        }, key=len, reverse=True)) if log else ()
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
             if key.upper().startswith('GIT_'):
@@ -737,11 +743,13 @@ class HostDriver:
             result = subprocess.CompletedProcess(
                 command, result.returncode, stdout, stderr)
         if log:
-            require(len(result.stdout) + len(result.stderr) <= CODEX_LOG_LIMIT,
-                    'Codex retained output exceeds 64 MiB')
-            Path(log).write_bytes(result.stdout)
-            if result.stderr:
-                Path(log).with_suffix(Path(log).suffix + '.stderr').write_bytes(result.stderr)
+            log_path = Path(os.path.abspath(log))
+            with Tree(log_path.parent) as tree:
+                retain_codex_log(
+                    tree, log_path.name, result.stdout, result.stderr,
+                    maximum=CODEX_LOG_LIMIT, credentials=credential_values,
+                    paths=(self.root, self.worker, self.critic, self.state),
+                )
             require(result.returncode == 0,
                     f'HOST_COMMAND_FAILED: {name} failed; inspect retained run log')
             return ''

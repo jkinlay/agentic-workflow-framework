@@ -1673,5 +1673,154 @@ class ReferenceAdapterContractTests(unittest.TestCase):
         adapters, loader = _load_real(ADAPTER, config)
         loader._require_adapters(adapters, cycle_requirements(CONTROLLER))
 
+class ControllerAdapterDocumentationTests(unittest.TestCase):
+
+	def setUp(self):
+		self.doc = (ROOT / '.agentic/docs/34-CONTINUOUS-CONTROLLER.md').read_text(encoding='utf-8')
+
+	def _required_operations_section(self):
+		heading = '### Required adapter operations'
+		self.assertIn(heading, self.doc, 'Doc 34 must contain the adapter contract table')
+		return self.doc.split(heading, 1)[1].split('\n## ', 1)[0]
+
+	def test_doc_required_operations_table_covers_exact_command_sets(self):
+		import re
+		section = self._required_operations_section()
+		rows = []
+		for line in section.splitlines():
+			if line.startswith('| `'):
+				cells = [cell.strip() for cell in line.strip('|').split('|')]
+				self.assertEqual(3, len(cells), line)
+				rows.append(cells)
+		expected = {
+			'cycle': {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'},
+			'jira-lifecycle': {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'},
+			'merge-observed': {'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation'},
+			'owner-publication-prepare': {'authorize_owner_publication'},
+			'owner-publication-resume': {'observe_identity', 'observe_remote_heads', 'create_draft_pr', 'observe_draft_pr'},
+			'owner-publication-status': set(),
+			'batch-operation': {'batch_coordinator'},
+			'batch-closeout': {'batch_coordinator', 'observe_batch_merge', 'observe_issue_identity', 'observe_issue_policy', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition'},
+			'snapshot': set(),
+			'planning-state prune': set(),
+		}
+		self.assertEqual(len(expected), len(rows), 'One row per executable command form')
+		actual = {row[0].strip('`'): row for row in rows}
+		self.assertEqual(set(expected), set(actual))
+		for command, operations in expected.items():
+			with self.subTest(command=command):
+				cell = actual[command][1]
+				self.assertEqual(operations, set(re.findall(r'`([a-z_]+)`', cell)))
+				if not operations:
+					self.assertEqual('None', cell)
+		merge = actual['merge-observed'][1]
+		self.assertRegex(merge, r'additionally `observe_jira_reconciliation` when accepted project configuration has `jira.enabled is True`')
+
+	def test_doc_cycle_flag_requirements_describe_supplied_flags(self):
+		section = ' '.join(self._required_operations_section().split())
+		for flag, operation in (('--overlap-allowances', 'observe_overlap_allowance'), ('--replan-request', 'observe_replan_trigger')):
+			with self.subTest(flag=flag):
+				self.assertIn(f'`cycle {flag}` additionally requires `{operation}`', section)
+		self.assertIn('flag was supplied', section)
+		self.assertIn('even an empty loaded list', section)
+
+	def test_doc_overlap_callbacks_have_separate_runtime_conditions(self):
+		import re
+		section = self._required_operations_section()
+		self.assertIn('forwards these additional callbacks when callable', section)
+		conditions = {
+			'observe_overlap_conflict': 'expired allowance conflict observation',
+			'observe_overlap_sync_inventory': 'post-sync provider PR-head observation',
+			'sync_writer': 'confirmed conflict execution',
+			'reconcile_overlap_sync': 'UNKNOWN receipt-only recovery',
+			'observe_dispatch_quiescence': 'terminal proof for accepted dispatches',
+		}
+		for operation, condition in conditions.items():
+			with self.subTest(operation=operation):
+				self.assertRegex(section, r'(?m)^- `' + operation + r'`: ' + re.escape(condition) + r'\.$')
+		self.assertIn('Runtime overlap paths require the corresponding callback', section)
+
+	def test_doc_distinguishes_controller_contract_from_reference_support(self):
+		section = ' '.join(self._required_operations_section().split())
+		for phrase in ('reviewed, SHA-pinned module', '`build_adapters(config)`', 'callable operations', 'None means no reviewed adapter operations', 'state/configuration requirements or effects', 'controller contract', 'reference adapter lacks owner-publication and batch operations'):
+			with self.subTest(phrase=phrase):
+				self.assertIn(phrase, section)
+
+	def test_doc_workflow_controller_isolated_mode_guidance(self):
+		prose = ' '.join(self.doc.split())
+		self.assertIn('Do not use `python -B -I .agentic/scripts/workflow.py controller', prose)
+		self.assertIn('today', prose)
+		self.assertIn('fails under isolated mode (AWF-207)', prose)
+		self.assertIn('without `-I`; `-B` may be retained', prose)
+		self.assertIn('No fix release is promised', prose)
+
+	def test_doc_nonterminal_boundary_prohibits_successor_refill(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('`PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.', prose)
+		self.assertIn('A successor inventory cannot refill a round while any of those operations crosses the boundary.', prose)
+
+	def test_doc_legacy_boundary_binding_precedes_migration_and_all_changes(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n\n', 1)[0]
+		prose = ' '.join(section.split())
+		for rule in (
+			'only with their durable prior-inventory digest already in protected state.',
+			'Legacy non-terminal sets without that boundary binding are refused before any schema or row change.',
+		):
+			with self.subTest(rule=rule):
+				self.assertIn(rule, prose)
+
+	def test_doc_provider_reads_never_occur_inside_controller_write_transaction(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('Provider reads never occur inside a controller write transaction.', prose)
+
+	def test_doc_forget_source_refuses_pending_identities(self):
+		prose = ' '.join(self.doc.split())
+		self.assertIn('pending identities cannot be forgotten.', prose)
+
+	def test_doc_replan_comment_binds_complete_nonterminal_dispatch_set(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('binding repository, round, inventories and the complete non-terminal dispatch set.', prose)
+
+	def test_doc_overlap_allowance_waiver_binding_and_restart_requirements(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('For an overlap allowance,', prose)
+		self.assertIn('Its digest binds the dispatch, ticket, stream, exact tuple, allowance, shared path, observation and persistence time.', prose)
+		document_prose = ' '.join(self.doc.split())
+		self.assertIn('ordinary reads cap at 8 MiB', document_prose)
+		for sentence in (
+			'reduce event windows before they accumulate.',
+			'Restart observation must carry the same digest and never relaunch the session.',
+		):
+			with self.subTest(sentence=sentence):
+				self.assertIn(sentence, document_prose)
+		self.assertIn('Restart observation must carry the same digest and never relaunch the session.', prose)
+
+	def test_doc_fragment_warns_about_ellipses_and_separate_guide(self):
+		prose = ' '.join(self.doc.split())
+		self.assertIn('**Non-executable fragment:** ellipses omit steps and variables;', prose)
+		self.assertIn('separate reference: [provider-identity guide]', prose)
+
+	def test_doc_merge_observed_uses_supplied_project_configuration(self):
+		section = self._required_operations_section()
+		self.assertIn('the supplied project configuration (--project-config)', section)
+
+	def test_doc_refill_requires_separate_fresh_bound_trigger_and_durable_seal(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n\n', 2)[1]
+		prose = ' '.join(section.split())
+		self.assertIn('Refill requires one fresh authenticated host trigger bound to prior/next inventory digests and complete durable dispatch/stream/ticket/tuple/state set.', prose)
+		self.assertIn('Persist the seal before refill; consume it atomically with successor dispatch intent creation.', prose)
+		self.assertIn('Restart resumes only persisted successor intents without losing refill or recreating seals from replay.', prose)
+
+	def test_doc_reservation_reobservation_is_immediate_and_complete(self):
+		section = self.doc.split('Authenticated parked/worktree-diff sources', 1)[1].split('\n\n', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('observes complete provider-bound paused inventory and Git diff at pinned head/tree; repeat the complete observation immediately after every inventory replacement before scheduling.', prose)
+		self.assertIn('Failed refresh invalidates reservations and blocks scheduling.', prose)
+
+
 if __name__ == '__main__':
 	unittest.main()
