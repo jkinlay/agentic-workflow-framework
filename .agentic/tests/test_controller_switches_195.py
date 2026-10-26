@@ -61,6 +61,7 @@ class ControllerSwitchContractTests(unittest.TestCase):
         target = {'source_manifest_sha256': 'a' * 64, '_immutable_files': {}}
         for enabled in (False, True):
             config = json.loads((ROOT / '.agentic/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
+            config['template']['expected_workflow_version'] = '1.9.4'
             config['controller'].update(dict.fromkeys(SWITCHES, enabled))
             migrated, reports = apply_chain(table, '1.9.4', json.dumps(config).encode(),
                                             None, b'{}', b'{}', {}, target)

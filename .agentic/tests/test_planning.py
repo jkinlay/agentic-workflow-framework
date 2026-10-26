@@ -350,6 +350,127 @@ class ProviderSnapshotTests(unittest.TestCase):
         tickets[0]["write_paths"].append("src/later.py")
         self.assertEqual(original, self.snapshot)
 
+    def test_provider_status_names_normalize_reader_and_graph_without_mutating_evidence(self):
+        for raw, expected in (("To Do", "ready"), ("To-Do", "ready"),
+                              ("In Progress", "in_progress"), ("In-Progress", "in_progress"),
+                              ("In Flight", "in_flight"), ("In-Flight", "in_flight"),
+                              (" \tTO --\n DO\u2003", "ready"), ("Done", "closed")):
+            with self.subTest(raw=raw):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["ticket"]["status"] = raw
+                self.trusted = self.body(snapshot)
+                original = deepcopy((snapshot, self.trusted))
+                tickets = self.read(snapshot)
+                graph = planning.build_backlog_graph(tickets, self.cfg)
+                self.assertEqual(expected, tickets[0]["status"])
+                self.assertEqual(expected, graph["tickets"]["AWF-1"]["status"])
+                self.assertEqual({"src/brief.py": ["brief"], "src/pr.py": ["open_pr"],
+                                  "src/dirty.py": ["worktree_diff"]},
+                                 graph["tickets"]["AWF-1"]["path_sources"])
+                self.assertEqual(original, (snapshot, self.trusted))
+                tickets[0]["status"] = "later"
+                tickets[0]["write_paths"].append("src/later.py")
+                self.assertEqual(original, (snapshot, self.trusted))
+
+    def test_provider_status_names_enter_planned_ticket_keys(self):
+        for raw in ("To Do", "In Progress", "To-Do", "In-Progress", "In Flight", "In-Flight"):
+            with self.subTest(raw=raw):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["ticket"]["status"] = raw
+                self.trusted = self.body(snapshot)
+                graph = planning.build_backlog_graph(self.read(snapshot), self.cfg)
+                result = planning.plan_lanes(graph, self.cfg, **capacity_kwargs(self.cfg))
+                self.assertEqual({"AWF-1"},
+                                 {key for lane in result["lanes"] for key in lane["ticket_keys"]})
+
+    def status_with_dependent(self, raw, dependent_status="open"):
+        snapshot = deepcopy(self.snapshot)
+        snapshot["tickets"][0]["ticket"]["status"] = raw
+        dependent = deepcopy(snapshot["tickets"][0])
+        dependent["ticket"] = {"key": "AWF-2", "status": dependent_status,
+                               "declared_dependencies": ["AWF-1"]}
+        for component in dependent["components"]:
+            component["ticket_key"] = "AWF-2"
+            component["files"] = ["src/dependent.py"] if component["kind"] == "brief" else []
+        snapshot["tickets"].append(dependent)
+        self.trusted = self.body(snapshot)
+        return snapshot
+
+    def test_provider_done_closes_dependency_without_scheduling_closed_ticket(self):
+        snapshot = self.status_with_dependent("Done")
+        tickets = self.read(snapshot)
+        graph = planning.build_backlog_graph(tickets, self.cfg)
+        result = planning.plan_lanes(graph, self.cfg, **capacity_kwargs(self.cfg))
+        self.assertEqual("closed", tickets[0]["status"])
+        self.assertEqual("closed", graph["tickets"]["AWF-1"]["status"])
+        self.assertEqual({"AWF-2"},
+                         {key for lane in result["lanes"] for key in lane["ticket_keys"]})
+        self.assertEqual({}, result["blocked"])
+
+    def test_provider_in_progress_stays_blocked_by_open_dependency(self):
+        snapshot = self.status_with_dependent("open", "In Progress")
+        tickets = self.read(snapshot)
+        graph = planning.build_backlog_graph(tickets, self.cfg)
+        result = planning.plan_lanes(graph, self.cfg, **capacity_kwargs(self.cfg))
+        self.assertEqual("in_progress", tickets[1]["status"])
+        self.assertEqual("in_progress", graph["tickets"]["AWF-2"]["status"])
+        self.assertEqual({"AWF-1"},
+                         {key for lane in result["lanes"] for key in lane["ticket_keys"]})
+        self.assertEqual(["AWF-1"], result["blocked"]["AWF-2"])
+
+    def test_provider_status_normalization_cannot_hide_raw_authentication_tampering(self):
+        snapshot = deepcopy(self.snapshot)
+        snapshot["tickets"][0]["ticket"]["status"] = "To Do"
+        self.trusted = self.body(snapshot)
+        snapshot["tickets"][0]["ticket"]["status"] = "To-Do"
+        original = deepcopy((snapshot, self.trusted))
+        with self.assertRaisesRegex(ValidationError, "differs from independent authenticated"):
+            self.read(snapshot)
+        self.assertEqual(original, (snapshot, self.trusted))
+
+    def test_provider_canonical_statuses_keep_existing_planning_meanings(self):
+        for raw in sorted(planning.READY_STATUSES | planning.ACTIVE_STATUSES | planning.CLOSED_STATUSES):
+            with self.subTest(raw=raw):
+                snapshot = self.status_with_dependent(raw)
+                tickets = self.read(snapshot)
+                graph = planning.build_backlog_graph(tickets, self.cfg)
+                result = planning.plan_lanes(graph, self.cfg, **capacity_kwargs(self.cfg))
+                expected = "closed" if raw == "done" else raw
+                self.assertEqual(expected, tickets[0]["status"])
+                self.assertEqual(expected, graph["tickets"]["AWF-1"]["status"])
+                closed = raw in planning.CLOSED_STATUSES
+                self.assertEqual({"AWF-2"} if closed else {"AWF-1"},
+                                 {key for lane in result["lanes"] for key in lane["ticket_keys"]})
+                self.assertEqual({} if closed else {"AWF-2": ["AWF-1"]}, result["blocked"])
+
+    def test_provider_unknown_statuses_grant_neither_admission_nor_dependency_closure(self):
+        for raw in ("Custom Review", "  Custom-Flow  ", "   ", "In\u2013Progress"):
+            with self.subTest(raw=raw):
+                snapshot = self.status_with_dependent(raw)
+                tickets = self.read(snapshot)
+                self.assertEqual(raw, tickets[0]["status"])
+                result = plan(tickets, self.cfg)
+                self.assertEqual([], result["lanes"])
+                self.assertEqual(["AWF-1"], result["blocked"]["AWF-2"])
+
+    def test_provider_missing_and_invalid_status_validation_is_preserved(self):
+        snapshot = deepcopy(self.snapshot)
+        del snapshot["tickets"][0]["ticket"]["status"]
+        self.trusted = self.body(snapshot)
+        tickets = self.read(snapshot)
+        self.assertNotIn("status", tickets[0])
+        self.assertEqual("open", planning.build_backlog_graph(tickets, self.cfg)["tickets"]["AWF-1"]["status"])
+        self.assertEqual(["AWF-1"], plan(tickets, self.cfg)["lanes"][0]["ticket_keys"])
+        for invalid in ("", None, 7, True, [], {}):
+            with self.subTest(invalid=invalid):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["tickets"][0]["ticket"]["status"] = invalid
+                self.trusted = self.body(snapshot)
+                tickets = self.read(snapshot)
+                self.assertEqual(invalid, tickets[0]["status"])
+                with self.assertRaisesRegex(ValidationError, "needs a status"):
+                    planning.build_backlog_graph(tickets, self.cfg)
+
     def test_unauthenticated_backlog_snapshot_fails_before_graph_build(self):
         for case in ("unsigned", "stale", "foreign-repository", "foreign-project",
                      "foreign-scope", "foreign-head", "old-cycle", "partial",
@@ -621,11 +742,28 @@ class ProviderSnapshotTests(unittest.TestCase):
 
     def test_operating_doc_covers_max_lanes_overrides_and_migration(self):
         doc = (ROOT / ".agentic/docs/29-OPERATING-CONFIGURATION.md").read_text(encoding="utf-8")
+        self.assertIn("CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter", doc)
         for text in ("execution.max_lanes", "fixed", "max", "sealed safe capacity",
-                     "round boundaries", "omitted", "six", "AWF-50 item 1",
-                     "generated-schema limitation"):
+                     "round boundaries", "omitted", "six"):
             with self.subTest(text=text):
                 self.assertIn(text, doc)
+        migration = doc.split("\n| Contract |", 1)[0].rsplit("\n\n", 1)[1]
+        with self.subTest(requirement="operating-config table range"):
+            self.assertIn("| `operating-config` | `streams.count` | 1–12 |", doc.splitlines())
+        for text in ("`streams.count` 1–12 with A–L routes",
+                     "optional project `execution.max_lanes` 1–12",
+                     "Omitting `execution.max_lanes` retains six",
+                     "Lower binding limits, including `execution.max_parallel_tickets`",
+                     "enabled `execution.host_broker.max_workers`, still apply",
+                     "Migration: raise protected ceilings only through review",
+                     "Schema acceptance grants no dispatch authority"):
+            with self.subTest(migration_requirement=text):
+                self.assertIn(text, migration)
+        for text in ("Pending generated-schema limitation", "until AWF-50 item 1 lands",
+                     "Above-six configuration remains schema-invalid",
+                     "reject `execution.max_lanes`"):
+            with self.subTest(obsolete_claim=text):
+                self.assertNotIn(text, doc)
         self.assertLessEqual(len(doc.split()), 800)
 
 

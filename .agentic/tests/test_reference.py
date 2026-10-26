@@ -55,6 +55,8 @@ class Fixture(unittest.TestCase):
         provenance_fixture.bundle, provenance_fixture.config = self.bundle, self.config
         provenance_fixtures.bind_commit_provenance_fixture(provenance_fixture)
         self.config = provenance_fixture.config
+        # Reset loops must restore the range carried by this config instance.
+        self.bundle0 = copy.deepcopy(self.bundle)
 
     def gate(self):
         bind_review_admission(self.bundle)
@@ -182,6 +184,15 @@ class ConfigTests(Fixture):
 
 
 class GateTests(Fixture):
+    def test_reset_baseline_preserves_bound_provenance(self):
+        self.bundle = copy.deepcopy(self.bundle0)
+        provider = self.config.commit_provenance["provider_observation"]
+        candidate = self.bundle["candidate"]
+        self.assertEqual(provider["base"], candidate["target_base_sha"])
+        self.assertEqual(provider["base"], candidate["merge_base_sha"])
+        self.assertEqual(provider["head"], candidate["head_sha"])
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
+
     def test_required_specialist_positive_path(self):
         self.bundle["contract"]["risk_flags"]["security"] = True
         self.bundle["contract"]["specialist_domains"] = ["security"]
@@ -308,6 +319,7 @@ class GateTests(Fixture):
             self.bundle["ci"]["checks"][0].update(mutation)
             with self.subTest(mutation=mutation):
                 self.assertEqual(self.gate()["conclusion"], "NOT_READY")
+                self.assertEqual("PASS", self.gate()["gates"]["provenance"]["result"])
 
     def test_stale_evidence(self):
         with self.assertRaises(ValidationError):

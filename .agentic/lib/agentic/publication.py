@@ -824,9 +824,9 @@ def _validated_project_declarations(config):
     return publication
 
 
-def _head_project_declarations(root, head, extra_env):
+def _head_project_declarations(root, head_tree, extra_env):
     """Tracked head bytes alone grant configuration allowance authority."""
-    entry = _tree(root, head, extra_env).get(".agentic/PROJECT_CONFIG.yaml")
+    entry = head_tree.get(".agentic/PROJECT_CONFIG.yaml")
     if entry is None:
         return {}, None
     if entry[0] not in {"100644", "100755"} or entry[1] != "blob":
@@ -1133,7 +1133,14 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     if ancestor.returncode != 0:
         raise ValidationError("Publication base must be an ancestor of head")
     mapping, mapping_sha, mapping_file = load_mapping(root, mapping_path, extra_env=extra_env)
-    declarations, config_sha = _head_project_declarations(root, head_sha, extra_env)
+    tree_cache = {}
+
+    def cached_tree(commit):
+        if commit not in tree_cache:
+            tree_cache[commit] = _tree(root, commit, extra_env)
+        return tree_cache[commit]
+
+    declarations, config_sha = _head_project_declarations(root, cached_tree(head_sha), extra_env)
     configured_allowances = _validate_large_file_allowances(declarations.get("large_file_allowances", []))
     for path, allowance in configured_allowances.items():
         if path in large_allowances and large_allowances[path] != allowance:
@@ -1150,8 +1157,7 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     commits = [item.decode("ascii") for item in _git(root, "rev-list", "--reverse", "--topo-order", base_sha + ".." + head_sha,
                                                        extra_env=extra_env).stdout.splitlines()]
     findings, unscanned = [], []
-    tree_cache = {}
-    base_tree = tree_cache.setdefault(base_sha, _tree(root, base_sha, extra_env))
+    base_tree = cached_tree(base_sha)
     # Classification is exact and case-sensitive.  Known positives survive an
     # incomplete base scan, while every unknown remains blocking and the
     # unscanned base entry independently prevents PASS.
@@ -1206,7 +1212,7 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
         key = (commit, path)
         if key in historical_lines_cache:
             return historical_lines_cache[key]
-        tree = tree_cache.setdefault(commit, _tree(root, commit, extra_env))
+        tree = cached_tree(commit)
         entry = tree.get(path)
         if entry is None:
             lines = frozenset()
@@ -1262,7 +1268,7 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
             findings += _scan_text(message_text, commit=commit, path="message", source="message",
                                    detectors=detectors, allows=allows)
         parents = _git(root, "rev-list", "--parents", "-n", "1", commit, extra_env=extra_env).stdout.decode("ascii").split()[1:]
-        commit_tree = tree_cache.setdefault(commit, _tree(root, commit, extra_env))
+        commit_tree = cached_tree(commit)
         transition_maps = []
         for parent in parents or [None]:
             if parent is None:
@@ -1271,14 +1277,14 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                 parent_origins = origin_maps[parent]
             elif _git(root, "merge-base", "--is-ancestor", parent, base_sha,
                       extra_env=extra_env, check=False).returncode == 0:
-                parent_tree = tree_cache.setdefault(parent, _tree(root, parent, extra_env))
+                parent_tree = cached_tree(parent)
                 parent_origins = {path: path for path in parent_tree}
             else:
                 raise ValidationError("Publication history traversal omitted a merge parent")
             transitioned = dict(parent_origins)
             transition_maps.append(transitioned)
             for status, before_path, after_path in _changed_pairs(root, parent, commit, extra_env):
-                old_tree = {} if parent is None else tree_cache.setdefault(parent, _tree(root, parent, extra_env))
+                old_tree = {} if parent is None else cached_tree(parent)
                 origin = parent_origins.get(before_path)
                 if after_path is not None:
                     touched_head_paths.add(after_path)
@@ -1360,7 +1366,7 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                         if origin is not None), None)
             for path in commit_tree
         }
-    head_tree = tree_cache.setdefault(head_sha, _tree(root, head_sha, extra_env))
+    head_tree = cached_tree(head_sha)
     for path in sorted(touched_head_paths):
         if path is None or path not in head_tree or head_tree[path][1] != "blob":
             continue

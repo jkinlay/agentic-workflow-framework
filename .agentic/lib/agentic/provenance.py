@@ -21,7 +21,9 @@ import uuid
 from . import ValidationError
 from .canonical import fingerprint, timestamp
 from .child_process import child_env, isolated_git_env
-from .safeio import run_bounded
+from .safeio import (
+    SnapshotChangedError, SnapshotSizeError, Tree, run_bounded, snapshot_file,
+)
 
 
 FALLBACK_LABEL = "fallback: bot-written"
@@ -965,27 +967,42 @@ class _Git:
 
     @staticmethod
     def _file_bytes(path):
-        if not path.exists():
-            return b""
-        _require(path.is_file(),
-                 "REPOSITORY_IDENTITY_INVALID: repository metadata is not a file")
         try:
-            before = path.stat()
-            _require(before.st_size <= _REPOSITORY_FILE_LIMIT,
-                     "REPOSITORY_METADATA_SIZE: repository metadata exceeds 1 MiB")
-            raw = path.read_bytes()
-            after = path.stat()
-        except OSError as exc:
+            tree = Tree(path.parent)
+        except FileNotFoundError:
+            return b""
+        except (OSError, ValidationError) as exc:
             raise ValidationError(
                 "REPOSITORY_IDENTITY_INVALID: repository metadata is unreadable"
             ) from exc
-        _require(len(raw) == before.st_size
-                 and (before.st_dev, before.st_ino, before.st_size,
-                      before.st_mtime_ns)
-                 == (after.st_dev, after.st_ino, after.st_size,
-                     after.st_mtime_ns),
-                 "REPOSITORY_IDENTITY_CHANGED: repository metadata changed while read")
-        return raw
+        with tree:
+            try:
+                before = tree.inspect(path.name)
+            except (OSError, ValidationError) as exc:
+                raise ValidationError(
+                    "REPOSITORY_IDENTITY_INVALID: repository metadata is not a file"
+                ) from exc
+            if before is None:
+                return b""
+            _require(before.st_size <= _REPOSITORY_FILE_LIMIT,
+                     "REPOSITORY_METADATA_SIZE: repository metadata exceeds 1 MiB")
+            try:
+                captured = snapshot_file(tree, path.name, maximum=_REPOSITORY_FILE_LIMIT)
+                after = tree.inspect(path.name)
+            except (SnapshotSizeError, SnapshotChangedError) as exc:
+                raise ValidationError(
+                    "REPOSITORY_IDENTITY_CHANGED: repository metadata changed while read"
+                ) from exc
+            except (OSError, ValidationError) as exc:
+                raise ValidationError(
+                    "REPOSITORY_IDENTITY_INVALID: repository metadata is unreadable"
+                ) from exc
+            identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                                      value.st_mtime_ns, value.st_nlink)
+            _require(after is not None
+                     and identity(before) == captured.identity == identity(after),
+                     "REPOSITORY_IDENTITY_CHANGED: repository metadata changed while read")
+            return captured.data
 
     def _read_shallow_boundaries(self):
         raw = self._repository_files.get(self.common_dir / "shallow", b"")

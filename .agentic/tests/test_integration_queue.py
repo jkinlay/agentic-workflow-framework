@@ -1575,6 +1575,34 @@ class IntegrationQueueTests(unittest.TestCase):
                              app_binding={"producer_id": f"fixture-raw-{index}"},
                              mode_observer_registry=registry, now=NOW)
 
+    def test_schema_cache_keeps_accepted_config_observations_fresh(self):
+        Contracts(ROOT / '.agentic/schemas')
+        result = accepted_config_result(PROJECT_CONFIG)
+        requests = []
+        registry = {}
+
+        def observer(request):
+            requests.append(copy.deepcopy(request))
+            self.assertEqual('ACCEPTED_PROJECT_CONFIG', request['operation'])
+            return copy.deepcopy(result)
+
+        register_integration_observer('fixture-warm-config', observer, registry)
+        selector = {'producer_id': 'fixture-warm-config'}
+        self.assertEqual(PROJECT_CONFIG, _accepted_project_config(
+            PROJECT_CONFIG, selector, registry, now=NOW))
+        result['acceptance']['status'] = 'REJECTED'
+        with self.assertRaisesRegex(ValidationError, 'accepted runtime'):
+            _accepted_project_config(PROJECT_CONFIG, selector, registry, now=NOW)
+        self.assertEqual(2, len(requests))
+        result.clear()
+        result.update(accepted_config_result(PROJECT_CONFIG))
+        raw = b'{"a":1,"a":2}'
+        result.update(raw_bytes_base64=base64.b64encode(raw).decode('ascii'),
+                      config_sha256=sha256(raw))
+        with self.assertRaisesRegex(ValidationError, 'invalid bytes'):
+            _accepted_project_config(PROJECT_CONFIG, selector, registry, now=NOW)
+        self.assertEqual(3, len(requests))
+
     def test_awf76_observer_capability_is_operation_scoped(self):
         registry = {}
         register_integration_observer(
@@ -1789,6 +1817,228 @@ class IntegrationQueueTests(unittest.TestCase):
         source = script.read_text(encoding="utf-8")
         self.assertNotIn('sub.add_parser("conflict")', source)
         self.assertNotIn('add_argument("--hours"', source)
+
+
+class SchemaCheckCacheTests(unittest.TestCase):
+    def setUp(self):
+        from collections import OrderedDict
+        from agentic import contracts
+
+        self.module = contracts
+        self.temporary = tempfile.TemporaryDirectory(prefix='awf-schema-cache-')
+        self.addCleanup(self.temporary.cleanup)
+        self.catalog = Path(self.temporary.name)
+        self.cache_patch = patch.multiple(
+            contracts, _SCHEMA_CHECK_CACHE=OrderedDict(),
+            _SCHEMA_CHECK_CACHE_BYTES=0, create=True)
+        self.cache_patch.start()
+        self.addCleanup(self.cache_patch.stop)
+        self.real_check = contracts.Draft202012Validator.check_schema
+
+    def write_schema(self, name='sample', **values):
+        schema = {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                  '$id': 'urn:awf:1.2:' + name, 'type': 'integer', **values}
+        (self.catalog / (name + '.schema.json')).write_text(
+            json.dumps(schema), encoding='utf-8', newline='\n')
+        return schema
+
+    def checks(self):
+        return patch.object(self.module.Draft202012Validator, 'check_schema',
+                            wraps=self.real_check)
+
+    def test_cache_hit_and_miss_have_identical_results_and_changed_schema_misses(self):
+        def outcomes(contracts):
+            result = []
+            for value in (1, 'invalid'):
+                try:
+                    result.append(('accepted', contracts.validate('sample', value)))
+                except ValidationError as exc:
+                    result.append(('rejected', str(exc)))
+            return result
+
+        self.write_schema()
+        with self.checks() as checks:
+            miss = Contracts(self.catalog)
+            self.assertEqual(1, checks.call_count)
+            hit = Contracts(self.catalog)
+            self.assertEqual(1, checks.call_count)
+            self.assertEqual(miss.schemas, hit.schemas)
+            self.assertEqual(outcomes(miss), outcomes(hit))
+            self.write_schema(type='string')
+            changed = Contracts(self.catalog)
+            self.assertEqual(2, checks.call_count)
+            changed_hit = Contracts(self.catalog)
+            self.assertEqual(2, checks.call_count)
+            self.assertEqual(outcomes(changed), outcomes(changed_hit))
+            self.assertNotEqual(outcomes(miss), outcomes(changed))
+
+    def test_validator_class_change_cannot_reuse_a_successful_check(self):
+        from jsonschema import Draft7Validator
+
+        self.write_schema()
+        Contracts(self.catalog)
+        with patch.object(self.module, 'Draft202012Validator', Draft7Validator), patch.object(
+                Draft7Validator, 'check_schema', wraps=Draft7Validator.check_schema) as checks:
+            Contracts(self.catalog).validate('sample', 1)
+            Contracts(self.catalog).validate('sample', 1)
+        self.assertEqual(1, checks.call_count)
+
+    def test_schema_check_uses_the_validator_class_captured_in_its_key(self):
+        from jsonschema import Draft7Validator
+
+        self.write_schema()
+        key_function = self.module._schema_check_key
+
+        def switch_validator(*args):
+            key = key_function(*args)
+            self.module.Draft202012Validator = Draft7Validator
+            return key
+
+        with patch.object(self.module, 'Draft202012Validator', self.module.Draft202012Validator), self.checks() as original, patch.object(
+                Draft7Validator, 'check_schema', wraps=Draft7Validator.check_schema) as replacement, patch.object(
+                self.module, '_schema_check_key', side_effect=switch_validator):
+            Contracts(self.catalog)
+        self.assertEqual(1, original.call_count)
+        self.assertEqual(0, replacement.call_count)
+
+    def test_unchanged_catalog_reuses_checks_but_reloads_every_file(self):
+        self.write_schema()
+        self.write_schema('other', type='string')
+        with self.checks() as checks, patch.object(
+                self.module, 'load', wraps=self.module.load) as reader:
+            first = Contracts(self.catalog)
+            second = Contracts(self.catalog)
+        self.assertEqual(4, reader.call_count)
+        self.assertEqual(2, checks.call_count)
+        self.assertIsNot(first.registry, second.registry)
+        self.assertIsNot(first.formats, second.formats)
+        self.assertEqual(1, second.validate('sample', 1))
+        with self.assertRaises(ValidationError):
+            second.validate('sample', 'invalid')
+
+    def test_changed_schema_at_same_path_is_checked_and_changes_validation(self):
+        self.write_schema()
+        with self.checks() as checks:
+            first = Contracts(self.catalog)
+            self.write_schema(type='string')
+            second = Contracts(self.catalog)
+        self.assertEqual(2, checks.call_count)
+        first.validate('sample', 1)
+        second.validate('sample', 'new')
+        with self.assertRaises(ValidationError):
+            second.validate('sample', 1)
+
+    def test_boolean_and_numeric_schema_values_have_distinct_keys(self):
+        with self.checks() as checks:
+            self.write_schema(default=True)
+            Contracts(self.catalog)
+            self.write_schema(default=1)
+            Contracts(self.catalog)
+            Contracts(self.catalog)
+        self.assertEqual(2, checks.call_count)
+
+    def test_invalid_schema_is_never_cached_and_repair_is_observed(self):
+        from jsonschema.exceptions import SchemaError
+
+        self.write_schema(type='invalid-type')
+        with self.checks() as checks:
+            for _ in range(2):
+                with self.assertRaises(SchemaError):
+                    Contracts(self.catalog)
+            self.write_schema()
+            Contracts(self.catalog).validate('sample', 1)
+            Contracts(self.catalog)
+        self.assertEqual(3, checks.call_count)
+
+    def test_added_removed_and_wrong_identity_files_are_observed(self):
+        self.write_schema()
+        Contracts(self.catalog)
+        self.write_schema('other', type='string')
+        self.assertEqual({'sample', 'other'}, set(Contracts(self.catalog).schemas))
+        (self.catalog / 'other.schema.json').rename(self.catalog / 'other.removed')
+        self.assertEqual({'sample'}, set(Contracts(self.catalog).schemas))
+        self.write_schema(**{'$id': 'urn:wrong'})
+        for _ in range(2):
+            with self.assertRaisesRegex(ValidationError, 'Invalid schema identity'):
+                Contracts(self.catalog)
+
+    def test_instances_and_different_directories_do_not_share_mutable_schemas(self):
+        self.write_schema()
+        first = Contracts(self.catalog)
+        second = Contracts(self.catalog)
+        first.schemas['sample']['type'] = 'string'
+        second.validate('sample', 1)
+        Contracts(self.catalog).validate('sample', 1)
+        other = self.catalog / 'other'
+        other.mkdir()
+        schema = self.write_schema(type='string')
+        (other / 'sample.schema.json').write_text(json.dumps(schema), encoding='utf-8')
+        with self.assertRaises(ValidationError):
+            Contracts(other).validate('sample', 1)
+
+    def test_eviction_preserves_acceptance_and_rechecks_evicted_values(self):
+        with patch.object(self.module, '_SCHEMA_CHECK_CACHE_MAX_ENTRIES', 1, create=True), self.checks() as checks:
+            for value in (1, 2, 1, 1):
+                self.write_schema(default=value)
+                Contracts(self.catalog).validate('sample', value)
+        self.assertEqual(3, checks.call_count)
+
+    def test_key_byte_budget_evicts_instead_of_rejecting_catalogs(self):
+        schema = self.write_schema(default=1)
+        size = len(json.dumps(schema, sort_keys=True, separators=(',', ':'),
+                              ensure_ascii=False, allow_nan=False).encode('utf-8'))
+        with patch.object(self.module, '_SCHEMA_CHECK_CACHE_MAX_BYTES', size + 1, create=True), self.checks() as checks:
+            for value in (1, 2, 1, 1):
+                self.write_schema(default=value)
+                Contracts(self.catalog).validate('sample', value)
+        self.assertEqual(3, checks.call_count)
+
+    def test_oversized_keys_are_checked_every_time_without_rejection(self):
+        self.write_schema(description='large annotation' * 20)
+        with patch.object(self.module, '_SCHEMA_CHECK_CACHE_MAX_BYTES', 10, create=True), self.checks() as checks:
+            for _ in range(2):
+                Contracts(self.catalog).validate('sample', 1)
+        self.assertEqual(2, checks.call_count)
+
+    def test_unsupported_or_unserializable_values_use_original_check(self):
+        self.write_schema()
+        for annotation in (object(), float('nan')):
+            schema = self.write_schema()
+            schema['default'] = annotation
+            with self.subTest(annotation=type(annotation).__name__), self.checks() as checks, patch.object(
+                    self.module, 'load', return_value=schema):
+                for _ in range(2):
+                    Contracts(self.catalog).validate('sample', 1)
+                self.assertEqual(2, checks.call_count)
+
+    def test_concurrent_construction_checks_identical_schema_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.write_schema()
+        barrier = threading.Barrier(4)
+
+        def construct(_):
+            barrier.wait()
+            return Contracts(self.catalog).validate('sample', 1)
+
+        with self.checks() as checks, ThreadPoolExecutor(max_workers=4) as pool:
+            self.assertEqual([1] * 4, list(pool.map(construct, range(4))))
+        self.assertEqual(1, checks.call_count)
+
+    def test_local_references_use_fresh_registries_after_catalog_changes(self):
+        self.write_schema('target')
+        self.write_schema(type='object', properties={'value': {'$ref': 'urn:awf:1.2:target'}})
+        first = Contracts(self.catalog)
+        first.validate('sample', {'value': 1})
+        self.write_schema('target', type='string')
+        second = Contracts(self.catalog)
+        first.validate('sample', {'value': 1})
+        second.validate('sample', {'value': 'fresh'})
+        with self.assertRaises(ValidationError):
+            second.validate('sample', {'value': 1})
+        with self.assertRaisesRegex(Exception, 'Unresolvable'):
+            self.write_schema(**{'$ref': 'https://example.invalid/unavailable'})
+            Contracts(self.catalog).validate('sample', 1)
 
 
 if __name__ == "__main__":
