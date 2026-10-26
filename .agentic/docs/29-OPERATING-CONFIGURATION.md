@@ -16,15 +16,11 @@ evidence and matching capacities; missing authentication, self-digests and
 operator values fail closed. Observed capacity is 0–1000; zero selects no lane
 (`safe_lane_count == 0`).
 
-Pending generated-schema limitation: raw schemas cap `streams.count` at six,
-provide A-F routes, and reject `execution.max_lanes` until AWF-50 item 1 lands.
-Above-six configuration remains schema-invalid. Migration:
-keep an omitted setting to retain six; raise protected ceilings only through review
-after that schema update. Schema acceptance grants no dispatch authority.
+Generated schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
-| `operating-config` | `streams.count` | 1–6 |
+| `operating-config` | `streams.count` | 1–12 |
 | `project-config` | `execution.max_parallel_tickets`, `execution.max_parallel_tickets_per_stream`, `execution.host_broker.max_workers`, each `execution.host_broker.resources` value | 1–1000 |
 | `project-config` | `execution.host_broker.max_heavy_jobs`, `execution.host_broker.max_gpu_jobs`, explicit `execution.independent_reviewers.count` | 0–1000 |
 | `ticket-plan` | `lane_cap` | 1–1000 |

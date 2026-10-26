@@ -4,6 +4,7 @@ import hashlib
 import re
 import sys
 import unittest
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -16,12 +17,34 @@ LIMITATION = (
     'primitives. Publish from Windows or Linux.'
 )
 PINS = {
-    'Whats-New': 'd3612a905b96063a0fe2361902c1760eb38b7c638144dbc2f27c484a2f12296f',
+    'Whats-New': '48ff2399a20beca60b0de4b6c83c87d7455db47c149b93ab34502bd30369a90f',
     'User-Interface': '3c6e78ee044061ad8242b16bb08f3d83874b70990ee91f63c46fb20540c2c9ae',
 }
 
 
 class PublicationDocsTests(unittest.TestCase):
+    def test_relative_markdown_links_resolve(self):
+        documents = (
+            'docs/AWF-1.9.5-Whats-New.md',
+            'docs/AWF-1.9.5-User-Interface.md',
+            'docs/showcase/AWF-1.9.5-Whats-New.md',
+            'docs/showcase/AWF-1.9.5-User-Interface.md',
+        )
+        for document in documents:
+            source = ROOT / document
+            text = source.read_text(encoding='utf-8')
+            # These documents use inline links with whitespace-free destinations.
+            for match in re.finditer(r'\]\(([^)\s]+)\)', text):
+                destination = match.group(1)
+                link = urlsplit(destination)
+                if link.scheme or link.netloc or not link.path:
+                    continue
+                line = text.count('\n', 0, match.start()) + 1
+                with self.subTest(source=f'{document}:{line}', destination=destination):
+                    target = (source.parent / unquote(link.path)).resolve()
+                    self.assertTrue(target.is_relative_to(ROOT), str(target))
+                    self.assertTrue(target.is_file(), str(target))
+
     def test_full_text_bytes_and_publication_membership(self):
         for name, pin in PINS.items():
             with self.subTest(name=name):

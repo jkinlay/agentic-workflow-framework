@@ -2,6 +2,7 @@
 .agentic/.venv/
 .agentic-install/
 .agentic-backup/
+_to_delete/
 .agentic-state/**/lock
 .agentic-state/operating/pending.json
 .agentic-state/publication-deny.json
