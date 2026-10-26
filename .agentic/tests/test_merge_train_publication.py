@@ -709,10 +709,10 @@ class BatchObjectTransportTests(unittest.TestCase):
 
     def commit(self, *, test="import unittest\nclass Upgrade(unittest.TestCase):\n def test_ok(self): pass\n",
                valid=True, parent=None):
-        files = {".agentic/tests/test_upgrade_194.py": test.encode(),
+        files = {".agentic/tests/test_upgrade_195.py": test.encode(),
                  ".gitattributes": b".agentic/tests/* export-ignore\n",
                  "payload.txt": b"new object bytes\n"}
-        manifest = {"format": "awf-manifest-1", "template_version": "1.9.4",
+        manifest = {"format": "awf-manifest-1", "template_version": "1.9.5",
                     "files": {name: hashlib.sha256(value).hexdigest()
                               for name, value in files.items()}}
         if not valid:

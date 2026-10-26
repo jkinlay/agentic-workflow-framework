@@ -2,7 +2,7 @@
 """AC42 end-to-end upgrade gate harness (AWF-11).
 
 Upgrades a recorded historical installation fixture (default 1.9.1, as AC42
-specifies) to this 1.9.4 source in a fresh Git repository, then records one
+specifies) to this 1.9.5 source in a fresh Git repository, then records one
 PASS / FAIL / NOT_COVERED row per AC42 clause in an evidence JSON file.
 
 The adoption-PR merge and the GitHub observations are a recorded synthetic
@@ -19,12 +19,14 @@ Git configuration is changed.
 from __future__ import annotations
 import argparse
 import base64
+import copy
 import difflib
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -165,6 +167,213 @@ def owner_blob(project, commit, name, max_bytes=OWNER_BLOB_MAX_BYTES):
     if done.returncode != 0 or len(done.stdout) != int(size.stdout):
         raise RuntimeError(f"{name} at {commit} could not be read completely")
     return done.stdout
+
+
+def _mapping_entries(node, yaml):
+    """Return unique scalar-key entries from one composed YAML mapping."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    entries = {}
+    for key, value in node.value:
+        if not isinstance(key, yaml.ScalarNode) or key.value in entries:
+            return None
+        entries[key.value] = (key, value)
+    return entries
+
+
+def _line_start(text, index):
+    return max(text.rfind("\n", 0, index), text.rfind("\r", 0, index)) + 1
+
+
+def _insert_mapping_entry(text, node, flow_entry, block_lines, newline, yaml):
+    """Insert into one structurally identified mapping without re-emitting it."""
+    entries = _mapping_entries(node, yaml)
+    if entries is None:
+        return None
+    if node.flow_style:
+        openings = [token.start_mark.index for token in yaml.scan(text)
+                    if isinstance(token, yaml.tokens.FlowMappingStartToken)
+                    and node.start_mark.index <= token.start_mark.index < node.end_mark.index]
+        if not openings:
+            return None
+        opening = min(openings)
+        separator = ", " if entries else ""
+        return text[:opening + 1] + flow_entry + separator + text[opening + 1:]
+
+    insertion = node.end_mark.index
+    if not (0 <= insertion <= len(text)):
+        return None
+    if entries:
+        indent = next(iter(entries.values()))[0].start_mark.column
+    else:
+        indent = node.start_mark.column
+    insertion_line = _line_start(text, insertion)
+    if insertion < len(text) and not text[insertion_line:insertion].strip(" \t"):
+        insertion = insertion_line
+    prefix = "" if insertion == 0 or text[insertion - 1] in "\r\n" else newline
+    rendered = prefix + "".join(" " * indent + line + newline for line in block_lines)
+    return text[:insertion] + rendered + text[insertion:]
+
+
+def _compose_mapping(text):
+    import yaml
+    try:
+        root = yaml.compose(text)
+        value = yaml.safe_load(text)
+    except (UnicodeError, yaml.YAMLError):
+        return None
+    entries = _mapping_entries(root, yaml)
+    if entries is None or not isinstance(value, dict):
+        return None
+    return yaml, root, entries, value
+
+
+def expected_project_config(raw):
+    """Derive the exact bytes after the documented additive config edits."""
+    try:
+        text = bytes(raw).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+    composed = _compose_mapping(text)
+    if composed is None:
+        return None
+    yaml, _, root_entries, value = composed
+    template = root_entries.get("template")
+    template_entries = _mapping_entries(template[1], yaml) if template else None
+    version_entry = template_entries.get("expected_workflow_version") if template_entries else None
+    version_node = version_entry[1] if version_entry else None
+    if (not isinstance(version_node, yaml.ScalarNode)
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version_node.value)):
+        return None
+    start, end = version_node.start_mark.index, version_node.end_mark.index
+    scalar_source = text[start:end]
+    matches = list(re.finditer(re.escape(version_node.value), scalar_source))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    text = (text[:start + match.start()] + VERSION
+            + text[start + match.end():])
+    expected_value = copy.deepcopy(value)
+    expected_value["template"]["expected_workflow_version"] = VERSION
+    recomposed = _compose_mapping(text)
+    if recomposed is None or recomposed[3] != expected_value:
+        return None
+
+    newline = "\r\n" if "\r\n" in text else "\r" if "\r" in text else "\n"
+    yaml, _, root_entries, value = recomposed
+    jira_entry = root_entries.get("jira")
+    jira_entries = _mapping_entries(jira_entry[1], yaml) if jira_entry else None
+    if jira_entries is None or not isinstance(value.get("jira"), dict):
+        return None
+    identity_fields = ("cloud_id", "provider_project_id", "controller_actor_id")
+    missing = [name for name in identity_fields if name not in jira_entries]
+    if missing:
+        site_entry = jira_entries.get("site")
+        if site_entry is None:
+            return None
+        insertion = _line_start(text, site_entry[0].start_mark.index)
+        leading = text[insertion:site_entry[0].start_mark.index]
+        if leading.strip(" \t"):
+            return None
+        block = "".join(leading + '"' + name + '": null,' + newline
+                        for name in missing)
+        text = text[:insertion] + block + text[insertion:]
+        for name in missing:
+            expected_value["jira"][name] = None
+        recomposed = _compose_mapping(text)
+        if recomposed is None or recomposed[3] != expected_value:
+            return None
+
+    # The review-tier migration serializes strict JSON; YAML retains all bytes
+    # except the one structurally scoped insertion.
+    json_value = None
+    if text.lstrip().startswith(("{", "[")):
+        try:
+            json_value = json.loads(text)
+        except (TypeError, ValueError):
+            pass
+    tier_default = {"roles": ["critic", "specialist"],
+                    "findings": "blocking", "max_rounds": 3}
+    if json_value is not None:
+        if not isinstance(json_value, dict):
+            return None
+        execution = json_value.setdefault("execution", {})
+        if not isinstance(execution, dict):
+            return None
+        tiers = execution.setdefault("risk_tiers", {})
+        if not isinstance(tiers, dict):
+            return None
+        tiers.setdefault("tier3_review", copy.deepcopy(tier_default))
+        return (json.dumps(json_value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+    recomposed = _compose_mapping(text)
+    if recomposed is None:
+        return None
+    yaml, root, root_entries, value = recomposed
+    expected_value = copy.deepcopy(value)
+    execution_entry = root_entries.get("execution")
+    tier_flow = ("tier3_review: {roles: [critic, specialist], findings: blocking, "
+                 "max_rounds: 3}")
+    if execution_entry is None:
+        text = _insert_mapping_entry(
+            text, root,
+            "execution: {risk_tiers: {" + tier_flow + "}}",
+            ["execution:", "  risk_tiers:", "    tier3_review:",
+             "      roles: [critic, specialist]", "      findings: blocking",
+             "      max_rounds: 3"], newline, yaml)
+        expected_value["execution"] = {"risk_tiers": {"tier3_review": tier_default}}
+    else:
+        execution_entries = _mapping_entries(execution_entry[1], yaml)
+        if execution_entries is None or not isinstance(value.get("execution"), dict):
+            return None
+        risk_entry = execution_entries.get("risk_tiers")
+        if risk_entry is None:
+            text = _insert_mapping_entry(
+                text, execution_entry[1],
+                "risk_tiers: {" + tier_flow + "}",
+                ["risk_tiers:", "  tier3_review:",
+                 "    roles: [critic, specialist]", "    findings: blocking",
+                 "    max_rounds: 3"], newline, yaml)
+            expected_value["execution"]["risk_tiers"] = {"tier3_review": tier_default}
+        else:
+            risk_entries = _mapping_entries(risk_entry[1], yaml)
+            if risk_entries is None or not isinstance(value["execution"].get("risk_tiers"), dict):
+                return None
+            if "tier3_review" not in risk_entries:
+                text = _insert_mapping_entry(
+                    text, risk_entry[1], tier_flow,
+                    ["tier3_review:", "  roles: [critic, specialist]",
+                     "  findings: blocking", "  max_rounds: 3"], newline, yaml)
+                expected_value["execution"]["risk_tiers"]["tier3_review"] = tier_default
+    if text is None:
+        return None
+    recomposed = _compose_mapping(text)
+    if recomposed is None or recomposed[3] != expected_value:
+        return None
+    return text.encode("utf-8")
+
+
+def project_values_preserved(owner_before, owner_after, config, installed):
+    """Return the exact owner-file preservation result and diagnostic evidence."""
+    changed = {}
+    for name, raw in owner_before.items():
+        after = owner_after.get(name)
+        if after != raw:
+            changed[name] = list(difflib.unified_diff(
+                (raw or b"").decode("utf-8", "replace").splitlines(),
+                (after or b"").decode("utf-8", "replace").splitlines(),
+                lineterm="", n=0))[2:40]
+    # AWF-managed records and the documented append-only .gitignore block.
+    allowed = {config, installed, ".agentic/workflow-version.yaml", ".gitignore"}
+    ignore_after = owner_after.get(".gitignore")
+    ignore_ok = ".gitignore" not in owner_before or (
+        ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
+    expected_config = expected_project_config(owner_before.get(config, b""))
+    config_ok = expected_config is not None and owner_after.get(config) == expected_config
+    ok = set(changed) <= allowed and config_ok and ignore_ok
+    return ok, {"changed": changed, "project_config_exact": config_ok,
+                "gitignore_prefix_preserved": ignore_ok}
 
 
 class Gate:
@@ -398,22 +607,10 @@ def main(argv=None):
         owner_before = {name: blob(base_commit, name) for name in owner_before}
         if any(raw is None for raw in owner_before.values()):
             raise RuntimeError("owner file absent from the base commit")
-        changed = {}
-        for name, raw in owner_before.items():
-            after = blob("HEAD", name)
-            if after != raw:
-                changed[name] = list(difflib.unified_diff((raw or b"").decode("utf-8", "replace").splitlines(),
-                    (after or b"").decode("utf-8", "replace").splitlines(), lineterm="", n=0))[2:40]
-        # AWF-managed records and the documented append-only .gitignore block.
-        allowed = {CONFIG, INSTALLED, ".agentic/workflow-version.yaml", ".gitignore"}
-        ignore_after = blob("HEAD", ".gitignore") if ".gitignore" in owner_before else None
-        ignore_ok = ".gitignore" not in owner_before or (
-            ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
-        config_lines = [line for line in changed.get(CONFIG, []) if line[:1] in "+-"]
-        config_ok = all("expected_workflow_version" in line or line.strip("+- ").startswith(
-            ('"cloud_id"', '"provider_project_id"', '"controller_actor_id"')) for line in config_lines)
-        gate.record("project_values_preserved", set(changed) <= allowed and config_ok and ignore_ok,
-                    {"changed": changed, "gitignore_prefix_preserved": ignore_ok})
+        owner_after = {name: blob("HEAD", name) for name in owner_before}
+        values_ok, values_evidence = project_values_preserved(
+            owner_before, owner_after, CONFIG, INSTALLED)
+        gate.record("project_values_preserved", values_ok, values_evidence)
         gate.record("external_data_unchanged", tree_digest(external) == external_before, external_before)
 
         clone = work / "fresh-clone"

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run one of three deterministic Windows unittest module shards.
+"""Run one of six deterministic Windows unittest module shards.
 
 From the repository root: python -B scripts/run_windows_unittests.py --shard 0
 Add --list to guard all allocations and print this shard without importing tests.
 Paths are repository-relative POSIX strings sorted by Unicode code point, per
-suite; index i belongs to shard i % 3. No inventory is frozen into this script.
+suite; index i belongs to shard i % 6 after the explicit exclusion below.
 Each suite uses a fresh interpreter, the repository cwd and its Linux CI
 discovery top-level contract. Selection is logged before any child is launched;
 discovery and completed module-suite records must match it exactly.
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import importlib
 import json
 import os
 from pathlib import Path
@@ -24,7 +25,10 @@ import unittest
 SUITES = ('.agentic/tests', 'scripts/tests', 'global/awf/tests',
           'global/awf-portable/tests')
 EXPLICIT_TOP = frozenset(SUITES[:2])
-SHARDS = (0, 1, 2)
+SHARDS = (0, 1, 2, 3, 4, 5)
+ZERO_TEST_MODULES = frozenset({'.agentic/tests/test_awf36_automation_fixtures.py'})
+# The installed-runtime acceptance suite has its own CI job and budget.
+EXCLUDED_MODULES = frozenset({'scripts/tests/test_installed_self_test.py'})
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
@@ -58,8 +62,8 @@ def allocate(modules):
     for suite, paths in modules.items():
         if len(paths) != len(set(paths)):
             raise ValueError(f'duplicate inventory paths: {suite}')
-        ordered = sorted(paths)
-        allocation[suite] = {shard: ordered[shard::3] for shard in SHARDS}
+        ordered = sorted(path for path in paths if path not in EXCLUDED_MODULES)
+        allocation[suite] = {shard: ordered[shard::len(SHARDS)] for shard in SHARDS}
     return allocation
 
 
@@ -75,8 +79,9 @@ def guard(root, allocation):
             raise ValueError(f'invalid shard indices: {suite}')
         counts = Counter(path for paths in shards.values() for path in paths)
         duplicate = sorted(path for path, count in counts.items() if count != 1)
-        unknown = sorted(set(counts) - set(expected[suite]))
-        missing = sorted(set(expected[suite]) - set(counts))
+        included = set(expected[suite]) - EXCLUDED_MODULES
+        unknown = sorted(set(counts) - included)
+        missing = sorted(included - set(counts))
         if duplicate or unknown or missing:
             raise ValueError(f'{suite}: duplicate={duplicate}, unknown={unknown}, missing={missing}')
 
@@ -94,12 +99,13 @@ class RecordedSuite(unittest.TestSuite):
         super().__init__([tests])
         self.path = path
         self.executed = executed
+        self.allowed_empty = path in ZERO_TEST_MODULES and tests.countTestCases() == 0
 
     def run(self, result, debug=False):
         before = (result.testsRun, len(result.errors), len(result.skipped))
         result = super().run(result, debug)
         after = (result.testsRun, len(result.errors), len(result.skipped))
-        if before == after:
+        if before == after and not self.allowed_empty:
             raise ValueError(f'empty execution for selected module: {self.path}')
         self.executed.append(self.path)
         return result
@@ -114,6 +120,7 @@ class SelectedLoader(unittest.TestLoader):
         self.selected = set(selected)
         self.discovered = []
         self.executed = []
+        self.zero_test_modules = {}
 
     def _match_path(self, path, full_path, pattern):
         # TestLoader explicitly provides this seam for alternate matching.
@@ -121,13 +128,22 @@ class SelectedLoader(unittest.TestLoader):
         return super()._match_path(path, full_path, pattern) and relative in self.selected
 
     def _find_test_path(self, full_path, pattern):
+        relative = Path(full_path).relative_to(self.root).as_posix()
+        helper = '.agentic/tests/test_awf36_automation_fixtures.py'
+        if (relative in self.selected
+                and relative == '.agentic/tests/test_awf36_controller_automation.py'
+                and (self.root / helper).is_file()):
+            # The helper patches the consumer's setUp before discovery loads its
+            # cases, even when ordinal allocation puts it in another shard.
+            importlib.import_module('test_awf36_automation_fixtures')
         # Wrap the suite returned by real discovery, including its import-error
         # or explicit SkipTest cases. Do not guess dotted module names.
         tests, recurse = super()._find_test_path(full_path, pattern)
-        relative = Path(full_path).relative_to(self.root).as_posix()
         if relative in self.selected and tests is not None:
             if tests.countTestCases() == 0:
-                raise ValueError(f'empty discovery for selected module: {relative}')
+                if relative not in ZERO_TEST_MODULES:
+                    raise ValueError(f'empty discovery for selected module: {relative}')
+                self.zero_test_modules[relative] = 0
             self.discovered.append(relative)
             tests = RecordedSuite(tests, relative, self.executed)
         return tests, recurse
@@ -152,6 +168,7 @@ def run_suite(root, suite, selected):
     reconcile(selected, loader.executed)
     print(json.dumps(dict(event='suite_result', suite=suite,
                           discovered=loader.discovered, executed=loader.executed,
+                          zero_test_modules=loader.zero_test_modules,
                           tests_run=tests_run, successful=successful)), flush=True)
     return 0 if successful else 1
 
@@ -211,6 +228,7 @@ def main(argv=None):
         if args._suite:
             return run_suite(root, args._suite, allocation[args._suite][args.shard])
         print(json.dumps(dict(event='selected', shard=args.shard,
+                              excluded=sorted(EXCLUDED_MODULES),
                               modules={suite: allocation[suite][args.shard] for suite in SUITES})),
               flush=True)
         if args.list:

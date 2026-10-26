@@ -48,7 +48,7 @@ class CodexSkillTests(unittest.TestCase):
     def test_different_version_in_default_user_home_refuses_and_names_path(self):
         pinned = self.codex_home / "skills" / "awf"
         stale = self.home / ".codex" / "skills" / "awf"
-        self.skill(pinned, "1.9.4")
+        self.skill(pinned, "1.9.5")
         self.skill(stale, "1.9.3")
         record = self.root / "run" / "skill-selection.json"
 
@@ -62,21 +62,21 @@ class CodexSkillTests(unittest.TestCase):
         self.assertEqual(logged["status"], "REFUSED")
         self.assertEqual(
             {(item["path"], item["version"]) for item in logged["visible_skills"]},
-            {(str(pinned.resolve()), "1.9.4"), (str(stale.resolve()), "1.9.3")},
+            {(str(pinned.resolve()), "1.9.5"), (str(stale.resolve()), "1.9.3")},
         )
 
     def test_matching_user_and_project_copies_are_logged(self):
         pinned = self.codex_home / "skills" / "awf"
         project_skill = self.project / ".agents" / "skills" / "awf"
-        self.skill(pinned, "1.9.4")
-        self.skill(project_skill, "1.9.4")
+        self.skill(pinned, "1.9.5")
+        self.skill(project_skill, "1.9.5")
 
         observed = observe_codex_awf_skills(
             self.project, self.checkout, self.environment
         )
 
         self.assertEqual(observed["status"], "PASS")
-        self.assertEqual(observed["expected_version"], "1.9.4")
+        self.assertEqual(observed["expected_version"], "1.9.5")
         self.assertEqual(observed["pinned_skill_path"], str(pinned.resolve()))
         self.assertEqual(len(observed["visible_skills"]), 2)
         project_record = next(
@@ -130,7 +130,7 @@ class CodexSkillTests(unittest.TestCase):
         )
         self.assertEqual(
             logged["problems"],
-            [f"AWF skill {resolved} has version 1.9.3; expected 1.9.4"],
+            [f"AWF skill {resolved} has version 1.9.3; expected 1.9.5"],
         )
         self.assertIn(resolved, str(raised.exception))
 
@@ -151,7 +151,7 @@ class CodexSkillTests(unittest.TestCase):
         profile = self.root / "windows-profile"
         selected = home if os.name != "nt" else profile
         other = profile if os.name != "nt" else home
-        self.skill(selected / ".codex" / "skills" / "awf", "1.9.4")
+        self.skill(selected / ".codex" / "skills" / "awf", "1.9.5")
         stale = other / ".codex" / "skills" / "awf"
         self.skill(stale, "1.9.3")
         environment = {"HOME": str(home), "USERPROFILE": str(profile)}
@@ -176,7 +176,7 @@ class CodexSkillTests(unittest.TestCase):
         from agentic.providers.github_review_host import HostDriver
 
         pinned = self.codex_home / "skills" / "awf"
-        self.skill(pinned, "1.9.4")
+        self.skill(pinned, "1.9.5")
         state = self.root / "state"
         worker = self.checkout
         critic = self.root / "critic"
@@ -258,7 +258,7 @@ class CodexSkillTests(unittest.TestCase):
 
     def test_controller_dispatch_enforces_and_retains_skill_selection(self):
         pinned = self.codex_home / "skills" / "awf"
-        self.skill(pinned, "1.9.4")
+        self.skill(pinned, "1.9.5")
         now = "2026-10-11T10:00:00Z"
         binding = {
             "project_id": "project",
@@ -368,7 +368,7 @@ class CodexSkillTests(unittest.TestCase):
     def test_controller_refuses_stale_skill_in_distinct_dispatch_worktree(self):
         pinned = self.codex_home / "skills" / "awf"
         stale = self.checkout / ".agents" / "skills" / "awf"
-        self.skill(pinned, "1.9.4")
+        self.skill(pinned, "1.9.5")
         self.skill(stale, "1.9.3")
         now = "2026-10-11T10:00:00Z"
         binding = {
@@ -456,7 +456,7 @@ class CodexSkillTests(unittest.TestCase):
 
     def test_controller_store_persists_visible_skill_record_before_begin(self):
         pinned = self.codex_home / "skills" / "awf"
-        self.skill(pinned, "1.9.4")
+        self.skill(pinned, "1.9.5")
         now = "2026-10-11T10:00:00Z"
         record = observe_codex_awf_skills(
             self.project, self.checkout, self.environment

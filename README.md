@@ -1,6 +1,6 @@
 # Agentic Workflow Framework
 
-Release 1.9.4. [Apache-2.0](LICENSE) applies; see [NOTICE](NOTICE).
+Release 1.9.5. [Apache-2.0](LICENSE) applies; see [NOTICE](NOTICE).
 
 ## Start
 
