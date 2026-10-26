@@ -21,6 +21,29 @@ from agentic import ValidationError
 from agentic import safeio
 
 
+_GITHUB_TOKEN = "gh" + "p_" + "0123456789abcdefghijklmnop"
+_GITHUB_OAUTH_TOKEN = "gh" + "o_" + "0123456789abcdefghijklmnop"
+_GITHUB_USER_TOKEN = "gh" + "u_" + "0123456789abcdefghijklmnop"
+_GITHUB_SERVER_TOKEN = "gh" + "s_" + "0123456789abcdefghijklmnop"
+_GITHUB_REFRESH_TOKEN = "gh" + "r_" + "0123456789abcdefghijklmnop"
+_GITHUB_PAT = "github_" + "pat_" + "0123456789abcdefghijklmnop"
+_SK_TOKEN = "s" + "k-" + "abcdefghijklmnopqrst"
+_SLACK_BOT_TOKEN = "xox" + "b-" + "0123456789" + "-" + "abcdefghijklmnop"
+_SLACK_USER_TOKEN = "xox" + "p-" + "0123456789" + "-" + "abcdefghijklmnop"
+_SLACK_APP_TOKEN = "xox" + "a-" + "0123456789" + "-" + "abcdefghijklmnop"
+_SLACK_SESSION_TOKEN = "xox" + "s-" + "0123456789" + "-" + "abcdefghijklmnop"
+_AUTH_BEARER_20 = "Authorization: " + "Bearer " + "abcdefghijklmnopqrst"
+_URL_SECRET = "https://user:" + "secret@example.com/path"
+_URL_SYNTHETIC_PASSWORD = "https://fixture:" + "synthetic-password@example.invalid/a"
+_GITHUB_PAT_SYNTHETIC = "github_" + "pat_SYNTHETIC123"
+_GITHUB_TOKEN_SYNTHETIC = "gh" + "p_SYNTHETIC123"
+_AUTH_SYNTHETIC_HEADER = "Authorization: " + "Bearer " + "synthetic-header"
+_AUTH_SYNTHETIC_TAMPER = "Authorization: " + "Bearer " + "synthetic-tamper"
+_AUTH_SYNTHETIC_NONZERO = "Authorization: " + "Bearer " + "synthetic-nonzero"
+_URL_PASSWORD_COLON = "https://user:" + "pa:ss@example.com/"
+_URL_PASSWORD_QUERY = "https://example.com?note=user:" + "password@host"
+
+
 def _python(source, *arguments):
     return [sys.executable, "-B", "-c", source, *map(str, arguments)]
 
@@ -462,12 +485,18 @@ class CodexRetentionTests(unittest.TestCase):
 
     THREAD = "3bca9a10-44c0-4fa0-a069-685d12f5eff3"
     CONTROLLER = "6dcb0314-9954-40c8-84fc-0ed9b9365b69"
-    CREDENTIALS = (
-        "Authorization: Bearer synthetic-header", "Authorization: custom synthetic-header",
+    DIAGNOSTIC_CREDENTIALS = (
+        _AUTH_SYNTHETIC_HEADER, "Authorization: custom synthetic-header",
         "password=synthetic-assignment", "--api-key synthetic-cli",
-        "https://fixture:synthetic-password@example.invalid/a",
-        "github_pat_SYNTHETIC123", "ghp_SYNTHETIC123", "sk-SYNTHETIC123",
+        _URL_SYNTHETIC_PASSWORD,
+        _GITHUB_PAT_SYNTHETIC, _GITHUB_TOKEN_SYNTHETIC, "sk-SYNTHETIC123",
         "Bearer synthetic-bare", "token synthetic-bare", "opaque-fixture-value",
+    )
+    MACHINE_CREDENTIALS = (
+        _GITHUB_TOKEN, _GITHUB_PAT,
+        _SK_TOKEN, _SLACK_BOT_TOKEN,
+        _AUTH_BEARER_20,
+        _URL_SYNTHETIC_PASSWORD,
     )
 
     def setUp(self):
@@ -525,8 +554,79 @@ class CodexRetentionTests(unittest.TestCase):
     def assert_no_retention(self):
         self.assertEqual(list(self.run.iterdir()), [])
 
+    def test_c1_00_machine_log_prose_is_retained_byte_identical(self):
+        prose = (
+            "strips API/GitHub-token variables", "the token budget is 4000",
+            "Bearer of bad news", "Authorization: header is removed",
+            "token: 4000 used", "password: see the runbook", "api_key: null",
+            "Set OPENAI_API_KEY=<redacted> in the env", 'VERSION_TOKEN = r"..."',
+            "PROVIDER_API_KEY_ENV_VARS = frozenset(", "--token-file path",
+            "sk-learn is a library", "https://user@example.com/x",
+            "export GHP_TOKEN=xyz", "set GITHUB_PAT_VALUE in CI",
+            "SK-ABCDEFGHIJKLMNOPQRST", "XOXB-EXAMPLE",
+        )
+        for value in prose:
+            with self.subTest(value=value):
+                raw = self.machine(value)
+                try:
+                    result = self.invoke(raw)
+                except ValidationError as exc:
+                    self.fail(f"ordinary machine-log prose was refused: {exc}")
+                self.assertEqual(result, "")
+                self.assertEqual(self.log.read_bytes(), raw)
+
+    def test_c1_00a_machine_log_secret_families_refused_direct_and_json_escaped(self):
+        cases = (
+            (_GITHUB_TOKEN, b"ghp_", b"gh\\u0070_"),
+            (_GITHUB_OAUTH_TOKEN, b"gho_", b"gh\\u006f_"),
+            (_GITHUB_USER_TOKEN, b"ghu_", b"gh\\u0075_"),
+            (_GITHUB_SERVER_TOKEN, b"ghs_", b"gh\\u0073_"),
+            (_GITHUB_REFRESH_TOKEN, b"ghr_", b"gh\\u0072_"),
+            (_GITHUB_PAT, b"github_pat_", b"github_p\\u0061t_"),
+            (_SK_TOKEN, b"sk-", b"s\\u006b-"),
+            (_SLACK_BOT_TOKEN, b"xoxb-", b"xox\\u0062-"),
+            (_SLACK_USER_TOKEN, b"xoxp-", b"xox\\u0070-"),
+            (_SLACK_APP_TOKEN, b"xoxa-", b"xox\\u0061-"),
+            (_SLACK_SESSION_TOKEN, b"xoxs-", b"xox\\u0073-"),
+            (_AUTH_BEARER_20, b"Authorization", b"Authorizati\\u006fn"),
+            (_URL_SECRET, b"user:secret", b"user\\u003asecret"),
+            ("opaque-fixture-value", b"fixture", b"fixt\\u0075re"),
+        )
+        for value, direct, escaped in cases:
+            for spelling, raw in (("direct", self.machine(value)),
+                                  ("escaped", self.machine(value).replace(direct, escaped))):
+                with self.subTest(value=value, spelling=spelling):
+                    with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
+                        self.invoke(raw)
+                    self.assert_no_retention()
+
+    def test_c1_00b_separate_json_fields_do_not_form_a_credential_url(self):
+        raw = b'{"text":"see https://user:' + b'password","next":"@example.com"}\n'
+        self.assertEqual(self.invoke(raw), "")
+        self.assertEqual(self.log.read_bytes(), raw)
+
+    def test_c1_00c_password_colon_is_refused_without_query_or_cross_field_false_positives(self):
+        value = _URL_PASSWORD_COLON
+        for spelling, raw in (
+                ("decoded", self.machine(value)),
+                ("escaped", self.machine(value).replace(b"user:pa:ss", b"user\\u003apa\\u003ass"))):
+            with self.subTest(spelling=spelling):
+                with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
+                    self.invoke(raw)
+                self.assert_no_retention()
+
+        accepted = (
+            self.machine(_URL_PASSWORD_QUERY),
+            b'{"text":"see https://user:' + b'password","next":"@example.com"}\n',
+        )
+        for raw in accepted:
+            with self.subTest(raw=raw):
+                self.assertEqual(self.invoke(raw), "")
+                self.assertEqual(self.log.read_bytes(), raw)
+
     def test_c1_01_machine_credentials_refused_before_retention(self):
-        for credential in self.CREDENTIALS + ("provider-fixture-value", "git-fixture-value"):
+        for credential in self.MACHINE_CREDENTIALS + (
+                "opaque-fixture-value", "provider-fixture-value", "git-fixture-value"):
             with self.subTest(credential=credential):
                 with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
                     self.invoke(self.machine(credential))
@@ -534,10 +634,10 @@ class CodexRetentionTests(unittest.TestCase):
 
     def test_c1_02_decoded_nested_values_keys_and_duplicates_cannot_hide_credentials(self):
         payloads = (
-            b'{"nested":[{"text":"\\u0073k-SYNTHETIC123"}]}\n',
-            b'{"\\u0067hp_SYNTHETIC123":"ordinary"}\n',
-            b'{"nested":{"password":"synthetic-split"}}\n',
-            b'{"pass\\u0077ord":"synthetic-key"}\n',
+            b'{"nested":[{"text":"\\u0073k-abcdefghijklmnopqrst"}]}\n',
+            b'{"\\u0067hp_0123456789abcdefghijklmnop":"ordinary"}\n',
+            b'{"nested":{"text":"xox\\u0062-0123456789-abcdefghijklmnop"}}\n',
+            b'{"Authorizati\\u006fn: Bearer abcdefghijklmnopqrst":"ordinary"}\n',
             b'{"text":"\\u006fpaque-fixture-value"}\n',
         )
         for raw in payloads:
@@ -546,13 +646,14 @@ class CodexRetentionTests(unittest.TestCase):
                     self.invoke(raw)
                 self.assert_no_retention()
         with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_INVALID$"):
-            self.invoke(b'{"text":"ghp_SYNTHETIC123","text":"ordinary"}\n')
+            self.invoke((f'{{"text":"{_GITHUB_TOKEN}","text":"ordinary"}}\n').encode())
         self.assert_no_retention()
 
     def test_c1_03_actual_stderr_credentials_redacted_for_both_execution_branches(self):
         for fixture in (False, True):
             with self.subTest(fixture=fixture):
-                stderr = ("\n".join(self.CREDENTIALS) + "\nprovider-fixture-value\ngit-fixture-value").encode()
+                stderr = ("\n".join(self.DIAGNOSTIC_CREDENTIALS)
+                          + "\nprovider-fixture-value\ngit-fixture-value").encode()
                 self.assertEqual(self.invoke(stderr=stderr, fixture=fixture), "")
                 diagnostic = self.companion.read_text(encoding="utf-8")
                 for secret in ("synthetic-header", "synthetic-assignment", "synthetic-cli",
@@ -592,7 +693,7 @@ class CodexRetentionTests(unittest.TestCase):
         self.assertNotIn(b"/home/fixture", self.companion.read_bytes())
 
     def test_c1_07_tampering_still_fails_digest_verification(self):
-        self.invoke(stderr=b"Authorization: Bearer synthetic-tamper")
+        self.invoke(stderr=_AUTH_SYNTHETIC_TAMPER.encode())
         result = self.run / "result.json"
         result.write_bytes(b"{}\n")
         self.driver._record_codex_identity(self.CONTROLLER, self.run, self.run, result)
@@ -625,14 +726,14 @@ class CodexRetentionTests(unittest.TestCase):
         for size in (65520, 65535, 65536, 131070):
             with self.subTest(size=size):
                 with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
-                    self.invoke(self.machine("é" + "x" * size + " sk-SYNTHETIC123"))
+                    self.invoke(self.machine("é" + "x" * size + " " + _SK_TOKEN))
                 self.assert_no_retention()
 
     def test_c1_10a_invalid_record_wins_over_credentials_in_any_record_order(self):
         cases = (
-            (b'{"text":"ghp_SYNTHETIC123"}\nnot-json\n', "CODEX_LOG_INVALID"),
-            (b'not-json\n{"text":"ghp_SYNTHETIC123"}\n', "CODEX_LOG_INVALID"),
-            (b'{"text":"ghp_SYNTHETIC123"}\n', "CODEX_LOG_CREDENTIAL"),
+            ((f'{{"text":"{_GITHUB_TOKEN_SYNTHETIC}"}}\nnot-json\n').encode(), "CODEX_LOG_INVALID"),
+            ((f'not-json\n{{"text":"{_GITHUB_TOKEN_SYNTHETIC}"}}\n').encode(), "CODEX_LOG_INVALID"),
+            ((f'{{"text":"{_GITHUB_TOKEN_SYNTHETIC}"}}\n').encode(), "CODEX_LOG_CREDENTIAL"),
         )
         for raw, code in cases:
             with self.subTest(raw=raw, code=code):
@@ -685,7 +786,7 @@ class CodexRetentionTests(unittest.TestCase):
     def test_c1_13_preflight_refusals_preserve_existing_evidence_and_no_temporaries(self):
         self.log.write_bytes(b"existing-machine")
         self.companion.write_bytes(b"existing-diagnostic")
-        cases = ((self.machine("ghp_SYNTHETIC123"), b"", 1000, "CODEX_LOG_CREDENTIAL"),
+        cases = ((self.machine(_GITHUB_TOKEN_SYNTHETIC), b"", 1000, "CODEX_LOG_CREDENTIAL"),
                  (self.machine(), b"\0" * 16, len(self.machine()) + 17, "CODEX_LOG_LIMIT"))
         for stdout, stderr, maximum, code in cases:
             with self.subTest(code=code):
@@ -698,7 +799,7 @@ class CodexRetentionTests(unittest.TestCase):
 
     def test_c1_14_nonzero_stays_failure_and_empty_stderr_has_no_companion(self):
         with self.assertRaisesRegex(ValidationError, "HOST_COMMAND_FAILED") as caught:
-            self.invoke(stderr=b"Authorization: Bearer synthetic-nonzero", returncode=7)
+            self.invoke(stderr=_AUTH_SYNTHETIC_NONZERO.encode(), returncode=7)
         self.assertNotIn("synthetic-nonzero", str(caught.exception))
         self.assertNotIn(b"synthetic-nonzero", self.companion.read_bytes())
         self.assertFalse((self.run / "codex-identity.json").exists())
@@ -720,7 +821,7 @@ class CodexRetentionTests(unittest.TestCase):
         contract.write_text("fixture contract", encoding="utf-8")
         self.driver.c.update(contract_path=str(contract),
                              contract_sha256=hashlib.sha256(contract.read_bytes()).hexdigest())
-        result = subprocess.CompletedProcess([], 0, self.machine("ghp_SYNTHETIC123"), b"")
+        result = subprocess.CompletedProcess([], 0, self.machine(_GITHUB_TOKEN_SYNTHETIC), b"")
         for route in ("agent", "qualification_agent", "first_draft_worker"):
             with self.subTest(route=route), \
                     mock.patch.object(self.host.os, "environ", self.environment), \

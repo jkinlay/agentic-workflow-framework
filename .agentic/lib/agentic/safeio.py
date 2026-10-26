@@ -1127,19 +1127,19 @@ def _inspect_codex_jsonl(raw, credentials):
             while pending:
                 item = pending.pop()
                 if isinstance(item, str):
-                    if child_process.contains_credentials(item, credentials=credentials):
+                    if child_process.contains_machine_log_credentials(
+                            item, credentials=credentials):
                         raise ValidationError("CODEX_LOG_CREDENTIAL")
                 elif isinstance(item, dict):
                     for key, child in item.items():
-                        # A decoded sensitive key still denotes a credential
-                        # assignment even if JSON escaped its spelling/value.
-                        if child_process.contains_credentials(key + ": <value>"):
+                        if child_process.contains_machine_log_credentials(
+                                key + ": <value>", credentials=credentials):
                             raise ValidationError("CODEX_LOG_CREDENTIAL")
                         pending.append(key)
                         pending.append(child)
                 elif isinstance(item, list):
                     pending.extend(item)
-        if child_process.contains_credentials(text, credentials=credentials):
+        if child_process.contains_machine_log_credentials(text, credentials=credentials):
             raise ValidationError("CODEX_LOG_CREDENTIAL")
     except ValidationError as exc:
         if str(exc) == "CODEX_LOG_CREDENTIAL":

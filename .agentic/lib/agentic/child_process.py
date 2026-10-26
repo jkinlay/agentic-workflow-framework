@@ -214,6 +214,32 @@ _RETENTION_CREDENTIAL_PATTERNS = _CREDENTIAL_PATTERNS + (
 )
 
 
+_MACHINE_LOG_CREDENTIAL_PATTERNS = (
+    re.compile(
+        r"(?<![A-Za-z0-9_])(?:gh[pousr]_|github_pat_)[A-Za-z0-9_-]+"
+        r"(?![A-Za-z0-9_-])"),
+    re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"),
+    re.compile(r"(?<![A-Za-z0-9_])xox[bpas]-[A-Za-z0-9-]+(?![A-Za-z0-9-])"),
+    re.compile(
+        r"(?i)\bauthorization\s*:\s*(?:bearer|token|basic)\s+"
+        r"[a-z0-9._~+/=-]{16,}(?![a-z0-9._~+/=-])"),
+    re.compile(r'''(?i:\bhttps?)://[^\s/:@"',{}?#]+:[^\s/@"',{}?#]+@'''),
+)
+
+
+def contains_machine_log_credentials(value, *, credentials=()):
+    """Detect only the approved high-confidence machine-log secret formats.
+
+    This deliberately excludes the broader diagnostic redaction grammar. Exact
+    nonempty credential values and the finite patterns above are the complete
+    refusal boundary; this is not universal secret detection.
+    """
+    text = _diagnostic_text(value)
+    return (any(isinstance(credential, (str, bytes)) and credential
+                and _diagnostic_text(credential) in text for credential in credentials)
+            or any(pattern.search(text) for pattern in _MACHINE_LOG_CREDENTIAL_PATTERNS))
+
+
 def contains_credentials(value, *, credentials=()):
     """Detect the finite diagnostic/host credential grammar, without rendering.
 
