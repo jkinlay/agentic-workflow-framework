@@ -2,17 +2,19 @@
 
 ## 1.9.5 (unreleased)
 
-CONDITIONAL (#245): AWF-210 version bump.
+AWF-210 version bump.
 
 AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
 
-Ticket-level merged inventory: AWF-5,AWF-8,AWF-10,AWF-14,AWF-16,AWF-17,AWF-18,AWF-19,AWF-20,AWF-22,AWF-23,AWF-24,AWF-26,AWF-28,AWF-30,AWF-31,AWF-32,AWF-33,AWF-34,AWF-35,AWF-36,AWF-37,AWF-41,AWF-42,AWF-43,AWF-44,AWF-45,AWF-47,AWF-48,AWF-50,AWF-51,AWF-52,AWF-53,AWF-54,AWF-55,AWF-57,AWF-58,AWF-59,AWF-60,AWF-61,AWF-62,AWF-63,AWF-64,AWF-65,AWF-66,AWF-68,AWF-69,AWF-70,AWF-71,AWF-72,AWF-73,AWF-74,AWF-75,AWF-76,AWF-77,AWF-78,AWF-79,AWF-80,AWF-81,AWF-82,AWF-87,AWF-88,AWF-89,AWF-91,AWF-93,AWF-94,AWF-96,AWF-97,AWF-100,AWF-101,AWF-107,AWF-110,AWF-115,AWF-117,AWF-131,AWF-132,AWF-140,AWF-145,AWF-148,AWF-150,AWF-151,AWF-154,AWF-157,AWF-158,AWF-177,AWF-178,AWF-181,AWF-182,AWF-185,AWF-195,AWF-201,AWF-205,AWF-206,AWF-208,AWF-212,AWF-213,AWF-214,AWF-215,AWF-217. These changes cover planning and controller operation, bounded review/publication and provenance, installation and upgrade safety, Windows portability, diagnostics, manifests, and release documentation. First-parent entries without ticket IDs are the Windows pre-push gate (#230), batch merge #81, and ADR merges #134, #135, and #137; their detailed history remains in the release’s first-parent log.
+Ticket-level merged inventory: AWF-5,AWF-8,AWF-10,AWF-14,AWF-16,AWF-17,AWF-18,AWF-19,AWF-20,AWF-22,AWF-23,AWF-24,AWF-26,AWF-28,AWF-30,AWF-31,AWF-32,AWF-33,AWF-34,AWF-35,AWF-36,AWF-37,AWF-41,AWF-42,AWF-43,AWF-44,AWF-45,AWF-47,AWF-48,AWF-50,AWF-51,AWF-52,AWF-53,AWF-54,AWF-55,AWF-57,AWF-58,AWF-59,AWF-60,AWF-61,AWF-62,AWF-63,AWF-64,AWF-65,AWF-66,AWF-68,AWF-69,AWF-70,AWF-71,AWF-72,AWF-73,AWF-74,AWF-75,AWF-76,AWF-77,AWF-78,AWF-79,AWF-80,AWF-81,AWF-82,AWF-87,AWF-88,AWF-89,AWF-91,AWF-93,AWF-94,AWF-96,AWF-97,AWF-100,AWF-101,AWF-107,AWF-110,AWF-115,AWF-117,AWF-131,AWF-132,AWF-140,AWF-145,AWF-148,AWF-150,AWF-151,AWF-154,AWF-157,AWF-158,AWF-177,AWF-178,AWF-181,AWF-182,AWF-185,AWF-195,AWF-201,AWF-205,AWF-206,AWF-208,AWF-210,AWF-212,AWF-213,AWF-214,AWF-215,AWF-217. Ticketless first-parent entries are the Windows pre-push gate (#230), batch merge #81, and ADR merges #134, #135, and #137.
 
-Runner #262 and C2 #263 are merged into main at `604d1922` under D-1026-28. CONDITIONAL: #245, #257, #259, C1, and AWF-55 remain; #251 is outside the D-1026-25 order.
+The 1.9.5 release includes the `.gitignore` replace-in-place installer and a retained Codex machine-log credential detector that refuses only high-confidence secret formats and exact environment credential values.
 
 ### Known issues (1.9.5)
 
-No listed issue remains open on supplied commit evidence.
+- The Windows installed-runtime self-test can exceed its 3600-second budget on a loaded host.
+- A stored bounded reason may not replay identically across a future status-report redaction change if the redaction grammar changes.
+- `.git` metadata whose link count is greater than 1 is refused by the pinned file reader (#263).
 
 Fixed in 1.9.5: AWF-18 (#63), AWF-19 (#88), AWF-21 (#61), AWF-22 (#75), AWF-23 (#82), AWF-24 (#52), AWF-31 (#80), AWF-32 (#78/#83/#190), AWF-33 (#102), AWF-34 (#131/#218), and AWF-35 (#113).
 
@@ -96,4 +98,4 @@ Red-team hardening, three independent reviewers (one per workstream), consolidat
 
 ## Earlier releases
 
-The verified 1.6 archive preserves the full historical changelog, migrations and review dispositions. Its source ZIP SHA-256 is `b6d9302f72feb0860d069fa23cf547b970c727fa84a3dc84f2f860c83e5836f2`. Historical evidence is not current operating policy.
+The verified 1.6 archive preserves the full historical changelog, migrations and review dispositions. Its source ZIP digest remains in the verified archive record. Historical evidence is not current operating policy.

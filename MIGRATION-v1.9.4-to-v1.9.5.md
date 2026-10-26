@@ -1,6 +1,6 @@
 # Upgrade AWF 1.9.4 to 1.9.5
 
-CONDITIONAL (#245): use this guide only with a verified integrated 1.9.5 distribution, its independently obtained manifest pin, and a registered byte-exact 1.9.4 installation. The final 1.9.5 release date and publication acceptance remain UNVERIFIED.
+Use this guide only with a verified integrated 1.9.5 distribution, its independently obtained manifest pin, and a registered byte-exact 1.9.4 installation. The final 1.9.5 release date and publication acceptance remain UNVERIFIED.
 
 ## Before upgrading
 
@@ -34,7 +34,9 @@ The adjacent migration changes `.agentic/PROJECT_CONFIG.yaml` at `template.expec
 
 YAML retains surrounding bytes and verifies the parsed result; JSON is reserialized. `OPERATING_CONFIG.yaml` is carried forward without authorizing a capacity increase. This adjacent step does not add Jira identity fields: that insertion belongs to the earlier 1.9.2→1.9.3 step.
 
-CONDITIONAL (#257): installation replaces complete historical AWF blocks in `.gitignore` with `.agentic/templates/operating.gitignore`, preserving every byte outside recognized blocks. It appends the template when no recognized block exists and refuses partial, incomplete, or nested AWF block boundaries.
+The `.gitignore` installer creates or appends one AWF block after the existing bytes, with one LF only if required, when no complete block is recognized. Otherwise it replaces the first complete header-to-terminal block in place at its original position and removes later complete blocks. It preserves every byte outside the blocks in order; refuses partial, nested, or incomplete boundaries; and `added_lines` counts the lines actually inserted.
+
+The retained Codex machine-log credential detector refuses only high-confidence secret formats and exact environment credential values.
 
 ## Controller adapter requirements
 
@@ -53,7 +55,7 @@ The controller loads a reviewed absolute adapter module, checks its SHA-256 pin,
 | `batch-operation` | `batch_coordinator` | None | Unsupported |
 | `batch-closeout` | `batch_coordinator,observe_batch_merge,observe_issue_identity,observe_issue_policy,observe_provider_identity,read_current_status,write_transition,read_transition` | None | Unsupported: missing `batch_coordinator,observe_batch_merge,observe_issue_policy` |
 
-Adapter loading alone grants no live execution, publication, review, push, merge, or Jira-write authority. CONDITIONAL (#259): reconcile this table with the accepted Doc 34 text after that PR lands.
+Adapter loading alone grants no live execution, publication, review, push, merge, or Jira-write authority.
 
 ## Verification and rollback
 
@@ -63,4 +65,4 @@ ACTIVE additionally requires acceptance of the receipt-changing upgrade and curr
 
 For a completed upgrade, use an owner-reviewed restoration or revert plan based on preserved backups and accepted history. Exact restore commands and subsequent ACTIVE acceptance remain UNVERIFIED.
 
-Runner #262 and C2 #263 are merged into main at `604d1922` under D-1026-28. CONDITIONAL: #245, #257, #259, C1, and AWF-55 remain; #251 is outside the D-1026-25 order.
+Final integrated platform, CI, archive, and publication results remain UNVERIFIED.
