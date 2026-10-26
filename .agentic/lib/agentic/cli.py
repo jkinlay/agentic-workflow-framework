@@ -395,6 +395,11 @@ def main(argv=None, default_root=None):
                     except Exception as exc:
                         report_result = {"status": "FAILED", "reason": render_bounded_diagnostic(
                             str(exc), code="STATUS_REPORT_FAILED")}
+                if report_result["status"] == "NOT_RUN":
+                    print(render_bounded_diagnostic(report_result["reason"],
+                          code="STATUS_REPORT_NOT_RUN"), file=sys.stderr)
+                elif report_result["status"] == "FAILED":
+                    print(report_result["reason"], file=sys.stderr)
                 output = {**output, "status_report": report_result}
             if args.json:
                 emit_json(output)
