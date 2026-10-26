@@ -125,7 +125,7 @@ class PortableSetupTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=30, check=False)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         proof = json.loads(result.stdout)
-        self.assertEqual(str(moved), proof["bundle_directory"])
+        self.assertEqual(moved.resolve(), Path(proof["bundle_directory"]).resolve())
         catalog = (self.cache / "catalog.json").read_text(encoding="utf-8")
         self.assertNotIn(str(self.bundle.root), catalog)
         self.assertNotIn(str(SCRIPT.parents[1]), catalog)

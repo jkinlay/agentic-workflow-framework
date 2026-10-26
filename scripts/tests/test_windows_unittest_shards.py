@@ -200,7 +200,7 @@ class ShardTests(unittest.TestCase):
                        '    def test_example(self):\n'
                        f'        self.assertEqual({index}, helper.VALUE)\n'
                        '        self.assertEqual("repository root", project_helper.VALUE)\n'
-                       f'        self.assertEqual(Path({str(self.root)!r}), Path.cwd())\n')
+                       f'        self.assertEqual(Path({str(self.root)!r}).resolve(), Path.cwd().resolve())\n')
         completed = self.invoke()
         self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
         self.assertEqual('selected', json.loads(completed.stdout.splitlines()[0])['event'])
