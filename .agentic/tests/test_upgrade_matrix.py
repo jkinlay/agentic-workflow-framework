@@ -29,7 +29,7 @@ from upgrade_fixtures import (BLOB_ROOT, FIXTURE_ROOT, NEXT, advance_one_fixture
     file_tree, fixture_blob, fixture_index, fixture_manifest, fixture_storage_statistics,
     managed_tree_from_receipt, materialize, verify_materialized)
 
-VERSIONS = ("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3")
+VERSIONS = ("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3", "1.9.4")
 FIXED_UUID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 
 
@@ -83,11 +83,11 @@ class UpgradeMatrixTests(unittest.TestCase):
                 patch("agentic.operating.now_text", return_value="2026-01-02T00:00:00Z"):
             return self.upgrade(destination)
 
-    def test_fixture_storage_is_exact_deduplicated_and_under_five_mb(self):
+    def test_fixture_storage_is_exact_deduplicated_and_under_ten_mb(self):
         index = fixture_index()
         self.assertEqual(tuple(index["versions"]), VERSIONS)
         fixture_bytes = sum(path.stat().st_size for path in FIXTURE_ROOT.rglob("*") if path.is_file())
-        self.assertLess(fixture_bytes, 9_000_000)
+        self.assertLess(fixture_bytes, 10_000_000)
         self.assertEqual(index["storage"]["kind"], "plain-sha256-blobs")
         self.assertEqual(index["storage"]["blob_count"], len(list(BLOB_ROOT.iterdir())))
         self.assertEqual(index["storage"], fixture_storage_statistics())
@@ -177,18 +177,28 @@ class UpgradeMatrixTests(unittest.TestCase):
                 self.assertEqual(after_value["execution"]["model_routing"]["budgets"]["max_runs_per_ticket"],
                                  expected_routing_cap)
                 expected_config = before["configuration"].replace(version.encode(), VERSION.encode(), 1)
-                if version != "1.9.3":
+                if version not in {"1.9.3", "1.9.4"}:
                     expected_config = _insert_unbound_jira_identity(expected_config)
+                tier3_review = {"roles": ["critic", "specialist"],
+                                "findings": "blocking", "max_rounds": 3}
+                self.assertEqual(after_value["execution"]["risk_tiers"]["tier3_review"],
+                                 tier3_review)
                 if version == "1.8.3":
                     expected_owner = json.loads(json.dumps(before_value))
                     expected_owner["template"]["expected_workflow_version"] = VERSION
                     expected_owner["jira"].update(cloud_id=None, provider_project_id=None,
                                                    controller_actor_id=None)
+                    expected_owner["execution"]["risk_tiers"] = {"tier3_review": tier3_review}
                     routing = after_value["execution"].pop("model_routing")
                     self.assertEqual(after_value, expected_owner)
                     self.assertEqual(routing["role_defaults"]["worker"]["model"],
                                      before_value["execution"]["roles"]["worker"]["model"])
                 else:
+                    entry = b"tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}"
+                    key = b'"execution": {' if version == "1.8.9" else b'"risk_tiers": {'
+                    addition = b"risk_tiers: {" + entry + b"}" if version == "1.8.9" else entry
+                    self.assertEqual(expected_config.count(key), 1)
+                    expected_config = expected_config.replace(key, key + addition + b", ", 1)
                     self.assertEqual(after, expected_config)
                 self.assertEqual(result["upgrade"]["detected_version"], version)
                 self.assertEqual(bool(result["upgrade"]["new_required_settings"]), version == "1.8.3")
@@ -221,7 +231,7 @@ class UpgradeMatrixTests(unittest.TestCase):
                                          "routing-ledger:model_runs-v1")
                     else:
                         self.assertEqual(actual_state, raw)
-                archive = destination / ".agentic-state/archive/upgrade-to-1.9.4/files/legacy-note.txt"
+                archive = destination / ".agentic-state/archive/upgrade-to-1.9.5/files/legacy-note.txt"
                 self.assertEqual(archive.read_bytes(), before["state"][".agentic-state/legacy-note.txt"])
                 self.assertEqual(archive.stat().st_mode & stat.S_IWRITE, 0)
                 ledger = destination / ".agentic-state/routing/ledger.sqlite"
@@ -269,7 +279,7 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertEqual(actions[".agentic-state/reviews/critic-review.json"], "archived_read_only_copy")
         self.assertEqual(actions[".agentic-state/routing/ledger.sqlite"], "archived_read_only_copy")
         for relative in ("reviews/critic-review.json", "routing/ledger.sqlite"):
-            self.assertTrue((destination / ".agentic-state/archive/upgrade-to-1.9.4/files" / relative).is_file())
+            self.assertTrue((destination / ".agentic-state/archive/upgrade-to-1.9.5/files" / relative).is_file())
 
     def test_full_contract_validation_archives_exact_key_critic_counterexample(self):
         destination, _ = self.fixture("1.9.2")
@@ -290,7 +300,7 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertEqual(action["validation_path"], action["path"])
         for field in ("binding", "closure", "evidence_checked", "record_id", "verdict"):
             self.assertIn(field, action["validation_reason"])
-        manifest = json.loads((destination / ".agentic-state/archive/upgrade-to-1.9.4/manifest.json").read_bytes())
+        manifest = json.loads((destination / ".agentic-state/archive/upgrade-to-1.9.5/manifest.json").read_bytes())
         archived = next(item for item in manifest["files"] if item["source"] == action["path"])
         self.assertEqual(archived["validation_path"], action["path"])
         self.assertEqual(archived["validation_reason"], action["validation_reason"])
@@ -317,7 +327,7 @@ class UpgradeMatrixTests(unittest.TestCase):
             with self.subTest(path=relative):
                 self.assertEqual(actions[relative]["action"], "archived_read_only_copy")
                 self.assertIn(field, actions[relative]["validation_reason"])
-                archived = (destination / ".agentic-state/archive/upgrade-to-1.9.4/files" /
+                archived = (destination / ".agentic-state/archive/upgrade-to-1.9.5/files" /
                             relative.removeprefix(".agentic-state/"))
                 self.assertEqual(archived.read_bytes(), originals[relative])
 
@@ -357,7 +367,7 @@ class UpgradeMatrixTests(unittest.TestCase):
                               if item["path"] == ".agentic-state/routing/ledger.sqlite")
                 self.assertEqual(action["action"], "archived_read_only_copy")
                 self.assertIn("target initializer", action["validation_reason"])
-                archived = destination / ".agentic-state/archive/upgrade-to-1.9.4/files/routing/ledger.sqlite"
+                archived = destination / ".agentic-state/archive/upgrade-to-1.9.5/files/routing/ledger.sqlite"
                 self.assertEqual(archived.read_bytes(), corrupt)
                 self.assertEqual(ledger.read_bytes(), corrupt)
 
@@ -382,10 +392,10 @@ class UpgradeMatrixTests(unittest.TestCase):
                     self.assertEqual(actions[relative]["action"], "retained_schema_compatible")
                     expected_schema = state_schema(relative, raw)
                     if (relative.endswith("reviews/critic-review.json") and
-                            step["from"] in {"1.9.1", "1.9.2", "1.9.3"}):
+                            step["from"] in {"1.9.1", "1.9.2", "1.9.3", "1.9.4"}):
                         expected_schema = "critic-review:3"
                     if (relative.endswith("lifecycle/controller-event.json") and
-                            step["from"] in {"1.9.1", "1.9.2", "1.9.3"}):
+                            step["from"] in {"1.9.1", "1.9.2", "1.9.3", "1.9.4"}):
                         expected_schema = "controller-event:3"
                     if (relative.endswith("routing/ledger.sqlite") and
                             step["from"] != "1.8.3"):
@@ -491,6 +501,68 @@ class UpgradeMatrixTests(unittest.TestCase):
             self.assertEqual(fixture["managed_manifest_sha256"], entry["managed_manifest_sha256"])
             self.assertEqual(fixture["managed_file_count"], entry["managed_file_count"])
             self.assertEqual(fixture["receipt"]["schema"], entry["receipt_schema"])
+
+    def test_shipped_194_routing_ledger_migrates_exact_schema_and_preserves_rows(self):
+        import sqlite3
+        from agentic.upgrade import (_migrate_routing_ledger, state_archive_plan,
+                                     state_migration_plan, state_schema)
+        from upgrade_fixtures import fixture_blob, fixture_manifest
+
+        relative = ".agentic-state/routing/ledger.sqlite"
+        raw = fixture_blob(fixture_manifest("1.9.4")["state_files"][relative]["sha256"])
+
+        def connection_for(data):
+            connection = sqlite3.connect(":memory:")
+            connection.deserialize(data)
+            return connection
+
+        original = connection_for(raw)
+        try:
+            self.assertEqual(original.execute("PRAGMA quick_check").fetchone(), ("ok",))
+            tables = [row[0] for row in original.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+            self.assertNotIn("routing_run_provenance", tables)
+            rows = {table: original.execute('SELECT rowid,* FROM "' + table + '"').fetchall()
+                    for table in tables}
+            self.assertEqual(len(rows["model_runs"]), 1)
+        finally:
+            original.close()
+
+        self.assertEqual(state_schema(relative, raw), "routing-ledger:model_runs-v1-legacy")
+        migrated = _migrate_routing_ledger(raw)
+        self.assertNotEqual(migrated, raw)
+        self.assertEqual(state_schema(relative, migrated), "routing-ledger:model_runs-v1")
+        self.assertEqual(_migrate_routing_ledger(migrated), migrated)
+        current = connection_for(migrated)
+        try:
+            for table, expected in rows.items():
+                self.assertEqual(current.execute('SELECT rowid,* FROM "' + table + '"').fetchall(),
+                                 expected, table)
+            self.assertEqual(current.execute("SELECT * FROM routing_run_provenance").fetchall(), [])
+        finally:
+            current.close()
+        actions = state_migration_plan({relative: raw}, {relative: migrated}, "1.9.4", "1.9.5")
+        self.assertEqual(actions[0]["action"], "migrated_schema")
+        self.assertEqual(actions[0]["target_schema"], "routing-ledger:model_runs-v1")
+        self.assertEqual(state_archive_plan({relative: migrated}), ({}, []))
+
+        for mutation in ("ALTER TABLE model_runs ADD COLUMN unexpected TEXT",
+                         "DROP INDEX model_runs_status",
+                         "CREATE TRIGGER unexpected AFTER INSERT ON model_runs BEGIN SELECT 1; END",
+                         "PRAGMA user_version=194", "DROP TABLE model_failure_resolutions"):
+            with self.subTest(mutation=mutation):
+                corrupt = connection_for(raw)
+                try:
+                    corrupt.execute(mutation)
+                    corrupt.commit()
+                    invalid = corrupt.serialize()
+                finally:
+                    corrupt.close()
+                self.assertIsNone(state_schema(relative, invalid))
+                self.assertEqual(_migrate_routing_ledger(invalid), invalid)
+                additions, actions = state_archive_plan({relative: invalid})
+                self.assertEqual(actions[0]["action"], "archived_read_only_copy")
+                self.assertEqual(additions[actions[0]["archive"]], invalid)
 
 
 if __name__ == "__main__":

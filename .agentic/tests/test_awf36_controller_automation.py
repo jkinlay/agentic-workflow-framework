@@ -143,7 +143,7 @@ class ControllerAutomationTests(unittest.TestCase):
             "agentic.codex_skill.observe_codex_awf_skills",
             return_value={
                 "format": "awf-codex-skill-selection-1",
-                "expected_version": "1.9.4",
+                "expected_version": "1.9.5",
                 "project_root": "/fixture",
                 "pinned_skill_path": "/fixture/skill",
                 "launch_directory": "/fixture",

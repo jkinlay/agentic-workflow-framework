@@ -1,6 +1,6 @@
 # External resources
 
-Version 1.9.4. Observations grant no authority. Admit every required resource
+Version 1.9.5. Observations grant no authority. Admit every required resource
 for the exact task, principal and application session before dispatch.
 
 ## Workspace roles
