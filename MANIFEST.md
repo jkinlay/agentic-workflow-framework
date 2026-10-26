@@ -28,13 +28,13 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/benchmarks/native/routine-measurement-rubric.json` | `10f074df2b7a69d7c0ad4888c4c523d4779c6ad821d2b9213d3d06393632fb94` |
 | `.agentic/benchmarks/native/routine-rubric.json` | `c9b2bf9d1953b8b1c777964c1d20e813e76f002937e22ab9b0945aa5c247c653` |
 | `.agentic/benchmarks/native/rubric.json` | `61e719369395e2721f8a7aa9a819ca8203947547dd6793ed9f6994df4442628f` |
-| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `e9a0843db594ef1980c77949947efe5aef2ad32a5f5622bc4f9ebbab30927ff8` |
+| `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `bbcb0472ccbf022b532b6847e401f2911c40d917303c159f020aade1d9113b01` |
 | `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `017867bd395605cf5199c81b011edafa224837a47ddaf847e27d111b2202f147` |
 | `.agentic/docs/23-TICKET-LIFECYCLE.md` | `4b55b7a6da6164e2480bcd81f7f03639caac2bcaefc3477ba89888020701b3ef` |
 | `.agentic/docs/24-STREAM-STARTUP.md` | `225689619660124d08b317b2e37315a179ae7df5a7b0c68af20730ad9f5c2c5b` |
 | `.agentic/docs/27-MODEL-ROUTING.md` | `70fa79be062db420eaadc1aef52dd7502a6b218f2d609111015208bd7a38499d` |
 | `.agentic/docs/28-EXTERNAL-REVIEW.md` | `f3e911e18321548798715136195f7a886e1b267f9b2eb0073ac839ddd6ed2c7a` |
-| `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `a57d55c84b58cd2dc2a260e42236cae7d2e4f2e9f9905c152fff854edc40a068` |
+| `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `a1dc4ca15c96b214ee94210c23ae2a20c7d176ef6b30ac58112f36ffd7195bd0` |
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `be2b7bab26761b55fa4ad2b3b42f104a1d3a9ec89b07f2cd8cc6477062a71bad` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `d187e88fb4921061ee31125bfe5b209480bcaba19abdcd02ae8e4831b33e62d0` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `055339f2721179daf2c7c3db6b4bff7f9cbf860c7204b49d950ab751442904c1` |

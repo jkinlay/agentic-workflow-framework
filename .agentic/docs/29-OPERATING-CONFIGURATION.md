@@ -1,10 +1,10 @@
-# Operating configuration
+# Operating configuration by conversation
 
 At CONFIGURED, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste table in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
-## Configuration layers
+## Two configuration layers
 
-Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlists, floors, escalation and one shared critic route; legacy per-stream reviewer routes remain accepted. Changes require review; [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
+Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlists, floors, escalation and one shared critic route; legacy per-stream reviewer routes remain accepted. Changes require review.
 
 Show/status/`operating.state` share `effective_ceiling`: runtime minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. Disabled brokers do not bind; heavy/GPU limits are not stream counts. Configuration cannot prove host/reviewer availability.
 
@@ -12,7 +12,7 @@ Show/status/`operating.state` share `effective_ceiling`: runtime minimum of `exe
 
 For bound cycle, `produce_planning_resource_observation` accepts trusted host callback capacities only. Planning independently reauthenticates closed evidence and matching capacities; missing authentication, self-digests and operator values fail closed. Observed capacity: 0–1000; zero selects no lane (`safe_lane_count == 0`).
 
-Schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
+Generated schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
@@ -24,7 +24,7 @@ Schemas accept `streams.count` 1–12 with A–L routes and optional project `ex
 | `host-lease` | `heavy_slots`, `gpu_slots` | 0–1000 |
 | `host-lease`, `run-attestation` | `resources_held[].slots` | 1–1000 |
 
-`OPERATING_CONFIG.yaml` holds unprotected project choices. AWF 1.9.5 defaults: three `gpt-5.6-luna`/medium workers; one shared `gpt-5.6-sol`/high critic/adversarial handler; `gpt-5.6-sol`/high controller/specialists; `gpt-5.6-luna`/low simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
+`OPERATING_CONFIG.yaml` holds unprotected project choices. Defaults: three `gpt-5.6-luna`/medium workers; one shared `gpt-5.6-sol`/high critic/adversarial handler; `gpt-5.6-sol`/high controller/specialists; `gpt-5.6-luna`/low simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
 
 `independent_reviewers.allocation: shared_critic` uses one reviewer slot. Legacy `one_per_stream` and fixed counts remain binding. `--propose-operating-capacity` only proposes ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
 
@@ -32,12 +32,12 @@ Owner overrides require authenticated `fixed`/`max` decisions and audited histor
 
 Authenticated provider readers trim/casefold statuses and collapse whitespace/ASCII-hyphen runs: `To Do`/`To-Do` → `ready`, `In Progress`/`In-Progress` → `in_progress`, `Done` → `closed`. Vocabulary: ready `open`/`ready`/`backlog`; active `in_flight`/`working`/`dispatched`/`in_progress`; closed `closed`/`done`/`merged`/`cancelled`/`canceled`. Unknown custom names grant neither admission nor closed dependencies; they require reviewed adapter mappings. Direct graph callers supply canonical vocabulary.
 
-## Apply user's choices
+## Apply the user's choices
 
 Translate, echo and execute instructions without reconfirmation:
 
 ```text
-& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
+& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
 ```
 
 Show results. Routes pin optional escalation; mandatory floors prevail.
@@ -56,7 +56,7 @@ Pins `epic_overrides.PROJ-123.streams.B.worker`. Observed matching `epic_id` sel
 
 `--set epic_overrides.PROJ-123.streams.B.worker=...` works without `--epic`; global/scoped repairs are atomic.
 
-Changes affect subsequent dispatch; running work retains route/hash. Surplus streams finish without new packets or cancellation. A–F proves no availability.
+Changes affect subsequent dispatch; running work retains route/hash. Surplus streams finish without packets or cancellation. A–F proves no availability.
 
 ## Recommend from observed Epics
 
@@ -70,11 +70,11 @@ Optional inventory: `data/`, `data/**`, `data/*` are equivalent prefixes; other 
 
 Present table; wait for adoption or keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Stale hashes require recomputation.
 
-Defaults stay unpinned; unchanged pins share footnote. Stored/named rows and replay checks remain. Adoption preserves pins/floors; custom instructions change pins.
+Defaults stay unpinned; unchanged pins share footnote. Rows and replay checks remain. Adoption preserves pins/floors; custom instructions change pins.
 
 ## Audit and recovery
 
-Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`; audits retain instructions, hashes, changes and source. Bootstrap creates, appends, or replaces one AWF `.gitignore` block while preserving outside bytes; [migration guidance](MIGRATION-v1.9.4-to-v1.9.5.md) defines placement, deduplication, malformed boundaries, and `added_lines`. Ignore operating locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`. Inspect recovery artifacts; incomplete transactions block dispatch.
+Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`; audits retain instructions, hashes, changes and source. Bootstrap creates, appends, or replaces one AWF `.gitignore` block, preserving outside bytes; release guide `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries, and `added_lines`. Ignore operating locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`. Inspect recovery artifacts; incomplete transactions block dispatch.
 
 Publish complete flushed journal/audit writes without replacement. Preserve conflicts and interrupted staging files outside audit chain within inventory bounds. Recovery requires independently inspected journal SHA-256. Unsupported atomic primitives fail closed.
 
