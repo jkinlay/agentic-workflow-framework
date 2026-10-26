@@ -2,29 +2,27 @@
 
 ## 1.9.5 (unreleased)
 
-AWF-210: version bump.
+AWF-210 version bump.
 
-1.9.5: AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
+AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
+
+Ticket inventory by area: planning and controller operation; bounded review, publication, and provenance; installation and upgrade safety; Windows portability; diagnostics; manifests; and release documentation. The complete ticket and ticketless-entry inventory is in the release’s first-parent log.
+
+The 1.9.5 release includes the `.gitignore` replace-in-place installer and a retained Codex machine-log credential detector that refuses only high-confidence secret formats and exact environment credential values.
+
+### Known issues (1.9.5)
+
+- The Windows installed-runtime self-test can exceed its 3600-second budget on a loaded host.
+- A stored bounded reason may not replay identically across a future status-report redaction change if the redaction grammar changes.
+- `.git` metadata whose link count is greater than 1 is refused by the pinned file reader (#263).
+
+Fixed in 1.9.5: AWF-18 (#63), AWF-19 (#88), AWF-21 (#61), AWF-22 (#75), AWF-23 (#82), AWF-24 (#52), AWF-31 (#80), AWF-32 (#78/#83/#190), AWF-33 (#102), AWF-34 (#131/#218), and AWF-35 (#113).
 
 ## 1.9.4 — 8 October 2026
 
 AWF-15 (#56) binds closeout records to the merge SHA. AWF-29 fixes protected-path refusal, critic-schema compatibility, and sandbox/effort pass-through. AWF-40 (#68) fixes doc 22 guidance. AWF-16 and AWF-30 are deferred to 1.9.5; AWF-41 remains an owner-review check. The 1.9.3 → 1.9.4 fallback is version-only and ships no tier-3 review configuration.
 
-### Known issues (1.9.5)
-
-- AWF-24 (#52): AC42 Windows fixes moved to 1.9.5; the caveat still applies.
-- AWF-31: operator qualification flags.
-- AWF-32: missing controller adapter.
-- AWF-33: sessions can pick up an older skill.
-- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
-- AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
-- AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
-- AWF-22 (#51): AC42 can pass without the admission check; ACTIVE check uses the source checkout, not the installed `workflow.py`.
-- AWF-23: Heavy validation: support POSIX hosts and symlinked managed-venv interpreters (`.agentic/.venv/bin/python`).
-- AWF-34: Publication scan can never PASS on a repo with an existing tracked file over 32 MB: add a recorded allowance or baseline.
-- AWF-35: self_test fails on project-owned scripts not listed in install-pinned .agentic/launch-surfaces.json.
-
-Known issues: AWF-34 and AWF-35 (accepted for 1.9.4 installs, fix in 1.9.5).
+Known in 1.9.4: AWF-34 and AWF-35; fixed in 1.9.5 by #131/#218 and #113.
 
 ## 1.9.3 — 8 October 2026
 
