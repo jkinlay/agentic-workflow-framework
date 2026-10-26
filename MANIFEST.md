@@ -42,7 +42,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `fca50ff47c86935859a56e785fb788e3b0da8f3e2b8b45e06ffd3ee3614a9c2a` |
 | `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `dc27fe0ddb7f98abf5c0bcb901fac41b64dd7d4dd323fef55b24e970f3e40362` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `c4a03fd41bd2464571ce7aaddfa7e0e457a8b0fcddecc44bf9036f9303fdf969` |
-| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `d41a58f56d2c81e79dfb48f65a7335b68c2f91ae5d28416bf6a382493f6b4b81` |
+| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `0eeaff1d57fa6b11ae317fff5bfeb4db01919e28aca637fee6e0cc7c5f13677b` |
 | `.agentic/docs/35-RULES-ACTIVATION.md` | `3f02910a9cf5d74986f419c1f88ce63afa87c15f0bc26597d5afb5dcdd1772d0` |
 | `.agentic/docs/36-FIVE-SLOT-ACCELERATION.md` | `569690740ca75c8b89b3014e947016b5ef2381dc87c153935001ff00048be03a` |
 | `.agentic/docs/37-PRIVATE-DENY-SCAN.md` | `54aee43783e6bed3fa25a08f4e0e1d28553fed92d7b71c9e97d8f47ab9db0e6c` |
@@ -422,7 +422,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
 | `.agentic/tests/test_ready_authorization.py` | `fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d` |
 | `.agentic/tests/test_reference.py` | `ca4af76b4de3bfd0d084cd0c33bdc59150f1d8c9e2e2da3d8b2a5cddc69ff503` |
-| `.agentic/tests/test_reference_controller_adapter.py` | `edb582207284de0ca3fb3e1ed478b35068986c8b434b9507d420d8cabce05fda` |
+| `.agentic/tests/test_reference_controller_adapter.py` | `696e36d4bf1b4825bc8312edfde592231a56ea765add8bf18fdbb90fb285c81e` |
 | `.agentic/tests/test_reference_controller_adapter_install.py` | `701d0a2138abfc903834433b6439f38b9c0003cc5959d3e880cc62c3c700ba8d` |
 | `.agentic/tests/test_release_trust.py` | `5ee524663da11f15a04ed83c19ffcc7a951f5d89715784610799ce4709c0eed4` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
