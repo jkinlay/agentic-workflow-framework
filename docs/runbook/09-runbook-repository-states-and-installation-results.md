@@ -24,6 +24,8 @@ The command showing current state is the installed canonical runtime invoking:
 workflow.py --root <repo-path> status --json
 ```
 
-Use the complete OS-specific commands below. CLI parsing and dispatch: `7fcaeece:.agentic/lib/agentic/cli.py:141`; `7fcaeece:.agentic/lib/agentic/cli.py:380`.
+Use the complete OS-specific commands for [Windows](10-runbook-windows-powershell.md), [macOS](11-runbook-macos-posix-shell.md), [Linux](12-runbook-linux-posix-shell.md). CLI parsing and dispatch: `7fcaeece:.agentic/lib/agentic/cli.py:141`; `7fcaeece:.agentic/lib/agentic/cli.py:380`.
 
 Ordinary status exit 0 can mean INSTALLED or CONFIGURED. **Only `status --require-active` exit 0 establishes ACTIVE.** Exit 4 means ACTIVE was not established; exit 2 means no valid project state/input was established. Sources: `7fcaeece:.agentic/lib/agentic/cli.py:390`; `7fcaeece:.agentic/tests/test_adoption_status.py:1163`.
+
+[Runbook index](INDEX.md)
