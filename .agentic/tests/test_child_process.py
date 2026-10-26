@@ -183,5 +183,36 @@ class ChildEnvironmentTests(unittest.TestCase):
         self.assertTrue(all("env=child_env(" in line for line in launch_lines))
 
 
+class CredentialDetectionTests(unittest.TestCase):
+    def test_retention_scanner_shares_credential_grammar_without_treating_paths_as_secrets(self):
+        from agentic import child_process
+        scanner = getattr(child_process, "contains_credentials", None)
+        self.assertTrue(callable(scanner), "retention needs a shared credential detector")
+        secrets = (
+            "Authorization: Bearer synthetic-header", "Authorization: synthetic-scheme value",
+            'api_key="synthetic assignment"', "--client-secret synthetic-cli",
+            "https://fixture:synthetic-password@example.invalid/a",
+            "github_pat_SYNTHETIC123", "ghp_SYNTHETIC123", "sk-SYNTHETIC123",
+            "Bearer synthetic-bare", "token synthetic-bare", "opaque-fixture-value",
+        )
+        for value in secrets:
+            with self.subTest(value=value):
+                self.assertTrue(scanner(value, credentials=("opaque-fixture-value",)))
+        for value in ("ordinary Unicode café 漢字 🚀", "/home/fixture/a", r"C:\fixture\a",
+                      r"\\fixture\share\a", "escaped controls \\n \\u001b", "token", "keynote"):
+            with self.subTest(value=value):
+                self.assertFalse(scanner(value))
+
+    def test_retention_scanner_matches_credentials_across_read_boundaries(self):
+        from agentic import child_process
+        scanner = getattr(child_process, "contains_credentials", None)
+        self.assertTrue(callable(scanner), "retention needs a complete-input scanner")
+        for size in (65530, 65535, 65536, 131069):
+            with self.subTest(size=size):
+                value = "é" + "x" * size + " Authorization: Bearer synthetic-boundary"
+                self.assertTrue(scanner(value))
+        self.assertFalse(scanner("", credentials=("", b"")))
+
+
 if __name__ == "__main__":
     unittest.main()

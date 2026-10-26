@@ -1,6 +1,8 @@
 """Process-boundary regressions for the shared bounded runner."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -452,6 +454,282 @@ class BoundedProcessTests(unittest.TestCase):
         self.assertEqual(events[0], ("suspended", safeio._CREATE_SUSPENDED))
         self.assertEqual(events[1][0], "attach-and-resume")
         self.assertEqual(events[-1][0], "close")
+
+
+class CodexRetentionTests(unittest.TestCase):
+    """C1 matrix: production host boundary plus direct encoded retention caps."""
+
+    THREAD = "3bca9a10-44c0-4fa0-a069-685d12f5eff3"
+    CONTROLLER = "6dcb0314-9954-40c8-84fc-0ed9b9365b69"
+    CREDENTIALS = (
+        "Authorization: Bearer synthetic-header", "Authorization: custom synthetic-header",
+        "password=synthetic-assignment", "--api-key synthetic-cli",
+        "https://fixture:synthetic-password@example.invalid/a",
+        "github_pat_SYNTHETIC123", "ghp_SYNTHETIC123", "sk-SYNTHETIC123",
+        "Bearer synthetic-bare", "token synthetic-bare", "opaque-fixture-value",
+    )
+
+    def setUp(self):
+        from agentic.providers import github_review_host as host
+        self.host = host
+        temporary = tempfile.TemporaryDirectory(prefix="awf-c1-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.state = self.root / "state"
+        self.run = self.state / "runs" / self.CONTROLLER
+        self.run.mkdir(parents=True)
+        self.log = self.run / "codex.jsonl"
+        self.companion = self.run / "codex.jsonl.stderr"
+        config = self.root / "host.json"
+        config.write_bytes(b"{}\n")
+        executable = Path(sys.executable).resolve()
+        self.driver = host.HostDriver({
+            "worker_checkout": str(self.root), "critic_checkout": str(self.root),
+            "state_dir": str(self.state), "repository": "fixture/project",
+            "executables": {"codex": {"path": str(executable),
+                "sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}},
+            "_config_path": str(config), "config_hash": hashlib.sha256(config.read_bytes()).hexdigest(),
+            "command_timeout_seconds": 30, "agent_timeout_seconds": 30,
+            "models": {"worker": "fixture", "critic": "fixture"}, "allowed_paths": [],
+        }, self.root)
+        self.driver._qualification_probe = True
+        self.environment = {"GH_TOKEN": "opaque-fixture-value", "OPENAI_API_KEY": "provider-fixture-value",
+                            "GIT_PRIVATE_TOKEN": "git-fixture-value"}
+
+    def machine(self, text="ordinary"):
+        return (json.dumps({"type": "thread.started", "thread_id": self.THREAD}) + "\n"
+                + json.dumps({"type": "item.completed", "text": text}, ensure_ascii=False)
+                + "\n").encode("utf-8")
+
+    def invoke(self, stdout=None, stderr=b"", *, returncode=0, fixture=False):
+        result = subprocess.CompletedProcess([], returncode, self.machine() if stdout is None else stdout, stderr)
+        with mock.patch.object(self.host.os, "environ", self.environment), \
+                mock.patch.object(self.host, "enforce_pinned_awf_skill"), \
+                mock.patch.object(self.host, "run_bounded", return_value=result) as bounded:
+            if fixture:
+                with mock.patch.object(self.host.subprocess, "run", return_value=result):
+                    value = self.driver.run("codex", ["exec"], log=self.log)
+                bounded.assert_not_called()
+                return value
+            return self.driver.run("codex", ["exec"], log=self.log)
+
+    def retain(self, stdout, stderr=b"", *, maximum=None):
+        operation = getattr(safeio, "retain_codex_log", None)
+        self.assertTrue(callable(operation), "C1 requires shared preflight before confined retention")
+        with safeio.Tree(self.run) as tree:
+            return operation(tree, self.log.name, stdout, stderr,
+                             maximum=self.host.CODEX_LOG_LIMIT if maximum is None else maximum,
+                             credentials=tuple(self.environment.values()), paths=(self.root,))
+
+    def assert_no_retention(self):
+        self.assertEqual(list(self.run.iterdir()), [])
+
+    def test_c1_01_machine_credentials_refused_before_retention(self):
+        for credential in self.CREDENTIALS + ("provider-fixture-value", "git-fixture-value"):
+            with self.subTest(credential=credential):
+                with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
+                    self.invoke(self.machine(credential))
+                self.assert_no_retention()
+
+    def test_c1_02_decoded_nested_values_keys_and_duplicates_cannot_hide_credentials(self):
+        payloads = (
+            b'{"nested":[{"text":"\\u0073k-SYNTHETIC123"}]}\n',
+            b'{"\\u0067hp_SYNTHETIC123":"ordinary"}\n',
+            b'{"nested":{"password":"synthetic-split"}}\n',
+            b'{"pass\\u0077ord":"synthetic-key"}\n',
+            b'{"text":"\\u006fpaque-fixture-value"}\n',
+        )
+        for raw in payloads:
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
+                    self.invoke(raw)
+                self.assert_no_retention()
+        with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_INVALID$"):
+            self.invoke(b'{"text":"ghp_SYNTHETIC123","text":"ordinary"}\n')
+        self.assert_no_retention()
+
+    def test_c1_03_actual_stderr_credentials_redacted_for_both_execution_branches(self):
+        for fixture in (False, True):
+            with self.subTest(fixture=fixture):
+                stderr = ("\n".join(self.CREDENTIALS) + "\nprovider-fixture-value\ngit-fixture-value").encode()
+                self.assertEqual(self.invoke(stderr=stderr, fixture=fixture), "")
+                diagnostic = self.companion.read_text(encoding="utf-8")
+                for secret in ("synthetic-header", "synthetic-assignment", "synthetic-cli",
+                               "synthetic-password", "SYNTHETIC123", "synthetic-bare",
+                               *self.environment.values()):
+                    self.assertNotIn(secret, diagnostic)
+                self.assertIn("redact", diagnostic.lower())
+                self.assertEqual(self.log.read_bytes(), self.machine())
+
+    def test_c1_04_stderr_local_and_quoted_paths_redacted(self):
+        paths = ('/home/fixture/secret.txt', r'C:\fixture\secret.txt',
+                 r'\\fixture\share\secret.txt', '"/home/fixture/space name.txt"',
+                 r'"C:\fixture\space name.txt"', str(self.root))
+        self.invoke(stderr="\n".join(paths).encode())
+        diagnostic = self.companion.read_text(encoding="utf-8")
+        for path in paths:
+            self.assertNotIn(path, diagnostic)
+        self.assertEqual(diagnostic.count("<redacted-path>"), len(paths))
+
+    def test_c1_05_stderr_controls_escaped_with_one_framing_lf(self):
+        controls = "\0\r\n\t\x1b\x7f\x80\x9f"
+        self.invoke(stderr=("start" + controls + "end").encode())
+        raw = self.companion.read_bytes()
+        self.assertEqual(raw, b"start\\x00\\x0d\\x0a\\x09\\x1b\\x7f\\x80\\x9fend\n")
+
+    def test_c1_06_machine_bytes_thread_and_digest_binding_preserved(self):
+        raw = (b' { "type": "thread.started", "thread_id": "' + self.THREAD.encode()
+               + b'" }\r\n' + '{"text":"café 漢字 🚀 /home/fixture C:\\\\fixture \\n \\u001b"}\n'.encode())
+        self.invoke(raw, b"/home/fixture/diagnostic\n")
+        self.assertEqual(self.log.read_bytes(), raw)
+        result = self.run / "result.json"
+        result.write_bytes(b"{}\n")
+        self.assertEqual(self.driver._record_codex_identity(self.CONTROLLER, self.run, self.run, result), self.THREAD)
+        self.assertEqual(self.driver.codex_run_id(self.CONTROLLER), self.THREAD)
+        identity = json.loads((self.run / "codex-identity.json").read_bytes())
+        self.assertEqual(identity["codex_log_sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertNotIn(b"/home/fixture", self.companion.read_bytes())
+
+    def test_c1_07_tampering_still_fails_digest_verification(self):
+        self.invoke(stderr=b"Authorization: Bearer synthetic-tamper")
+        result = self.run / "result.json"
+        result.write_bytes(b"{}\n")
+        self.driver._record_codex_identity(self.CONTROLLER, self.run, self.run, result)
+        self.log.write_bytes(self.log.read_bytes() + b'{"text":"changed"}\n')
+        with self.assertRaisesRegex(ValidationError, "evidence changed after binding"):
+            self.driver.codex_run_id(self.CONTROLLER)
+        self.assertNotIn(b"synthetic-tamper", self.companion.read_bytes())
+
+    def test_c1_08_utf8_encoded_boundaries_and_framing(self):
+        for character in ("é", "漢", "🚀"):
+            stdout = self.machine(character)
+            stderr = ("z" + character).encode()
+            final_size = len(stdout) + len(stderr) + 1
+            with self.subTest(character=character):
+                self.retain(stdout, stderr, maximum=final_size)
+                self.assertEqual(self.log.read_bytes(), stdout)
+                self.assertEqual(self.companion.read_bytes(), stderr + b"\n")
+                with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_LIMIT$"):
+                    self.retain(stdout, stderr, maximum=final_size - 1)
+                self.assertEqual(self.log.read_bytes(), stdout)
+                self.assertEqual(self.companion.read_bytes(), stderr + b"\n")
+
+    def test_c1_09_escape_expansion_refused_before_either_write(self):
+        stdout, stderr = self.machine(), b"\0" * 16
+        with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_LIMIT$"):
+            self.retain(stdout, stderr, maximum=len(stdout) + len(stderr) + 1)
+        self.assert_no_retention()
+
+    def test_c1_10_credentials_near_read_and_parser_boundaries(self):
+        for size in (65520, 65535, 65536, 131070):
+            with self.subTest(size=size):
+                with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
+                    self.invoke(self.machine("é" + "x" * size + " sk-SYNTHETIC123"))
+                self.assert_no_retention()
+
+    def test_c1_11_invalid_machine_input_fails_closed_content_free(self):
+        payloads = (b'\xff', b'{"text":"synthetic-invalid"', b'\n', b'null\n',
+                    b'{"text":"\\ud800"}\n', b'{"number":NaN}\n',
+                    b'{"text":' + b'[' * 2000 + b'0' + b']' * 2000 + b'}\n')
+        for raw in payloads:
+            with self.subTest(raw_prefix=raw[:30]):
+                with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_INVALID$") as caught:
+                    self.invoke(raw)
+                self.assertNotIn("synthetic-invalid", str(caught.exception))
+                self.assertTrue(caught.exception.__suppress_context__)
+                self.assert_no_retention()
+
+    def test_c1_12_inclusive_64_mib_cap_and_one_byte_over(self):
+        limit = self.host.CODEX_LOG_LIMIT
+        self.assertEqual(limit, 64 * 1024 * 1024)
+        raw = b'{}' + b' ' * (limit - 3) + b'\n'
+        self.retain(raw)
+        self.assertEqual(self.log.stat().st_size, limit)
+        self.assertEqual(hashlib.sha256(self.log.read_bytes()).digest(), hashlib.sha256(raw).digest())
+        with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_LIMIT$"):
+            self.retain(raw + b' ')
+        self.assertEqual(self.log.read_bytes(), raw)
+        from agentic.child_process import CODEX_LOG_RUNNER_POLICY
+        self.assertEqual(CODEX_LOG_RUNNER_POLICY.stdout_limit, 32 * 1024 * 1024)
+        self.assertEqual(CODEX_LOG_RUNNER_POLICY.stderr_limit, 8 * 1024 * 1024)
+        self.assertEqual(CODEX_LOG_RUNNER_POLICY.aggregate_output_limit, 32 * 1024 * 1024)
+
+    def test_c1_13_preflight_refusals_preserve_existing_evidence_and_no_temporaries(self):
+        self.log.write_bytes(b"existing-machine")
+        self.companion.write_bytes(b"existing-diagnostic")
+        cases = ((self.machine("ghp_SYNTHETIC123"), b"", 1000, "CODEX_LOG_CREDENTIAL"),
+                 (self.machine(), b"\0" * 16, len(self.machine()) + 17, "CODEX_LOG_LIMIT"))
+        for stdout, stderr, maximum, code in cases:
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(ValidationError, "^" + code + "$"):
+                    self.retain(stdout, stderr, maximum=maximum)
+                self.assertEqual(self.log.read_bytes(), b"existing-machine")
+                self.assertEqual(self.companion.read_bytes(), b"existing-diagnostic")
+                self.assertEqual(sorted(path.name for path in self.run.iterdir()),
+                                 ["codex.jsonl", "codex.jsonl.stderr"])
+
+    def test_c1_14_nonzero_stays_failure_and_empty_stderr_has_no_companion(self):
+        with self.assertRaisesRegex(ValidationError, "HOST_COMMAND_FAILED") as caught:
+            self.invoke(stderr=b"Authorization: Bearer synthetic-nonzero", returncode=7)
+        self.assertNotIn("synthetic-nonzero", str(caught.exception))
+        self.assertNotIn(b"synthetic-nonzero", self.companion.read_bytes())
+        self.assertFalse((self.run / "codex-identity.json").exists())
+        other_log = self.run / "empty.jsonl"
+        self.log = other_log
+        self.assertEqual(self.invoke(stdout=b"", stderr=b""), "")
+        self.assertEqual(other_log.read_bytes(), b"")
+        self.assertFalse(other_log.with_suffix(".jsonl.stderr").exists())
+        with self.assertRaisesRegex(ValidationError, "exactly one thread.started"):
+            self.driver._codex_thread_id(other_log)
+        self.assertFalse((self.run / "codex-identity.json").exists())
+
+    def test_c1_15_agent_qualification_and_first_draft_stop_at_shared_refusal(self):
+        templates = self.root / ".agentic/review-loop"
+        templates.mkdir(parents=True)
+        for name in ("worker-prompt.md", "qualification-probe-prompt.md", "first-draft-worker-prompt.md"):
+            (templates / name).write_text("fixture prompt", encoding="utf-8")
+        contract = self.root / "contract.md"
+        contract.write_text("fixture contract", encoding="utf-8")
+        self.driver.c.update(contract_path=str(contract),
+                             contract_sha256=hashlib.sha256(contract.read_bytes()).hexdigest())
+        result = subprocess.CompletedProcess([], 0, self.machine("ghp_SYNTHETIC123"), b"")
+        for route in ("agent", "qualification_agent", "first_draft_worker"):
+            with self.subTest(route=route), \
+                    mock.patch.object(self.host.os, "environ", self.environment), \
+                    mock.patch.object(self.host, "enforce_pinned_awf_skill"), \
+                    mock.patch.object(self.host.review_qualification, "validate_config_qualification"), \
+                    mock.patch.object(self.host, "run_bounded", return_value=result), \
+                    mock.patch.object(self.driver, "first_draft_git_controls", return_value={"fixture": True}), \
+                    mock.patch.object(self.driver, "require_first_draft_git_controls"), \
+                    mock.patch.object(self.driver, "require_clean_first_draft_checkout"), \
+                    mock.patch.object(self.driver, "_bounded_result") as success, \
+                    mock.patch.object(self.driver, "_record_codex_identity") as identity:
+                success.side_effect = AssertionError("success evidence reached before credential refusal")
+                run_id = {"agent": "a", "qualification_agent": "b", "first_draft_worker": "c"}[route] * 8 + "-1111-4111-8111-111111111111"
+                with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_CREDENTIAL$"):
+                    if route == "agent":
+                        self.driver.agent("worker", {}, [], run_id)
+                    elif route == "qualification_agent":
+                        self.driver.qualification_agent("worker", run_id, {})
+                    else:
+                        self.driver.first_draft_worker(run_id=run_id)
+                success.assert_not_called()
+                identity.assert_not_called()
+                self.assertEqual(list(self.state.rglob("codex.jsonl*")), [])
+
+    def test_c1_16_unsafe_destinations_and_write_failure_cannot_succeed(self):
+        original = self.run / "original"
+        original.write_bytes(b"original")
+        os.link(original, self.companion)
+        with self.assertRaises(ValidationError):
+            self.invoke(stderr=b"ordinary")
+        self.assertFalse(self.log.exists(), "both destinations must be checked before writing")
+        self.assertEqual(original.read_bytes(), b"original")
+        with mock.patch.object(safeio.Tree, "write", side_effect=OSError("injected write failure")):
+            with self.assertRaisesRegex(ValidationError, "^CODEX_LOG_WRITE$"):
+                self.invoke()
+        self.assertFalse((self.run / "codex-identity.json").exists())
+        self.assertFalse(list(self.run.glob(".awf-*.tmp")))
 
 
 if __name__ == "__main__":

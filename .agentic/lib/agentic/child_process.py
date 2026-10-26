@@ -207,6 +207,41 @@ def _diagnostic_text(value):
     return value
 
 
+_RETENTION_CREDENTIAL_PATTERNS = _CREDENTIAL_PATTERNS + (
+    # Preserve the host diagnostic policy's broader header/bare-token grammar.
+    re.compile(r"(?i)(\bauthorization\s*:\s*)[^\r\n]*"),
+    re.compile(r"(?i)(\b(?:bearer|token)\s+)[^\s,;]+"),
+)
+
+
+def contains_credentials(value, *, credentials=()):
+    """Detect the finite diagnostic/host credential grammar, without rendering.
+
+    Paths and controls alone are not credentials. Inspect complete text and
+    separately decoded JSON strings/keys at the machine-evidence boundary.
+    This is pattern and exact-value coverage, not universal secret detection.
+    """
+    text = _diagnostic_text(value)
+    return (any(isinstance(credential, (str, bytes)) and credential
+                and _diagnostic_text(credential) in text for credential in credentials)
+            or any(pattern.search(text) for pattern in _RETENTION_CREDENTIAL_PATTERNS))
+
+
+def redact_retention_credentials(value, *, credentials=()):
+    """Remove the retention detector's credentials before diagnostic rendering."""
+    text = _diagnostic_text(value)
+    for credential in sorted(
+            (value for value in credentials if isinstance(value, (str, bytes)) and value),
+            key=len, reverse=True):
+        text = text.replace(_diagnostic_text(credential), "<redacted-credential>")
+    for pattern in _RETENTION_CREDENTIAL_PATTERNS:
+        text = pattern.sub(
+            lambda match: (match.group(1) if pattern.groups else "") + "<redacted-credential>",
+            text,
+        )
+    return text
+
+
 def render_diagnostic(value, *, credentials=(), paths=()):
     """Render untrusted diagnostics without credentials, local paths, or controls."""
     text = _diagnostic_text(value)

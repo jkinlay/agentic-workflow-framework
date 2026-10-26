@@ -1088,6 +1088,98 @@ def write_log(tree, relative, value, *, maximum=8 * 1024 * 1024,
     tree.write(relative, raw)
 
 
+def _inspect_codex_jsonl(raw, credentials):
+    """Inspect raw and decoded evidence; never reserialize the retained bytes."""
+    # Zero records are inspectable. Identity consumers still require exactly
+    # one thread.started event before they can establish a run binding.
+    if not raw:
+        return
+    try:
+        text = raw.decode("utf-8", "strict")
+        lines = text.splitlines()
+        if not lines or any(not line.strip() for line in lines):
+            raise ValueError
+        # Validate syntax first so malformed/duplicate input has a fixed code.
+        for line in lines:
+            value = json.loads(line, object_pairs_hook=_json_pairs,
+                               parse_constant=_json_constant, parse_float=_json_float)
+            if not isinstance(value, dict):
+                raise ValueError
+            pending = [(value, 0)]
+            while pending:
+                item, depth = pending.pop()
+                if depth > 128:
+                    raise ValueError
+                if isinstance(item, str):
+                    if any(0xD800 <= ord(character) <= 0xDFFF for character in item):
+                        raise ValueError
+                    if child_process.contains_credentials(item, credentials=credentials):
+                        raise ValidationError("CODEX_LOG_CREDENTIAL")
+                elif isinstance(item, dict):
+                    for key, child in item.items():
+                        # A decoded sensitive key still denotes a credential
+                        # assignment even if JSON escaped its spelling/value.
+                        if child_process.contains_credentials(key + ": <value>"):
+                            raise ValidationError("CODEX_LOG_CREDENTIAL")
+                        pending.append((key, depth + 1))
+                        pending.append((child, depth + 1))
+                elif isinstance(item, list):
+                    pending.extend((child, depth + 1) for child in item)
+        if child_process.contains_credentials(text, credentials=credentials):
+            raise ValidationError("CODEX_LOG_CREDENTIAL")
+    except ValidationError as exc:
+        if str(exc) == "CODEX_LOG_CREDENTIAL":
+            raise ValidationError("CODEX_LOG_CREDENTIAL") from None
+        raise ValidationError("CODEX_LOG_INVALID") from None
+    except (UnicodeError, ValueError, RecursionError):
+        raise ValidationError("CODEX_LOG_INVALID") from None
+
+
+def retain_codex_log(tree, relative, stdout, stderr, *, maximum,
+                     credentials=(), paths=()):
+    """Preflight both channels before confined per-leaf atomic replacement.
+
+    Accepted JSONL is byte-identical machine evidence. The diagnostic companion
+    uses write_log's redaction, escaping and framing semantics, with the host's
+    broader credential grammar. Both raw and final combined caps are inclusive;
+    expansion is refused without truncation. I/O failure can leave one safe
+    leaf, but must propagate to prevent success/identity recording.
+    """
+    if not isinstance(tree, Tree):
+        raise ValidationError("CODEX_LOG_DESTINATION")
+    _validate_maximum(maximum, "CODEX_LOG_LIMIT")
+    if not isinstance(stdout, bytes) or not isinstance(stderr, bytes):
+        raise ValidationError("CODEX_LOG_INVALID")
+    if len(stdout) + len(stderr) > maximum:
+        raise ValidationError("CODEX_LOG_LIMIT")
+    credentials = tuple(credentials)
+    _inspect_codex_jsonl(stdout, credentials)
+    companion = b""
+    if stderr:
+        rendered = render_diagnostic(
+            child_process.redact_retention_credentials(stderr, credentials=credentials),
+            paths=paths,
+        )
+        try:
+            companion = (rendered + "\n").encode("utf-8", "strict")
+        except UnicodeError:
+            raise ValidationError("CODEX_LOG_INVALID") from None
+    if len(stdout) + len(companion) > maximum:
+        raise ValidationError("CODEX_LOG_LIMIT")
+    try:
+        tree.inspect(relative)
+        if companion:
+            tree.inspect(relative + ".stderr")
+    except (OSError, ValidationError):
+        raise ValidationError("CODEX_LOG_DESTINATION") from None
+    try:
+        tree.write(relative, stdout)
+        if companion:
+            tree.write(relative + ".stderr", companion)
+    except (OSError, ValidationError):
+        raise ValidationError("CODEX_LOG_WRITE") from None
+
+
 # Descriptive compatibility aliases for callers adopting the primitives in
 # later slices. They share the implementations above rather than widening the
 # accepted input grammar.

@@ -376,6 +376,10 @@ class Launcher {
         self.cli('enroll')
         paused = self.cli('tick', code=2)
         self.assertIn('codex failed; inspect retained run log', paused['reason'])
+        run = self.state / 'runs' / paused['inflight']['id']
+        events = [json.loads(line) for line in
+                  (run / 'codex.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(events[-1], {'type': 'synthetic.failed', 'message': 'Synthetic model failure'})
         self.assertEqual(self.cli('tick', code=2)['inflight'], paused['inflight'])
         self.assertEqual(len(self.observations('codex')), 1)
 
