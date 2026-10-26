@@ -24,13 +24,13 @@ POSIX uses owner read/write permissions; Windows ACLs remain unchanged.
 
 Format 2 retains `cycle_sequence` and `seen` digest/last-cycle pairs. Legacy
 digests migrate to age zero; identical observations refresh age. Above 4096,
-evict oldest `(last_cycle, source_id)`, pinning pending sources beyond that target.
+evict oldest `(last_cycle, source_id)`, pinning pending sources beyond target.
 Evicted sources may recompute; identical plans never duplicate history.
 Each save checks canonical UTF-8 against 4 MiB; ordinary reads cap at 8 MiB.
 Excess pinned/preserved fields refuse before writing, preserving previous bytes;
-earlier saves/history may be durable. Cycles accept at most 4,000 provider events,
+earlier saves/history may persist. Cycles accept at most 4,000 provider events,
 including repeats; excess refuses before state/history writes or dispatch.
-The staged-state 4 MiB guard takes precedence.
+Staged-state 4 MiB guard takes precedence.
 
 Stop **all cycles using the state** before recovery:
 
@@ -39,19 +39,20 @@ python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB 
 ```
 
 Recovery needs existing protected primary state, bounds parsing input to 16 MiB,
-trims only `seen`, and reports bytes/counts. Pending work, overrides, observation,
+trims only `seen`, reports bytes/counts. Pending work, overrides, observation,
 candidate metadata, other rows/history remain. Unshrinkable state refuses;
 reduce event windows. After provider-owner confirmation, `--forget-source SOURCE_ID`
-reconsiders changed bytes for retained non-pending identities. Never delete the
+reconsiders changed bytes for retained non-pending identities. Never delete
 planning key. Restart only after successful repair.
 
 ## Dispatch state and round boundaries
 
-Dispatch payloads/receipts use closed schema version 2. Opening protected state
+Dispatch payloads/receipts use closed schema v2. Opening protected state
 atomically creates schema and migrates unambiguous 1.9.4 `PENDING`, `IN_FLIGHT`,
-`UNKNOWN` rows only with a durable prior-inventory digest. Missing binding,
-unsupported states/receipts/fields, ambiguous payloads or later initialization
-refusal roll back schema/data, preserving the complete before-image.
+`UNKNOWN` rows only with their durable prior-inventory digest already in protected state.
+Legacy non-terminal sets without that boundary binding are refused before any schema or row change.
+Unsupported states/receipts/fields, ambiguous payloads or later initialization
+refusal roll back schema/data, preserving complete before-image.
 The reference adapter refuses legacy calls/records before runner preparation/launch.
 
 `PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.
@@ -63,12 +64,12 @@ consume it atomically with successor dispatch intent creation.
 Restart resumes only persisted successor intents without losing refill
 or recreating seals from replay.
 `--replan-request REQUEST.json` contains only a positive GitHub `comment_id`.
-The adapter fetches the immutable comment with provider Date/ETag. Require a fresh,
+Adapter fetches the immutable comment with provider Date/ETag. Require a fresh,
 unedited configured trusted-owner comment: exactly `AWF-ROUND-REPLAN 1`, newline,
 then canonical JSON binding repository, round, inventories and non-terminal
 dispatch set. Caller-authored trigger/round identities are refused.
 
-Provider reads never span controller write transactions. Validate `LANE_START`
+Provider reads never occur inside a controller write transaction. Validate `LANE_START`
 first, then persist a dispatch-bound waiver before `begun_at` and the adapter call.
 Bind dispatch, ticket, stream, tuple, allowance, path, observation and persistence
 time; restart carries the same digest without relaunch.
@@ -101,7 +102,7 @@ reconcile after merge. Final submission requires the
 
 ## Reference adapter (AWF-32)
 
-**Non-executable setup fragment:** follow the
+**Non-executable fragment:** follow
 [provider-identity guide](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md).
 
 ```powershell
@@ -144,7 +145,7 @@ Adapter: 1 MiB stderr cap, credentials stripped, fail-closed, and
 
 ### Required adapter operations
 
-Production commands load a reviewed, SHA-pinned module exposing
+Commands load a reviewed, SHA-pinned module exposing
 `build_adapters(config)`, returning callable operations. None means no reviewed
 adapter operations, regardless of state/configuration requirements or effects.
 Source: `.agentic/scripts/continuous_controller.py`.
@@ -166,7 +167,7 @@ Source: `.agentic/scripts/continuous_controller.py`.
 the CLI checks whether the flag was supplied, even an empty loaded list.
 `cycle --replan-request` additionally requires `observe_replan_trigger`.
 
-The CLI forwards these additional callbacks when callable, separately from its
+CLI forwards these additional callbacks when callable, outside its
 unconditional load-time set:
 
 - `observe_overlap_conflict`: expired allowance conflict observation.
@@ -175,8 +176,7 @@ unconditional load-time set:
 - `reconcile_overlap_sync`: UNKNOWN receipt-only recovery.
 - `observe_dispatch_quiescence`: terminal proof for accepted dispatches.
 
-Runtime overlap paths require the corresponding callback; omission can block
-those paths. This is the controller contract; the reference adapter lacks
+Runtime overlap paths require the corresponding callback. This controller contract applies; the reference adapter lacks
 owner-publication and batch operations.
 
 ## Controller automation switches

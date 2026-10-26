@@ -1760,6 +1760,21 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 		self.assertIn('`PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.', prose)
 		self.assertIn('A successor inventory cannot refill a round while any of those operations crosses the boundary.', prose)
 
+	def test_doc_legacy_boundary_binding_precedes_migration_and_all_changes(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n\n', 1)[0]
+		prose = ' '.join(section.split())
+		for rule in (
+			'only with their durable prior-inventory digest already in protected state.',
+			'Legacy non-terminal sets without that boundary binding are refused before any schema or row change.',
+		):
+			with self.subTest(rule=rule):
+				self.assertIn(rule, prose)
+
+	def test_doc_provider_reads_never_occur_inside_controller_write_transaction(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('Provider reads never occur inside a controller write transaction.', prose)
+
 	def test_doc_refill_requires_separate_fresh_bound_trigger_and_durable_seal(self):
 		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n\n', 2)[1]
 		prose = ' '.join(section.split())
