@@ -142,6 +142,98 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(main(['--root',str(ROOT),'status','--json']),ordinary)
             self.assertEqual(json.loads(output.getvalue()),report)
 
+    def test_report_diagnostics_preserve_status_stdout_exits_and_opt_in(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest.mock import patch
+        from agentic.child_process import render_bounded_diagnostic
+        from agentic.cli import main
+        from agentic.providers import github_status
+        from agentic import status_report_store
+        from test_status_report import admitted_fixture, snapshot
+
+        config, request = admitted_fixture()
+        request['github_identity'] = None
+        unknown = api().build_report({})
+        self.assertEqual(unknown['eta'], dict(status='UNKNOWN', reason='MISSING_ETA_INPUTS'))
+        failure = 'synthetic report failure'
+        oversized = 'synthetic report failure\n\x1b' + '\u03bb' * 5000
+        run_report = status_report_store.run_report
+        cases = ['missing_both', 'missing_input', 'missing_store', 'identity',
+                 'exception', 'oversized_exception', 'recorded', 'recorded_unknown', 'no_report']
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            project = folder / 'project'
+            (project / '.agentic').mkdir(parents=True)
+            (project / '.agentic/PROJECT_CONFIG.yaml').write_bytes(canonical(config))
+            source = folder / 'input.json'
+            source.write_bytes(canonical(request))
+            store = folder / 'state.db'
+            for state, ordinary, required in [('ACTIVE', 0, 0), ('CONFIGURED', 0, 4), (None, 2, 4)]:
+                status = dict(line='AWF 1.9.4: ' + str(state), project_state=state, next_action=None)
+                for require_active, code in [(False, ordinary), (True, required)]:
+                    for as_json in [False, True]:
+                        for case in cases:
+                            with self.subTest(state=state, required=require_active, json=as_json, case=case):
+                                args = ['--root', str(project), 'status']
+                                if require_active: args.append('--require-active')
+                                if as_json: args.append('--json')
+                                if case != 'no_report': args.append('--report')
+                                if case not in {'missing_both', 'missing_input', 'no_report'}:
+                                    args.extend(['--report-input', str(source)])
+                                if case not in {'missing_both', 'missing_store', 'no_report'}:
+                                    args.extend(['--report-store', str(store)])
+                                result = None
+                                side_effect = None
+                                if case.startswith('missing_'):
+                                    result = dict(status='NOT_RUN', reason=
+                                        'REPORT_ARGUMENTS_REQUIRED: supply --report-input and --report-store')
+                                elif case == 'identity':
+                                    result = dict(status='NOT_RUN', reason='IDENTITY_UNOBSERVED')
+                                    side_effect = run_report
+                                elif case in {'exception', 'oversized_exception'}:
+                                    message = oversized if case == 'oversized_exception' else failure
+                                    side_effect = RuntimeError(message)
+                                    result = dict(status='FAILED', reason=render_bounded_diagnostic(
+                                        message, code='STATUS_REPORT_FAILED'))
+                                elif case in {'recorded', 'recorded_unknown'}:
+                                    result = dict(status='RECORDED', report=
+                                        unknown if case == 'recorded_unknown' else api().build_report(snapshot()))
+                                stdout, stderr = io.StringIO(), io.StringIO()
+                                with patch.object(github_status, 'project_status', return_value=status), \
+                                        patch.object(status_report_store, 'run_report',
+                                            return_value=result, side_effect=side_effect) as run, \
+                                        patch.object(status_report_store, 'ReportStore') as reports, \
+                                        redirect_stdout(stdout), redirect_stderr(stderr):
+                                    self.assertEqual(main(args), code)
+                                expected = status if result is None else {**status, 'status_report': result}
+                                if as_json:
+                                    self.assertEqual(json.loads(stdout.getvalue()), expected)
+                                else:
+                                    text = github_status.render_status(expected) + '\n'
+                                    if result is not None:
+                                        text += 'Status report: ' + result['status'] + '\n'
+                                        text += (api().render_text(result['report']) if 'report' in result
+                                                 else result['reason']) + '\n'
+                                    self.assertEqual(stdout.getvalue(), text)
+                                if case.startswith('missing_') or case == 'no_report':
+                                    run.assert_not_called()
+                                else:
+                                    run.assert_called_once_with(project, source, store)
+                                reports.assert_not_called()
+                                self.assertFalse(store.exists())
+                                if result is not None and result['status'] in {'NOT_RUN', 'FAILED'}:
+                                    diagnostic = (result['reason'] if result['status'] == 'FAILED'
+                                        else render_bounded_diagnostic(result['reason'], code='STATUS_REPORT_NOT_RUN'))
+                                    self.assertEqual(stderr.getvalue(), diagnostic + '\n')
+                                    self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+                                    self.assertLessEqual(len(stderr.getvalue().rstrip('\n').encode('utf-8')), 4096)
+                                    if case == 'oversized_exception':
+                                        self.assertIn('<truncated>', stderr.getvalue())
+                                        self.assertNotIn('\x1b', stderr.getvalue())
+                                else:
+                                    self.assertEqual(stderr.getvalue(), '')
+
     def test_module_has_no_operational_imports(self):
         module=api()
         import ast

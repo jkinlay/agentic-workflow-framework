@@ -624,6 +624,26 @@ class AdoptionStatusTests(unittest.TestCase):
                 self.assertEqual('CONFIGURED', result['project_state'], result)
                 self.assertNotIn('report_active', result['decision_codes'])
 
+    def test_schema_cache_keeps_provider_identity_observations_fresh(self):
+        from agentic.contracts import Contracts
+
+        Contracts(self.root / '.agentic/schemas')
+        self.assertEqual('ACTIVE', self.observe()['project_state'])
+        graph_request = ('graphql', 'fixture/example', 7)
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                self.graphql = copy.deepcopy(self.graphql_response)
+                identity = self.graphql['data']['repository']
+                if missing:
+                    del identity['databaseId']
+                else:
+                    identity['databaseId'] = 102
+                before = self.requests.count(graph_request)
+                result = self.observe()
+                self.assertEqual(before + 1, self.requests.count(graph_request))
+                self.assertEqual('CONFIGURED', result['project_state'], result)
+                self.assertNotIn('report_active', result['decision_codes'])
+
     def test_both_provider_surfaces_without_merge_identity_stay_unobserved(self):
         self.api[self.base + '/pulls/7']['merge_commit_sha'] = None
         self.graphql['data']['repository']['pullRequest']['mergeCommit'] = None
