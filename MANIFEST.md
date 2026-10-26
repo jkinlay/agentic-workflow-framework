@@ -363,7 +363,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_continuous_controller_planning.py` | `b6851cd1d5e5f30c11d7ed6e618b6dc8f943c63eeaa2a5d78ec8adbfea5fbdf9` |
 | `.agentic/tests/test_controller_switches_195.py` | `ef6ca7b8ce1b5fd3b4028d9050b561ddcc16c2df32de0c189ab46f31d05ca0b3` |
 | `.agentic/tests/test_external_resources.py` | `fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e` |
-| `.agentic/tests/test_external_resources_cli.py` | `71a8c08a47ca96cd8c8ade49aa5e866a84d44e5e034f285e70efe1728c4370ff` |
+| `.agentic/tests/test_external_resources_cli.py` | `73aca73427ab8e45e856a124850a66e1c59e023ebe1093ab9a2148e02c1a522c` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
 | `.agentic/tests/test_gates_awf98.py` | `39db012967a59e3f19941084eef325d84fb5cb6d2724bcc9cf90512ec8d5d2fd` |
 | `.agentic/tests/test_gates_owner_review.py` | `b9d1e54e25e7281ba7c2e745b1b594d5a9593e12a02247b83307ce3cd3a11096` |

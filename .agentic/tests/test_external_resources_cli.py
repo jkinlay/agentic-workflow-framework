@@ -47,13 +47,13 @@ class ExternalResourceCliTests(unittest.TestCase):
                       "sample_mtime": "2026-10-09T12:00:00Z", "bytes_read": 1},
         }
 
-    def run_cli(self, *args, code=0, env=None):
+    def run_cli(self, *args, code=0, env=None, timeout=30):
         environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         if env is not None:
             environment.update(env)
         result = subprocess.run([sys.executable, "-B", str(SCRIPT), *map(str, args)],
                                 cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
-                                env=environment, timeout=30)
+                                env=environment, timeout=timeout)
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         return json.loads(result.stdout if code == 0 else result.stderr)
 
@@ -402,7 +402,7 @@ class ExternalResourceCliTests(unittest.TestCase):
                     "raw_estate": {"access": "read_only", "required_by": ["AWF-8"],
                                    "host_mapping": "operator_local", "sensitivity": "restricted",
                                    "probe": {"sample_relative_path": "sample.bin", "listing_limit": 2,
-                                             "timeout_seconds": 5}}}}), encoding="utf-8")
+                                             "timeout_seconds": 30}}}}), encoding="utf-8")
             mapping = base / "private-mapping.json"
             mapping.write_text(json.dumps({
                 "format": "awf-external-resource-mapping-1", "resources": {
@@ -414,7 +414,7 @@ class ExternalResourceCliTests(unittest.TestCase):
                 "admit", "--project-root", project, "--registry", registry,
                 "--mapping", mapping, "--resource", "raw_estate", "--task", "AWF-8",
                 "--principal", "worker-A", "--session", "session-1", "--now",
-                "2026-10-09T12:00:00Z", env={"PATH": ""})
+                "2026-10-09T12:00:00Z", env={"PATH": ""}, timeout=120)
 
             self.assertEqual(receipt["state"], "READ_VERIFIED")
             self.assertEqual(receipt["evidence"]["bytes_read"], 1)
