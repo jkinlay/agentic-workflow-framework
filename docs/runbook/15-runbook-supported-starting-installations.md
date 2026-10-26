@@ -14,3 +14,7 @@ Support is based on an exact registered receipt identity and verified managed by
 The table’s floor is 1.8.0, but that does **not** establish support for every release at or above 1.8.0. Identification still requires a registered entry and matching receipt identity. Sources: `9f44c2a1:.agentic/upgrade/known-versions.json:3`; `7fcaeece:.agentic/lib/agentic/upgrade.py:167`.
 
 The d2-006d test constructs a temporary source with VERSION advanced to 1.9.5. That is test-fixture evidence, not a published 1.9.5 distribution. Source: `9f44c2a1:.agentic/tests/test_upgrade_195_path.py:141`.
+
+**Before proceeding:** [Publication checkpoint](06-runbook-publication-checkpoint.md); [pre-upgrade checks and backup](16-runbook-pre-upgrade-checks-and-backup.md).
+
+[Runbook index](INDEX.md)
