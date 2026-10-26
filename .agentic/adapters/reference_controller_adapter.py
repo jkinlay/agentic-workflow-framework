@@ -1452,7 +1452,147 @@ def _build(config):
 		complete = next_cursor is None
 		observed_at = snapshot['observed_at']
 		return {'items': items, 'next_cursor': next_cursor, 'complete': complete, 'snapshot_id': snapshot_id, 'scope_sha256': scope_sha, 'observed_at': observed_at}
-	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation}
+	# AWF-205: planning callbacks required by the landed cycle contract.
+	# Host, backlog and event observations are authenticated; owner decisions
+	# are re-authenticated against immutable provider comments. Each observation is
+	# retained outside the worktrees under a byte-pinned evidence identity; each
+	# verifier re-reads that retained record and binds it to the exact request.
+	planning_evidence_root = record_dir / 'planning-evidence'
+	host_producer_id = 'reference-host'
+	resource_binding_keys = {'project_id', 'repository_id', 'scope_sha256', 'repository_head_sha', 'repository_tree_sha', 'project_config_sha256', 'operating_config_sha256'}
+	planning_binding_keys = {'project_id', 'repository_id', 'scope_sha256', 'repository_head_sha', 'project_config_sha256', 'cycle_id'}
+
+	def configured_scope(binding, keys, purpose):
+		_require(isinstance(binding, dict) and set(binding) == keys, purpose + ' binding is malformed')
+		_require(binding['project_id'] == github['project_id'] and binding['repository_id'] == str(github['repository_id']) and binding['scope_sha256'] == github['scope_sha256'], purpose + ' binding is foreign to the configured project')
+
+	def retain_planning_evidence(kind, value):
+		raw = require_record_bytes(canonical(value) + b'\n')
+		digest = sha256(raw)
+		evidence_id = kind + '-' + digest
+		planning_evidence_root.mkdir(parents=True, exist_ok=True)
+		path = planning_evidence_root / (evidence_id + '.json')
+		if path.exists():
+			_require(path.read_bytes() == raw, 'Retained planning evidence was altered')
+		else:
+			_write_record(path, value)
+		return (evidence_id, digest)
+
+	def read_planning_evidence(kind, evidence_id, evidence_sha256=None):
+		_require(isinstance(evidence_id, str) and re.fullmatch(re.escape(kind) + '-[0-9a-f]{64}', evidence_id) is not None, 'Planning evidence identity is invalid')
+		digest = evidence_id[len(kind) + 1:]
+		_require(evidence_sha256 is None or evidence_sha256 == digest, 'Planning evidence digest differs from its identity')
+		try:
+			with (planning_evidence_root / (evidence_id + '.json')).open('rb') as stream:
+				raw = require_record_bytes(stream.read(MAX_OUTPUT + 1))
+			value = json.loads(raw.decode('utf-8'))
+		except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+			raise ValidationError('Retained planning evidence is unavailable or invalid') from exc
+		_require(sha256(raw) == digest, 'Retained planning evidence bytes differ from their identity')
+		_require(isinstance(value, dict) and value.get('kind') == kind, 'Retained planning evidence is malformed')
+		return value
+
+	def planning_resource_request(request):
+		_require(isinstance(request, dict) and set(request) == {'operation', 'binding', 'observed_at', 'producer_implementation_sha256'} and request['operation'] == 'observe_planning_resources', 'Planning resource request is malformed')
+		configured_scope(request['binding'], resource_binding_keys, 'Planning resource')
+		timestamp(request['observed_at'])
+
+	def observe_host_resources(request):
+		planning_resource_request(request)
+		processors = os.cpu_count()
+		_require(type(processors) is int and processors > 0, 'Host processor count is unobservable')
+		capacity = min(processors, 1000)
+		resources = [{'name': 'cpu', 'capacity': capacity}]
+		request_sha256 = fingerprint('planning_resource_request', request)
+		evidence_id, evidence_sha256 = retain_planning_evidence('host', {'kind': 'host', 'producer_id': host_producer_id, 'request': deepcopy(request), 'request_sha256': request_sha256, 'observed_at': request['observed_at'], 'measured_at': _clock_text(clock), 'host_capacity': capacity, 'resources': resources})
+		return {'status': 'OBSERVED', 'producer_id': host_producer_id, 'evidence_id': evidence_id, 'evidence_sha256': evidence_sha256, 'request_sha256': request_sha256, 'observed_at': request['observed_at'], 'host_capacity': capacity, 'resources': deepcopy(resources)}
+
+	def verify_host_observation(authentication, request):
+		planning_resource_request(request)
+		_require(isinstance(authentication, dict) and set(authentication) == {'producer_id', 'evidence_id', 'evidence_sha256', 'request_sha256'} and authentication['producer_id'] == host_producer_id, 'Host evidence authentication is malformed or foreign')
+		value = read_planning_evidence('host', authentication['evidence_id'], authentication['evidence_sha256'])
+		request_sha256 = fingerprint('planning_resource_request', request)
+		_require(value.get('producer_id') == host_producer_id and value.get('request') == request and value.get('request_sha256') == request_sha256 == authentication['request_sha256'], 'Host evidence is not bound to this planning request')
+		return {'status': 'VERIFIED', **deepcopy(authentication), 'observed_at': value['observed_at'], 'host_capacity': value['host_capacity'], 'resources': deepcopy(value['resources'])}
+
+	def planning_observation_request(request):
+		_require(isinstance(request, dict) and set(request) == {'provider', 'binding', 'observed_at'}, 'Planning observation request is malformed')
+		_require(isinstance(request['provider'], dict) and set(request['provider']) == {'provider_id', 'implementation_sha256', 'verifier_implementation_sha256'}, 'Planning provider pin is malformed')
+		configured_scope(request['binding'], planning_binding_keys, 'Planning observation')
+		timestamp(request['observed_at'])
+		return deepcopy(request)
+
+	def open_pull_request_files(tickets):
+		branches = {}
+		for item in tickets:
+			slug = re.sub('[^a-z0-9]+', '-', item['ticket'].lower()).strip('-')
+			branches[github['branch_pattern'].format(ticket=item['ticket'], slug=slug)] = item['ticket']
+		numbers = {}
+		for pull in github_pages('repos/' + github['repository'] + '/pulls?state=open', 'items'):
+			_require(isinstance(pull, dict) and type(pull.get('number')) is int and isinstance(pull.get('head'), dict), 'GitHub pull request observation is malformed')
+			head = pull['head']
+			ticket = branches.get(head.get('ref'))
+			if ticket is None or not isinstance(head.get('repo'), dict) or head['repo'].get('id') != github['repository_id']:
+				continue
+			_require(ticket not in numbers, 'GitHub has more than one open pull request for ticket ' + ticket)
+			numbers[ticket] = pull['number']
+		result = {}
+		for ticket in branches.values():
+			if ticket not in numbers:
+				result[ticket] = []
+				continue
+			files = github_pages('repos/' + github['repository'] + '/pulls/' + str(numbers[ticket]) + '/files', 'items')
+			_require(all((isinstance(entry, dict) and isinstance(entry.get('filename'), str) and entry['filename'] for entry in files)), 'GitHub pull request files are malformed')
+			result[ticket] = sorted({entry['filename'] for entry in files})
+		return result
+
+	def observe_planning_backlog(request):
+		request = planning_observation_request(request)
+		inventory = observe_inventory(request['observed_at'])
+		pr_files = open_pull_request_files(inventory['tickets'])
+		tickets = []
+		for item in inventory['tickets']:
+			files = {'brief': list(item['paths']), 'open_pr': pr_files[item['ticket']], 'worktree_diff': []}
+			status = 'open' if item['disposition'] == 'ELIGIBLE' else 'blocked'
+			tickets.append({'ticket': {'key': item['ticket'], 'status': status}, 'components': [{'kind': kind, 'ticket_key': item['ticket'], 'binding': deepcopy(request['binding']), 'observed_at': request['observed_at'], 'files': files[kind]} for kind in ('brief', 'open_pr', 'worktree_diff')]})
+		body = {'format': 'awf-backlog-provider-snapshot-1', 'complete': True, 'provider': deepcopy(request['provider']), 'binding': deepcopy(request['binding']), 'observed_at': request['observed_at'], 'tickets': tickets}
+		evidence_id, _digest = retain_planning_evidence('backlog', {'kind': 'backlog', 'request': request, 'inventory_sha256': inventory['inventory_sha256'], 'snapshot': body})
+		return {**deepcopy(body), 'authentication': {'evidence_id': evidence_id}}
+
+	def verify_planning_backlog(authentication, request):
+		request = planning_observation_request(request)
+		_require(isinstance(authentication, dict) and set(authentication) == {'evidence_id'}, 'Planning backlog authentication is malformed')
+		value = read_planning_evidence('backlog', authentication['evidence_id'])
+		_require(value.get('request') == request, 'Planning backlog evidence is not bound to this request')
+		return {'status': 'VERIFIED', 'evidence_id': authentication['evidence_id'], 'snapshot': deepcopy(value['snapshot'])}
+
+	def observe_planning_events(request):
+		# The controller derives project_start/files_changed itself. This adapter
+		# sources no owner override events; owner chains arrive only from a
+		# trusted host and are re-authenticated by verify_planning_owner.
+		request = planning_observation_request(request)
+		body = {'binding': deepcopy(request['binding']), 'observed_at': request['observed_at'], 'events': []}
+		evidence_id, _digest = retain_planning_evidence('events', {'kind': 'events', 'request': request, 'snapshot': body})
+		return {**deepcopy(body), 'authentication': {'evidence_id': evidence_id}}
+
+	def verify_planning_events(authentication, request):
+		request = planning_observation_request(request)
+		_require(isinstance(authentication, dict) and set(authentication) == {'evidence_id'}, 'Planning event authentication is malformed')
+		value = read_planning_evidence('events', authentication['evidence_id'])
+		_require(value.get('request') == request, 'Planning event evidence is not bound to this request')
+		return {'status': 'VERIFIED', 'evidence_id': authentication['evidence_id'], 'snapshot': deepcopy(value['snapshot'])}
+
+	def verify_planning_owner(owner_source, request):
+		_require(isinstance(request, dict) and set(request) == {'binding', 'actor_id', 'raw_body_sha256', 'requested', 'now'}, 'Planning owner verification request is malformed')
+		_require(isinstance(owner_source, dict) and owner_source.get('channel') == 'github_pr_comment' and type(owner_source.get('comment_id')) is int and owner_source['comment_id'] > 0, 'Planning owner source is not a GitHub comment')
+		_require(owner_source.get('binding') == request['binding'] and owner_source.get('actor_id') == request['actor_id'] and owner_source.get('raw_body_sha256') == request['raw_body_sha256'], 'Planning owner source differs from the verification request')
+		comment, _etag, _provider_time = gh_json_etag('repos/' + github['repository'] + '/issues/comments/' + str(owner_source['comment_id']))
+		_require(isinstance(comment, dict) and comment.get('id') == owner_source['comment_id'] and isinstance(comment.get('user'), dict) and isinstance(comment.get('node_id'), str) and comment['node_id'], 'GitHub owner comment is malformed')
+		body = comment.get('body')
+		_require(isinstance(body, str) and comment['user'].get('id') == request['actor_id'] and body == owner_source.get('raw_body') and sha256(body.encode('utf-8')) == request['raw_body_sha256'], 'GitHub owner comment differs from the recorded owner source')
+		_require(comment.get('created_at') == comment.get('updated_at') == owner_source.get('created_at'), 'GitHub owner comment was edited or differs from its recorded time')
+		return {'status': 'VERIFIED', 'actor_id': request['actor_id'], 'binding': deepcopy(request['binding']), 'raw_body_sha256': request['raw_body_sha256'], 'source_id': 'github-comment:' + comment['node_id'], 'observed_at': _clock_text(clock)}
+	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
 
 def build_adapters(config):
 	return _build(config)

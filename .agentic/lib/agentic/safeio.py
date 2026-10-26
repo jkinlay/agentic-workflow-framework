@@ -5,7 +5,7 @@ held. POSIX: operations use open directory descriptors and O_NOFOLLOW. Existing
 hardlinked regular files are rejected. Writes replace a new temporary inode.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import math
@@ -16,9 +16,11 @@ import stat
 import subprocess
 import threading
 import time
+from types import MappingProxyType
 import uuid
 
 from . import ValidationError
+from . import child_process
 from .child_process import (
     ChildProcessPolicyError,
     OperationBudget,
@@ -34,19 +36,47 @@ _LEGACY_WATCHED_LIMIT = 1024 * 1024
 _DEFAULT_STDIN_LIMIT = 1024 * 1024
 
 
+@dataclass(frozen=True, init=False)
+class ChildEnvironmentSnapshot:
+    """Immutable child environment with exclusions resolved at capture time.
+
+    Construction always applies the reviewed runtime policy and provider-key
+    filtering. Capture a new snapshot for each operation; reuse never reads
+    configuration or accepts unvalidated replacement environment values.
+    """
+
+    environment: MappingProxyType = field(repr=False)
+    _strip_extra: tuple = field(repr=False)
+
+    def __init__(self, base=None):
+        strip_extra = sorted(child_process.configured_child_env_strip_extra())
+        environment = child_env(base, strip_extra=strip_extra)
+        object.__setattr__(self, "environment", MappingProxyType(environment))
+        object.__setattr__(self, "_strip_extra", tuple(strip_extra))
+
+    @classmethod
+    def capture(cls, base=None):
+        return cls(base)
+
+
 def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
                 stdout_limit=_LEGACY_STDOUT_LIMIT,
                 stderr_limit=_LEGACY_STDERR_LIMIT,
                 watched_files=(), watched_file_limit=_LEGACY_WATCHED_LIMIT,
                 stdin_limit=_DEFAULT_STDIN_LIMIT, aggregate_output_limit=None,
                 cancel_event=None, stream_sink=None, policy=None,
-                operation_budget=None):
+                operation_budget=None, retain_stdout=True,
+                environment_snapshot=None):
     """Run one owned process tree with bounded input, output, and artifacts.
 
     Existing callers may keep supplying the historical channel caps. New
     operations select an immutable ``RunnerPolicy``. A selected policy is
     closed: caller-selected cap or timeout overrides are refused. The optional
     ``OperationBudget`` is shared and non-resettable across related launches.
+    ``retain_stdout=False`` requires a sink and omits stdout from the result;
+    all bytes still count against the same channel, aggregate and operation
+    caps. A ``ChildEnvironmentSnapshot`` replaces per-launch policy resolution
+    only when explicitly supplied, and cannot be combined with ``env``.
     """
     if (not isinstance(argv, (list, tuple)) or not argv
             or any(not isinstance(value, str) for value in argv)):
@@ -88,6 +118,11 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
         raise ValidationError("SUBPROCESS_CANCEL: cancellation event is invalid")
     if stream_sink is not None and not callable(stream_sink):
         raise ValidationError("SUBPROCESS_STREAM_SINK: sink must be callable")
+    if type(retain_stdout) is not bool or (not retain_stdout and stream_sink is None):
+        raise ValidationError("SUBPROCESS_STREAM_SINK: nonretaining stdout requires a sink")
+    if environment_snapshot is not None:
+        if type(environment_snapshot) is not ChildEnvironmentSnapshot or env is not None:
+            raise ValidationError("SUBPROCESS_ENVIRONMENT: invalid or conflicting snapshot")
     input_bytes = None
     if stdin is not None:
         input_bytes = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
@@ -125,7 +160,12 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
         else:
             popen_arguments["start_new_session"] = True
         process = subprocess.Popen(
-            list(argv), cwd=cwd, env=child_env(env), shell=False, close_fds=True,
+            list(argv), cwd=cwd,
+            env=child_env(
+                env if environment_snapshot is None else environment_snapshot.environment,
+                strip_extra=(None if environment_snapshot is None
+                             else list(environment_snapshot._strip_extra))),
+            shell=False, close_fds=True,
             stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_arguments,
         )
@@ -145,6 +185,7 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
         raise
 
     captured = {"stdout": bytearray(), "stderr": bytearray()}
+    channel_sizes = {"stdout": 0, "stderr": 0}
     state_lock = threading.Lock()
     sink_lock = threading.Lock()
     issues = []
@@ -162,7 +203,7 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
                     return
                 with state_lock:
                     issue = None
-                    if len(captured[name]) + len(chunk) > limit:
+                    if channel_sizes[name] + len(chunk) > limit:
                         issue = name
                     elif aggregate_size + len(chunk) > aggregate_output_limit:
                         issue = "aggregate"
@@ -172,7 +213,9 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
                         except ChildProcessPolicyError:
                             issue = "operation_budget"
                     if issue is None:
-                        captured[name].extend(chunk)
+                        channel_sizes[name] += len(chunk)
+                        if name != "stdout" or retain_stdout:
+                            captured[name].extend(chunk)
                         aggregate_size += len(chunk)
                     elif not issues:
                         issues.append(issue)

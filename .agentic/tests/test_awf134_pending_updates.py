@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -77,7 +79,7 @@ class PendingJournalUpdateTests(unittest.TestCase):
                               defer_runtime=True)
         return destination, before
 
-    def interrupt_after_managed_after_publish(self):
+    def interrupt_after_managed_after_publish(self, setup=None):
         source, destination, pin, content = self.prepare_install(
             unchanged_files=0, changed_files=1)
         target = destination / ".agentic/adopted-clone/0000.bin"
@@ -86,6 +88,8 @@ class PendingJournalUpdateTests(unittest.TestCase):
         runtime.mkdir(parents=True)
         runtime_file = runtime / "runtime.bin"
         runtime_file.write_bytes(b"exact prior runtime\n")
+        if setup is not None:
+            setup(destination, content)
         before = self.snapshot_project(destination)
         before_mode = stat.S_IMODE(target.stat().st_mode)
         before_runtime = installer._runtime_tree_sha256(runtime)
@@ -206,6 +210,240 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual(before_mode, stat.S_IMODE(target.stat().st_mode))
         self.assertEqual(before_runtime,
                          installer._runtime_tree_sha256(destination / installer.RUNTIME))
+
+    def run_awf215_recovery(self, destination):
+        """Exercise recovery in a fresh process using the library under test.
+
+        The source-only bootstrap script is absent from installed projects.
+        Keep its recovery result/error transport here so these regressions
+        exercise the same recovery implementation in either layout.
+        """
+        import subprocess
+
+        code = """
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from agentic import ValidationError
+from agentic.installer import recover
+try:
+    print(json.dumps(recover(Path(sys.argv[2])), indent=2))
+except (ValidationError, OSError, ValueError) as exc:
+    print(f"BOOTSTRAP REJECTED: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+"""
+        return subprocess.run(
+            [sys.executable, "-B", "-c", code,
+             str(Path(installer.__file__).resolve().parents[1]), str(destination)],
+            cwd=destination, capture_output=True, text=True)
+
+    def test_awf215_unproved_partial_stage_moves_to_to_delete_and_rolls_back(self):
+        destination, before, before_mode, before_runtime = (
+            self.interrupt_after_managed_after_publish())
+        journal = json.loads((destination / installer.JOURNAL).read_bytes())
+        marker = json.loads((destination / installer.MARKER).read_bytes())
+        runtime = journal["runtime"]
+        stage = destination / runtime["stage"]
+        stage.mkdir()
+        (stage / "runtime.bin").write_bytes(b"unproved partial runtime\n")
+        (stage / "nested").mkdir()
+        (stage / "nested/partial.bin").write_bytes(b"preserve these bytes\x00\xff")
+        stage_digest = installer._runtime_tree_sha256(stage)
+
+        self.assertEqual("awf-install-journal-4", journal["format"])
+        self.assertEqual("active", journal["phase"])
+        self.assertIsNotNone(journal["managed_after_sha256"])
+        self.assertEqual(before_runtime, runtime["previous_sha256"])
+        self.assertIsNone(runtime["new_sha256"])
+        self.assertIsNone(runtime["cleanup_identity"])
+        self.assertIsNone(runtime["cleanup_members"])
+        self.assertIsNone(marker["pending_journal_sha256"])
+        self.assertIsNone(marker["pending_update_kind"])
+        self.assertFalse((destination / runtime["backup"]).exists())
+        self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
+
+        result = self.run_awf215_recovery(destination)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"status": "ROLLED_BACK"}, json.loads(result.stdout))
+        self.assertFalse(stage.exists())
+        moved = list((destination / "_to_delete").iterdir())
+        self.assertEqual(1, len(moved))
+        self.assertRegex(moved[0].name, r"^" + stage.name.replace(".", r"\.") +
+                         r"-\d{8}T\d{6}\.\d{6}Z-[0-9a-f-]{36}$")
+        self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
+        self.assertIn("WARNING", result.stderr)
+        self.assertIn("Unproved partial runtime stage moved to " + str(moved[0]),
+                      result.stderr)
+        self.assertIn("bytes preserved for inspection", result.stderr)
+        restored = {path: data for path, data in self.snapshot_project(destination).items()
+                    if not path.startswith("_to_delete/")}
+        self.assertEqual(before, restored)
+        self.assertEqual(before_mode, stat.S_IMODE(
+            (destination / ".agentic/adopted-clone/0000.bin").stat().st_mode))
+        self.assertEqual(before_runtime,
+                         installer._runtime_tree_sha256(destination / installer.RUNTIME))
+        self.assertFalse((destination / installer.JOURNAL).exists())
+        self.assertFalse((destination / installer.MARKER).exists())
+        self.assertFalse((destination / runtime["backup"]).exists())
+        self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
+        self.assertEqual({"status": "NO_PENDING_INSTALL"}, installer.recover(destination))
+        self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
+
+    def test_awf217_n2_recovery_keeps_git_status_clean(self):
+        ignore_bytes = (ROOT / installer.GITIGNORE_TEMPLATE).read_bytes()
+        git = shutil.which("git")
+        self.assertIsNotNone(git, "AWF-217 requires Git; setup must not skip")
+        control = self.root / "awf217-git-control"
+        control.mkdir()
+        for name in ("home", "xdg", "hooks", "template"):
+            (control / name).mkdir()
+        empty = control / "empty"
+        empty.write_bytes(b"")
+        git_env = {key: value for key, value in os.environ.items()
+                   if not key.upper().startswith("GIT_")}
+        git_env.update({
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "NUL" if os.name == "nt" else os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "HOME": str(control / "home"),
+            "USERPROFILE": str(control / "home"),
+            "XDG_CONFIG_HOME": str(control / "xdg"),
+        })
+
+        def run_git(destination, *args, input=None):
+            result = subprocess.run(
+                [git, "-c", "core.autocrlf=false",
+                 "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+                 "-c", "status.showUntrackedFiles=normal",
+                 "-c", "core.excludesFile=" + str(empty),
+                 "-c", "core.attributesFile=" + str(empty),
+                 "-c", "core.hooksPath=" + str(control / "hooks"),
+                 "-c", "user.name=AWF isolated test", "-c", "user.email=awf@example.invalid",
+                 "-c", "commit.gpgSign=false", *args],
+                cwd=destination, env=git_env, capture_output=True, text=True, input=input)
+            self.assertEqual(0, result.returncode, (args, result.stdout, result.stderr))
+            return result
+
+        def setup(destination, content):
+            content[installer.GITIGNORE_TEMPLATE] = ignore_bytes
+            (destination / installer.GITIGNORE).write_bytes(ignore_bytes)
+            run_git(destination, "init", "--template=" + str(control / "template"))
+            exclude = destination / ".git/info/exclude"
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            exclude.write_bytes(b"")
+            run_git(destination, "add", "-A")
+            run_git(destination, "commit", "-m", "Isolated pre-transaction baseline")
+            probe = destination / "awf217-untracked-control.txt"
+            probe.write_bytes(b"Git must report ordinary untracked files\n")
+            self.assertEqual("?? awf217-untracked-control.txt\n",
+                             run_git(destination, "status", "--porcelain").stdout)
+            probe.unlink()
+            self.assertEqual("", run_git(destination, "status", "--porcelain").stdout)
+
+        def project_snapshot(destination):
+            # Only this test omits Git metadata; every project byte remains compared.
+            return {path: data for path, data in
+                    PendingJournalUpdateTests.snapshot_project(destination).items()
+                    if not path.startswith(".git/")}
+
+        with patch.object(self, "snapshot_project", side_effect=project_snapshot):
+            destination, before, before_mode, before_runtime = (
+                self.interrupt_after_managed_after_publish(setup=setup))
+        self.assertEqual(ignore_bytes, (destination / installer.GITIGNORE).read_bytes())
+        journal = json.loads((destination / installer.JOURNAL).read_bytes())
+        marker = json.loads((destination / installer.MARKER).read_bytes())
+        runtime = journal["runtime"]
+        stage = destination / runtime["stage"]
+        stage.mkdir()
+        (stage / "runtime.bin").write_bytes(b"unproved partial runtime\n")
+        (stage / "nested").mkdir()
+        sentinel_bytes = b"preserve these bytes\x00\xff"
+        (stage / "nested/partial.bin").write_bytes(sentinel_bytes)
+        stage_digest = installer._runtime_tree_sha256(stage)
+
+        self.assertEqual("awf-install-journal-4", journal["format"])
+        self.assertEqual("active", journal["phase"])
+        self.assertIsNotNone(journal["managed_after_sha256"])
+        self.assertEqual(before_runtime, runtime["previous_sha256"])
+        self.assertIsNone(runtime["new_sha256"])
+        self.assertIsNone(runtime["cleanup_identity"])
+        self.assertIsNone(runtime["cleanup_members"])
+        self.assertIsNone(marker["pending_journal_sha256"])
+        self.assertIsNone(marker["pending_update_kind"])
+        self.assertFalse((destination / runtime["backup"]).exists())
+        self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
+
+        result = self.run_awf215_recovery(destination)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"status": "ROLLED_BACK"}, json.loads(result.stdout))
+        self.assertFalse(stage.exists())
+        moved = list((destination / "_to_delete").iterdir())
+        self.assertEqual(1, len(moved))
+        self.assertRegex(moved[0].name, r"^" + stage.name.replace(".", r"\.") +
+                         r"-\d{8}T\d{6}\.\d{6}Z-[0-9a-f-]{36}$")
+        self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
+        sentinel = moved[0] / "nested/partial.bin"
+        self.assertEqual(sentinel_bytes, sentinel.read_bytes())
+        self.assertIn("WARNING", result.stderr)
+        self.assertIn("Unproved partial runtime stage moved to " + str(moved[0]), result.stderr)
+        self.assertIn("bytes preserved for inspection", result.stderr)
+        restored = {path: data for path, data in project_snapshot(destination).items()
+                    if not path.startswith("_to_delete/")}
+        self.assertEqual(before, restored)
+        self.assertEqual(before_mode, stat.S_IMODE(
+            (destination / ".agentic/adopted-clone/0000.bin").stat().st_mode))
+        self.assertEqual(before_runtime,
+                         installer._runtime_tree_sha256(destination / installer.RUNTIME))
+        self.assertFalse((destination / installer.JOURNAL).exists())
+        self.assertFalse((destination / installer.MARKER).exists())
+        self.assertFalse((destination / runtime["backup"]).exists())
+        self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
+        repeated = self.run_awf215_recovery(destination)
+        self.assertEqual(0, repeated.returncode, repeated.stderr)
+        self.assertEqual({"status": "NO_PENDING_INSTALL"}, json.loads(repeated.stdout))
+        self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
+        self.assertEqual(sentinel_bytes, sentinel.read_bytes())
+        self.assertEqual(ignore_bytes, (destination / installer.GITIGNORE).read_bytes())
+        self.assertEqual(b"", (destination / ".git/info/exclude").read_bytes())
+
+        status = run_git(destination, "status", "--porcelain")
+        self.assertEqual("", status.stdout, status.stdout)
+        relative = sentinel.relative_to(destination).as_posix()
+        ignored = run_git(destination, "check-ignore", "-v", "-z", "--stdin",
+                          input=relative + "\0")
+        source, line, rule, matched, terminator = ignored.stdout.split("\0")
+        self.assertEqual(".gitignore", source)
+        self.assertEqual("_to_delete/", rule)
+        self.assertEqual(rule, ignore_bytes.decode("utf-8").splitlines()[int(line) - 1])
+        self.assertEqual(relative, matched)
+        self.assertEqual("", terminator)
+
+    def test_awf215_recorded_stage_digest_mismatch_still_refuses(self):
+        destination, _before, _before_mode, _before_runtime = (
+            self.interrupt_after_managed_after_publish())
+        with installer.Tree(destination) as tree:
+            journal, _raw, _marker = installer._read_bound_journal(tree)
+            transaction = installer._RuntimeInstallTransaction(tree, journal)
+            transaction.stage.mkdir()
+            runtime_file = transaction.stage / "runtime.bin"
+            runtime_file.write_bytes(b"recorded runtime\n")
+            transaction.record_staged_runtime()
+        runtime_file.write_bytes(b"external stage edit\n")
+        before = self.snapshot_project(destination)
+        transaction_before = self.snapshot_transaction(destination)
+
+        result = self.run_awf215_recovery(destination)
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("Runtime recovery found an external edit in the staged runtime; "
+                      "journal retained", result.stderr)
+        self.assertEqual(before, self.snapshot_project(destination))
+        self.assertEqual(transaction_before, self.snapshot_transaction(destination))
+        self.assertTrue((destination / installer.JOURNAL).exists())
+        self.assertTrue((destination / installer.MARKER).exists())
+        self.assertEqual(b"external stage edit\n", runtime_file.read_bytes())
+        self.assertFalse((destination / "_to_delete").exists())
 
     def test_awf134_crash_after_runtime_stage_precommit_recovers_by_explicit_kind(self):
         destination, before, _before_mode, _before_runtime = (

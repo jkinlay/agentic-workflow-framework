@@ -622,10 +622,26 @@ class ProviderSnapshotTests(unittest.TestCase):
     def test_operating_doc_covers_max_lanes_overrides_and_migration(self):
         doc = (ROOT / ".agentic/docs/29-OPERATING-CONFIGURATION.md").read_text(encoding="utf-8")
         for text in ("execution.max_lanes", "fixed", "max", "sealed safe capacity",
-                     "round boundaries", "omitted", "six", "AWF-50 item 1",
-                     "generated-schema limitation"):
+                     "round boundaries", "omitted", "six"):
             with self.subTest(text=text):
                 self.assertIn(text, doc)
+        migration = doc.split("\n| Contract |", 1)[0].rsplit("\n\n", 1)[1]
+        with self.subTest(requirement="operating-config table range"):
+            self.assertIn("| `operating-config` | `streams.count` | 1–12 |", doc.splitlines())
+        for text in ("`streams.count` 1–12 with A–L routes",
+                     "optional project `execution.max_lanes` 1–12",
+                     "Omitting `execution.max_lanes` retains six",
+                     "Lower binding limits, including `execution.max_parallel_tickets`",
+                     "enabled `execution.host_broker.max_workers`, still apply",
+                     "Migration: raise protected ceilings only through review",
+                     "Schema acceptance grants no dispatch authority"):
+            with self.subTest(migration_requirement=text):
+                self.assertIn(text, migration)
+        for text in ("Pending generated-schema limitation", "until AWF-50 item 1 lands",
+                     "Above-six configuration remains schema-invalid",
+                     "reject `execution.max_lanes`"):
+            with self.subTest(obsolete_claim=text):
+                self.assertNotIn(text, doc)
         self.assertLessEqual(len(doc.split()), 800)
 
 

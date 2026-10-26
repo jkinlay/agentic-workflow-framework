@@ -101,6 +101,34 @@ class Repository:
 
 
 class PublicationScanTests(unittest.TestCase):
+    def test_runtime_environment_policy_is_resolved_once_per_scan_and_refreshed(self):
+        from agentic import child_process
+        real_loader = child_process.configured_child_env_strip_extra
+        with mock.patch.object(child_process, "configured_child_env_strip_extra",
+                               wraps=real_loader) as loader:
+            first = scan_repository(self.repo.path, self.repo.base, self.repo.base)
+            first_count = loader.call_count
+            second = scan_repository(self.repo.path, self.repo.base, self.repo.base)
+        print(f"runtime environment policy reads: first={first_count}, total={loader.call_count}")
+        self.assertEqual("PASS", first["status"])
+        self.assertEqual(first, second)
+        self.assertEqual(1, first_count)
+        self.assertEqual(2, loader.call_count)
+
+    def test_real_oversized_allowance_remains_accepted_without_raising_runner_caps(self):
+        content = b"x" * (publication.MAX_TEXT_BYTES + 1)
+        self.repo.write("existing.dat", data=content)
+        base = self.repo.commit("accepted oversized artifact", "existing.dat")
+        allowance = {"path": "existing.dat", "sha256": hashlib.sha256(content).hexdigest(),
+                     "reason": "Reviewed historical artifact", "approver": "fixture-owner"}
+        result = scan_repository(self.repo.path, base, base, large_file_allowances=[allowance])
+        self.assertEqual("PASS", result["status"], render_scan(result))
+        self.assertFalse(result["unscanned"])
+        evidence = [item for item in result["findings"] if item["source"] == "large-file-allowance"]
+        self.assertEqual(1, len(evidence))
+        self.assertEqual("PRE_EXISTING", evidence[0]["classification"])
+        self.assertIn(allowance["sha256"], evidence[0]["detector_id"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-publication-test-")
         self.repo = Repository(self.temp.name)
@@ -108,6 +136,87 @@ class PublicationScanTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def _assert_single_tree_read_per_commit(self, reader):
+        commits = [call.args[1] for call in reader.call_args_list]
+        self.assertTrue(commits)
+        self.assertEqual(len(commits), len(set(commits)), commits)
+
+    def test_tree_cache_reads_each_commit_once_and_refreshes_each_scan(self):
+        for revision in range(2):
+            for name in ("first.txt", "second.txt", "third.txt"):
+                self.repo.write(name, f"revision {revision}\n")
+            self.repo.commit("several changed paths", "first.txt", "second.txt", "third.txt")
+        expected = set(git(self.repo.path, "rev-list", "HEAD").splitlines())
+        for _ in range(2):
+            with mock.patch.object(publication, "_tree", wraps=publication._tree) as reader:
+                result = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+            self.assertEqual("PASS", result["status"])
+            self.assertEqual(expected, {call.args[1] for call in reader.call_args_list})
+            self._assert_single_tree_read_per_commit(reader)
+
+    def test_tree_cache_matches_uncached_complete_scan(self):
+        import inspect
+
+        class UncachedTrees(dict):
+            def __contains__(self, key):
+                return False
+
+            def __setitem__(self, key, value):
+                pass
+
+            def __getitem__(self, key):
+                return publication._tree(self_root, key)
+
+            def setdefault(self, key, value):
+                return value
+
+        self_root = self.repo.path
+        self.repo.write("finding.txt", private_locator() + "\n")
+        self.repo.write("binary.dat", data=b"\0unscanned\n")
+        self.repo.commit("mixed scan evidence", "finding.txt", "binary.dat")
+        namespace = dict(vars(publication), UncachedTrees=UncachedTrees)
+        source = inspect.getsource(scan_repository).replace("tree_cache = {}", "tree_cache = UncachedTrees()")
+        self.assertIn("tree_cache = UncachedTrees()", source)
+        exec(compile(source, "<uncached-publication-scan>", "exec"), namespace)
+        expected = namespace["scan_repository"](
+            self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        actual = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(actual["findings"])
+        self.assertTrue(actual["unscanned"])
+        self.assertEqual(expected, actual)
+
+    def test_tree_cache_parentless_side_root_keeps_findings(self):
+        with mock.patch.object(publication, "_tree", wraps=publication._tree) as reader:
+            self.test_parentless_side_root_is_scanned()
+        self._assert_single_tree_read_per_commit(reader)
+
+    def test_tree_cache_merge_parents_keep_findings(self):
+        with mock.patch.object(publication, "_tree", wraps=publication._tree) as reader:
+            self.test_merge_commit_resolution_is_scanned()
+        self._assert_single_tree_read_per_commit(reader)
+
+    def test_tree_cache_first_read_failure_propagates(self):
+        with mock.patch.object(publication, "_tree", side_effect=ValidationError("tree unavailable")) as reader:
+            with self.assertRaisesRegex(ValidationError, "tree unavailable"):
+                scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        self.assertEqual(1, reader.call_count)
+        self.assertEqual("PASS", scan_repository(
+            self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)["status"])
+
+    def test_tree_cache_does_not_suppress_later_blob_failure(self):
+        self.repo.write("seed.txt", "changed\n")
+        self.repo.commit("change seed", "seed.txt")
+        real_blob = publication._blob
+
+        def read_blob(root, oid, extra_env=None, **kwargs):
+            if not kwargs.get("classification"):
+                raise ValidationError("blob disappeared")
+            return real_blob(root, oid, extra_env, **kwargs)
+
+        with mock.patch.object(publication, "_blob", side_effect=read_blob):
+            with self.assertRaisesRegex(ValidationError, "blob disappeared"):
+                scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
 
     def test_builtin_detectors_do_not_flag_their_own_shipped_source(self):
         path = ROOT / ".agentic/lib/agentic/publication.py"
