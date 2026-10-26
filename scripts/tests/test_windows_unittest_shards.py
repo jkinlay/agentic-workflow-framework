@@ -69,9 +69,11 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(allocation, runner.allocate(inventory))
         for suite in ROOTS:
             paths = sorted(inventory[suite])
-            self.assertEqual([suite + '/test_B.py', suite + '/test_c.py'], allocation[suite][0])
-            self.assertEqual(paths[1::3], allocation[suite][1])
-            self.assertEqual(paths[2::3], allocation[suite][2])
+            self.assertEqual([suite + '/test_B.py'], allocation[suite][0])
+            self.assertEqual(paths[1::6], allocation[suite][1])
+            self.assertEqual(paths[2::6], allocation[suite][2])
+            for shard in (3, 4, 5):
+                self.assertEqual(paths[shard::6], allocation[suite][shard])
         runner.guard(self.root, allocation)
 
     def test_inventory_is_dynamic_and_uses_canonical_relative_paths(self):
@@ -108,7 +110,7 @@ class ShardTests(unittest.TestCase):
                 runner.guard(self.root, allocation)
 
     def test_guard_rejects_invalid_or_absent_shard_indices(self):
-        for invalid in (-1, 3, '0', True):
+        for invalid in (-1, 6, '0', True):
             allocation = self.allocation()
             allocation[ROOTS[0]] = {key: value for key, value in allocation[ROOTS[0]].items() if key != invalid}
             allocation[ROOTS[0]][invalid] = []
@@ -124,7 +126,7 @@ class ShardTests(unittest.TestCase):
         del allocation[ROOTS[0]]
         with self.assertRaisesRegex(ValueError, 'suite'):
             runner.guard(self.root, allocation)
-        allocation['other/tests'] = {0: [], 1: [], 2: []}
+        allocation['other/tests'] = {shard: [] for shard in range(6)}
         with self.assertRaisesRegex(ValueError, 'suite'):
             runner.guard(self.root, allocation)
 
@@ -159,7 +161,7 @@ class ShardTests(unittest.TestCase):
     def test_list_checks_all_shards_without_importing_or_spawning(self):
         for suite in ROOTS:
             self.write(suite, 'test_awf.py', 'raise RuntimeError("must not import")\n')
-        for shard in range(3):
+        for shard in range(6):
             with self.subTest(shard=shard), mock.patch.object(runner.subprocess, 'run') as child:
                 with mock.patch('sys.stdout', new_callable=io.StringIO) as output:
                     self.assertEqual(0, runner.main(['--root', str(self.root), '--shard', str(shard), '--list']))
@@ -169,11 +171,11 @@ class ShardTests(unittest.TestCase):
                 self.assertEqual(shard, record['shard'])
                 self.assertEqual(self.allocation(), runner.allocate(runner.inventory(self.root)))
 
-    def test_all_three_cli_shards_cover_each_module_once(self):
+    def test_all_six_cli_shards_cover_each_module_once(self):
         for suite in ROOTS:
             self.write(suite, 'test_second.py', PASSING)
         selected = []
-        for shard in range(3):
+        for shard in range(6):
             completed = self.invoke(shard, '--list')
             self.assertEqual(0, completed.returncode, completed.stderr)
             record, = self.events(completed, 'selected')
@@ -183,7 +185,7 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(len(selected), len(set(selected)))
 
     def test_invalid_cli_shard_fails(self):
-        for shard in (-1, 3):
+        for shard in (-1, 6):
             completed = self.invoke(shard, '--list')
             self.assertNotEqual(0, completed.returncode)
             self.assertIn('invalid choice', completed.stderr)
@@ -243,6 +245,8 @@ def load_tests(loader, tests, pattern):
     def test_other_selected_modules_continue_after_failure(self):
         self.write(ROOTS[0], 'test_a.py', PASSING.replace('assertTrue(True)', 'fail("first module failed")'))
         self.write(ROOTS[0], 'test_b.py', PASSING)
+        for name in ('test_c.py', 'test_d.py', 'test_e.py'):
+            self.write(ROOTS[0], name, PASSING)
         self.write(ROOTS[0], 'test_z.py', PASSING.replace('self.assertTrue(True)', 'print("later module ran")'))
         completed = self.invoke()
         self.assertNotEqual(0, completed.returncode)
@@ -324,6 +328,99 @@ def load_tests(loader, tests, pattern):
                 with mock.patch('sys.stdout', new_callable=io.StringIO), mock.patch('sys.stderr', new_callable=io.StringIO):
                     self.assertNotEqual(0, runner.main(['--root', str(self.root), '--shard', '0']))
                 self.assertEqual(4, child.call_count)
+
+    def test_allowlisted_empty_helper_is_selected_and_zero_count_is_recorded(self):
+        helper = self.write(ROOTS[0], 'test_awf36_automation_fixtures.py', 'VALUE = 1\n')
+        allocation = self.allocation()
+        shard = next(index for index, paths in allocation[ROOTS[0]].items() if helper in paths)
+        completed = self.invoke(shard)
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        record = next(r for r in self.events(completed, 'suite_result') if r['suite'] == ROOTS[0])
+        self.assertEqual([helper], record['discovered'])
+        self.assertEqual([helper], record['executed'])
+        self.assertEqual(0, record['tests_run'])
+        self.assertEqual({helper: 0}, record.get('zero_test_modules'))
+
+    def test_non_allowlisted_empty_module_still_raises(self):
+        for suite, name in ((ROOTS[0], 'test_awf.py'),
+                            (ROOTS[1], 'test_awf36_automation_fixtures.py'),
+                            (ROOTS[0], 'nested/test_awf36_automation_fixtures.py')):
+            with self.subTest(suite=suite, name=name):
+                path = self.write(suite, name, 'VALUE = 1\n')
+                loader = runner.SelectedLoader(self.root, [path])
+                with mock.patch.object(unittest.TestLoader, '_find_test_path',
+                                       return_value=(unittest.TestSuite(), False)):
+                    with self.assertRaisesRegex(ValueError, 'empty discovery for selected module'):
+                        loader._find_test_path(str(self.root / path), 'test*.py')
+
+    def test_helper_is_imported_before_consumer_suite_is_loaded(self):
+        helper = self.write(ROOTS[0], 'test_awf36_automation_fixtures.py',
+                            'import test_awf36_controller_automation as consumer\nconsumer.READY = True\n')
+        consumer = self.write(ROOTS[0], 'test_awf36_controller_automation.py',
+                              PASSING.replace('self.assertTrue(True)', 'self.assertTrue(READY)') +
+                              '\nREADY = False\ndef load_tests(loader, tests, pattern):\n'
+                              '    if not READY:\n        raise AssertionError("helper was not imported first")\n'
+                              '    return tests\n')
+        allocation = self.allocation()
+        shard = next(index for index, paths in allocation[ROOTS[0]].items() if consumer in paths)
+        self.assertNotIn(helper, allocation[ROOTS[0]][shard])
+        completed = self.invoke(shard)
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        record = next(r for r in self.events(completed, 'suite_result') if r['suite'] == ROOTS[0])
+        self.assertEqual([consumer], record['executed'])
+        self.assertEqual(1, record['tests_run'])
+        self.assertEqual({}, record.get('zero_test_modules'))
+
+    def test_consumer_without_helper_uses_normal_discovery(self):
+        consumer = self.write(ROOTS[0], 'test_awf36_controller_automation.py', PASSING)
+        allocation = self.allocation()
+        shard = next(index for index, paths in allocation[ROOTS[0]].items() if consumer in paths)
+        completed = self.invoke(shard)
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        record = next(r for r in self.events(completed, 'suite_result') if r['suite'] == ROOTS[0])
+        self.assertEqual([consumer], record['executed'])
+        self.assertEqual(1, record['tests_run'])
+
+    def test_allowlisted_helper_with_hollow_nonempty_suite_still_fails(self):
+        helper = self.write(ROOTS[0], 'test_awf36_automation_fixtures.py', PASSING + '''
+class HollowSuite(unittest.TestSuite):
+    def run(self, result, debug=False):
+        return result
+def load_tests(loader, tests, pattern):
+    return HollowSuite([Example('test_example')])
+''')
+        allocation = self.allocation()
+        shard = next(index for index, paths in allocation[ROOTS[0]].items() if helper in paths)
+        completed = self.invoke(shard)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn('empty execution', completed.stderr)
+
+    def test_installed_self_test_is_excluded_and_accounted_for_by_guard(self):
+        excluded = self.write(ROOTS[1], 'test_installed_self_test.py', 'raise AssertionError("must not import")\n')
+        self.assertIn(excluded, runner.inventory(self.root)[ROOTS[1]])
+        allocation = self.allocation()
+        selected = [path for paths in allocation[ROOTS[1]].values() for path in paths]
+        self.assertNotIn(excluded, selected)
+        runner.guard(self.root, allocation)
+        allocation[ROOTS[1]][0].append(excluded)
+        with self.assertRaisesRegex(ValueError, 'unknown'):
+            runner.guard(self.root, allocation)
+
+    def test_six_shards_cover_inventory_minus_recorded_exclusion_exactly_once(self):
+        excluded = self.write(ROOTS[1], 'test_installed_self_test.py', 'raise AssertionError("must not import")\n')
+        for suite in ROOTS:
+            for index in range(13):
+                self.write(suite, f'test_extra_{index:02}.py', PASSING)
+        selected = []
+        for shard in range(6):
+            completed = self.invoke(shard, '--list')
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            record, = self.events(completed, 'selected')
+            self.assertEqual([excluded], record.get('excluded'))
+            selected.extend(path for paths in record['modules'].values() for path in paths)
+        expected = [path for paths in runner.inventory(self.root).values() for path in paths if path != excluded]
+        self.assertCountEqual(expected, selected)
+        self.assertEqual(len(selected), len(set(selected)))
 
 
 if __name__ == '__main__':
