@@ -440,7 +440,7 @@
     ".agentic/tests/test_safeio_channels.py": "fed7d7c9222ca803570e39697e6bbd83399720cfc06f02b97139a6857b2e17bb",
     ".agentic/tests/test_safeio_cli_channels.py": "0672aa09a82bb1627ed25a2859f7bff77349acf7af595a9ab37a2f15b4e76dac",
     ".agentic/tests/test_safeio_cli_inputs.py": "fe5b452b8ab636080581b798abc84320b8c3b3650d5d8bab88f50639044b7986",
-    ".agentic/tests/test_safeio_process.py": "cb3bcfbdb035bb3efa06c3edac36f57ea2fc1de2f58c90d9678a0652e427b4ca",
+    ".agentic/tests/test_safeio_process.py": "f4550d2231fc1d28636405eddfb955aa1e127f0870d5a3345371df8c78557048",
     ".agentic/tests/test_safeio_unlink.py": "86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f",
     ".agentic/tests/test_safeio_windows_errors.py": "e497029ec9a4a339995425a988c5a9b81ebeea2d5b24209f9c5845af02a0690c",
     ".agentic/tests/test_source_only.py": "ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3",
