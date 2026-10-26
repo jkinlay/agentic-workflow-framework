@@ -44,13 +44,13 @@ SOURCE_HEAD = SOURCE_GIT_TUPLE[0] if SOURCE_GIT_TUPLE else "0" * 40
 SOURCE_TREE = SOURCE_GIT_TUPLE[1] if SOURCE_GIT_TUPLE else "0" * 40
 CANDIDATE = {"repository_id": 101, "base_sha": "a" * 40,
              "head_sha": SOURCE_HEAD, "tree_sha": SOURCE_TREE}
-ORIGINAL_TEMP_ROOT = tempfile.gettempdir()
+ORIGINAL_TEMP_ROOT = tempfile.tempdir
 
 
 def setUpModule():
     if SOURCE_GIT_TUPLE is None:
         raise unittest.SkipTest(COMMITTED_GIT_REASON)
-    tempfile.tempdir = os.path.realpath(ORIGINAL_TEMP_ROOT)
+    tempfile.tempdir = os.path.realpath(tempfile.gettempdir())
 
 
 def tearDownModule():

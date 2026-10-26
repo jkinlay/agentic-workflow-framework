@@ -1935,7 +1935,10 @@ class PublicationRewriteTests(unittest.TestCase):
                 publication._restore_rewrite_reflogs(
                     self.repo.path, snapshot, "refs/heads/awf/EX-6-publication")
             self.assertEqual(b"external junction bytes\n", marker.read_bytes())
-            self.assertTrue(logs.is_junction())
+            details = os.lstat(logs)
+            self.assertTrue(
+                details.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                and details.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
         finally:
             logs.rmdir()
             held.rename(logs)
