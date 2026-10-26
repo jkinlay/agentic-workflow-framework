@@ -21,6 +21,104 @@ def fractions(): return {'eta':{'confidence':{'quantiles':[0.5,0.8]}}}
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_identity_unknown_schema_is_closed_and_cannot_claim_success(self):
+        from test_status_report import admitted_fixture, identity_unknown_report, snapshot
+        config, request = admitted_fixture(); request['github_identity'] = None
+        report = identity_unknown_report(config, request)
+        contracts = Contracts(ROOT / '.agentic/schemas')
+        error = None
+        try:
+            contracts.validate('status-report', report)
+        except ValidationError as exc:
+            error = str(exc)
+        self.assertIsNone(error, error)
+        for field in ['status', 'reason', 'outstanding', 'priority', 'lanes', 'merge_train',
+                      'eta', 'routing', 'release_binding', 'inputs_sha256']:
+            bad = copy.deepcopy(report); del bad[field]
+            with self.subTest(missing=field), self.assertRaises(ValidationError):
+                contracts.validate('status-report', bad)
+        for status in ['ACTIVE', 'PASS', 'KNOWN', 'RECORDED', 'COMPLETE', None]:
+            with self.subTest(status=status), self.assertRaises(ValidationError):
+                contracts.validate('status-report', {**report, 'status': status})
+        known = api().build_report(snapshot())
+        for field in ['outstanding', 'priority', 'lanes', 'merge_train', 'eta', 'routing']:
+            bad = copy.deepcopy(report)
+            bad[field] = known[field] if field != 'routing' else dict(status='KNOWN', binding=None,
+                declarations=[], proposals=[], observations=[])
+            with self.subTest(known=field), self.assertRaises(ValidationError):
+                contracts.validate('status-report', bad)
+            bad = copy.deepcopy(report); bad[field]['authority'] = True
+            with self.subTest(extra_metric=field), self.assertRaises(ValidationError):
+                contracts.validate('status-report', bad)
+        for field, value in [('lane_observations', {'rejected_override': None}),
+                             ('execution_authority', True), ('complete', True), ('reason', '')]:
+            with self.subTest(extra=field), self.assertRaises(ValidationError):
+                contracts.validate('status-report', {**report, field: value})
+        contracts.validate('status-report', known)
+
+    def test_identity_unknown_cli_preserves_exit_matrix_and_reports_reason(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest.mock import patch
+        from agentic.cli import main
+        from agentic.providers import github_status
+        from agentic.store import Store
+        from test_status_report import admitted_fixture, identity_unknown_report
+        config, request = admitted_fixture(); request['github_identity'] = None
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory); project = folder / 'project'
+            (project / '.agentic').mkdir(parents=True)
+            (project / '.agentic/PROJECT_CONFIG.yaml').write_bytes(canonical(config))
+            source = folder / 'input.json'; source.write_bytes(canonical(request))
+            state_path = folder / 'state.db'; state = Store(state_path, config['project']['id'])
+            for status, ordinary, required in [('ACTIVE', 0, 0), ('CONFIGURED', 0, 4), (None, 2, 4)]:
+                legacy = dict(line='AWF status ' + str(status), project_state=status, next_action=None)
+                for require, code in [(False, ordinary), (True, required)]:
+                    for as_json in [False, True]:
+                        for mode in ['identity', 'no_report', 'missing_input', 'missing_store', 'absent_store']:
+                            args = ['--root', str(project), 'status']
+                            if require: args.append('--require-active')
+                            if as_json: args.append('--json')
+                            if mode != 'no_report': args.append('--report')
+                            if mode not in {'no_report', 'missing_input'}: args += ['--report-input', str(source)]
+                            if mode not in {'no_report', 'missing_store'}:
+                                args += ['--report-store', str(folder / 'absent.db' if mode == 'absent_store' else state_path)]
+                            out, err = io.StringIO(), io.StringIO()
+                            with self.subTest(status=status, require=require, json=as_json, mode=mode), \
+                                    patch.object(github_status, 'project_status', return_value=legacy), \
+                                    redirect_stdout(out), redirect_stderr(err):
+                                self.assertEqual(main(args), code)
+                                if mode == 'identity':
+                                    if as_json:
+                                        result = json.loads(out.getvalue())['status_report']
+                                        self.assertEqual(result['status'], 'UNKNOWN')
+                                        self.assertEqual(result['reason'], 'IDENTITY_UNOBSERVED')
+                                        self.assertEqual(result['report'], identity_unknown_report(config, request))
+                                        self.assertEqual(result['sequence'], 1)
+                                    else:
+                                        self.assertIn('Status report: UNKNOWN\n', out.getvalue())
+                                        rendered = out.getvalue().split('Status report: UNKNOWN\n', 1)[1]
+                                        self.assertEqual({line.split(': ', 1)[0]: json.loads(line.split(': ', 1)[1])
+                                            for line in rendered.splitlines()}, identity_unknown_report(config, request))
+                                    self.assertIn('STATUS_REPORT_UNKNOWN', err.getvalue())
+                                    self.assertIn('IDENTITY_UNOBSERVED', err.getvalue())
+                                elif mode == 'no_report':
+                                    self.assertEqual(err.getvalue(), '')
+                                    self.assertEqual(json.loads(out.getvalue()), legacy) if as_json else \
+                                        self.assertEqual(out.getvalue(), github_status.render_status(legacy) + '\n')
+                                elif mode == 'absent_store':
+                                    self.assertIn('STATUS_REPORT_FAILED', err.getvalue())
+                                    if as_json: self.assertEqual(json.loads(out.getvalue())['status_report']['status'], 'FAILED')
+                                    self.assertFalse((folder / 'absent.db').exists())
+                                else:
+                                    self.assertIn('STATUS_REPORT_NOT_RUN', err.getvalue())
+                                    self.assertIn('REPORT_ARGUMENTS_REQUIRED', err.getvalue())
+                                    if as_json: self.assertEqual(json.loads(out.getvalue())['status_report']['status'], 'NOT_RUN')
+                                if mode != 'no_report':
+                                    self.assertEqual(len(err.getvalue().splitlines()), 1)
+                                    self.assertLessEqual(len(err.getvalue().rstrip('\n').encode('utf-8')), 4096)
+            self.assertEqual(state.verify_chain()['sequence'], 1)
+
     def test_only_output_fraction_pointers_and_integer_only_inputs(self):
         value=fractions()
         self.assertEqual(api().loads_report(api().canonical_report(value)),value)
@@ -150,7 +248,7 @@ class BoundaryTests(unittest.TestCase):
         from agentic.cli import main
         from agentic.providers import github_status
         from agentic import status_report_store
-        from test_status_report import admitted_fixture, snapshot
+        from test_status_report import admitted_fixture, identity_unknown_report, snapshot
 
         config, request = admitted_fixture()
         request['github_identity'] = None
@@ -189,7 +287,10 @@ class BoundaryTests(unittest.TestCase):
                                     result = dict(status='NOT_RUN', reason=
                                         'REPORT_ARGUMENTS_REQUIRED: supply --report-input and --report-store')
                                 elif case == 'identity':
-                                    result = dict(status='NOT_RUN', reason='IDENTITY_UNOBSERVED')
+                                    result = dict(status='UNKNOWN', reason='IDENTITY_UNOBSERVED',
+                                        record_id=request['record_id'], sequence=1, created_at=request['created_at'],
+                                        trigger='on-demand', source_mode='SUPPLIED_RECORDS_ONLY',
+                                        report=identity_unknown_report(config, request))
                                     side_effect = run_report
                                 elif case in {'exception', 'oversized_exception'}:
                                     message = oversized if case == 'oversized_exception' else failure
@@ -205,6 +306,7 @@ class BoundaryTests(unittest.TestCase):
                                             return_value=result, side_effect=side_effect) as run, \
                                         patch.object(status_report_store, 'ReportStore') as reports, \
                                         redirect_stdout(stdout), redirect_stderr(stderr):
+                                    reports.return_value.append.return_value = 1
                                     self.assertEqual(main(args), code)
                                 expected = status if result is None else {**status, 'status_report': result}
                                 if as_json:
@@ -220,11 +322,17 @@ class BoundaryTests(unittest.TestCase):
                                     run.assert_not_called()
                                 else:
                                     run.assert_called_once_with(project, source, store)
-                                reports.assert_not_called()
+                                if case == 'identity':
+                                    reports.assert_called_once_with(store, config['project']['id'], worktree_roots=[project])
+                                    reports.return_value.append.assert_called_once()
+                                    retained = reports.return_value.append.call_args.args[0]
+                                    self.assertEqual(status_report_store.replay_report(retained), result['report'])
+                                else:
+                                    reports.assert_not_called()
                                 self.assertFalse(store.exists())
-                                if result is not None and result['status'] in {'NOT_RUN', 'FAILED'}:
+                                if result is not None and result['status'] in {'NOT_RUN', 'FAILED', 'UNKNOWN'}:
                                     diagnostic = (result['reason'] if result['status'] == 'FAILED'
-                                        else render_bounded_diagnostic(result['reason'], code='STATUS_REPORT_NOT_RUN'))
+                                        else render_bounded_diagnostic(result['reason'], code='STATUS_REPORT_' + result['status']))
                                     self.assertEqual(stderr.getvalue(), diagnostic + '\n')
                                     self.assertEqual(len(stderr.getvalue().splitlines()), 1)
                                     self.assertLessEqual(len(stderr.getvalue().rstrip('\n').encode('utf-8')), 4096)

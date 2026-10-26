@@ -33,11 +33,16 @@ class OptInStatusCompatibilityTests(unittest.TestCase):
     def test_opt_in_preserves_active_nonactive_null_state_legacy_exit_matrix(self):
         from agentic.cli import main
         from contextlib import redirect_stderr
+        from test_status_report import admitted_fixture, identity_unknown_report
+        config, request = admitted_fixture(); request['github_identity'] = None
+        unknown = dict(status='UNKNOWN', reason='IDENTITY_UNOBSERVED', record_id=request['record_id'],
+            sequence=1, created_at=request['created_at'], trigger='on-demand',
+            source_mode='SUPPLIED_RECORDS_ONLY', report=identity_unknown_report(config, request))
         for state, ordinary, required in [('ACTIVE',0,0),('CONFIGURED',0,4),(None,2,4)]:
             legacy = dict(line='AWF status '+str(state), project_state=state, next_action=None)
             for require, expected in [(False,ordinary),(True,required)]:
                 for report_result in [dict(status='RECORDED', report={'inputs_sha256':'a'*64}),
-                                      dict(status='NOT_RUN', reason='IDENTITY_UNOBSERVED')]:
+                                      unknown]:
                     args = ['--root',str(ROOT),'status','--json','--report',
                             '--report-input','fixture-input.json','--report-store','fixture-state.db']
                     if require: args.append('--require-active')

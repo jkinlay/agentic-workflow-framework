@@ -326,6 +326,19 @@ def admitted_fixture():
     return config, request
 
 
+def identity_unknown_report(config, request, reason='IDENTITY_UNOBSERVED', operating=None):
+    """Independent expected restricted values, with the original input digest."""
+    release = dict(project_id=config['project']['id'],
+        workflow_version=config['template']['expected_workflow_version'],
+        jira_enabled=config['jira'].get('enabled', True),
+        scope_selector=copy.deepcopy(config['jira']['scope']) if config['jira'].get('enabled', True) else None)
+    return dict(status='UNKNOWN', reason=reason,
+        inputs_sha256=api().inputs_sha256(dict(request=request, configuration=config, operating=operating)),
+        release_binding=dict(status='KNOWN', inputs=release, sha256=api().inputs_sha256(release)),
+        **{name: dict(status='UNKNOWN', reason=reason)
+           for name in ('outstanding', 'priority', 'lanes', 'merge_train', 'eta', 'routing')})
+
+
 class OptInReportTests(unittest.TestCase):
     def module(self):
         return importlib.import_module('agentic.status_report_store')
@@ -343,9 +356,189 @@ class OptInReportTests(unittest.TestCase):
             if change == 'disabled': cfg['jira']['enabled'] = False
             with self.subTest(change=change):
                 result = self.module().prepare_report(cfg, data)
-                self.assertEqual(result['status'], 'NOT_RUN')
-                self.assertIn(reason, result['reason'])
-                self.assertNotIn('record', result)
+                self.assertEqual(result['status'], 'PREPARED')
+                self.assertIn(reason, result['report']['reason'])
+                self.assertEqual(result['report'], identity_unknown_report(cfg, data,
+                    self.module()._identity(cfg, data)))
+                self.assertEqual(self.module().replay_report(result['record']), result['report'])
+
+    def test_identity_failure_prepares_reasoned_unknown_report(self):
+        from agentic.operating import default_operating, validate_operating
+        cases = ['disabled', 'missing_github', 'missing_jira', 'omitted_github',
+                 'binding', 'github_actor', 'jira_actor', 'github_access', 'jira_access']
+        for case in cases:
+            config, request = admitted_fixture()
+            if case == 'disabled': config['jira']['enabled'] = False
+            if case == 'missing_github': request['github_identity'] = None
+            if case == 'missing_jira': request['jira_connections'] = None
+            if case == 'omitted_github': del request['github_identity']
+            if case == 'binding': request['binding']['release_sha256'] = 'f' * 64
+            if case == 'github_actor': request['github_identity']['actor_id'] += 1
+            if case == 'jira_actor': request['jira_connections'][0]['account_id'] = 'foreign'
+            if case == 'github_access': request['github_identity']['readable'] = False
+            if case == 'jira_access': request['jira_connections'][0]['projects'][0]['browse'] = False
+            operating = validate_operating(default_operating(), config)
+            original = copy.deepcopy((config, request, operating.config))
+            reason = self.module()._identity(config, request)
+            with self.subTest(case=case):
+                prepared = self.module().prepare_report(config, request, operating=operating)
+                self.assertEqual(prepared['status'], 'PREPARED')
+                self.assertEqual(prepared['report'], identity_unknown_report(config, request, reason, operating.config))
+                record = prepared['record']
+                self.assertEqual(record['inputs'], dict(configuration=config, request=request, operating=operating.config))
+                self.assertEqual(record['inputs_sha256'], prepared['report']['inputs_sha256'])
+                self.assertEqual(record['values_json'], api().render_json(prepared['report']))
+                self.assertEqual((record['project_id'], record['source_mode'], record['trigger']),
+                    (config['project']['id'], 'SUPPLIED_RECORDS_ONLY', 'on-demand'))
+                self.assertEqual(self.module().replay_report(record), prepared['report'])
+                self.assertEqual((config, request, operating.config), original)
+                request['binding']['project_id'] = 'changed-after-preparation'
+                config['project']['id'] = 'changed-after-preparation'
+                operating.config['streams']['count'] = 1
+                self.assertEqual(record['inputs'], dict(configuration=original[0], request=original[1], operating=original[2]))
+
+    def test_identity_failure_run_report_appends_unknown_once_and_replays(self):
+        import tempfile
+        from agentic.canonical import canonical
+        from agentic.contracts import Contracts
+        from agentic.store import Store
+        config, request = admitted_fixture()
+        request['github_identity'] = None
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory); project = folder / 'project'
+            (project / '.agentic').mkdir(parents=True)
+            (project / '.agentic/PROJECT_CONFIG.yaml').write_bytes(canonical(config))
+            source = folder / 'input.json'; source.write_bytes(canonical(request))
+            state_path = folder / 'state.db'; state = Store(state_path, config['project']['id'])
+            calls = []
+            validate, append = Contracts.validate, self.module().ReportStore.append
+            def checked(contracts, name, value):
+                result = validate(contracts, name, value)
+                calls.append(name)
+                return result
+            def appended(store, record):
+                self.assertEqual(calls, ['status-report-input', 'status-report'])
+                calls.append('append')
+                return append(store, record)
+            with patch.object(Contracts, 'validate', new=checked), \
+                    patch.object(self.module().ReportStore, 'append', new=appended):
+                result = self.module().run_report(project, source, state_path)
+            self.assertEqual(result['status'], 'UNKNOWN')
+            self.assertEqual(result, dict(status='UNKNOWN', reason='IDENTITY_UNOBSERVED',
+                record_id=request['record_id'], sequence=1, created_at=request['created_at'],
+                trigger='on-demand', source_mode='SUPPLIED_RECORDS_ONLY',
+                report=identity_unknown_report(config, request)))
+            self.assertEqual(calls, ['status-report-input', 'status-report', 'append'])
+            self.assertEqual(self.module().run_report(project, source, state_path), result)
+            self.assertEqual(state.verify_chain()['sequence'], 1)
+            with state.connection() as db:
+                events = db.execute('SELECT event_type,external_id,payload FROM events').fetchall()
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]['event_type'], 'status_report')
+                self.assertEqual(events[0]['external_id'], 'status-report:' + request['record_id'])
+                retained = json.loads(events[0]['payload'])
+                self.assertEqual(self.module().replay_report(retained), result['report'])
+                for sql in ['UPDATE events SET payload=payload', 'DELETE FROM events']:
+                    import sqlite3
+                    with self.assertRaises(sqlite3.IntegrityError): db.execute(sql)
+                for table in ['tickets', 'operations', 'reservations']:
+                    self.assertEqual(db.execute('SELECT count(*) FROM ' + table).fetchone()[0], 0)
+            changed = copy.deepcopy(retained); changed['trigger'] = 'activation'
+            with self.assertRaises(ValidationError):
+                self.module().ReportStore(state_path, config['project']['id']).append(changed)
+            self.assertEqual(state.verify_chain()['sequence'], 1)
+
+    def test_identity_unknown_replay_rejects_promoted_or_forged_values(self):
+        config, request = admitted_fixture(); request['github_identity'] = None
+        prepared = self.module().prepare_report(config, request)
+        self.assertEqual(prepared['status'], 'PREPARED')
+        record = prepared['record']
+        for change in ['reason', 'marker', 'extra_projection', 'known_metric', 'release',
+                       'ACTIVE', 'PASS', 'canonical', 'digest', 'metadata', 'admitted']:
+            bad = copy.deepcopy(record); values = json.loads(bad['values_json'])
+            if change == 'reason': values['reason'] = 'forged'
+            if change == 'marker': bad['projection']['identity_failure'] = 'forged'
+            if change == 'extra_projection': bad['projection']['inventory'] = snapshot()['inventory']
+            if change == 'known_metric': values['outstanding'] = api().build_report(snapshot())['outstanding']
+            if change == 'release':
+                bad['projection']['release_binding']['workflow_version'] = 'forged'
+                values['release_binding']['inputs']['workflow_version'] = 'forged'
+                values['release_binding']['sha256'] = api().inputs_sha256(values['release_binding']['inputs'])
+            if change in {'ACTIVE', 'PASS'}: values['status'] = change
+            if change == 'digest': bad['inputs_sha256'] = 'f' * 64
+            if change == 'metadata': bad['project_id'] = 'foreign'
+            if change == 'admitted': bad['projection'].pop('identity_failure')
+            bad['values_json'] = api().render_json(values) + (' ' if change == 'canonical' else '')
+            with self.subTest(change=change), self.assertRaises(ValidationError):
+                self.module().replay_report(bad)
+        # An identity-admitted snapshot cannot be replayed with a failure marker.
+        good_config, good_request = admitted_fixture()
+        admitted = self.module().prepare_report(good_config, good_request)['record']
+        admitted['projection']['identity_failure'] = 'IDENTITY_UNOBSERVED'
+        with self.assertRaises(ValidationError): self.module().replay_report(admitted)
+
+    def test_identity_unknown_preserves_store_and_request_rejections(self):
+        import tempfile
+        from agentic.canonical import canonical
+        from agentic.store import Store
+        config, request = admitted_fixture(); request['github_identity'] = None
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory); project = folder / 'project'
+            (project / '.agentic').mkdir(parents=True)
+            config_path = project / '.agentic/PROJECT_CONFIG.yaml'
+            config_path.write_bytes(canonical(config))
+            source = folder / 'input.json'; source.write_bytes(canonical(request))
+            state_path = folder / 'state.db'
+            with self.assertRaisesRegex(ValidationError, 'Existing report store required'):
+                self.module().run_report(project, source, state_path)
+            self.assertFalse(state_path.exists())
+            state = Store(state_path, '3061ccda-dafd-4fab-ab01-fbfcfb2688d4')
+            with self.assertRaisesRegex(ValidationError, 'another project'):
+                self.module().run_report(project, source, state_path)
+            self.assertEqual(state.verify_chain()['sequence'], 0)
+            own_path = folder / 'own.db'; own = Store(own_path, config['project']['id'])
+            self.assertEqual(self.module().run_report(project, source, own_path)['status'], 'UNKNOWN')
+            changed = copy.deepcopy(request); changed['created_at'] = '2026-10-25T10:00:00Z'
+            source.write_bytes(canonical(changed))
+            with self.assertRaisesRegex(ValidationError, 'External-event id reused with different content'):
+                self.module().run_report(project, source, own_path)
+            for field, value in [('record_id', 'invalid'), ('created_at', 'invalid'),
+                                 ('binding', {}), ('identity_failure', 'injected')]:
+                bad = copy.deepcopy(request); bad[field] = value
+                source.write_bytes(canonical(bad))
+                with self.subTest(field=field), self.assertRaises(ValidationError):
+                    self.module().run_report(project, source, own_path)
+            for field, value in [('record_id', 'invalid'), ('created_at', 'invalid')]:
+                bad = copy.deepcopy(request); bad[field] = value
+                with self.subTest(library=field), self.assertRaises((ValidationError, ValueError)):
+                    self.module().prepare_report(config, bad)
+            with self.assertRaises(ValidationError): self.module().prepare_report(config, request, trigger='invalid')
+            bad_config = copy.deepcopy(config); bad_config['template']['expected_workflow_version'] = ''
+            with self.assertRaises(ValidationError): self.module().prepare_report(bad_config, request)
+            self.assertEqual(own.verify_chain()['sequence'], 1)
+
+    def test_identity_unknown_skips_source_verifiers_and_operational_actions(self):
+        from contextlib import ExitStack
+        from unittest.mock import Mock
+        config, request, operating, _ = override_report_fixture('fixed', 1)
+        request.update(github_identity=None, merge_train=snapshot()['merge_train'], planning_graph={})
+        verifier = Mock(side_effect=AssertionError('unbound evidence verifier'))
+        targets = ['_inventory', '_assignments', '_lanes', '_eta', '_routing', '_verified',
+                   'verify_assignment_record', 'verify_plan_record', 'validate_ticket_plan', 'verify_override_state']
+        with ExitStack() as stack:
+            guards = [stack.enter_context(patch.object(self.module(), name,
+                side_effect=AssertionError('unbound builder ' + name))) for name in targets]
+            guards.extend(stack.enter_context(patch(path, side_effect=AssertionError('operational action')))
+                for path in ['agentic.planning.recompute_plan', 'agentic.planning.plan_lanes',
+                             'agentic.model_routing.select_route', 'agentic.store.Store.reserve_budget'])
+            prepared = self.module().prepare_report(config, request, operating=operating,
+                verify_inventory=verifier, verify_owner_source=verifier, verify_merge_train=verifier)
+            self.assertEqual(prepared['status'], 'PREPARED')
+            self.assertEqual(prepared['report'], identity_unknown_report(config, request, operating=operating.config))
+            self.assertNotIn('lane_observations', prepared['report'])
+            self.assertEqual(self.module().replay_report(prepared['record']), prepared['report'])
+            for guard in guards: guard.assert_not_called()
+            verifier.assert_not_called()
 
     def test_admitted_unknowns_preserve_original_snapshot_and_replay(self):
         config, request = admitted_fixture()
@@ -549,7 +742,7 @@ class OptInReportTests(unittest.TestCase):
         request['plan']['inputs']['capacity']['safe_lane_count'] = 999
         self.assertEqual(self.module().prepare_report(config, request, operating=operating)['report']['lanes']['status'], 'UNKNOWN')
 
-    def test_run_report_validates_and_appends_only_after_identity_admission(self):
+    def test_run_report_validates_and_appends_admitted_or_unknown_with_collision_refusal(self):
         import tempfile
         from agentic.store import Store
         from agentic.canonical import canonical
@@ -565,8 +758,15 @@ class OptInReportTests(unittest.TestCase):
             self.assertEqual(state.verify_chain()['sequence'], 1)
             request['github_identity']['repository_id'] += 1
             source.write_bytes(canonical(request))
-            self.assertEqual(self.module().run_report(project, source, state_path)['status'], 'NOT_RUN')
+            with self.assertRaisesRegex(ValidationError, 'External-event id reused with different content'):
+                self.module().run_report(project, source, state_path)
             self.assertEqual(state.verify_chain()['sequence'], 1)
+            request['record_id'] = '3061ccda-dafd-4fab-ab01-fbfcfb2688d4'
+            source.write_bytes(canonical(request))
+            result = self.module().run_report(project, source, state_path)
+            self.assertEqual(result['status'], 'UNKNOWN')
+            self.assertIn('IDENTITY_MISMATCH', result['reason'])
+            self.assertEqual(state.verify_chain()['sequence'], 2)
 
 
 def override_report_fixture(mode, value):

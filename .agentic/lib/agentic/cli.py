@@ -398,6 +398,9 @@ def main(argv=None, default_root=None):
                 if report_result["status"] == "NOT_RUN":
                     print(render_bounded_diagnostic(report_result["reason"],
                           code="STATUS_REPORT_NOT_RUN"), file=sys.stderr)
+                elif report_result["status"] == "UNKNOWN":
+                    print(render_bounded_diagnostic(report_result["reason"],
+                          code="STATUS_REPORT_UNKNOWN"), file=sys.stderr)
                 elif report_result["status"] == "FAILED":
                     print(report_result["reason"], file=sys.stderr)
                 output = {**output, "status_report": report_result}
