@@ -1775,6 +1775,31 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 		prose = ' '.join(section.split())
 		self.assertIn('Provider reads never occur inside a controller write transaction.', prose)
 
+	def test_doc_forget_source_refuses_pending_identities(self):
+		prose = ' '.join(self.doc.split())
+		self.assertIn('pending identities cannot be forgotten.', prose)
+
+	def test_doc_replan_comment_binds_complete_nonterminal_dispatch_set(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('binding repository, round, inventories and the complete non-terminal dispatch set.', prose)
+
+	def test_doc_overlap_allowance_waiver_binding_and_restart_requirements(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('For an overlap allowance,', prose)
+		self.assertIn('Its digest binds the dispatch, ticket, stream, exact tuple, allowance, shared path, observation and persistence time.', prose)
+		self.assertIn('Restart must carry the same digest and never relaunch.', prose)
+
+	def test_doc_fragment_warns_about_ellipses_and_separate_guide(self):
+		prose = ' '.join(self.doc.split())
+		self.assertIn('**Non-executable fragment:** ellipses omit steps and variables;', prose)
+		self.assertIn('separate reference: [provider-identity guide]', prose)
+
+	def test_doc_merge_observed_uses_supplied_project_configuration(self):
+		section = self._required_operations_section()
+		self.assertIn('the supplied project configuration (--project-config)', section)
+
 	def test_doc_refill_requires_separate_fresh_bound_trigger_and_durable_seal(self):
 		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n\n', 2)[1]
 		prose = ' '.join(section.split())

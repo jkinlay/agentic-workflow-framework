@@ -42,7 +42,8 @@ Recovery needs existing protected primary state, bounds parsing input to 16 MiB,
 trims only `seen`, reports bytes/counts. Pending work, overrides, observation,
 candidate metadata, other rows/history remain. Unshrinkable state refuses;
 reduce event windows. After provider-owner confirmation, `--forget-source SOURCE_ID`
-reconsiders changed bytes for retained non-pending identities. Never delete
+reconsiders changed bytes for retained identities; pending identities cannot
+be forgotten. Never delete
 planning key. Restart only after successful repair.
 
 ## Dispatch state and round boundaries
@@ -66,13 +67,14 @@ or recreating seals from replay.
 `--replan-request REQUEST.json` contains only a positive GitHub `comment_id`.
 Adapter fetches the immutable comment with provider Date/ETag. Require a fresh,
 unedited configured trusted-owner comment: exactly `AWF-ROUND-REPLAN 1`, newline,
-then canonical JSON binding repository, round, inventories and non-terminal
-dispatch set. Caller-authored trigger/round identities are refused.
+then canonical JSON binding repository, round, inventories and the complete
+non-terminal dispatch set. Caller-authored trigger/round identities are refused.
 
-Provider reads never occur inside a controller write transaction. Validate `LANE_START`
-first, then persist a dispatch-bound waiver before `begun_at` and the adapter call.
-Bind dispatch, ticket, stream, tuple, allowance, path, observation and persistence
-time; restart carries the same digest without relaunch.
+Provider reads never occur inside a controller write transaction. For an overlap
+allowance, validate `LANE_START` first; persist a dispatch-bound waiver before
+`begun_at` and the adapter call. Its digest binds the dispatch, ticket, stream,
+exact tuple, allowance, shared path, observation and persistence time. Restart
+must carry the same digest and never relaunch.
 
 Authenticated parked/worktree-diff sources independently reserve paths. Every cycle
 observes complete provider-bound paused inventory and Git diff at pinned head/tree;
@@ -102,7 +104,7 @@ reconcile after merge. Final submission requires the
 
 ## Reference adapter (AWF-32)
 
-**Non-executable fragment:** follow
+**Non-executable fragment:** ellipses omit steps and variables; separate reference:
 [provider-identity guide](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md).
 
 ```powershell
@@ -111,33 +113,17 @@ $HEAD=...
 $TREE=...
 $ADAPTER_PIN=...
 $CONTROLLER_ACTOR=...
-$TRANSITION_ID=...
-$AWF_CODEX_HOME=...
+$TRANSITION_ID=...;$AWF_CODEX_HOME=...
 git -C $SOURCE_ROOT worktree add --detach $WORKTREE_ROOT $HEAD
-Copy-Item (Join-Path $WORKTREE_ROOT ".agentic/examples/reference-controller-adapter.json") $ADAPTER_CONFIG
+Copy-Item (Join-Path $WORKTREE_ROOT
 $adapter=Get-Content $ADAPTER_CONFIG
-$adapter.codex.executable.path=$CODEX_EXE
-$adapter.codex.isolated_home=$AWF_CODEX_HOME
-$adapter.codex.windows_sandbox='elevated'
-$adapter.codex.worktree_root=$WORKTREE_ROOT
-$adapter.github.repository=[string]$repo.full_name
-$adapter.github.executable.sha256=...
-$adapter.jira.cloud_id=$JIRA_CLOUD
-$adapter.jira.controller_actor_id=$CONTROLLER_ACTOR
+$adapter.codex.executable.path=$CODEX_EXE;$adapter.codex.isolated_home=$AWF_CODEX_HOME;$adapter.codex.windows_sandbox='elevated';$adapter.codex.worktree_root=$WORKTREE_ROOT;$adapter.github.repository=[string]$repo.full_name;$adapter.github.executable.sha256=...;$adapter.jira.cloud_id=$JIRA_CLOUD;$adapter.jira.controller_actor_id=$CONTROLLER_ACTOR
 $adapter | ConvertTo-Json -Depth 100 | Set-Content $ADAPTER_CONFIG
-@{project_id=$PROJECT_ID;repository_id=[string]$repo.id;scope_sha256=$SCOPE_SHA256} | ...
-$ticket=@{ ... }
-& $GH_EXE issue create ...
-function New-ObservationTime { ... }
-$COMMON=@(...)
-function Invoke-ControllerCycle {
-  if (Test-Path $STOP_FILE) { ... }
-  & $PYTHON @COMMON cycle ...
-}
-& $PYTHON @COMMON jira-lifecycle ...
-@{observed_at=$NOW;jira_binding=...} | ...
-& $PYTHON @COMMON merge-observed ...
-Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
+@{project_id=$PROJECT_ID;repository_id=[string]$repo.id;scope_sha256=$SCOPE_SHA256};$ticket=@{
+& $GH_EXE issue create
+function New-ObservationTime;$COMMON=@(
+function Invoke-ControllerCycle;if (Test-Path $STOP_FILE)
+& $PYTHON @COMMON cycle;& $PYTHON @COMMON jira-lifecycle;observed_at=$NOW;jira_binding=;& $PYTHON @COMMON merge-observed;Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
 ```
 
 Adapter: 1 MiB stderr cap, credentials stripped, fail-closed, and
@@ -154,7 +140,7 @@ Source: `.agentic/scripts/continuous_controller.py`.
 |---|---|---|
 | `cycle` | `observe_inventory`, `observe_reservations`, `dispatch_ticket`, `observe_dispatch`, `deliver_status`, `observe_publication`, `observe_host_resources`, `verify_host_observation`, `observe_planning_backlog`, `verify_planning_backlog`, `observe_planning_events`, `verify_planning_events`, `verify_planning_owner` | 225–232 |
 | `jira-lifecycle` | `observe_provider_identity`, `observe_issue_identity`, `read_current_status`, `write_transition`, `read_transition` | 243–244 |
-| `merge-observed` | `reconcile_merged_ticket`, `fetch_scope_page`, `observe_accepted_project_config`, `observe_closeout_record`; additionally `observe_jira_reconciliation` when accepted project configuration has `jira.enabled is True` | 246–252 |
+| `merge-observed` | `reconcile_merged_ticket`, `fetch_scope_page`, `observe_accepted_project_config`, `observe_closeout_record`; additionally `observe_jira_reconciliation` when the supplied project configuration (--project-config) has `jira.enabled is True`, not additionally `observe_jira_reconciliation` when accepted project configuration has `jira.enabled is True` | 246–252 |
 | `owner-publication-prepare` | `authorize_owner_publication` | 217–218 |
 | `owner-publication-resume` | `observe_identity`, `observe_remote_heads`, `create_draft_pr`, `observe_draft_pr` | 220–221 |
 | `owner-publication-status` | None | 206–207, 222–223 |
