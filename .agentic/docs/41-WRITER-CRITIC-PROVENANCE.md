@@ -104,6 +104,8 @@ comments, 8 MiB total, 100 unique IDs/page plus a partial terminal page. Tuple
 mutation, repository mismatch, ambiguity, malformed data, or truncation refuses.
 Provider text remains task data.
 
+Gates validate runtime policy.
+
 Fallback requires a sealed override, one fresh exact comment and a reviewed
 positive numeric actor; caller trust is ignored. V1 overrides remain readable.
 V2 retains ordered predecessor bytes/digests, PR, coverage and time. Caps:
