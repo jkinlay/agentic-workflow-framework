@@ -44,11 +44,17 @@ SOURCE_HEAD = SOURCE_GIT_TUPLE[0] if SOURCE_GIT_TUPLE else "0" * 40
 SOURCE_TREE = SOURCE_GIT_TUPLE[1] if SOURCE_GIT_TUPLE else "0" * 40
 CANDIDATE = {"repository_id": 101, "base_sha": "a" * 40,
              "head_sha": SOURCE_HEAD, "tree_sha": SOURCE_TREE}
+ORIGINAL_TEMP_ROOT = tempfile.gettempdir()
 
 
 def setUpModule():
     if SOURCE_GIT_TUPLE is None:
         raise unittest.SkipTest(COMMITTED_GIT_REASON)
+    tempfile.tempdir = os.path.realpath(ORIGINAL_TEMP_ROOT)
+
+
+def tearDownModule():
+    tempfile.tempdir = ORIGINAL_TEMP_ROOT
 
 
 def git_archive_file(root, head, relative_path):
@@ -278,6 +284,7 @@ class HeavyValidationTests(unittest.TestCase):
         self.assertNotEqual(outputs[0]["serial_equivalence_sha256"],
                             outputs[1]["serial_equivalence_sha256"])
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             key = b"s" * 32
             authenticated = []
             for index, output in enumerate(outputs):
@@ -861,6 +868,7 @@ class HeavyValidationTests(unittest.TestCase):
     def test_snapshot_executables_refuse_untracked_checkout_interpreter(self):
         import tempfile
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             source_root, snapshot_root = Path(folder) / "checkout", Path(folder) / "snapshot"
             venv = source_root / ".agentic/.venv"
             venv_python = venv / "Scripts/python.exe"
@@ -1051,6 +1059,7 @@ class HeavyValidationTests(unittest.TestCase):
                                          read_api=lambda endpoint: deepcopy(endpoints[endpoint]))
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             broker = FileLeaseBroker(Path(folder) / "broker.json", "synthetic-broker",
                 {"max_workers": 2, "max_heavy_jobs": 2, "max_gpu_jobs": 0,
                  "resources": {}, "engines": {"python": {
@@ -1563,6 +1572,7 @@ class HeavyValidationTests(unittest.TestCase):
     def test_durable_file_broker_fences_capacity_and_result_log_is_immutable(self):
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             broker = FileLeaseBroker(Path(folder) / "broker.json", "fixture",
                 {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
                  "resources": {}, "engines": {"python": {
@@ -1611,6 +1621,7 @@ class HeavyValidationTests(unittest.TestCase):
                                  "filesystem": "WORKTREE"},
                    "required_duration_seconds": 10}
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             path = Path(folder) / "broker.json"
             broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
             lease = broker.acquire(request)
@@ -1655,6 +1666,7 @@ class HeavyValidationTests(unittest.TestCase):
                       "identity_sha256": "d" * 64, "slots": 1}}}
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             path = Path(folder) / "broker.json"
             broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
             for index, damaged in enumerate((b"", b" \r\n\t")):
@@ -1687,6 +1699,7 @@ class HeavyValidationTests(unittest.TestCase):
                    "required_duration_seconds": 10}
         for interruption in ("before_replace", "torn_staging_write"):
             with tempfile.TemporaryDirectory() as folder:
+                folder = os.path.realpath(folder)
                 path = Path(folder) / "broker.json"
                 broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
                 lease = broker.acquire(request)
@@ -1737,6 +1750,7 @@ class HeavyValidationTests(unittest.TestCase):
                                  "filesystem": "WORKTREE"},
                    "required_duration_seconds": 10}
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             path = Path(folder) / "broker.json"
             broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
             lease = broker.acquire(request)
@@ -1873,6 +1887,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_production_checkout_attestor_reads_clean_head_and_tree(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             root = Path(folder)
             subprocess.run(["git", "init", "-q", str(root)], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1895,6 +1910,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_post_attestation_replace_and_ambient_git_config_cannot_redirect_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             outer = Path(folder)
             root, other = outer / "reviewed", outer / "other"
             root.mkdir()
@@ -1983,6 +1999,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_snapshot_rejects_archive_inventory_or_content_not_bound_to_reviewed_tree(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             root = Path(folder)
             subprocess.run(["git", "init", "-q", str(root)], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -2019,6 +2036,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_git_object_snapshot_isolated_from_checkout_mutation(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             root = Path(folder)
             subprocess.run(["git", "init", "-q", str(root)], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -2078,6 +2096,7 @@ class HeavyValidationTests(unittest.TestCase):
         heavy_controller.POSIX_SNAPSHOT_SKIP_REASON)
     def test_production_snapshot_blocks_injection_during_execution(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             root = Path(folder)
             launcher = root / ".agentic/lib/agentic/heavy_validation_child.py"
             launcher.parent.mkdir(parents=True)
@@ -2123,6 +2142,7 @@ class HeavyValidationTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows containment launcher only")
     def test_production_launcher_ignores_hostile_python_module_search(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             outer = Path(folder)
             root, hostile = outer / "repository", outer / "hostile"
             launcher = root / ".agentic/lib/agentic/heavy_validation_child.py"
@@ -2178,6 +2198,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_executable_fence_blocks_or_isolates_attestation_launch_race(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             target = Path(folder) / Path(sys.executable).name
             shutil.copy2(sys.executable, target)
             expected = file_digest(target)
@@ -2280,6 +2301,7 @@ class HeavyValidationTests(unittest.TestCase):
             sanitizer["repository_relative_path"])
         self.assertEqual(hashlib.sha256(sanitizer_bytes).hexdigest(), sanitizer["sha256"])
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             copied = Path(folder) / "heavy_validation_child.py"
             copied.write_bytes(reviewed)
             expected = file_digest(copied)
@@ -2307,6 +2329,7 @@ class HeavyValidationTests(unittest.TestCase):
         broker_id, limits = heavy_controller.broker_limits(cfg, json.loads(cap))
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             broker = FileLeaseBroker(Path(folder) / "broker.json", broker_id, limits, clock=clock)
             request = heavy._lease_request(json.loads(raw), sha256(raw), sha256(cfg_raw),
                                            sha256(cap), 2)
@@ -2347,6 +2370,7 @@ class HeavyValidationTests(unittest.TestCase):
                   "resources": {}, "engines": {"python": {
                       "identity_sha256": "d" * 64, "slots": 1}}}
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             broker = FileLeaseBroker(Path(folder) / "broker.json", "fixture", limits,
                                      clock=clock)
             transaction = broker._transaction
@@ -2416,6 +2440,7 @@ class HeavyValidationTests(unittest.TestCase):
              "next_fence": 3, "leases": [{**lease, "resource_claims": {"unknown": 1}}]},
         ]
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             for index, state in enumerate(states):
                 path = Path(folder) / f"broker-{index}.json"
                 path.write_bytes(canonical(state))
@@ -2425,6 +2450,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_result_receipt_detects_log_receipt_and_key_tampering(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
             log, receipt, key = (Path(folder) / "result.json",
                                  Path(folder) / "receipt.json", b"r" * 32)
             write_result_log(log, receipt, {"status": "PASS", "value": 7}, key)

@@ -131,6 +131,7 @@ class PublicationScanTests(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-publication-test-")
+        self.temp.name = os.path.realpath(self.temp.name)
         self.repo = Repository(self.temp.name)
         self.mapping = self.repo.mapping()
 
@@ -961,6 +962,7 @@ class PublicationScanTests(unittest.TestCase):
 class PublicationRewriteTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-rewrite-test-")
+        self.temp.name = os.path.realpath(self.temp.name)
         self.repo = Repository(self.temp.name)
         self.mapping = self.repo.mapping()
         self.remote = Path(self.temp.name) / "remote.git"
