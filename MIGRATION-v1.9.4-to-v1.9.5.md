@@ -46,14 +46,14 @@ The controller loads a reviewed absolute adapter module, checks its SHA-256 pin,
 |---|---|---|---|
 | `planning-state prune` | None | None | N/A; no adapter is loaded |
 | `snapshot` | None | None | N/A; no adapter is loaded |
-| `cycle` | `observe_inventory,observe_reservations,dispatch_ticket,observe_dispatch,deliver_status,observe_publication,observe_host_resources,verify_host_observation,observe_planning_backlog,verify_planning_backlog,observe_planning_events,verify_planning_events,verify_planning_owner` | Required with `--overlap-allowances`: `observe_overlap_allowance`; required with `--replan-request`: `observe_replan_trigger`. Optional when callable: `observe_overlap_conflict,observe_overlap_sync_inventory,sync_writer,reconcile_overlap_sync,observe_dispatch_quiescence` | Supported |
-| `jira-lifecycle` | `observe_provider_identity,observe_issue_identity,read_current_status,write_transition,read_transition` | None | Supported |
-| `merge-observed` | `reconcile_merged_ticket,fetch_scope_page,observe_accepted_project_config,observe_closeout_record` | When Jira is enabled: `observe_jira_reconciliation` | Supported |
+| `cycle` | `observe_inventory, observe_reservations, dispatch_ticket, observe_dispatch, deliver_status, observe_publication, observe_host_resources, verify_host_observation, observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events, verify_planning_owner` | Required with `--overlap-allowances`: `observe_overlap_allowance`; required with `--replan-request`: `observe_replan_trigger`. Optional when callable: `observe_overlap_conflict, observe_overlap_sync_inventory, sync_writer, reconcile_overlap_sync, observe_dispatch_quiescence` | Supported |
+| `jira-lifecycle` | `observe_provider_identity, observe_issue_identity, read_current_status, write_transition, read_transition` | None | Supported |
+| `merge-observed` | `reconcile_merged_ticket, fetch_scope_page, observe_accepted_project_config, observe_closeout_record` | When Jira is enabled: `observe_jira_reconciliation` | Supported |
 | `owner-publication-prepare` | `authorize_owner_publication` | None | Unsupported |
-| `owner-publication-resume` | `observe_identity,observe_remote_heads,create_draft_pr,observe_draft_pr` | None | Unsupported |
+| `owner-publication-resume` | `observe_identity, observe_remote_heads, create_draft_pr, observe_draft_pr` | None | Unsupported |
 | `owner-publication-status` | None | None | N/A; no adapter is loaded |
 | `batch-operation` | `batch_coordinator` | None | Unsupported |
-| `batch-closeout` | `batch_coordinator,observe_batch_merge,observe_issue_identity,observe_issue_policy,observe_provider_identity,read_current_status,write_transition,read_transition` | None | Unsupported: missing `batch_coordinator,observe_batch_merge,observe_issue_policy` |
+| `batch-closeout` | `batch_coordinator, observe_batch_merge, observe_issue_identity, observe_issue_policy, observe_provider_identity, read_current_status, write_transition, read_transition` | None | Unsupported: missing `batch_coordinator, observe_batch_merge, observe_issue_policy` |
 
 Adapter loading alone grants no live execution, publication, review, push, merge, or Jira-write authority.
 
