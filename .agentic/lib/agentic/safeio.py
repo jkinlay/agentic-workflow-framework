@@ -1100,7 +1100,6 @@ def _inspect_codex_jsonl(raw, credentials):
         if not lines or any(not line.strip() for line in lines):
             raise ValueError
         # Validate syntax first so malformed/duplicate input has a fixed code.
-        values = []
         for line in lines:
             value = json.loads(line, object_pairs_hook=_json_pairs,
                                parse_constant=_json_constant, parse_float=_json_float)
@@ -1120,8 +1119,10 @@ def _inspect_codex_jsonl(raw, credentials):
                         pending.append((child, depth + 1))
                 elif isinstance(item, list):
                     pending.extend((child, depth + 1) for child in item)
-            values.append(value)
-        for value in values:
+        # Reparse validated lines so decoded records are held one at a time.
+        for line in lines:
+            value = json.loads(line, object_pairs_hook=_json_pairs,
+                               parse_constant=_json_constant, parse_float=_json_float)
             pending = [value]
             while pending:
                 item = pending.pop()

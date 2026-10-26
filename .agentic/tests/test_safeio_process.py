@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import tracemalloc
 import unittest
 from unittest import mock
 
@@ -638,6 +639,21 @@ class CodexRetentionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, "^" + code + "$"):
                     self.invoke(raw)
                 self.assert_no_retention()
+
+    def test_c1_10b_many_records_do_not_retain_decoded_objects(self):
+        raw = b'{"x":0}\n' * 400_000
+        maximum = 4 * len(raw) + 32 * 1024 * 1024
+        tracemalloc.start()
+        try:
+            safeio._inspect_codex_jsonl(raw, ())
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        print(f"codex JSONL tracemalloc: input={len(raw)} peak={peak} bound={maximum}")
+        self.assertLessEqual(
+            peak, maximum,
+            f"decoded records retained: input={len(raw)} peak={peak} bound={maximum}",
+        )
 
     def test_c1_11_invalid_machine_input_fails_closed_content_free(self):
         payloads = (b'\xff', b'{"text":"synthetic-invalid"', b'\n', b'null\n',
