@@ -1,6 +1,6 @@
 # Runbook index
 
-The AWF 1.9.5 install and adoption runbook is kept in the repository in parts, split byte-exact at every level-2 and level-3 heading with no rewording (rulings jk-direct-1657 and jk-direct-1715), so every part starts with its own heading. Read the parts in this order. Joining them in this order reproduces the source text with exactly one newline at the end of each part: SHA-256 956d39cab43ce8bfee823af6196aeda9fc21db2836e8d5537239acf77f81409c, 71546 bytes.
+The AWF 1.9.5 install and adoption runbook is kept in 41 ordered repository parts, each retaining its initial heading. Sections 08–23 are the AWF-177 install/adoption reconciliation destination; use this index for the complete runbook. The **historical original split identity**, split byte-exact at every level-2 and level-3 heading without rewording under rulings jk-direct-1657 and jk-direct-1715, was SHA-256 956d39cab43ce8bfee823af6196aeda9fc21db2836e8d5537239acf77f81409c, 71,546 bytes. Subsequent scoped edits do not retain that original byte identity.
 
 1. [00-runbook-introduction.md](00-runbook-introduction.md): AWF 1.9.5 Install and Adoption Runbook
 2. [01-runbook-prerequisites.md](01-runbook-prerequisites.md): 1. Prerequisites
@@ -45,3 +45,5 @@ The AWF 1.9.5 install and adoption runbook is kept in the repository in parts, s
 41. [40-runbook-unverified-until-publish.md](40-runbook-unverified-until-publish.md): Unverified until publish
 
 Each part is capped at 1,200 words by release hygiene. The parts may be rejoined when AWF-200 moves the cap to 1,200 words per section.
+
+**Current joined-content identity:** SHA-256 f2183d1b8246039a4b25eb018364b684c0a374befdef462bb733d307eb9ac8ae, 81,260 bytes. Join all 41 parts in the order above, each with exactly one terminal LF; exclude INDEX itself. This content identity does not establish release qualification.

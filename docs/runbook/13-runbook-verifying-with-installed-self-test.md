@@ -1,6 +1,6 @@
 ## 4. Verifying with the installed self-test
 
-Run this at **step 8 of each OS sequence**, after installation/configuration verification and candidate preparation. For an existing repository, record the reviewed adoption or upgrade candidate before self-test so committed governed bytes match the checkout. For the supported commitless fresh-install case, retain the reasons for committed-HEAD-dependent skips.
+Run this at **step 8 of each OS sequence** ([Windows](10-runbook-windows-powershell.md), [macOS](11-runbook-macos-posix-shell.md), [Linux](12-runbook-linux-posix-shell.md)), after installation/configuration verification and candidate preparation. For an existing repository, record the reviewed adoption or upgrade candidate before self-test so committed governed bytes match the checkout. For the supported commitless fresh-install case, retain the reasons for committed-HEAD-dependent skips.
 
 The installed entry point is the managed `.agentic/scripts/self_test.py`, using the target repository’s canonical runtime. The source-only wrapper is not required in an installed project. Sources: `7fcaeece:scripts/tests/test_installed_self_test.py:104`; `7fcaeece:scripts/tests/test_installed_self_test.py:133`.
 
@@ -20,3 +20,7 @@ For an installed component check, source release review is `NOT_APPLICABLE`; `re
 Caught interruption/timeout produces `INTERRUPTED`, retains phase/test information, and exits 130. Other failures exit nonzero. An externally terminated run without a completed report is **UNVERIFIED**, not PASS. Sources: `7fcaeece:.agentic/scripts/self_test.py:422`; `7fcaeece:.agentic/scripts/self_test.py:451`.
 
 **[POSTSUITE-001 branch]** Any additional interruption-recovery behavior is **UNVERIFIED** because no successor revision was supplied.
+
+For an upgrade, follow [post-upgrade verification and reactivation](20-runbook-post-upgrade-verification-and-reactivation.md).
+
+[Runbook index](INDEX.md)
