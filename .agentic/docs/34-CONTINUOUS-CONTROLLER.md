@@ -55,10 +55,13 @@ refusal roll back schema/data, preserving the complete before-image.
 The reference adapter refuses legacy calls/records before runner preparation/launch.
 
 `PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.
-No successor refill crosses them without a fresh authenticated host trigger
-binding prior/next inventory digests and the complete dispatch/stream/ticket/tuple/state
-set. Persist the seal before refill; consume it atomically with successor intents.
-Restart resumes persisted intents without losing refill or recreating seals.
+A successor inventory cannot refill a round while any of those operations
+crosses the boundary. Refill requires one fresh authenticated host trigger
+bound to prior/next inventory digests and complete durable
+dispatch/stream/ticket/tuple/state set. Persist the seal before refill;
+consume it atomically with successor dispatch intent creation.
+Restart resumes only persisted successor intents without losing refill
+or recreating seals from replay.
 `--replan-request REQUEST.json` contains only a positive GitHub `comment_id`.
 The adapter fetches the immutable comment with provider Date/ETag. Require a fresh,
 unedited configured trusted-owner comment: exactly `AWF-ROUND-REPLAN 1`, newline,
@@ -72,7 +75,7 @@ time; restart carries the same digest without relaunch.
 
 Authenticated parked/worktree-diff sources independently reserve paths. Every cycle
 observes complete provider-bound paused inventory and Git diff at pinned head/tree;
-repeat after every inventory replacement before scheduling. Failed refresh
+repeat the complete observation immediately after every inventory replacement before scheduling. Failed refresh
 invalidates reservations and blocks scheduling. Reject foreign/stale/partial,
 non-NFC, case/separator/traversal, symlink and non-canonical Git paths.
 Reservations block overlapping starts even with owner allowances; unrelated paths

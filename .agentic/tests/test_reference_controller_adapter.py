@@ -1754,6 +1754,25 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 		self.assertIn('without `-I`; `-B` may be retained', prose)
 		self.assertIn('No fix release is promised', prose)
 
+	def test_doc_nonterminal_boundary_prohibits_successor_refill(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('`PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.', prose)
+		self.assertIn('A successor inventory cannot refill a round while any of those operations crosses the boundary.', prose)
+
+	def test_doc_refill_requires_separate_fresh_bound_trigger_and_durable_seal(self):
+		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n\n', 2)[1]
+		prose = ' '.join(section.split())
+		self.assertIn('Refill requires one fresh authenticated host trigger bound to prior/next inventory digests and complete durable dispatch/stream/ticket/tuple/state set.', prose)
+		self.assertIn('Persist the seal before refill; consume it atomically with successor dispatch intent creation.', prose)
+		self.assertIn('Restart resumes only persisted successor intents without losing refill or recreating seals from replay.', prose)
+
+	def test_doc_reservation_reobservation_is_immediate_and_complete(self):
+		section = self.doc.split('Authenticated parked/worktree-diff sources', 1)[1].split('\n\n', 1)[0]
+		prose = ' '.join(section.split())
+		self.assertIn('observes complete provider-bound paused inventory and Git diff at pinned head/tree; repeat the complete observation immediately after every inventory replacement before scheduling.', prose)
+		self.assertIn('Failed refresh invalidates reservations and blocks scheduling.', prose)
+
 
 if __name__ == '__main__':
 	unittest.main()
