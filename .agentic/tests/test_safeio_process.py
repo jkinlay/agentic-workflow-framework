@@ -763,6 +763,32 @@ class MetadataSnapshotContractTests(unittest.TestCase):
                                 for stream in observed["streams"]))
             self.assertEqual(result, safeio.snapshot_file(path, maximum=8))
 
+    def test_snapshot_stream_creation_failure_closes_descriptor(self):
+        captured = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"snapshot")
+
+            def reject(fd, _mode, **_kwargs):
+                captured.append(fd)
+                raise OSError("fdopen failure")
+
+            try:
+                with mock.patch.object(safeio.os, "fdopen", side_effect=reject):
+                    with self.assertRaisesRegex(OSError, "fdopen failure"):
+                        with safeio.Tree(path.parent) as tree:
+                            safeio.snapshot_file(tree, path.name, maximum=8)
+                self.assertEqual(1, len(captured))
+                with self.assertRaises(OSError):
+                    os.fstat(captured[0])
+            finally:
+                if captured:
+                    try:
+                        os.close(captured[0])
+                    except OSError:
+                        pass
+        self.assertFalse(Path(directory).exists())
+
     def test_snapshot_size_refusal_is_typed_and_closes_handles(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config"

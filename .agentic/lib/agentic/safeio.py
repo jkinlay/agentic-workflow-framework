@@ -782,7 +782,12 @@ class Tree:
             fd = msvcrt.open_osfhandle(raw, os.O_RDONLY | os.O_BINARY)
         else:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=handle)
-        with os.fdopen(fd, "rb", buffering=0) as stream:
+        try:
+            stream = os.fdopen(fd, "rb", buffering=0)
+        except BaseException:
+            os.close(fd)
+            raise
+        with stream:
             before = os.fstat(stream.fileno())
             if (not stat.S_ISREG(before.st_mode)
                     or (not allow_hardlinks and before.st_nlink != 1)):
