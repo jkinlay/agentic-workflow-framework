@@ -56,7 +56,7 @@ class PublishReleaseTests(unittest.TestCase):
         cls.epoch = int(command(["git", "show", "-s", "--format=%ct", cls.commit], cls.repository, cls.git_env))
         cls.windows_check = cls.base / "windows-check.json"
         cls.windows_check.write_text(json.dumps({
-            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.4",
+            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.5",
             "source_commit": cls.commit,
             "checks": {"portable_build": "PASS", "host_skill_install": "PASS", "host_skill_verify": "PASS"},
         }, sort_keys=True), encoding="utf-8")
@@ -176,7 +176,7 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertEqual(scan["sha256"], hashlib.sha256(report_path.read_bytes()).hexdigest())
         self.assertIn(scan["sha256"], result["tag_message"])
         self.assertIn(scan["sha256"], result["release_body"])
-        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"], self.repository))
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.5"], self.repository))
 
     def test_blocked_publication_scan_stops_before_release_mutation(self):
         calls = []
@@ -202,10 +202,10 @@ class PublishReleaseTests(unittest.TestCase):
                               scan_command_runner=blocked)
         self.assertEqual(1, len(calls))
         origin.assert_not_called()
-        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"], self.repository))
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.5"], self.repository))
 
     def test_publication_scan_error_stops_before_release_mutation(self):
-        tags_before = command(["git", "tag", "--list", "v1.9.4"], self.repository)
+        tags_before = command(["git", "tag", "--list", "v1.9.5"], self.repository)
 
         def failed(_command_line, *, cwd):
             return SimpleNamespace(returncode=1, stdout=b"", stderr=b"synthetic scan failure")
@@ -219,7 +219,7 @@ class PublishReleaseTests(unittest.TestCase):
                               scan_command_runner=failed)
         origin.assert_not_called()
         self.assertEqual(tags_before,
-                         command(["git", "tag", "--list", "v1.9.4"], self.repository))
+                         command(["git", "tag", "--list", "v1.9.5"], self.repository))
 
     def test_tag_push_uses_only_the_explicit_gh_credential_helper(self):
         isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -356,7 +356,7 @@ class PublishReleaseTests(unittest.TestCase):
         rejected_key = "http.https://user@github.com/o/r.git.extraHeader"
         subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository,
                        env=self.git_env, capture_output=True)
-        subprocess.run(["git", "tag", "-d", "v1.9.4"], cwd=self.repository,
+        subprocess.run(["git", "tag", "-d", "v1.9.5"], cwd=self.repository,
                        env=self.git_env, capture_output=True)
         command(["git", "remote", "add", "origin", remote], self.repository, self.git_env)
         command(["git", "config", "--local", rejected_key,
@@ -365,7 +365,7 @@ class PublishReleaseTests(unittest.TestCase):
                         cwd=self.repository, env=self.git_env, capture_output=True)
         self.addCleanup(subprocess.run, ["git", "remote", "remove", "origin"],
                         cwd=self.repository, env=self.git_env, capture_output=True)
-        self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.4"],
+        self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.5"],
                         cwd=self.repository, env=self.git_env, capture_output=True)
 
         with self.assertRaises(publisher.ReleaseError) as raised:
@@ -375,7 +375,7 @@ class PublishReleaseTests(unittest.TestCase):
                 validation_runner=self.fake_validation, gh="gh",
                 scan_command_runner=self.fake_scan_command)
 
-        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"],
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.5"],
                                      self.repository, self.git_env))
         message = str(raised.exception)
         self.assertIn(rejected_key.casefold(), message.casefold())
@@ -623,7 +623,7 @@ class PublishReleaseTests(unittest.TestCase):
         request_url = safe_remote + "/info/refs"
         self.addCleanup(subprocess.run, ["git", "remote", "remove", "origin"],
                         cwd=self.repository, capture_output=True)
-        self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.4"],
+        self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.5"],
                         cwd=self.repository, capture_output=True)
         repository_config = self.repository / ".git/config"
         repository_config_before = repository_config.read_bytes()
@@ -698,7 +698,7 @@ class PublishReleaseTests(unittest.TestCase):
              "-c", f"{header_key}=",
              "-c", f"{helper_key}=", "-c", helper],
             push[push_index - 14:push_index])
-        self.assertEqual(["push", "origin", "refs/tags/v1.9.4"], push[push_index:])
+        self.assertEqual(["push", "origin", "refs/tags/v1.9.5"], push[push_index:])
         for line, env in git_calls:
             with self.subTest(command=line):
                 self.assertEqual(os.devnull, env["GIT_CONFIG_GLOBAL"])
@@ -708,9 +708,9 @@ class PublishReleaseTests(unittest.TestCase):
                     self.assertFalse(any("credential.helper" in argument for argument in line))
         self.assertEqual(repository_config_before, repository_config.read_bytes())
         self.assertEqual(ambient_config_before, ambient_config.read_bytes())
-        self.assertEqual("v1.9.4", command(["git", "tag", "--list", "v1.9.4"], self.repository))
+        self.assertEqual("v1.9.5", command(["git", "tag", "--list", "v1.9.5"], self.repository))
         message = str(raised.exception)
-        self.assertIn("local annotated tag remains at refs/tags/v1.9.4", message)
+        self.assertIn("local annotated tag remains at refs/tags/v1.9.5", message)
         self.assertIn("no GitHub release was created", message)
         self.assertIn(
             "git -c credential.helper= "
@@ -721,7 +721,7 @@ class PublishReleaseTests(unittest.TestCase):
             "-c credential.https://github.com/jkinlay/awf-fixture.git.helper= "
             "-c 'credential.https://github.com/jkinlay/awf-fixture.git.helper="
             "!gh auth git-credential' "
-            "push origin refs/tags/v1.9.4", message)
+            "push origin refs/tags/v1.9.5", message)
         self.assertNotIn(helper_secret, message)
         self.assertNotIn(transport_secret, message)
         self.assertNotIn("embedded-secret", message)
@@ -810,7 +810,7 @@ class PublishReleaseTests(unittest.TestCase):
         original = readme.read_bytes()
         untracked = self.repository / "synthetic-untracked.txt"
         try:
-            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.4", "Release 9.9.9", 1), encoding="utf-8")
+            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.5", "Release 9.9.9", 1), encoding="utf-8")
             untracked.write_text("fixture", encoding="utf-8")
             report = publisher.source_report(self.repository, self.commit)
             joined = "\n".join(report["problems"])
@@ -1092,19 +1092,19 @@ print('password=repository-secret')
                                        validation_runner=self.fake_validation, gh=str(executable),
                                        scan_command_runner=self.fake_scan_command)
             self.assertEqual("DRAFT_CREATED", result["status"])
-            verified = publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-output",
+            verified = publisher.verify_tag(self.repository, "v1.9.5", self.base / "verify-output",
                                             gh=str(executable))
             self.assertEqual("PASS", verified["status"])
             extra = store / "unexpected-extra.zip"
             extra.write_bytes(b"unrecorded release asset")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-extra-output",
+                publisher.verify_tag(self.repository, "v1.9.5", self.base / "verify-extra-output",
                                      gh=str(executable))
             extra.unlink()
             changed = next(store.glob("*.zip"))
             changed.write_bytes(changed.read_bytes() + b"changed")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-fail-output",
+                publisher.verify_tag(self.repository, "v1.9.5", self.base / "verify-fail-output",
                                      gh=str(executable))
         finally:
             os.environ.clear(); os.environ.update(old)

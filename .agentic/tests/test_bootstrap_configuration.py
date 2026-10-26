@@ -651,16 +651,20 @@ class ConfiguredInstallerTests(unittest.TestCase):
         null_bindings = (b'    "cloud_id": null,\r\n    "provider_project_id": null,\r\n'
                          b'    "controller_actor_id": null,\r\n')
         expected = before.replace(b'"expected_workflow_version": "1.9.2"',
-                                  b'"expected_workflow_version": "1.9.4"'
-                                  ).replace(jira_anchor, jira_anchor + null_bindings)
+                                  b'"expected_workflow_version": "1.9.5"'
+                                  ).replace(jira_anchor, jira_anchor + null_bindings).replace(
+                                      b'"risk_tiers": {',
+                                      b'"risk_tiers": {tier3_review: {roles: [critic, specialist], '
+                                      b'findings: blocking, max_rounds: 3}, ', 1)
 
         second = self.perform(mode="upgrade")
 
         after = config_path.read_bytes()
         self.assertEqual(after, expected)
         removed = [line for line in before.splitlines(keepends=True) if line not in after.splitlines(keepends=True)]
-        self.assertEqual(removed, [b'    "expected_workflow_version": "1.9.2"\r\n'])
-        current = json.loads(after.replace(b'  # owner budget policy\r\n', b''))
+        self.assertEqual(removed, [b'    "expected_workflow_version": "1.9.2"\r\n',
+                                   b'    "risk_tiers": {\r\n'])
+        current = load_yaml(after)
         self.assertEqual(current["execution"]["max_tokens_per_ticket"], 100000)
         self.assertEqual(current["execution"]["max_cost_microusd_per_ticket"], 2500000)
         self.assertEqual(current["execution"]["model_routing"]["budgets"]["max_tokens_per_ticket"], 100000)

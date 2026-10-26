@@ -4,7 +4,7 @@
 
    Install the approved Python, Git, GitHub CLI, and Codex distributions; obtain the independently verified AWF distribution, compatible offline wheels, and first repository. Exact OS package-installation, authentication, repository acquisition, and outer-ZIP verification commands are **UNVERIFIED** in the supplied sources.
 
-   **Success/confirm:** all prerequisite inputs in §1 exist and their independent approvals are recorded. **Failure:** stop at the missing input; do not execute an unverified distribution.
+   **Success/confirm:** all prerequisite inputs in [§1](01-runbook-prerequisites.md) exist and their independent approvals are recorded. **Failure:** stop at the missing input; do not execute an unverified distribution.
 
 2. **Preview and install the portable skill.**
 
@@ -29,7 +29,7 @@
 
    Interface and generated source location: `7fcaeece:global/awf-portable/scripts/prepare_release.py:202`; `7fcaeece:global/awf-portable/scripts/prepare_release.py:241`.
 
-   **Success/confirm:** exit 0 and the §2 cache-success fields; compare the returned manifest digest with the independent release pin. **Failure:** preserve the rejected cache and investigate; a version mismatch must stop this sequence.
+   **Success/confirm:** exit 0 and the [§2 cache-success fields](07-runbook-distribution-and-source-preparation.md); compare the returned manifest digest with the independent release pin. **Failure:** preserve the rejected cache and investigate; a version mismatch must stop this sequence.
 
 4. **Create the bootstrap environment and install locked dependencies.**
 
@@ -61,7 +61,7 @@
 
    **Success/confirm:** preview reports `PLAN`; actual bootstrap reports CONFIGURED, exit 0, with two successful installed subprocess checks. Check recorded commands, source pin, accepted configuration, and matching policy/operating digests. Sources: `7fcaeece:.agentic/lib/agentic/adoption_config.py:857`; `7fcaeece:scripts/validate_git_checkout.py:344`.
 
-   **Failure:** for exit 1, resolve exact configuration residue. For integrity failure or NOT_RUN checks, preserve unexpected files and repair the reported integrity/import problem. For retained installation intent, follow §5 recovery. Source: `7fcaeece:.agentic/lib/agentic/adoption_config.py:864`.
+   **Failure:** for exit 1, resolve exact configuration residue. For integrity failure or NOT_RUN checks, preserve unexpected files and repair the reported integrity/import problem. For retained installation intent, follow [§5 journal recovery](19-runbook-journal-recovery.md). Source: `7fcaeece:.agentic/lib/agentic/adoption_config.py:864`.
 
 7. **Confirm through the installed runtime.**
 
@@ -76,7 +76,7 @@
 
    **Success/confirm:** doctor identifies existing canonical runtime/script; verification exits 0 with `integrity_valid: true`; validation exits 0 with `status: ACCEPTED`; Show and retain the operating table, paste it into the adoption PR, and offer: keep defaults, review Epics and recommend, or custom. Apply direct instructions within accepted governance; obtain acceptance before applying recommendations. **Failure:** use exact reported remedies and repeat both checks after repair.
 
-8. **Review and record the candidate, then run the installed self-test (§4).** For an existing repository, review the installation diff and scoped LF attributes, record the adoption candidate in a local commit, and confirm that its governed bytes match the checkout before self-test. Retain the report and every skip reason. The separately supported commitless fresh-install case may skip tests requiring committed HEAD.
+8. **Review and record the candidate, then run the installed [self-test (§4)](13-runbook-verifying-with-installed-self-test.md).** For an existing repository, review the installation diff and scoped LF attributes, record the adoption candidate in a local commit, and confirm that its governed bytes match the checkout before self-test. Retain the report and every skip reason. The separately supported commitless fresh-install case may skip tests requiring committed HEAD.
 
    ```powershell
    & '<repo-path>/.agentic/.venv/Scripts/python.exe' -B '<repo-path>/.agentic/scripts/self_test.py' --checks-only --report '<install-dir>/reports/first-installed.json'
@@ -107,3 +107,7 @@
     **Success/confirm:** exit 0, `project_state: ACTIVE`, `accepted_checkout: VERIFIED`, and recorded acceptance/default-head identities. Source: `7fcaeece:.agentic/lib/agentic/providers/github_status.py:674`.
 
     **Failure:** exit 4 means ACTIVE remains unestablished. Resolve reported trust, merge, identity, checkout, or access blockers. This step requires provider observations and **cannot be completed under the offline review restrictions used to prepare this runbook**. Missing provider access retains CONFIGURED. Source: `7fcaeece:.agentic/tests/test_adoption_status.py:963`.
+
+**Related guidance:** [Publication checkpoint](06-runbook-publication-checkpoint.md); [journal recovery](19-runbook-journal-recovery.md).
+
+[Runbook index](INDEX.md)

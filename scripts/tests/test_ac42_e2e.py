@@ -105,6 +105,121 @@ class OwnerBlobTests(unittest.TestCase):
                 harness.owner_blob(repo, "HEAD", ".gitignore", max_bytes=3)
 
 
+class ProjectValuesPreservedTests(unittest.TestCase):
+    CONFIG = ".agentic/PROJECT_CONFIG.yaml"
+    INSTALLED = ".agentic/installed-manifest.json"
+    BEFORE = (b"# owner comment\n"
+              b"{\n"
+              b'  "template": {"expected_workflow_version": "1.9.2"},\n'
+              b'  "jira": {\n'
+              b'    "enabled": false,\n'
+              b'    "site": "https://jira.example.invalid",\n'
+              b'    "project_key": "KEEP"\n'
+              b'  },\n'
+              b'  "execution": {\n'
+              b'    "risk_tiers": {\n'
+              b'      "tier1_review": {"max_rounds": 1}\n'
+              b'    }\n'
+              b'  }\n'
+              b"}\n"
+              b"# retained formatting\n")
+    AFTER = (b"# owner comment\n"
+             b"{\n"
+             b'  "template": {"expected_workflow_version": "1.9.5"},\n'
+             b'  "jira": {\n'
+             b'    "enabled": false,\n'
+             b'    "cloud_id": null,\n'
+             b'    "provider_project_id": null,\n'
+             b'    "controller_actor_id": null,\n'
+             b'    "site": "https://jira.example.invalid",\n'
+             b'    "project_key": "KEEP"\n'
+             b'  },\n'
+             b'  "execution": {\n'
+             b'    "risk_tiers": {tier3_review: {roles: [critic, specialist], '
+             b'findings: blocking, max_rounds: 3}, \n'
+             b'      "tier1_review": {"max_rounds": 1}\n'
+             b'    }\n'
+             b'  }\n'
+             b"}\n"
+             b"# retained formatting\n")
+    def decision(self, after):
+        harness = _load_harness()
+        return harness.project_values_preserved(
+            {self.CONFIG: self.BEFORE}, {self.CONFIG: after}, self.CONFIG, self.INSTALLED)[0]
+
+    def test_documented_tier_three_insertion_is_accepted(self):
+        self.assertTrue(self.decision(self.AFTER))
+
+    def test_non_null_jira_binding_mutation_is_rejected(self):
+        mutated = self.AFTER.replace(b'"cloud_id": null', b'"cloud_id": "changed"')
+        self.assertFalse(self.decision(mutated))
+
+    def test_existing_non_null_jira_binding_is_preserved_and_mutation_rejected(self):
+        before = self.BEFORE.replace(
+            b'    "enabled": false,\n',
+            b'    "enabled": false,\n'
+            b'    "cloud_id": "abc123",\n')
+        after = self.AFTER.replace(b'"cloud_id": null', b'"cloud_id": "abc123"')
+        harness = _load_harness()
+        expected = harness.expected_project_config(before)
+        self.assertEqual(after, expected)
+        self.assertTrue(harness.project_values_preserved(
+            {self.CONFIG: before}, {self.CONFIG: after}, self.CONFIG, self.INSTALLED)[0])
+        mutated = after.replace(b'"cloud_id": "abc123"', b'"cloud_id": "changed"')
+        self.assertFalse(harness.project_values_preserved(
+            {self.CONFIG: before}, {self.CONFIG: mutated}, self.CONFIG, self.INSTALLED)[0])
+
+    def test_comments_and_formatting_outside_exact_edits_are_kept(self):
+        self.assertTrue(self.decision(self.AFTER))
+        self.assertFalse(self.decision(self.AFTER.replace(
+            b"# retained formatting", b"# changed formatting")))
+
+    def test_unrelated_owner_value_change_is_rejected(self):
+        mutated = self.AFTER.replace(b'"project_key": "KEEP"', b'"project_key": "CHANGED"')
+        self.assertFalse(self.decision(mutated))
+
+    def test_version_replacement_is_scoped_to_template_mapping(self):
+        before = (b"template:\n"
+                  b"  expected_workflow_version: !!str 1.9.2\n"
+                  b"owner_note: \"expected_workflow_version: 1.9.2\"\n"
+                  b"jira: {cloud_id: KEEP, provider_project_id: KEEP, "
+                  b"controller_actor_id: KEEP, site: https://jira.example.invalid}\n"
+                  b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
+        expected = before.replace(
+            b"expected_workflow_version: !!str 1.9.2",
+            b"expected_workflow_version: !!str 1.9.5")
+        harness = _load_harness()
+        self.assertEqual(expected, harness.expected_project_config(before))
+
+    def test_flow_jira_existing_identity_is_not_duplicated(self):
+        before = (b"template: {expected_workflow_version: 1.9.2}\n"
+                  b"jira: {cloud_id: KEEP,\n"
+                  b"  provider_project_id: KEEP,\n"
+                  b"  controller_actor_id: KEEP,\n"
+                  b"  site: https://jira.example.invalid}\n"
+                  b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
+        expected = before.replace(b"1.9.2", b"1.9.5", 1)
+        harness = _load_harness()
+        self.assertEqual(expected, harness.expected_project_config(before))
+        self.assertEqual(1, expected.count(b"cloud_id:"))
+
+    def test_tier_insertion_is_scoped_to_execution_risk_tiers(self):
+        before = (b"template: {expected_workflow_version: 1.9.2}\n"
+                  b"jira: {cloud_id: KEEP, provider_project_id: KEEP, "
+                  b"controller_actor_id: KEEP, site: https://jira.example.invalid}\n"
+                  b"owner_policy:\n"
+                  b"  risk_tiers: {owner_tier: KEEP}\n"
+                  b"execution: {risk_tiers: {tier1_review: KEEP}}\n")
+        tier = (b"tier3_review: {roles: [critic, specialist], findings: blocking, "
+                b"max_rounds: 3}")
+        expected = before.replace(b"1.9.2", b"1.9.5", 1).replace(
+            b"execution: {risk_tiers: {",
+            b"execution: {risk_tiers: {" + tier + b", ")
+        harness = _load_harness()
+        self.assertEqual(expected, harness.expected_project_config(before))
+        self.assertEqual(b"owner_tier: KEEP", expected.splitlines()[3].split(b"{")[1][:-1])
+
+
 class AutocrlfScopeTests(unittest.TestCase):
     def test_fresh_clone_preserves_false_and_input_without_global_writes(self):
         harness = _load_harness()

@@ -1,6 +1,6 @@
 # Publication safety
 
-Version 1.9.4. Publication is blocked unless the exact candidate history and
+Version 1.9.5. Publication is blocked unless the exact candidate history and
 provider text pass a history-aware scan. `git diff --check` checks whitespace
 only and is never publication-safety evidence.
 

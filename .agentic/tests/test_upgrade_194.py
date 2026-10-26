@@ -30,10 +30,20 @@ class Upgrade194Tests(unittest.TestCase):
             self.assertEqual(result["conflicts"], [])
             diff = result["upgrade"]["configuration_diff_total"]
             self.assertIn('-    "expected_workflow_version": "1.9.3"', diff)
-            self.assertIn('+    "expected_workflow_version": "1.9.4"', diff)
-            self.assertEqual(diff.count("\n-"), 1)
-            self.assertEqual(diff.count("\n+"), 2)  # header plus the one added setting
-            self.assertNotIn("tier3_review", json.dumps(result["upgrade"]))
+            self.assertIn('+    "expected_workflow_version": "1.9.5"', diff)
+            self.assertEqual(diff.count("\n-"), 2)
+            self.assertEqual(diff.count("\n+"), 3)  # header, scalar and additive policy
+            self.assertIn('+    "risk_tiers": {tier3_review: {roles: [critic, specialist], '
+                          'findings: blocking, max_rounds: 3},', diff)
+            steps = result["upgrade"]["steps"]
+            self.assertEqual([(step["from"], step["to"]) for step in steps],
+                             [("1.9.3", "1.9.4"), ("1.9.4", "1.9.5")])
+            historical_diff = steps[0]["configuration_diff"]
+            self.assertIn('-    "expected_workflow_version": "1.9.3"', historical_diff)
+            self.assertIn('+    "expected_workflow_version": "1.9.4"', historical_diff)
+            self.assertEqual(historical_diff.count("\n-"), 1)
+            self.assertEqual(historical_diff.count("\n+"), 2)
+            self.assertNotIn("tier3_review", historical_diff)
             self.assertNotIn("migrate_1_9_3_to_1_9_4", json.dumps(result["upgrade"]))
         finally:
             for path in destination.rglob("*"):
