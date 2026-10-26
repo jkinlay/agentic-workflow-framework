@@ -1466,8 +1466,148 @@
           }
         }
       ]
+    },
+    "status": {
+      "const": "UNKNOWN"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
     }
   },
+  "dependentRequired": {
+    "status": [
+      "reason"
+    ],
+    "reason": [
+      "status"
+    ]
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "UNKNOWN"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "outstanding": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "UNKNOWN"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "priority": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "UNKNOWN"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "lanes": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "UNKNOWN"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "merge_train": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "UNKNOWN"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "eta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "UNKNOWN"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "routing": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "UNKNOWN"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "lane_observations"
+          ]
+        }
+      }
+    }
+  ],
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:awf:1.2:status-report",
   "title": "Agentic Workflow 1.2 \u2014 status-report"

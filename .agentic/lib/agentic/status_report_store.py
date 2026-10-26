@@ -14,6 +14,7 @@ import uuid
 
 from . import ValidationError
 from .canonical import MAX_DOCUMENT_BYTES, canonical, fingerprint, load, loads, timestamp
+from .child_process import render_bounded_diagnostic
 from .contracts import Contracts
 from .intake_assignment import verify_assignment_record
 from .operating import read_operating, validate_snapshot
@@ -62,8 +63,23 @@ def _identity(config, request):
         github_identity_preflight(config, request['github_identity'])
         jira_identity_preflight(config, request['jira_connections'])
     except ProviderIdentityError as exc:
-        return exc.code + ': ' + str(exc)
+        try:
+            return render_bounded_diagnostic(str(exc), code=exc.code, paths=tuple(
+                source for source in (
+                    (request.get('inventory') or {}).get('source')
+                    if isinstance(request.get('inventory'), dict) else None,
+                    (request.get('merge_train') or {}).get('source')
+                    if isinstance(request.get('merge_train'), dict) else None,
+                    *(record.get('source') for record in (request.get('assignments') or [])
+                      if isinstance(record, dict)))
+                if isinstance(source, (str, bytes)) and source))
+        except Exception:
+            return exc.code + ': <redacted>'
     return None
+
+
+def _identity_failure_projection(config, reason):
+    return dict(release_binding=_release(config), identity_failure=reason)
 
 
 def _verified(value, binding, verifier, label):
@@ -231,8 +247,6 @@ def prepare_report(config, request, *, operating=None, verify_inventory=None,
                    verify_owner_source=None, verify_merge_train=None, trigger='on-demand'):
     """Verify supplied sources and freeze the original inputs before projection."""
     reason = _identity(config, request)
-    if reason is not None:
-        return dict(status='NOT_RUN', reason=reason)
     _require(trigger in {'on-demand','activation'}, 'Invalid report trigger')
     _require(str(uuid.UUID(request['record_id'])) == request['record_id'], 'Invalid report identity')
     timestamp(request['created_at'])
@@ -256,13 +270,16 @@ def prepare_report(config, request, *, operating=None, verify_inventory=None,
             else:
                 projection[key] = _unknown('INVALID_' + label + ': ' + str(exc))
 
-    project('inventory', lambda: _inventory(config, request, verify_inventory), 'INVENTORY')
-    project('assignments', lambda: _assignments(request.get('assignments')), 'ASSIGNMENTS')
-    project('lane_evidence', lambda: _lanes(config, request, operating, projection['inventory'], verify_owner_source), 'PLAN')
-    project('eta_inputs', lambda: _eta(request.get('planning_graph'), projection.get('lane_evidence'),
-                                     projection['inventory'], projection['assignments']), 'GRAPH')
-    project('merge_train', lambda: _verified(request.get('merge_train'), request['binding'], verify_merge_train, 'MERGE_TRAIN'), 'MERGE_TRAIN')
-    project('routing', lambda: _routing(config, operating), 'ROUTING')
+    if reason is not None:
+        projection = _identity_failure_projection(config, reason)
+    else:
+        project('inventory', lambda: _inventory(config, request, verify_inventory), 'INVENTORY')
+        project('assignments', lambda: _assignments(request.get('assignments')), 'ASSIGNMENTS')
+        project('lane_evidence', lambda: _lanes(config, request, operating, projection['inventory'], verify_owner_source), 'PLAN')
+        project('eta_inputs', lambda: _eta(request.get('planning_graph'), projection.get('lane_evidence'),
+                                         projection['inventory'], projection['assignments']), 'GRAPH')
+        project('merge_train', lambda: _verified(request.get('merge_train'), request['binding'], verify_merge_train, 'MERGE_TRAIN'), 'MERGE_TRAIN')
+        project('routing', lambda: _routing(config, operating), 'ROUTING')
     report = build_report(projection)
     report['inputs_sha256'] = digest
     record = dict(format='awf-status-report-record-1', record_id=request['record_id'],
@@ -281,7 +298,11 @@ def replay_report(record):
     _require(inputs_sha256(record['inputs']) == record['inputs_sha256'], 'Report input snapshot hash mismatch')
     request = record['inputs']['request']
     reason = _identity(record['inputs']['configuration'], request)
-    _require(reason is None, reason)
+    if reason is None:
+        _require('identity_failure' not in record['projection'], 'Unexpected identity failure projection')
+    else:
+        _require(record['projection'] == _identity_failure_projection(
+            record['inputs']['configuration'], reason), reason)
     _require(str(uuid.UUID(record['record_id'])) == record['record_id'], 'Invalid report identity')
     timestamp(record['created_at'])
     _require(record['record_id'] == request['record_id'] and record['created_at'] == request['created_at']
@@ -352,6 +373,9 @@ def run_report(root, input_path, store_path):
         return prepared
     contracts.validate('status-report', prepared['report'])
     sequence = ReportStore(store_path, config['project']['id'], worktree_roots=[root]).append(prepared['record'])
-    return dict(status='RECORDED', record_id=request['record_id'], sequence=sequence,
+    result = dict(status='RECORDED', record_id=request['record_id'], sequence=sequence,
                 created_at=request['created_at'], trigger='on-demand', source_mode='SUPPLIED_RECORDS_ONLY',
                 report=prepared['report'])
+    if prepared['report'].get('status') == 'UNKNOWN':
+        result.update(status='UNKNOWN', reason=prepared['report']['reason'])
+    return result
