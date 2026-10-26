@@ -604,6 +604,14 @@ class FileSnapshot:
     identity: tuple
 
 
+class SnapshotSizeError(ValidationError):
+    """The file was already oversized when its descriptor was inspected."""
+
+
+class SnapshotChangedError(ValidationError):
+    """The file changed or grew beyond the cap during a bounded read."""
+
+
 class _WatchedFileLimit(ValidationError):
     pass
 
@@ -774,20 +782,21 @@ class Tree:
             fd = msvcrt.open_osfhandle(raw, os.O_RDONLY | os.O_BINARY)
         else:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=handle)
-        with os.fdopen(fd, "rb") as stream:
+        with os.fdopen(fd, "rb", buffering=0) as stream:
             before = os.fstat(stream.fileno())
             if (not stat.S_ISREG(before.st_mode)
-                    or (not allow_hardlinks and before.st_nlink != 1)
-                    or before.st_size > maximum):
+                    or (not allow_hardlinks and before.st_nlink != 1)):
                 raise ValidationError("Unsafe file type/link count/size")
+            if before.st_size > maximum:
+                raise SnapshotSizeError("Unsafe file type/link count/size")
             data = stream.read(maximum + 1)
             if len(data) > maximum:
-                raise ValidationError("File exceeds size limit")
+                raise SnapshotChangedError("File exceeds size limit")
             after = os.fstat(stream.fileno())
             identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
                                       value.st_mtime_ns, value.st_nlink)
             if identity(before) != identity(after) or after.st_size != len(data):
-                raise ValidationError("File changed during bounded read")
+                raise SnapshotChangedError("File changed during bounded read")
             return FileSnapshot(
                 data, len(data), hashlib.sha256(data).hexdigest(), identity(after))
 

@@ -1,6 +1,9 @@
 """Process-boundary regressions for the shared bounded runner."""
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
+import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +19,7 @@ import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic import safeio
+from agentic import provenance
 
 
 def _python(source, *arguments):
@@ -452,6 +456,345 @@ class BoundedProcessTests(unittest.TestCase):
         self.assertEqual(events[0], ("suspended", safeio._CREATE_SUSPENDED))
         self.assertEqual(events[1][0], "attach-and-resume")
         self.assertEqual(events[-1][0], "close")
+
+
+@contextmanager
+def _metadata_reads(before_read=lambda: None):
+    """Count real FileIO bytes beneath either pathname or descriptor buffering."""
+    observed = {"bytes": 0, "reads": 0, "streams": []}
+    real_open, real_fdopen = io.open, os.fdopen
+
+    class CountedRaw(io.RawIOBase):
+        def __init__(self, raw):
+            self.raw = raw
+            observed["streams"].append(self)
+
+        def readable(self):
+            return True
+
+        def fileno(self):
+            return self.raw.fileno()
+
+        def _before(self):
+            if observed["reads"] == 0:
+                before_read()
+            observed["reads"] += 1
+
+        def read(self, size=-1):
+            self._before()
+            data = self.raw.read(size)
+            observed["bytes"] += len(data)
+            return data
+
+        def readinto(self, buffer):
+            self._before()
+            size = self.raw.readinto(buffer)
+            observed["bytes"] += size
+            return size
+
+        def close(self):
+            try:
+                self.raw.close()
+            finally:
+                super().close()
+
+    def wrap(raw, buffering):
+        counted = CountedRaw(raw)
+        if buffering == 0:
+            return counted
+        return io.BufferedReader(counted, io.DEFAULT_BUFFER_SIZE if buffering < 0 else buffering)
+
+    def open_path(file, mode="r", buffering=-1, *args, **kwargs):
+        if mode == "rb":
+            return wrap(real_open(file, mode, 0, *args, **kwargs), buffering)
+        return real_open(file, mode, buffering, *args, **kwargs)
+
+    def open_fd(fd, mode="r", buffering=-1, **kwargs):
+        if mode == "rb":
+            return wrap(real_open(fd, mode, buffering=0, **kwargs), buffering)
+        return real_fdopen(fd, mode, buffering=buffering, **kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(io, "open", side_effect=open_path))
+        stack.enter_context(mock.patch.object(safeio.os, "fdopen", side_effect=open_fd))
+        if os.name == "nt":
+            real_win_open = safeio.win_open
+
+            def shared_open(path, **kwargs):
+                # Permit the same real-file mutation that POSIX permits during a
+                # read. Keep all no-follow/type checks in the Windows opener.
+                if not kwargs.get("directory", False):
+                    kwargs["shared_write"] = True
+                return real_win_open(path, **kwargs)
+
+            stack.enter_context(mock.patch.object(safeio, "win_open", side_effect=shared_open))
+        yield observed
+
+
+class RepositoryMetadataReadTests(unittest.TestCase):
+    def test_symlinked_metadata_refuses_without_consuming_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "real"
+            parent.mkdir()
+            target = parent / "config"
+            target.write_bytes(b"harmless target")
+            linked = root / "linked"
+            dangling = root / "dangling"
+            linked_parent = root / "linked-parent"
+            for case, link, destination, is_directory, path in (
+                    ("leaf", linked, target, False, linked),
+                    ("dangling", dangling, root / "absent", False, dangling),
+                    ("parent", linked_parent, parent, True, linked_parent / "config")):
+                with self.subTest(case=case):
+                    try:
+                        link.symlink_to(destination, target_is_directory=is_directory)
+                    except OSError as exc:
+                        self.skipTest(f"{case} symlinks unavailable: {exc}")
+                    with _metadata_reads() as observed:
+                        with self.subTest(check="refusal"):
+                            with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_INVALID:"):
+                                provenance._Git._file_bytes(path)
+                        with self.subTest(check="no target bytes"):
+                            self.assertEqual(0, observed["bytes"])
+
+    def test_growth_after_observation_is_changed_and_underlying_read_is_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"safe")
+
+            def grow():
+                with open(path, "ab", buffering=0) as writer:
+                    writer.write(b"x" * 65536)
+
+            with mock.patch.object(provenance, "_REPOSITORY_FILE_LIMIT", 8), \
+                    _metadata_reads(grow) as observed:
+                with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_CHANGED:"):
+                    provenance._Git._file_bytes(path)
+            self.assertGreater(observed["reads"], 0)
+            self.assertGreater(observed["bytes"], 0)
+            self.assertLessEqual(observed["bytes"], 9)
+            self.assertTrue(all(stream.closed and stream.raw.closed
+                                for stream in observed["streams"]))
+
+    def test_metadata_ordinary_file_compatibility_matrix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in ("missing", "optional-parent/missing"):
+                with self.subTest(case=relative):
+                    self.assertEqual(b"", provenance._Git._file_bytes(root / relative))
+            path = root / "config"
+            with mock.patch.object(provenance, "_REPOSITORY_FILE_LIMIT", 4):
+                for value in (b"", b"abc", b"1234"):
+                    path.write_bytes(value)
+                    with self.subTest(case=value):
+                        self.assertEqual(value, provenance._Git._file_bytes(path))
+                path.write_bytes(b"12345")
+                with self.assertRaisesRegex(ValidationError, "^REPOSITORY_METADATA_SIZE:"):
+                    provenance._Git._file_bytes(path)
+
+    def test_metadata_nonregular_and_hardlinked_files_refuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "config"
+            target.write_bytes(b"safe")
+            hardlink = root / "hardlink"
+            os.link(target, hardlink)
+            for case, path in (("directory", root), ("hardlink", hardlink)):
+                with self.subTest(case=case), self.assertRaisesRegex(
+                        ValidationError, "^REPOSITORY_IDENTITY_INVALID:"):
+                    provenance._Git._file_bytes(path)
+
+    def test_metadata_unreadable_is_sanitized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"safe")
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(io, "open", side_effect=PermissionError("private path")))
+                if os.name == "nt":
+                    real_open = safeio.win_open
+
+                    def deny_leaf(candidate, **kwargs):
+                        if not kwargs.get("directory", False):
+                            raise PermissionError("private path")
+                        return real_open(candidate, **kwargs)
+
+                    stack.enter_context(mock.patch.object(safeio, "win_open", side_effect=deny_leaf))
+                else:
+                    real_open = safeio.os.open
+
+                    def deny_leaf(candidate, flags, *args, **kwargs):
+                        if candidate == path.name:
+                            raise PermissionError("private path")
+                        return real_open(candidate, flags, *args, **kwargs)
+
+                    stack.enter_context(mock.patch.object(safeio.os, "open", side_effect=deny_leaf))
+                with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_INVALID:") as caught:
+                    provenance._Git._file_bytes(path)
+            self.assertNotIn("private path", str(caught.exception))
+
+    def test_metadata_disappearance_after_observation_is_not_absence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"safe")
+            real_read, real_snapshot = Path.read_bytes, safeio.snapshot_file
+
+            def vanish_read(candidate):
+                candidate.unlink()
+                return real_read(candidate)
+
+            def vanish_snapshot(*args, **kwargs):
+                path.unlink()
+                return real_snapshot(*args, **kwargs)
+
+            with mock.patch.object(Path, "read_bytes", vanish_read), \
+                    mock.patch.object(provenance, "snapshot_file", side_effect=vanish_snapshot, create=True):
+                with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_INVALID:"):
+                    provenance._Git._file_bytes(path)
+
+    def test_metadata_mutation_within_cap_is_changed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            for case in ("size", "mtime"):
+                path.write_bytes(b"safe")
+                initial = path.stat()
+
+                def mutate():
+                    if case == "size":
+                        with open(path, "ab", buffering=0) as writer:
+                            writer.write(b"!")
+                    else:
+                        os.utime(path, ns=(initial.st_atime_ns, initial.st_mtime_ns + 1_000_000_000))
+
+                with self.subTest(case=case), \
+                        mock.patch.object(provenance, "_REPOSITORY_FILE_LIMIT", 16), _metadata_reads(mutate):
+                    with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_CHANGED:"):
+                        provenance._Git._file_bytes(path)
+
+    def test_metadata_pathname_replacement_before_and_after_snapshot_is_changed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, replacement = root / "config", root / "replacement"
+            for stage in ("before", "after"):
+                path.write_bytes(b"same")
+                replacement.write_bytes(b"same")
+                initial = path.stat()
+                os.utime(replacement, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+                real_read, real_snapshot = Path.read_bytes, safeio.snapshot_file
+
+                def swap():
+                    os.replace(replacement, path)
+
+                def replacing_read(candidate):
+                    if stage == "before":
+                        swap()
+                    raw = real_read(candidate)
+                    if stage == "after":
+                        swap()
+                    return raw
+
+                def replacing_snapshot(*args, **kwargs):
+                    if stage == "before":
+                        swap()
+                    result = real_snapshot(*args, **kwargs)
+                    if stage == "after":
+                        swap()
+                    return result
+
+                with self.subTest(stage=stage), mock.patch.object(Path, "read_bytes", replacing_read), \
+                        mock.patch.object(provenance, "snapshot_file", side_effect=replacing_snapshot, create=True):
+                    with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_CHANGED:"):
+                        provenance._Git._file_bytes(path)
+
+    def test_growth_between_inspection_and_descriptor_open_is_changed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"safe")
+            real_read, real_snapshot = Path.read_bytes, safeio.snapshot_file
+
+            def grow():
+                with open(path, "ab", buffering=0) as writer:
+                    writer.write(b"x" * 16)
+
+            def growing_read(candidate):
+                grow()
+                return real_read(candidate)
+
+            def growing_snapshot(*args, **kwargs):
+                grow()
+                return real_snapshot(*args, **kwargs)
+
+            with mock.patch.object(provenance, "_REPOSITORY_FILE_LIMIT", 8), \
+                    mock.patch.object(Path, "read_bytes", growing_read), \
+                    mock.patch.object(provenance, "snapshot_file", side_effect=growing_snapshot, create=True):
+                with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_CHANGED:"):
+                    provenance._Git._file_bytes(path)
+
+    def test_later_identity_verification_compares_metadata_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"before")
+            initial = path.stat()
+            git = object.__new__(provenance._Git)
+            git._identity = {}
+            git._repository_files = {path: provenance._Git._file_bytes(path)}
+            path.write_bytes(b"after!")
+            os.utime(path, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+            with self.assertRaisesRegex(ValidationError, "^REPOSITORY_IDENTITY_CHANGED:"):
+                git._verify_repository_identity()
+
+
+class MetadataSnapshotContractTests(unittest.TestCase):
+    def test_snapshot_bytes_size_digest_identity_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"snapshot")
+            with _metadata_reads() as observed, safeio.Tree(path.parent) as tree:
+                result = safeio.snapshot_file(tree, path.name, maximum=8)
+                self.assertEqual(b"snapshot", result.data)
+                self.assertEqual(8, result.size)
+                self.assertEqual(hashlib.sha256(b"snapshot").hexdigest(), result.sha256)
+                self.assertEqual(safeio._file_identity(path.stat()), result.identity)
+            self.assertEqual({}, tree._dirs)
+            self.assertTrue(observed["streams"])
+            self.assertTrue(all(stream.closed and stream.raw.closed
+                                for stream in observed["streams"]))
+            self.assertEqual(result, safeio.snapshot_file(path, maximum=8))
+
+    def test_snapshot_size_refusal_is_typed_and_closes_handles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"12345")
+            with _metadata_reads() as observed:
+                with self.assertRaises(ValidationError) as caught:
+                    with safeio.Tree(path.parent) as tree:
+                        safeio.snapshot_file(tree, path.name, maximum=4)
+            self.assertIsInstance(caught.exception, getattr(safeio, "SnapshotSizeError", ()))
+            self.assertEqual("Unsafe file type/link count/size", str(caught.exception))
+            self.assertEqual(0, observed["bytes"])
+            self.assertEqual({}, tree._dirs)
+            self.assertTrue(all(stream.closed and stream.raw.closed
+                                for stream in observed["streams"]))
+
+    def test_snapshot_growth_and_mutation_refusals_are_typed_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            for value in (b"12345", b"123"):
+                path.write_bytes(b"safe")
+
+                def mutate():
+                    with open(path, "wb", buffering=0) as writer:
+                        writer.write(value)
+
+                with self.subTest(value=value), _metadata_reads(mutate) as observed:
+                    with self.assertRaises(ValidationError) as caught:
+                        with safeio.Tree(path.parent) as tree:
+                            safeio.snapshot_file(tree, path.name, maximum=4)
+                    self.assertIsInstance(caught.exception, getattr(safeio, "SnapshotChangedError", ()))
+                    self.assertLessEqual(observed["bytes"], 5)
+                    self.assertEqual({}, tree._dirs)
+                    self.assertTrue(all(stream.closed and stream.raw.closed
+                                        for stream in observed["streams"]))
 
 
 if __name__ == "__main__":
