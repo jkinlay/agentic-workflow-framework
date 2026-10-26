@@ -597,7 +597,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
 | `global/awf/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
-| `scripts/ac42_e2e.py` | `eb3395d933e6e982cb78696d074088731a04c1e850f76abb7c7d713af00cbdd6` |
+| `scripts/ac42_e2e.py` | `51c83943e9fa1ce726e0864a147f92871610b07297b3f6219bd58fb8aa5ec1dc` |
 | `scripts/bootstrap_project.py` | `639eb1d42a76c5008214d26a1d5c9ac30276b3bf4643de893f8f949927cdefd8` |
 | `scripts/build_release.py` | `9e4fe036247a99f6f1b15a13579a25bebfc16eda8ce97d6812ec2041edcdefc5` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
@@ -623,7 +623,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/run_windows_unittests.py` | `7dbba35db3a9d8d1ff2cbe34257c912ba479cde2663bcf5494c2821f057798ef` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
-| `scripts/tests/test_ac42_e2e.py` | `90e46f02d560103043ffb3c76f4b33db4e1a048c98b218d5b44ce83836861bed` |
+| `scripts/tests/test_ac42_e2e.py` | `58a730953824f9a0c87b0ece9b669195c73e165c375c1132daa6c9389326883e` |
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
 | `scripts/tests/test_awf195_publication_docs.py` | `29f7d9286cfc678ba6f21d7510a4ff7c73808656e1f0db0edcdef95d1c2a7c9f` |

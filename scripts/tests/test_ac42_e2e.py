@@ -142,11 +142,53 @@ class ProjectValuesPreservedTests(unittest.TestCase):
              b'  }\n'
              b"}\n"
              b"# retained formatting\n")
+    IGNORE_HEADER = (
+        b"# AWF operating recovery files are local; changes/ is versioned audit evidence.\n")
+    HISTORICAL_IGNORE_BLOCK = (
+        IGNORE_HEADER
+        + b".agentic-state/**/lock\n"
+        + b".agentic-state/operating/pending.json\n"
+        + b"*.awf-operating-*.tmp\n"
+        + b".awf-*.tmp\n")
 
     def decision(self, after):
         harness = _load_harness()
         return harness.project_values_preserved(
             {self.CONFIG: self.BEFORE}, {self.CONFIG: after}, self.CONFIG, self.INSTALLED)[0]
+
+    def gitignore_decision(self, before, after):
+        harness = _load_harness()
+        return harness.project_values_preserved(
+            {self.CONFIG: self.BEFORE, ".gitignore": before},
+            {self.CONFIG: self.AFTER, ".gitignore": after},
+            self.CONFIG, self.INSTALLED)[0]
+
+    def operating_ignore_block(self):
+        return (ROOT / ".agentic/templates/operating.gitignore").read_bytes()
+
+    def test_historical_gitignore_block_replaced_in_place_is_accepted(self):
+        before = b"owner-prefix/\n" + self.HISTORICAL_IGNORE_BLOCK + b"!owner-suffix/\n"
+        after = b"owner-prefix/\n" + self.operating_ignore_block() + b"!owner-suffix/\n"
+        self.assertTrue(self.gitignore_decision(before, after))
+
+    def test_gitignore_append_is_accepted_only_without_a_historical_block(self):
+        owner_only = b"owner-only/"
+        appended = owner_only + b"\n" + self.operating_ignore_block()
+        self.assertTrue(self.gitignore_decision(owner_only, appended))
+        historical = owner_only + b"\n" + self.HISTORICAL_IGNORE_BLOCK
+        self.assertFalse(self.gitignore_decision(
+            historical, historical + self.operating_ignore_block()))
+
+    def test_gitignore_owner_line_change_outside_block_is_rejected(self):
+        before = b"owner-prefix/\n" + self.HISTORICAL_IGNORE_BLOCK + b"!owner-suffix/\n"
+        after = b"changed-prefix/\n" + self.operating_ignore_block() + b"!owner-suffix/\n"
+        self.assertFalse(self.gitignore_decision(before, after))
+
+    def test_gitignore_block_differing_from_shipped_template_is_rejected(self):
+        before = b"owner-only/\n"
+        altered = self.operating_ignore_block().replace(
+            b".agentic-install/", b".agentic-install-changed/")
+        self.assertFalse(self.gitignore_decision(before, before + altered))
 
     def test_documented_tier_three_insertion_is_accepted(self):
         self.assertTrue(self.decision(self.AFTER))
@@ -178,6 +220,47 @@ class ProjectValuesPreservedTests(unittest.TestCase):
     def test_unrelated_owner_value_change_is_rejected(self):
         mutated = self.AFTER.replace(b'"project_key": "KEEP"', b'"project_key": "CHANGED"')
         self.assertFalse(self.decision(mutated))
+
+    def test_version_replacement_is_scoped_to_template_mapping(self):
+        before = (b"template:\n"
+                  b"  expected_workflow_version: !!str 1.9.2\n"
+                  b"owner_note: \"expected_workflow_version: 1.9.2\"\n"
+                  b"jira: {cloud_id: KEEP, provider_project_id: KEEP, "
+                  b"controller_actor_id: KEEP, site: https://jira.example.invalid}\n"
+                  b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
+        expected = before.replace(
+            b"expected_workflow_version: !!str 1.9.2",
+            b"expected_workflow_version: !!str 1.9.5")
+        harness = _load_harness()
+        self.assertEqual(expected, harness.expected_project_config(before))
+
+    def test_flow_jira_existing_identity_is_not_duplicated(self):
+        before = (b"template: {expected_workflow_version: 1.9.2}\n"
+                  b"jira: {cloud_id: KEEP,\n"
+                  b"  provider_project_id: KEEP,\n"
+                  b"  controller_actor_id: KEEP,\n"
+                  b"  site: https://jira.example.invalid}\n"
+                  b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
+        expected = before.replace(b"1.9.2", b"1.9.5", 1)
+        harness = _load_harness()
+        self.assertEqual(expected, harness.expected_project_config(before))
+        self.assertEqual(1, expected.count(b"cloud_id:"))
+
+    def test_tier_insertion_is_scoped_to_execution_risk_tiers(self):
+        before = (b"template: {expected_workflow_version: 1.9.2}\n"
+                  b"jira: {cloud_id: KEEP, provider_project_id: KEEP, "
+                  b"controller_actor_id: KEEP, site: https://jira.example.invalid}\n"
+                  b"owner_policy:\n"
+                  b"  risk_tiers: {owner_tier: KEEP}\n"
+                  b"execution: {risk_tiers: {tier1_review: KEEP}}\n")
+        tier = (b"tier3_review: {roles: [critic, specialist], findings: blocking, "
+                b"max_rounds: 3}")
+        expected = before.replace(b"1.9.2", b"1.9.5", 1).replace(
+            b"execution: {risk_tiers: {",
+            b"execution: {risk_tiers: {" + tier + b", ")
+        harness = _load_harness()
+        self.assertEqual(expected, harness.expected_project_config(before))
+        self.assertEqual(b"owner_tier: KEEP", expected.splitlines()[3].split(b"{")[1][:-1])
 
 
 class AutocrlfScopeTests(unittest.TestCase):

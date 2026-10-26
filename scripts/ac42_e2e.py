@@ -19,6 +19,7 @@ Git configuration is changed.
 from __future__ import annotations
 import argparse
 import base64
+import copy
 import difflib
 import hashlib
 import json
@@ -168,51 +169,215 @@ def owner_blob(project, commit, name, max_bytes=OWNER_BLOB_MAX_BYTES):
     return done.stdout
 
 
+def _mapping_entries(node, yaml):
+    """Return unique scalar-key entries from one composed YAML mapping."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    entries = {}
+    for key, value in node.value:
+        if not isinstance(key, yaml.ScalarNode) or key.value in entries:
+            return None
+        entries[key.value] = (key, value)
+    return entries
+
+
+def _line_start(text, index):
+    return max(text.rfind("\n", 0, index), text.rfind("\r", 0, index)) + 1
+
+
+def _insert_mapping_entry(text, node, flow_entry, block_lines, newline, yaml):
+    """Insert into one structurally identified mapping without re-emitting it."""
+    entries = _mapping_entries(node, yaml)
+    if entries is None:
+        return None
+    if node.flow_style:
+        openings = [token.start_mark.index for token in yaml.scan(text)
+                    if isinstance(token, yaml.tokens.FlowMappingStartToken)
+                    and node.start_mark.index <= token.start_mark.index < node.end_mark.index]
+        if not openings:
+            return None
+        opening = min(openings)
+        separator = ", " if entries else ""
+        return text[:opening + 1] + flow_entry + separator + text[opening + 1:]
+
+    insertion = node.end_mark.index
+    if not (0 <= insertion <= len(text)):
+        return None
+    if entries:
+        indent = next(iter(entries.values()))[0].start_mark.column
+    else:
+        indent = node.start_mark.column
+    insertion_line = _line_start(text, insertion)
+    if insertion < len(text) and not text[insertion_line:insertion].strip(" \t"):
+        insertion = insertion_line
+    prefix = "" if insertion == 0 or text[insertion - 1] in "\r\n" else newline
+    rendered = prefix + "".join(" " * indent + line + newline for line in block_lines)
+    return text[:insertion] + rendered + text[insertion:]
+
+
+def _compose_mapping(text):
+    import yaml
+    try:
+        root = yaml.compose(text)
+        value = yaml.safe_load(text)
+    except (UnicodeError, yaml.YAMLError):
+        return None
+    entries = _mapping_entries(root, yaml)
+    if entries is None or not isinstance(value, dict):
+        return None
+    return yaml, root, entries, value
+
+
 def expected_project_config(raw):
     """Derive the exact bytes after the documented additive config edits."""
-    version_pattern = re.compile(
-        rb'(?P<prefix>["\']?expected_workflow_version["\']?[ \t]*:[ \t]*)'
-        rb'(?P<quote>["\']?)[0-9]+\.[0-9]+\.[0-9]+(?P=quote)')
-    expected, count = version_pattern.subn(
-        lambda match: match.group("prefix") + match.group("quote")
-        + VERSION.encode("ascii") + match.group("quote"), raw)
-    if count != 1:
+    try:
+        text = bytes(raw).decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
-    newline = b"\r\n" if b"\r\n" in expected else b"\r" if b"\r" in expected else b"\n"
-    identity_fields = ("cloud_id", "provider_project_id", "controller_actor_id")
-    missing = [name for name in identity_fields if not re.search(
-        rb'(?m)^[ \t]*["\']?' + name.encode("ascii") + rb'["\']?[ \t]*:', expected)]
-    if missing:
-        site_pattern = re.compile(rb'(?m)^(?P<indent>[ \t]*)["\']?site["\']?[ \t]*:')
-        sites = list(site_pattern.finditer(expected))
-        if len(sites) != 1:
-            return None
-        indent = sites[0].group("indent")
-        block = b"".join(indent + b'"' + name.encode("ascii") + b'": null,' + newline
-                         for name in missing)
-        expected = expected[:sites[0].start()] + block + expected[sites[0].start():]
+    composed = _compose_mapping(text)
+    if composed is None:
+        return None
+    yaml, _, root_entries, value = composed
+    template = root_entries.get("template")
+    template_entries = _mapping_entries(template[1], yaml) if template else None
+    version_entry = template_entries.get("expected_workflow_version") if template_entries else None
+    version_node = version_entry[1] if version_entry else None
+    if (not isinstance(version_node, yaml.ScalarNode)
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version_node.value)):
+        return None
+    start, end = version_node.start_mark.index, version_node.end_mark.index
+    scalar_source = text[start:end]
+    matches = list(re.finditer(re.escape(version_node.value), scalar_source))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    text = (text[:start + match.start()] + VERSION
+            + text[start + match.end():])
+    expected_value = copy.deepcopy(value)
+    expected_value["template"]["expected_workflow_version"] = VERSION
+    recomposed = _compose_mapping(text)
+    if recomposed is None or recomposed[3] != expected_value:
+        return None
 
-    tier_pattern = re.compile(rb'(?m)^[ \t]*["\']?tier3_review["\']?[ \t]*:')
-    if not tier_pattern.search(expected):
-        tier = (b"tier3_review: {roles: [critic, specialist], findings: blocking, "
-                b"max_rounds: 3}")
-        risk_pattern = re.compile(
-            rb'(?m)^[ \t]*["\']?risk_tiers["\']?[ \t]*:[ \t]*\{')
-        risks = list(risk_pattern.finditer(expected))
-        if len(risks) == 1:
-            insertion = risks[0].end()
-            expected = expected[:insertion] + tier + b", " + expected[insertion:]
+    newline = "\r\n" if "\r\n" in text else "\r" if "\r" in text else "\n"
+    yaml, _, root_entries, value = recomposed
+    jira_entry = root_entries.get("jira")
+    jira_entries = _mapping_entries(jira_entry[1], yaml) if jira_entry else None
+    if jira_entries is None or not isinstance(value.get("jira"), dict):
+        return None
+    identity_fields = ("cloud_id", "provider_project_id", "controller_actor_id")
+    missing = [name for name in identity_fields if name not in jira_entries]
+    if missing:
+        site_entry = jira_entries.get("site")
+        if site_entry is None:
+            return None
+        insertion = _line_start(text, site_entry[0].start_mark.index)
+        leading = text[insertion:site_entry[0].start_mark.index]
+        if leading.strip(" \t"):
+            return None
+        block = "".join(leading + '"' + name + '": null,' + newline
+                        for name in missing)
+        text = text[:insertion] + block + text[insertion:]
+        for name in missing:
+            expected_value["jira"][name] = None
+        recomposed = _compose_mapping(text)
+        if recomposed is None or recomposed[3] != expected_value:
+            return None
+
+    # The review-tier migration serializes strict JSON; YAML retains all bytes
+    # except the one structurally scoped insertion.
+    json_value = None
+    if text.lstrip().startswith(("{", "[")):
+        try:
+            json_value = json.loads(text)
+        except (TypeError, ValueError):
+            pass
+    tier_default = {"roles": ["critic", "specialist"],
+                    "findings": "blocking", "max_rounds": 3}
+    if json_value is not None:
+        if not isinstance(json_value, dict):
+            return None
+        execution = json_value.setdefault("execution", {})
+        if not isinstance(execution, dict):
+            return None
+        tiers = execution.setdefault("risk_tiers", {})
+        if not isinstance(tiers, dict):
+            return None
+        tiers.setdefault("tier3_review", copy.deepcopy(tier_default))
+        return (json.dumps(json_value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+    recomposed = _compose_mapping(text)
+    if recomposed is None:
+        return None
+    yaml, root, root_entries, value = recomposed
+    expected_value = copy.deepcopy(value)
+    execution_entry = root_entries.get("execution")
+    tier_flow = ("tier3_review: {roles: [critic, specialist], findings: blocking, "
+                 "max_rounds: 3}")
+    if execution_entry is None:
+        text = _insert_mapping_entry(
+            text, root,
+            "execution: {risk_tiers: {" + tier_flow + "}}",
+            ["execution:", "  risk_tiers:", "    tier3_review:",
+             "      roles: [critic, specialist]", "      findings: blocking",
+             "      max_rounds: 3"], newline, yaml)
+        expected_value["execution"] = {"risk_tiers": {"tier3_review": tier_default}}
+    else:
+        execution_entries = _mapping_entries(execution_entry[1], yaml)
+        if execution_entries is None or not isinstance(value.get("execution"), dict):
+            return None
+        risk_entry = execution_entries.get("risk_tiers")
+        if risk_entry is None:
+            text = _insert_mapping_entry(
+                text, execution_entry[1],
+                "risk_tiers: {" + tier_flow + "}",
+                ["risk_tiers:", "  tier3_review:",
+                 "    roles: [critic, specialist]", "    findings: blocking",
+                 "    max_rounds: 3"], newline, yaml)
+            expected_value["execution"]["risk_tiers"] = {"tier3_review": tier_default}
         else:
-            execution_pattern = re.compile(
-                rb'(?m)^[ \t]*["\']?execution["\']?[ \t]*:[ \t]*\{')
-            executions = list(execution_pattern.finditer(expected))
-            if risks or len(executions) != 1:
+            risk_entries = _mapping_entries(risk_entry[1], yaml)
+            if risk_entries is None or not isinstance(value["execution"].get("risk_tiers"), dict):
                 return None
-            insertion = executions[0].end()
-            expected = (expected[:insertion] + b"risk_tiers: {" + tier
-                        + b"}, " + expected[insertion:])
-    return expected
+            if "tier3_review" not in risk_entries:
+                text = _insert_mapping_entry(
+                    text, risk_entry[1], tier_flow,
+                    ["tier3_review:", "  roles: [critic, specialist]",
+                     "  findings: blocking", "  max_rounds: 3"], newline, yaml)
+                expected_value["execution"]["risk_tiers"]["tier3_review"] = tier_default
+    if text is None:
+        return None
+    recomposed = _compose_mapping(text)
+    if recomposed is None or recomposed[3] != expected_value:
+        return None
+    return text.encode("utf-8")
+
+
+def expected_gitignore(raw):
+    """Replace one historical AWF block in place, or append the current block."""
+    try:
+        block = (ROOT / ".agentic/templates/operating.gitignore").read_bytes()
+    except OSError:
+        return None
+    block_lines = block.splitlines()
+    if not block_lines:
+        return None
+    header, historical_end = block_lines[0], b".awf-*.tmp"
+    lines = bytes(raw).splitlines(keepends=True)
+    headers = [index for index, line in enumerate(lines)
+               if line.rstrip(b"\r\n") == header]
+    if not headers:
+        separator = b"\n" if raw and not bytes(raw).endswith(b"\n") else b""
+        return bytes(raw) + separator + block
+    if len(headers) != 1:
+        return None
+    start = headers[0]
+    ends = [index for index in range(start + 1, len(lines))
+            if lines[index].rstrip(b"\r\n") == historical_end]
+    if len(ends) != 1:
+        return None
+    return b"".join(lines[:start]) + block + b"".join(lines[ends[0] + 1:])
 
 
 def project_values_preserved(owner_before, owner_after, config, installed):
@@ -225,16 +390,18 @@ def project_values_preserved(owner_before, owner_after, config, installed):
                 (raw or b"").decode("utf-8", "replace").splitlines(),
                 (after or b"").decode("utf-8", "replace").splitlines(),
                 lineterm="", n=0))[2:40]
-    # AWF-managed records and the documented append-only .gitignore block.
+    # AWF-managed records and the exact current .gitignore block are allowed.
     allowed = {config, installed, ".agentic/workflow-version.yaml", ".gitignore"}
     ignore_after = owner_after.get(".gitignore")
+    expected_ignore = (expected_gitignore(owner_before[".gitignore"])
+                       if ".gitignore" in owner_before else None)
     ignore_ok = ".gitignore" not in owner_before or (
-        ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
+        expected_ignore is not None and ignore_after == expected_ignore)
     expected_config = expected_project_config(owner_before.get(config, b""))
     config_ok = expected_config is not None and owner_after.get(config) == expected_config
     ok = set(changed) <= allowed and config_ok and ignore_ok
     return ok, {"changed": changed, "project_config_exact": config_ok,
-                "gitignore_prefix_preserved": ignore_ok}
+                "gitignore_prefix_preserved": ignore_ok, "gitignore_exact": ignore_ok}
 
 
 class Gate:
