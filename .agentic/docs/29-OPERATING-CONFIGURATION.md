@@ -1,6 +1,6 @@
 # Operating configuration by conversation
 
-At CONFIGURED, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste its table in the adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work without ACTIVE or adapters.
+At CONFIGURED, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste its table in the adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 ## Two configuration layers
 
@@ -52,7 +52,7 @@ For Epic instructions, echo the observed ID:
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Stream B's worker on Sol/high for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-5.6-sol/high
 ```
 
-Pins `epic_overrides.PROJ-123.streams.B.worker`. Observed matching `epic_id` selects scoped routes after global and before agent/ticket overrides, within allowlists/floors. Never broaden Epic identity. `--epic` supports no scoped counts, simple switches or recommendations. Unpinning requires a complete route.
+Pins `epic_overrides.PROJ-123.streams.B.worker`. Observed matching `epic_id` selects scoped routes after global and before agent/ticket overrides, within allowlists/floors. Never broaden Epic identity. `--epic` supports no scoped counts/simple switches/recommendations. Unpinning requires a complete route.
 
 `--set epic_overrides.PROJ-123.streams.B.worker=...` also works without `--epic`; global/scoped repairs are atomic.
 

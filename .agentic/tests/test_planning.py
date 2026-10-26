@@ -742,6 +742,7 @@ class ProviderSnapshotTests(unittest.TestCase):
 
     def test_operating_doc_covers_max_lanes_overrides_and_migration(self):
         doc = (ROOT / ".agentic/docs/29-OPERATING-CONFIGURATION.md").read_text(encoding="utf-8")
+        self.assertIn("CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter", doc)
         for text in ("execution.max_lanes", "fixed", "max", "sealed safe capacity",
                      "round boundaries", "omitted", "six"):
             with self.subTest(text=text):
