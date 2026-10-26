@@ -34,6 +34,21 @@ from agentic.contracts import Contracts
 from agentic.policy import inspect_config
 
 
+# Verbatim LF-terminated operating.gitignore from published v1.9.4,
+# commit 5f8fb12b3f98034f6d97eccfc4952184f33d1021 (supplied tag source).
+# Keep this historical literal independent of the current release template.
+V194_OPERATING_IGNORE = (
+    b"# AWF operating recovery files are local; changes/ is versioned audit evidence.\n"
+    b".agentic/.venv/\n"
+    b".agentic-state/**/lock\n"
+    b".agentic-state/operating/pending.json\n"
+    b".agentic-state/publication-deny.json\n"
+    b"*.awf-operating-*.tmp\n"
+    b".awf-*.tmp\n"
+)
+V194_OPERATING_IGNORE_SHA256 = "69e14c79dc4be2c6debe91062b1c1f227a1bf5275d745e291312ebae2c54fb6f"
+
+
 def template():
     # Installed PROJECT_CONFIG.yaml is project-owned and may already be mapped.
     return load(ROOT / ".agentic/examples/unconfigured-project.yaml")
@@ -367,6 +382,90 @@ class OperatingAdoptionProposalTests(unittest.TestCase):
         self.assertEqual(merge_operating_ignores(None, block), block)
         self.assertNotIn(b".agentic-state/\n", block)
         self.assertNotIn(b".agentic-state/operating/changes/\n", block)
+
+    def test_verbatim_194_ignore_is_replaced_between_project_bytes(self):
+        self.assertEqual(sha256(V194_OPERATING_IGNORE), V194_OPERATING_IGNORE_SHA256)
+        self.assertEqual(len(V194_OPERATING_IGNORE.splitlines()), 7)
+        block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        prefix, suffix = b"# Project policy\r\noutput/\r\n\n", b"\nowner-output/"
+        original = prefix + V194_OPERATING_IGNORE + suffix
+        merged = merge_operating_ignores(original, block)
+        self.assertEqual(merged, prefix + block + suffix)
+        self.assertEqual(merged.count(block.splitlines()[0]), 1)
+        for rule in (b".agentic-install/", b".agentic-backup/"):
+            self.assertIn(rule, merged.splitlines())
+        self.assertEqual(merge_operating_ignores(merged, block), merged)
+
+    def test_current_ignore_with_project_suffix_is_unchanged(self):
+        block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        original = b"owner-prefix/\n" + block + b"owner-suffix/"
+        proposed, report = operating_ignore_plan(original, block)
+        self.assertEqual(proposed, original)
+        self.assertEqual(report["status"], "UNCHANGED")
+        self.assertEqual(report["added_lines"], [])
+        self.assertEqual(report["previous_sha256"], sha256(original))
+        self.assertEqual(report["proposed_sha256"], sha256(original))
+
+    def test_ignore_historical_eof_duplicates_and_synthetic_interiors(self):
+        block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        header = block.splitlines()[0] + b"\n"
+        synthetic = header + b"older-rule/\n\nextra-rule/\n.awf-*.tmp\n"
+        prefix, between, suffix = b"owner-prefix/\n", b"\nowner-between/\n\n", b"owner-suffix/"
+        cases = (
+            ("historical EOF", prefix + V194_OPERATING_IGNORE, prefix + block),
+            ("terminal EOF", prefix + V194_OPERATING_IGNORE.rstrip(b"\n"), prefix + block),
+            ("historical/current duplicates", prefix + V194_OPERATING_IGNORE + between + block + suffix,
+             prefix + block + between + suffix),
+            ("current/historical duplicates", prefix + block + between + V194_OPERATING_IGNORE + suffix,
+             prefix + block + between + suffix),
+            ("synthetic interior", prefix + synthetic + suffix, prefix + block + suffix),
+        )
+        for name, original, expected in cases:
+            with self.subTest(name=name):
+                proposed, report = operating_ignore_plan(original, block)
+                self.assertEqual(proposed, expected)
+                self.assertEqual(proposed.count(header), 1)
+                self.assertEqual(report["status"], "MERGED")
+                self.assertEqual(report["previous_sha256"], sha256(original))
+                self.assertEqual(report["proposed_sha256"], sha256(expected))
+                self.assertEqual(report["added_lines"], block.decode("utf-8").splitlines())
+                self.assertEqual(merge_operating_ignores(proposed, block), proposed)
+
+    def test_ignore_preserves_crlf_non_utf8_and_outside_matching_rules(self):
+        block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        prefix = b"# Owner \xff\r\n.awf-*.tmp\r\n\r\n"
+        suffix = b"\r\n.agentic/.venv/\r\nowner-\xfe/"
+        for historical in (V194_OPERATING_IGNORE, V194_OPERATING_IGNORE.replace(b"\n", b"\r\n")):
+            with self.subTest(historical=historical):
+                original = prefix + historical + suffix
+                proposed, report = operating_ignore_plan(original, block)
+                self.assertEqual(proposed, prefix + block + suffix)
+                self.assertEqual(report["added_lines"], block.decode("utf-8").splitlines())
+                self.assertEqual(merge_operating_ignores(proposed, block), proposed)
+        for original in (b"owner-\xff/", b"owner-\xfe/\r\n", b"", b".awf-*.tmp\n"):
+            with self.subTest(original=original):
+                separator = b"\n" if original and not original.endswith(b"\n") else b""
+                self.assertEqual(merge_operating_ignores(original, block), original + separator + block)
+
+    def test_ignore_refuses_partial_incomplete_and_nested_boundaries(self):
+        block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        header = block.splitlines()[0]
+        malformed = (
+            header[:-1] + b"\nowner-rule/\n.awf-*.tmp\n",
+            header + b" extra\nowner-rule/\n.awf-*.tmp\n",
+            header + b"\nowner-rule/\n",
+            header + b"\n" + V194_OPERATING_IGNORE,
+            block + header + b"\nowner-rule/\n",
+        )
+        for original in malformed:
+            with self.subTest(original=original):
+                with self.assertRaisesRegex(ValidationError, "AWF operating ignore"):
+                    merge_operating_ignores(original, block)
+                with self.assertRaisesRegex(ValidationError, "AWF operating ignore"):
+                    operating_ignore_plan(original, block)
+        for invalid in (block.rstrip(b"\n"), block + b"\x00\n"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValidationError, "Invalid operating ignore template"):
+                merge_operating_ignores(None, invalid)
 
     def test_fresh_and_upgrade_ignore_plans_include_canonical_runtime_without_installing(self):
         block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
@@ -759,6 +858,98 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), merged)
         path.write_bytes(merged + b"owner-added-output/\n")
         self.assertEqual(verify_installed(self.dest), self.pin)
+
+    def test_upgrade_verbatim_194_ignore_in_installer_harness(self):
+        # Authentic historical ignore bytes in a valid harness installation;
+        # this is not a materialized complete v1.9.4 release fixture.
+        self.assertEqual(sha256(V194_OPERATING_IGNORE), V194_OPERATING_IGNORE_SHA256)
+        self.perform()
+        path = self.dest / GITIGNORE
+        prefix, suffix = b"owner-prefix/\r\n\n", b"\nowner-suffix/"
+        original = prefix + V194_OPERATING_IGNORE + suffix
+        path.write_bytes(original)
+        result = self.perform(mode="upgrade")
+        expected = prefix + self.files[GITIGNORE_TEMPLATE] + suffix
+        self.assertEqual(path.read_bytes(), expected)
+        self.assertEqual(expected.count(V194_OPERATING_IGNORE.splitlines()[0]), 1)
+        for rule in (b".agentic-install/", b".agentic-backup/"):
+            self.assertIn(rule, path.read_bytes().splitlines())
+        self.assertEqual(result["gitignore"]["status"], "MERGED")
+        receipt = json.loads((self.dest / INSTALLED).read_bytes())
+        self.assertIn(GITIGNORE, receipt["mutable_paths"])
+        self.assertNotIn(GITIGNORE, receipt["immutable_files"])
+        planned = self.perform(mode="upgrade", dry_run=True)
+        self.assertEqual(path.read_bytes(), expected)
+        self.assertEqual(planned["gitignore"]["status"], "UNCHANGED")
+        self.assertEqual(planned["gitignore"]["added_lines"], [])
+        self.assertEqual(next(item["action"] for item in planned["write_plan"]
+                              if item["path"] == GITIGNORE), "write_same")
+        with patch.object(installer, "_publish_initial_intent", wraps=installer._publish_initial_intent) as publish:
+            repeated = self.perform(mode="upgrade")
+        self.assertEqual(path.read_bytes(), expected)
+        self.assertEqual(repeated["gitignore"]["status"], "UNCHANGED")
+        self.assertEqual(repeated["gitignore"]["added_lines"], [])
+        self.assertNotIn(GITIGNORE, [entry["path"] for entry in publish.call_args.args[1]["files"]])
+
+    def test_ignore_replacement_and_deduplication_roll_back_exact_bytes(self):
+        self.perform()
+        path = self.dest / GITIGNORE
+        block = self.files[GITIGNORE_TEMPLATE]
+        for historical in (V194_OPERATING_IGNORE, V194_OPERATING_IGNORE + b"owner-between/\n" + block):
+            with self.subTest(historical=historical):
+                original = b"# Owner \xff\r\n\n" + historical + b"\nowner-suffix/"
+                path.write_bytes(original)
+                planned = self.perform(mode="upgrade", dry_run=True)
+                self.assertEqual(next(item["action"] for item in planned["write_plan"]
+                                      if item["path"] == GITIGNORE), "replace")
+                # fail_after counts all sorted planned writes, not journal entries.
+                failure_position = planned["managed_files"].index(GITIGNORE) + 1
+                observed = []
+                rollback = installer.rollback
+                def observe_rollback(tree, journal):
+                    observed.append((path.read_bytes(), [entry["path"] for entry in journal["files"]]))
+                    return rollback(tree, journal)
+                with patch.object(installer, "rollback", side_effect=observe_rollback):
+                    with self.assertRaisesRegex(OSError, "Injected installation failure"):
+                        self.perform(mode="upgrade", fail_after=failure_position)
+                self.assertEqual(len(observed), 1)
+                self.assertEqual(observed[0][0], merge_operating_ignores(original, block))
+                self.assertNotEqual(observed[0][0], original)
+                self.assertIn(GITIGNORE, observed[0][1])
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(verify_installed(self.dest), self.pin)
+
+    def test_ignore_historical_upgrade_concurrent_edit_is_preserved(self):
+        self.perform()
+        path = self.dest / GITIGNORE
+        path.write_bytes(b"owner-prefix/\n" + V194_OPERATING_IGNORE + b"owner-suffix/")
+        receipt = (self.dest / INSTALLED).read_bytes()
+        concurrent = b"owner-\xff-added-during-upgrade/\r\n"
+        def merge_and_edit(existing, required):
+            path.write_bytes(concurrent)
+            return merge_operating_ignores(existing, required)
+        with patch.object(installer, "merge_operating_ignores", side_effect=merge_and_edit):
+            with self.assertRaisesRegex(ValidationError, "Destination changed while preparing adoption"):
+                self.perform(mode="upgrade")
+        self.assertEqual(path.read_bytes(), concurrent)
+        self.assertEqual((self.dest / INSTALLED).read_bytes(), receipt)
+        self.assertFalse((self.dest / installer.MARKER).exists())
+
+    def test_ignore_malformed_upgrade_refuses_without_writing(self):
+        self.perform()
+        path = self.dest / GITIGNORE
+        receipt = (self.dest / INSTALLED).read_bytes()
+        header = V194_OPERATING_IGNORE.splitlines()[0]
+        for malformed in (header[:-1] + b"\n", header + b"\nowner-\xff/\n",
+                          header + b"\n" + V194_OPERATING_IGNORE):
+            with self.subTest(malformed=malformed):
+                original = b"owner-prefix/\r\n" + malformed
+                path.write_bytes(original)
+                with self.assertRaisesRegex(ValidationError, "AWF operating ignore"):
+                    self.perform(mode="upgrade")
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual((self.dest / INSTALLED).read_bytes(), receipt)
+                self.assertFalse((self.dest / installer.MARKER).exists())
 
     def test_ignore_rollback_restores_project_bytes(self):
         self.dest.mkdir()
