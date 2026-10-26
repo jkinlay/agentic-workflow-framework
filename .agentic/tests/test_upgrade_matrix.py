@@ -197,9 +197,25 @@ class UpgradeMatrixTests(unittest.TestCase):
                         continue
                     actual = (destination / Path(relative)).read_bytes()
                     if relative == ".gitignore":
-                        self.assertTrue(actual.startswith(raw), relative)
-                        self.assertEqual(actual[len(raw):].decode().splitlines(),
-                                         result["gitignore"]["added_lines"])
+                        block = (ROOT / ".agentic/templates/operating.gitignore").read_bytes()
+                        header = b"# AWF operating recovery files are local; changes/ is versioned audit evidence."
+                        lines = raw.splitlines(keepends=True)
+                        headers = [index for index, line in enumerate(lines)
+                                   if line.rstrip(b"\r\n") == header]
+                        if headers:
+                            self.assertEqual(len(headers), 1, relative)
+                            start = headers[0]
+                            end = next(index for index in range(start + 1, len(lines))
+                                       if lines[index].rstrip(b"\r\n") == b".awf-*.tmp") + 1
+                            expected = b"".join(lines[:start]) + block + b"".join(lines[end:])
+                        else:
+                            separator = b"\n" if raw and not raw.endswith(b"\n") else b""
+                            expected = raw + separator + block
+                        self.assertEqual(actual, expected, relative)
+                        self.assertEqual(actual.splitlines().count(header), 1, relative)
+                        self.assertEqual(actual.count(block), 1, relative)
+                        added_lines = block.decode("utf-8").splitlines() if actual != raw else []
+                        self.assertEqual(result["gitignore"]["added_lines"], added_lines)
                     else:
                         self.assertEqual(actual, raw, relative)
                 self.assertEqual(managed_tree_from_receipt(destination), expected_managed)
@@ -239,6 +255,32 @@ class UpgradeMatrixTests(unittest.TestCase):
                     (destination / ".agentic-state/lifecycle/controller-event.json").read_bytes()))
                 contracts.validate("operating-change", json.loads(
                     (destination / ".agentic-state/operating/records/operating-change.json").read_bytes()))
+
+    def test_upgrade_preserves_owner_lines_around_historical_ignore_block(self):
+        destination, before = self.fixture("1.9.3")
+        historical = before["owner_files"][".gitignore"]
+        header = b"# AWF operating recovery files are local; changes/ is versioned audit evidence."
+        lines = historical.splitlines(keepends=True)
+        start = next(index for index, line in enumerate(lines) if line.rstrip(b"\r\n") == header)
+        end = next(index for index in range(start + 1, len(lines))
+                   if lines[index].rstrip(b"\r\n") == b".awf-*.tmp") + 1
+        prefix = b"# Owner \xff\r\nowner-prefix/\r\n\r\n" + b"".join(lines[:start])
+        suffix = b"".join(lines[end:]) + b"\r\n!owner-suffix/\r\nowner-\xfe/"
+        original = prefix + b"".join(lines[start:end]) + suffix
+        (destination / ".gitignore").write_bytes(original)
+        before["owner_files"][".gitignore"] = original
+
+        # Exercise the matrix's owner-byte assertion with owner lines on both
+        # sides, including CRLF, non-UTF-8 bytes and a suffix without a final LF.
+        with patch.object(self, "fixture", return_value=(destination, before)), \
+                patch(__name__ + ".VERSIONS", ("1.9.3",)):
+            self.test_direct_real_fixture_matrix_preserves_owner_bytes_and_verifies()
+
+        block = (ROOT / ".agentic/templates/operating.gitignore").read_bytes()
+        actual = (destination / ".gitignore").read_bytes()
+        self.assertEqual(actual, prefix + block + suffix)
+        self.assertEqual(actual.splitlines().count(header), 1)
+
 
     def test_direct_and_chained_real_fixture_upgrades_are_byte_identical(self):
         for version in VERSIONS:

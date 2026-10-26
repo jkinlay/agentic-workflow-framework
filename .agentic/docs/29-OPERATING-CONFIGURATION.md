@@ -85,7 +85,7 @@ Defaults stay unpinned; unchanged pins share a footnote. Stored/named rows and r
 
 ## Audit and recovery
 
-Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`: audits retain instructions, hashes, changes and source. Existing `.gitignore` rules survive; operating locks, `pending.json`, `*.awf-operating-*.tmp` and `.awf-*.tmp` are ignored. Inspect recovery artifacts; incomplete transactions block dispatch.
+Commit `OPERATING_CONFIG.yaml` and `.agentic-state/operating/changes/` audits (instructions, hashes, changes/source). Replace historical AWF `.gitignore` blocks in place; outside owner rules survive byte-for-byte. Ignore operating locks/`pending.json`/`*.awf-operating-*.tmp`/`.awf-*.tmp`. Inspect recovery artifacts; incomplete transactions block dispatch.
 
 Publish complete flushed journal/audit writes without replacement. Preserve conflicts and interrupted staging files outside the audit chain within inventory bounds. Recovery requires an independently inspected journal SHA-256. Unsupported atomic primitives fail closed.
 

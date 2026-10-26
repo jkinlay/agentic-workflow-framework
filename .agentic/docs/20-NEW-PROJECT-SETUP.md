@@ -36,7 +36,7 @@ Preserve `template.expected_workflow_version: 1.9.4`. Bootstrap accepts `--proje
 
 Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer allocation/count. Ordinary upgrades preserve both. `--propose-operating-capacity` stages ceiling six (preserving higher values) and current reviewer allocation for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 
-Bootstrap appends [narrow ignores](../templates/operating.gitignore), preserving bytes. Commit operating configuration and `changes/` audit records; review broad owner ignores. Retain `.agentic-install/`, `.agentic-backup/` and recovery files through recovery.
+Replace historical [AWF ignores](../templates/operating.gitignore) in place; outside owner rules survive byte-for-byte. Commit operating configuration and `changes/` audits; review broad owner ignores. Retain `.agentic-install/`/`.agentic-backup/`/recovery files through recovery.
 
 Empty `validation.required_ci_checks: []` is accepted for adoption as `ci_gate: NOT_CONFIGURED`; fresh empty trusted-owner IDs warn. Neither establishes identity or live readiness. Configure observed CI and real merge-owner identities before live enablement.
 
