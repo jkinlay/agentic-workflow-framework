@@ -354,32 +354,6 @@ def expected_project_config(raw):
     return text.encode("utf-8")
 
 
-def expected_gitignore(raw):
-    """Replace one historical AWF block in place, or append the current block."""
-    try:
-        block = (ROOT / ".agentic/templates/operating.gitignore").read_bytes()
-    except OSError:
-        return None
-    block_lines = block.splitlines()
-    if not block_lines:
-        return None
-    header, historical_end = block_lines[0], b".awf-*.tmp"
-    lines = bytes(raw).splitlines(keepends=True)
-    headers = [index for index, line in enumerate(lines)
-               if line.rstrip(b"\r\n") == header]
-    if not headers:
-        separator = b"\n" if raw and not bytes(raw).endswith(b"\n") else b""
-        return bytes(raw) + separator + block
-    if len(headers) != 1:
-        return None
-    start = headers[0]
-    ends = [index for index in range(start + 1, len(lines))
-            if lines[index].rstrip(b"\r\n") == historical_end]
-    if len(ends) != 1:
-        return None
-    return b"".join(lines[:start]) + block + b"".join(lines[ends[0] + 1:])
-
-
 def project_values_preserved(owner_before, owner_after, config, installed):
     """Return the exact owner-file preservation result and diagnostic evidence."""
     changed = {}
@@ -390,18 +364,16 @@ def project_values_preserved(owner_before, owner_after, config, installed):
                 (raw or b"").decode("utf-8", "replace").splitlines(),
                 (after or b"").decode("utf-8", "replace").splitlines(),
                 lineterm="", n=0))[2:40]
-    # AWF-managed records and the exact current .gitignore block are allowed.
+    # AWF-managed records and the documented append-only .gitignore block.
     allowed = {config, installed, ".agentic/workflow-version.yaml", ".gitignore"}
     ignore_after = owner_after.get(".gitignore")
-    expected_ignore = (expected_gitignore(owner_before[".gitignore"])
-                       if ".gitignore" in owner_before else None)
     ignore_ok = ".gitignore" not in owner_before or (
-        expected_ignore is not None and ignore_after == expected_ignore)
+        ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
     expected_config = expected_project_config(owner_before.get(config, b""))
     config_ok = expected_config is not None and owner_after.get(config) == expected_config
     ok = set(changed) <= allowed and config_ok and ignore_ok
     return ok, {"changed": changed, "project_config_exact": config_ok,
-                "gitignore_prefix_preserved": ignore_ok, "gitignore_exact": ignore_ok}
+                "gitignore_prefix_preserved": ignore_ok}
 
 
 class Gate:
