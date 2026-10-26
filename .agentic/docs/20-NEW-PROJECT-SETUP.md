@@ -1,6 +1,6 @@
 # Adoption guide
 
-Version 1.9.4. Read [the specification](../SPECIFICATION.md) and project-owned instructions.
+Version 1.9.5. Read [the specification](../SPECIFICATION.md) and project-owned instructions.
 
 | Stage | Preconditions and outcome |
 | --- | --- |
@@ -32,7 +32,7 @@ Ownership defaults: `@maintainer`; override with `--codeowner '@handle'` or `'@o
 | Test command | Prefer an npm test script, then evident pytest markers; otherwise supply `--test-command COMMAND`. Run it separately. |
 | Jira | Supply both `--jira-site URL` and `--jira-key KEY`. Neither sets `jira.enabled: false` with null site/key. Preserve existing values. |
 
-Preserve `template.expected_workflow_version: 1.9.4`. Bootstrap accepts `--project-start-inventory`, `--ticket-intake` or `--assignment-change`, writing `--assignment-state` outside the worktree; enabled Jira requires the controller adapter. The controller canonicalizes paths, records `intake-assignment`, binds tier/cap to state/PR; AWF-16 consumes it. Defaults: T1/1 for docs/tests, small configuration/labels or bounded single-file fixes without high-risk effects; T2/2 for moderate one-area code; T3/3 plus owner review for security/credentials, governance/CI/merge gates, migrations, install/upgrade/packaging, controller or release PRs. Stop on critic PASS. `execution.risk_tiers` is the override; protected paths floor T2. Jira writes verified `tier-N`/comment; unknown/mismatch durably stops that ticket's writes. Disabled Jira stays local. Changes require verifier-authenticated immutable owner evidence; the ticket, PR and state retain who/when/why/old/new, and below-floor refusals are recorded. [Review tiers and closeout](30-REVIEW-TIERS-AND-CLOSEOUT.md) governs review/cap rules.
+Preserve `template.expected_workflow_version: 1.9.5`. Bootstrap accepts `--project-start-inventory`, `--ticket-intake` or `--assignment-change`, writing `--assignment-state` outside the worktree; enabled Jira requires the controller adapter. The controller canonicalizes paths, records `intake-assignment`, binds tier/cap to state/PR; AWF-16 consumes it. Defaults: T1/1 for docs/tests, small configuration/labels or bounded single-file fixes without high-risk effects; T2/2 for moderate one-area code; T3/3 plus owner review for security/credentials, governance/CI/merge gates, migrations, install/upgrade/packaging, controller or release PRs. Stop on critic PASS. `execution.risk_tiers` is the override; protected paths floor T2. Jira writes verified `tier-N`/comment; unknown/mismatch durably stops that ticket's writes. Disabled Jira stays local. Changes require verifier-authenticated immutable owner evidence; the ticket, PR and state retain who/when/why/old/new, and below-floor refusals are recorded. [Review tiers and closeout](30-REVIEW-TIERS-AND-CLOSEOUT.md) governs review/cap rules.
 
 Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer allocation/count. Ordinary upgrades preserve both. `--propose-operating-capacity` stages ceiling six (preserving higher values) and current reviewer allocation for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 

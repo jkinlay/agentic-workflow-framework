@@ -1,6 +1,6 @@
 # AWF-32 Windows smoke procedure
 
-Version 1.9.4. **Operator-run; requires Jonathan.** This procedure is not
+Version 1.9.5. **Operator-run; requires Jonathan.** This procedure is not
 executed by CI or by the AWF-32 writer. Run it only on `CCLi9RTX4090` after
 AWF-36 has landed and the owner has enabled the controller switches.
 

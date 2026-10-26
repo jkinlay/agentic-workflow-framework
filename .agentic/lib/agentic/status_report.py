@@ -523,6 +523,16 @@ def _priority(value, outstanding):
 def build_report(inputs):
     """Project a detached report from supplied normalized evidence only."""
     digest = inputs_sha256(inputs)
+    if 'identity_failure' in inputs:
+        _shape(inputs, 'identity_failure release_binding')
+        reason = inputs['identity_failure']
+        _text(reason)
+        report = dict(status='UNKNOWN', reason=reason, inputs_sha256=digest,
+            release_binding=_release(inputs['release_binding']),
+            **{name: _unknown(reason) for name in
+               ('outstanding', 'priority', 'lanes', 'merge_train', 'eta', 'routing')})
+        validate_report_value(report)
+        return report
     outstanding = _outstanding(inputs.get('inventory'))
     lanes, observations = _lanes(inputs)
     report = dict(inputs_sha256=digest, outstanding=outstanding,

@@ -1,6 +1,6 @@
 # Activation status and capabilities
 
-Version 1.9.4. `workflow.py status` is a read-only observation. It creates no directory or lock and evaluates independent stages into `checks`. Each row has a stable `code`, `stage`, `state`, `evidence`, `remedy` and `observed_at`.
+Version 1.9.5. `workflow.py status` is a read-only observation. It creates no directory or lock and evaluates independent stages into `checks`. Each row has a stable `code`, `stage`, `state`, `evidence`, `remedy` and `observed_at`.
 
 Check states are `PASS`, `INVALID`, `MISMATCH`, `UNAVAILABLE`, `UNOBSERVED` and `NOT_APPLICABLE`. An unavailable later observation never lowers a state already established by earlier stages. Text output lists every blocker before one `Next command`; JSON uses the [activation-status schema](../schemas/activation-status.schema.json).
 
@@ -40,4 +40,4 @@ Reports cover outstanding tickets, tier/cap groups, safe/recommended/effective l
 
 Source mode is `SUPPLIED_RECORDS_ONLY`: AWF-48 assignment, AWF-50 plan/override and AWF-115 graph verifiers run before projection. This does not observe current Jira/plans or recompute lanes. Inventory/train authentication and owner-source reauthentication require trusted host callbacks, unavailable through this file-only CLI; their dependent values remain coded `UNKNOWN`. Model declarations do not establish execution-effective proposals; missing dispatch context stays `UNKNOWN`.
 
-Identity rejection, missing observations or disabled Jira returns `NOT_RUN` without a record. Accepted reports append one immutable AWF event retaining original request/configuration/operating snapshots, their hash, verified projection, values, timestamp and trigger. Identical retries retain sequence; changed content under the same UUID rejects. `replay_report` reproduces values from retained inputs/projection. No database is created, no source is mutated, and no adapter is enabled. Automatic activation emission remains open for release 1.9.6; an activation-format fixture proves no automatic hook.
+Identity rejection, missing observations or disabled Jira appends an immutable UNKNOWN report with code and reason. All six metrics remain UNKNOWN; release binding reflects configuration only. Records retain original snapshots, hash, projection, values, timestamp and trigger. Identical retries retain sequence; changed content under the same UUID rejects. Replay verifies restricted values. Missing CLI input/store arguments remain NOT_RUN; persistence failures are FAILED. No database is created, source mutated or capability granted. Automatic activation remains deferred to 1.9.6.

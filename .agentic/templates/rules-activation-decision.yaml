@@ -12,7 +12,7 @@
     ],
     "configuration": {
       "merge_method": "squash",
-      "policy_sha256": "ba101ca08fc99e44b0bd567ce220f1b0ddcc8c5980131b18579ddbc98944fffd",
+      "policy_sha256": "224696af808513d61db5c06f08e9e0d7eab8feba3ff17ebfbce20892b86964a4",
       "status": "ACCEPTED"
     },
     "execution_authority": false,

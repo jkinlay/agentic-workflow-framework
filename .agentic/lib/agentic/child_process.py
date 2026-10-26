@@ -287,6 +287,8 @@ def render_diagnostic(value, *, credentials=(), paths=()):
             rendered_path = rendered_path.decode("utf-8", errors="replace")
         if rendered_path:
             text = text.replace(rendered_path, "<redacted-path>")
+            other_separator_path = rendered_path.translate({ord("/"): "\\", ord("\\"): "/"})
+            text = text.replace(other_separator_path, "<redacted-path>")
     for pattern in _LOCAL_PATH_PATTERNS:
         text = pattern.sub("<redacted-path>", text)
     rendered = []

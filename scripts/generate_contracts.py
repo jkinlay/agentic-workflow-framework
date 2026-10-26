@@ -216,6 +216,12 @@ def status_report_schemas():
         'routing': metric({'binding': route_binding, 'declarations': arr(declaration),
                            'proposals': route_records(proposal), 'observations': route_records(observation)})},
         required=['inputs_sha256','outstanding','priority','lanes','merge_train','eta','release_binding','routing'])
+    report['properties'].update(status=const('UNKNOWN'), reason=text())
+    report['dependentRequired'] = {'status': ['reason'], 'reason': ['status']}
+    report['allOf'] = [when('status', 'UNKNOWN', {
+        'properties': {name: unknown for name in
+            ('outstanding', 'priority', 'lanes', 'merge_train', 'eta', 'routing')},
+        'not': {'required': ['lane_observations']}})]
     # Producer-owned record shapes evolve independently of this projection.
     # Runtime admission uses AWF-48/50/115 semantic verifiers, never this object
     # placeholder as authority. The request and projected metrics are closed.
