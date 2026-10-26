@@ -1789,7 +1789,14 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 		prose = ' '.join(section.split())
 		self.assertIn('For an overlap allowance,', prose)
 		self.assertIn('Its digest binds the dispatch, ticket, stream, exact tuple, allowance, shared path, observation and persistence time.', prose)
-		self.assertIn('Restart must carry the same digest and never relaunch.', prose)
+		document_prose = ' '.join(self.doc.split())
+		for sentence in (
+			'reduce event windows before they accumulate.',
+			'Restart observation must carry the same digest and never relaunch the session.',
+		):
+			with self.subTest(sentence=sentence):
+				self.assertIn(sentence, document_prose)
+		self.assertIn('Restart observation must carry the same digest and never relaunch the session.', prose)
 
 	def test_doc_fragment_warns_about_ellipses_and_separate_guide(self):
 		prose = ' '.join(self.doc.split())

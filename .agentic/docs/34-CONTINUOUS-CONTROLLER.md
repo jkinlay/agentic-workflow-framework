@@ -19,14 +19,14 @@ mutations.
 
 The primary controller database holds `controller_meta['production_planning']`;
 the separate `.planning.sqlite3` database holds immutable plan history. Both
-restrict current database/WAL/SHM permissions after initialization closes.
+restrict database/WAL/SHM permissions after initialization closes.
 POSIX uses owner read/write permissions; Windows ACLs remain unchanged.
 
 Format 2 retains `cycle_sequence` and `seen` digest/last-cycle pairs. Legacy
 digests migrate to age zero; identical observations refresh age. Above 4096,
 evict oldest `(last_cycle, source_id)`, pinning pending sources beyond target.
 Evicted sources may recompute; identical plans never duplicate history.
-Each save checks canonical UTF-8 against 4 MiB; ordinary reads cap at 8 MiB.
+Each save checks canonical UTF-8 against 4 MiB; reads cap at 8 MiB.
 Excess pinned/preserved fields refuse before writing, preserving previous bytes;
 earlier saves/history may persist. Cycles accept at most 4,000 provider events,
 including repeats; excess refuses before state/history writes or dispatch.
@@ -41,7 +41,7 @@ python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB 
 Recovery needs existing protected primary state, bounds parsing input to 16 MiB,
 trims only `seen`, reports bytes/counts. Pending work, overrides, observation,
 candidate metadata, other rows/history remain. Unshrinkable state refuses;
-reduce event windows. After provider-owner confirmation, `--forget-source SOURCE_ID`
+reduce event windows before they accumulate. After provider-owner confirmation, `--forget-source SOURCE_ID`
 reconsiders changed bytes for retained identities; pending identities cannot
 be forgotten. Never delete
 planning key. Restart only after successful repair.
@@ -74,7 +74,7 @@ Provider reads never occur inside a controller write transaction. For an overlap
 allowance, validate `LANE_START` first; persist a dispatch-bound waiver before
 `begun_at` and the adapter call. Its digest binds the dispatch, ticket, stream,
 exact tuple, allowance, shared path, observation and persistence time. Restart
-must carry the same digest and never relaunch.
+observation must carry the same digest and never relaunch the session.
 
 Authenticated parked/worktree-diff sources independently reserve paths. Every cycle
 observes complete provider-bound paused inventory and Git diff at pinned head/tree;
@@ -176,13 +176,13 @@ master and its own switch. Disabled paths record
 `CONTROLLER_AUTOMATION_DISABLED` before publication observation or dispatch.
 Missing or non-boolean values refuse the cycle before recovery or provider
 calls. The CLI passes the exact reviewed `controller` mapping to the cycle.
-Disabling automation cancels never-started pending work; uncertain prior launches
+Disabling automation cancels never-started pending work; uncertain launches
 still reconcile by observation without relaunching.
 
-Install and upgrade still require all five automation switches, including
+Install and upgrade require all five automation switches, including
 `auto_transition_jira`, to be false. Operators enable the four dispatch switches
-only afterwards, under their own governance. Upgrades preserve existing values;
+only afterwards, under their governance. Upgrades preserve existing values;
 no controller-switch migration is needed. `auto_transition_jira` is unchanged.
 The switches grant no publication, review, merge or adapter qualification.
-Until AWF-36 and AWF-32 both ship, no project runs the continuous controller with
+Until AWF-36 and AWF-32 ship, no project runs the continuous controller with
 its own adapter (Jonathan, 8 October).
