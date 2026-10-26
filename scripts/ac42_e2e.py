@@ -354,6 +354,50 @@ def expected_project_config(raw):
     return text.encode("utf-8")
 
 
+def expected_gitignore(existing):
+    """Derive the exact N1 .gitignore bytes without using installer code."""
+    try:
+        required = (ROOT / ".agentic/templates/operating.gitignore").read_bytes()
+    except OSError:
+        return None
+    if not required.endswith(b"\n") or b"\x00" in required:
+        return None
+    if existing is None:
+        return required
+
+    header = b"# AWF operating recovery files are local; changes/ is versioned audit evidence."
+    terminal = b".awf-*.tmp"
+    spans = []
+    start = None
+    for match in re.finditer(rb"[^\n]*\n|[^\n]+$", existing):
+        raw = match.group()
+        line = raw[:-1].removesuffix(b"\r") if raw.endswith(b"\n") else raw
+        if line == header:
+            if start is not None:
+                return None
+            start = match.start()
+        elif line.startswith(header) or (line.startswith(b"# AWF ") and header.startswith(line)):
+            return None
+        elif line == terminal and start is not None:
+            spans.append((start, match.end()))
+            start = None
+    if start is not None:
+        return None
+    if not spans:
+        separator = b"\n" if existing and not existing.endswith(b"\n") else b""
+        return existing + separator + required
+
+    outside = []
+    previous = 0
+    for index, (span_start, span_end) in enumerate(spans):
+        outside.append(existing[previous:span_start])
+        if index == 0:
+            outside.append(required)
+        previous = span_end
+    outside.append(existing[previous:])
+    return b"".join(outside)
+
+
 def project_values_preserved(owner_before, owner_after, config, installed):
     """Return the exact owner-file preservation result and diagnostic evidence."""
     changed = {}
@@ -364,16 +408,15 @@ def project_values_preserved(owner_before, owner_after, config, installed):
                 (raw or b"").decode("utf-8", "replace").splitlines(),
                 (after or b"").decode("utf-8", "replace").splitlines(),
                 lineterm="", n=0))[2:40]
-    # AWF-managed records and the documented append-only .gitignore block.
+    # AWF-managed records and the byte-exact N1 .gitignore transformation.
     allowed = {config, installed, ".agentic/workflow-version.yaml", ".gitignore"}
-    ignore_after = owner_after.get(".gitignore")
-    ignore_ok = ".gitignore" not in owner_before or (
-        ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
+    expected_ignore = expected_gitignore(owner_before.get(".gitignore"))
+    ignore_ok = expected_ignore is not None and owner_after.get(".gitignore") == expected_ignore
     expected_config = expected_project_config(owner_before.get(config, b""))
     config_ok = expected_config is not None and owner_after.get(config) == expected_config
     ok = set(changed) <= allowed and config_ok and ignore_ok
     return ok, {"changed": changed, "project_config_exact": config_ok,
-                "gitignore_prefix_preserved": ignore_ok}
+                "gitignore_prefix_preserved": ignore_ok, "gitignore_exact": ignore_ok}
 
 
 class Gate:

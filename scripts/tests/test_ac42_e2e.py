@@ -142,10 +142,28 @@ class ProjectValuesPreservedTests(unittest.TestCase):
              b'  }\n'
              b"}\n"
              b"# retained formatting\n")
+    IGNORE_TEMPLATE = (ROOT / ".agentic/templates/operating.gitignore").read_bytes()
+    IGNORE_HEADER = IGNORE_TEMPLATE.splitlines()[0]
+    HISTORICAL_IGNORE = IGNORE_TEMPLATE.replace(
+        b".agentic/.venv/\n", b".agentic/legacy-runtime/\n")
+
     def decision(self, after):
         harness = _load_harness()
         return harness.project_values_preserved(
-            {self.CONFIG: self.BEFORE}, {self.CONFIG: after}, self.CONFIG, self.INSTALLED)[0]
+            {self.CONFIG: self.BEFORE},
+            {self.CONFIG: after, ".gitignore": self.IGNORE_TEMPLATE},
+            self.CONFIG, self.INSTALLED)[0]
+
+    def gitignore_decision(self, before, after):
+        harness = _load_harness()
+        owner_before = {self.CONFIG: self.BEFORE}
+        owner_after = {self.CONFIG: self.AFTER}
+        if before is not None:
+            owner_before[".gitignore"] = before
+        if after is not None:
+            owner_after[".gitignore"] = after
+        return harness.project_values_preserved(
+            owner_before, owner_after, self.CONFIG, self.INSTALLED)[0]
 
     def test_documented_tier_three_insertion_is_accepted(self):
         self.assertTrue(self.decision(self.AFTER))
@@ -164,10 +182,14 @@ class ProjectValuesPreservedTests(unittest.TestCase):
         expected = harness.expected_project_config(before)
         self.assertEqual(after, expected)
         self.assertTrue(harness.project_values_preserved(
-            {self.CONFIG: before}, {self.CONFIG: after}, self.CONFIG, self.INSTALLED)[0])
+            {self.CONFIG: before},
+            {self.CONFIG: after, ".gitignore": self.IGNORE_TEMPLATE},
+            self.CONFIG, self.INSTALLED)[0])
         mutated = after.replace(b'"cloud_id": "abc123"', b'"cloud_id": "changed"')
         self.assertFalse(harness.project_values_preserved(
-            {self.CONFIG: before}, {self.CONFIG: mutated}, self.CONFIG, self.INSTALLED)[0])
+            {self.CONFIG: before},
+            {self.CONFIG: mutated, ".gitignore": self.IGNORE_TEMPLATE},
+            self.CONFIG, self.INSTALLED)[0])
 
     def test_comments_and_formatting_outside_exact_edits_are_kept(self):
         self.assertTrue(self.decision(self.AFTER))
@@ -218,6 +240,106 @@ class ProjectValuesPreservedTests(unittest.TestCase):
         harness = _load_harness()
         self.assertEqual(expected, harness.expected_project_config(before))
         self.assertEqual(b"owner_tier: KEEP", expected.splitlines()[3].split(b"{")[1][:-1])
+
+    def test_historical_gitignore_block_replaced_in_place_is_accepted(self):
+        prefix, suffix = b"owner-prefix/\n", b"owner-suffix/\n"
+        before = prefix + self.HISTORICAL_IGNORE + suffix
+        self.assertTrue(self.gitignore_decision(
+            before, prefix + self.IGNORE_TEMPLATE + suffix))
+
+    def test_crlf_historical_gitignore_block_replaced_without_owner_normalization(self):
+        prefix, suffix = b"# Owner \xff\r\nowner-prefix/\r\n", b"owner-\xfe/\r\n"
+        historical = self.HISTORICAL_IGNORE.replace(b"\n", b"\r\n")
+        self.assertTrue(self.gitignore_decision(
+            prefix + historical + suffix, prefix + self.IGNORE_TEMPLATE + suffix))
+
+    def test_historical_terminal_at_eof_without_newline_is_replaced(self):
+        prefix = b"owner-prefix/\n"
+        before = prefix + self.HISTORICAL_IGNORE.rstrip(b"\n")
+        self.assertTrue(self.gitignore_decision(before, prefix + self.IGNORE_TEMPLATE))
+
+    def test_multiple_historical_gitignore_blocks_are_deduplicated(self):
+        prefix, between, suffix = b"prefix/\n", b"between/\n", b"suffix/\n"
+        before = (prefix + self.HISTORICAL_IGNORE + between
+                  + self.HISTORICAL_IGNORE + suffix)
+        self.assertTrue(self.gitignore_decision(
+            before, prefix + self.IGNORE_TEMPLATE + between + suffix))
+
+    def test_owner_terminal_after_complete_block_is_preserved(self):
+        prefix = b"prefix/\n"
+        suffix = b".awf-*.tmp\nowner-suffix/\n"
+        before = prefix + self.HISTORICAL_IGNORE + suffix
+        self.assertTrue(self.gitignore_decision(
+            before, prefix + self.IGNORE_TEMPLATE + suffix))
+
+    def test_partial_gitignore_header_is_rejected(self):
+        malformed = (
+            self.IGNORE_HEADER[:-1] + b"\nowner/\n.awf-*.tmp\n",
+            self.IGNORE_HEADER + b" extra\nowner/\n.awf-*.tmp\n",
+        )
+        for before in malformed:
+            with self.subTest(before=before):
+                self.assertFalse(self.gitignore_decision(before, before + self.IGNORE_TEMPLATE))
+
+    def test_nested_gitignore_header_is_rejected(self):
+        before = (self.IGNORE_HEADER + b"\nowner/\n" + self.HISTORICAL_IGNORE)
+        self.assertFalse(self.gitignore_decision(before, before + self.IGNORE_TEMPLATE))
+
+    def test_incomplete_gitignore_block_is_rejected(self):
+        before = self.IGNORE_HEADER + b"\nowner/\n"
+        self.assertFalse(self.gitignore_decision(before, before + self.IGNORE_TEMPLATE))
+
+    def test_bare_cr_is_owner_data_and_append_must_be_exact(self):
+        before = b"owner\r" + self.IGNORE_HEADER + b"\nowner-rule/\n.awf-*.tmp\n"
+        expected = before + self.IGNORE_TEMPLATE
+        self.assertTrue(self.gitignore_decision(before, expected))
+        for corrupt in (expected + b"extra", expected + self.IGNORE_TEMPLATE,
+                        self.IGNORE_TEMPLATE):
+            with self.subTest(corrupt=corrupt):
+                self.assertFalse(self.gitignore_decision(before, corrupt))
+
+    def test_gitignore_append_is_accepted_only_without_a_historical_block(self):
+        for before in (b"", b"owner/\n", b"owner/"):
+            separator = b"\n" if before and not before.endswith(b"\n") else b""
+            expected = before + separator + self.IGNORE_TEMPLATE
+            with self.subTest(valid=before):
+                self.assertTrue(self.gitignore_decision(before, expected))
+            with self.subTest(altered=before):
+                self.assertFalse(self.gitignore_decision(before, expected + b"extra"))
+            with self.subTest(duplicated=before):
+                self.assertFalse(self.gitignore_decision(before, expected + self.IGNORE_TEMPLATE))
+        historical = b"owner/\n" + self.HISTORICAL_IGNORE
+        self.assertFalse(self.gitignore_decision(
+            historical, historical + self.IGNORE_TEMPLATE))
+
+    def test_absent_gitignore_requires_exact_template_creation(self):
+        self.assertTrue(self.gitignore_decision(None, self.IGNORE_TEMPLATE))
+        for corrupt in (None, b"", self.IGNORE_TEMPLATE[:-1],
+                        self.IGNORE_TEMPLATE + self.IGNORE_TEMPLATE,
+                        self.IGNORE_TEMPLATE + b"extra"):
+            with self.subTest(corrupt=corrupt):
+                self.assertFalse(self.gitignore_decision(None, corrupt))
+
+    def test_gitignore_owner_line_change_outside_block_is_rejected(self):
+        prefix, between, suffix = b"prefix/\n", b"between/\n", b"suffix/\n"
+        before = (prefix + self.HISTORICAL_IGNORE + between
+                  + self.HISTORICAL_IGNORE + suffix)
+        expected = prefix + self.IGNORE_TEMPLATE + between + suffix
+        self.assertTrue(self.gitignore_decision(before, expected))
+        for corrupt in (b"changed-prefix/\n" + expected[len(prefix):],
+                        prefix + self.IGNORE_TEMPLATE + b"changed-between/\n" + suffix,
+                        expected[:-len(suffix)] + b"changed-suffix/\n"):
+            with self.subTest(corrupt=corrupt):
+                self.assertFalse(self.gitignore_decision(before, corrupt))
+
+    def test_gitignore_block_differing_from_shipped_template_is_rejected(self):
+        altered = self.IGNORE_TEMPLATE.replace(
+            b".agentic-backup/\n", b".agentic-backup-altered/\n")
+        owner = b"owner/\n"
+        self.assertFalse(self.gitignore_decision(owner, owner + altered))
+        before = owner + self.HISTORICAL_IGNORE + b"suffix/\n"
+        self.assertFalse(self.gitignore_decision(
+            before, owner + altered + b"suffix/\n"))
 
 
 class AutocrlfScopeTests(unittest.TestCase):
