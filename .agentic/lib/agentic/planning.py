@@ -128,6 +128,17 @@ BACKLOG_TICKET_KEYS = {
 }
 
 
+def _normalize_provider_status(value):
+    """Normalize recognized provider names without promoting custom statuses."""
+    if not isinstance(value, str):
+        return value
+    token = re.sub(r"[\s-]+", "_", value.strip().casefold())
+    token = {"to_do": "ready", "done": "closed"}.get(token, token)
+    if token in READY_STATUSES | ACTIVE_STATUSES | CLOSED_STATUSES:
+        return token
+    return value
+
+
 def tickets_from_provider_snapshot(
         snapshot, config, *, expected_binding, expected_provider, now,
         verify_provider_snapshot=None, rejected=None, observed_pr_paths=None):
@@ -226,6 +237,8 @@ def tickets_from_provider_snapshot(
         if not isinstance(components, list) or len(components) != 3:
             raise ValidationError("Backlog ticket needs complete brief, PR and diff observations")
         collected = copy.deepcopy(ticket)
+        if "status" in collected:
+            collected["status"] = _normalize_provider_status(collected["status"])
         kinds = set()
         for component in components:
             _closed(component, {"kind", "ticket_key", "binding", "observed_at", "files"},

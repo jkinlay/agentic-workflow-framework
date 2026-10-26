@@ -2,7 +2,7 @@
 
 **Linux is supported by the installer’s POSIX code path**, rather than excluded by an OS allowlist: it selects `bin/python`, builds a venv, and uses POSIX file locking. The source manifest workflow also declares Linux runners. Native integrated 1.9.5 results remain **UNVERIFIED**. Sources: `7fcaeece:.agentic/lib/agentic/adoption_config.py:445`; `7fcaeece:.agentic/lib/agentic/adoption_config.py:564`; `7fcaeece:.agentic/lib/agentic/installer.py:780`; `7fcaeece:.github/workflows/manifest-check.yml:29`.
 
-1. **Provision §1 prerequisites, verified distribution, wheels, and first repository.** Exact distribution-specific package-installation, authentication, acquisition, and ZIP-verification commands are **UNVERIFIED**. Confirm all inputs before proceeding.
+1. **Provision [§1 prerequisites](01-runbook-prerequisites.md), verified distribution, wheels, and first repository.** Exact distribution-specific package-installation, authentication, acquisition, and ZIP-verification commands are **UNVERIFIED**. Confirm all inputs before proceeding.
 
 2. **Preview and install the portable skill.**
 
@@ -66,7 +66,7 @@
 
    **Success/confirm:** existing canonical runtime/script, integrity true, ACCEPTED configuration, successful exits, Show and retain the operating table, paste it into the adoption PR, and offer: keep defaults, review Epics and recommend, or custom. Apply direct instructions within accepted governance; obtain acceptance before applying recommendations. **Failure:** repair exact reported blockers and repeat verification/validation.
 
-8. **Review and record the candidate, then run the installed self-test (§4).** For an existing repository, review the installation diff and scoped LF attributes, record the adoption candidate in a local commit, and confirm that its governed bytes match the checkout before self-test. Retain the report and every skip reason. The separately supported commitless fresh-install case may skip tests requiring committed HEAD.
+8. **Review and record the candidate, then run the installed [self-test (§4)](13-runbook-verifying-with-installed-self-test.md).** For an existing repository, review the installation diff and scoped LF attributes, record the adoption candidate in a local commit, and confirm that its governed bytes match the checkout before self-test. Retain the report and every skip reason. The separately supported commitless fresh-install case may skip tests requiring committed HEAD.
 
    ```sh
    '<repo-path>/.agentic/.venv/bin/python' -B '<repo-path>/.agentic/scripts/self_test.py' --checks-only --report '<install-dir>/reports/first-installed.json'
@@ -87,3 +87,7 @@
     Sources: `7fcaeece:.agentic/lib/agentic/cli.py:141`; `7fcaeece:.agentic/lib/agentic/providers/github_status.py:640`.
 
     **Success/confirm:** exit 0, ACTIVE, accepted checkout VERIFIED. **Failure:** retain the observed state and resolve named blockers. This requires live provider evidence; no such observation was performed for this runbook.
+
+**Related guidance:** [Publication checkpoint](06-runbook-publication-checkpoint.md); [journal recovery](19-runbook-journal-recovery.md).
+
+[Runbook index](INDEX.md)
