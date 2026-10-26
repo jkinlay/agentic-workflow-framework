@@ -14,6 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 PUBLISH_RELEASE = ROOT / "scripts/publish_release.py"
+RUN_WINDOWS_UNITTESTS = ROOT / "scripts/run_windows_unittests.py"
 
 
 def workflow():
@@ -37,6 +38,38 @@ def publish_release_suites():
     }
 
 
+def runner_shards():
+    tree = ast.parse(RUN_WINDOWS_UNITTESTS.read_text(encoding="utf-8"))
+    assignments = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "SHARDS"
+                for target in node.targets):
+            assignments.append(node)
+        elif (isinstance(node, ast.AnnAssign)
+              and isinstance(node.target, ast.Name)
+              and node.target.id == "SHARDS"):
+            assignments.append(node)
+    if len(assignments) != 1:
+        raise ValueError("runner must declare SHARDS exactly once at top level")
+    assignment = assignments[0]
+    if (not isinstance(assignment, ast.Assign)
+            or len(assignment.targets) != 1
+            or not isinstance(assignment.targets[0], ast.Name)):
+        raise ValueError("runner SHARDS must be a single direct assignment")
+    try:
+        shards = ast.literal_eval(assignment.value)
+    except (ValueError, TypeError) as error:
+        raise ValueError("runner SHARDS must be literal") from error
+    if not isinstance(shards, (tuple, list)):
+        raise ValueError("runner SHARDS must be a literal tuple or list")
+    if any(type(shard) is not int for shard in shards):
+        raise ValueError("runner SHARDS must contain only integers")
+    if len(shards) != len(set(shards)):
+        raise ValueError("runner SHARDS must contain unique integers")
+    return tuple(shards)
+
+
 def discovered_suites(job):
     suites = set()
     for step in job.get("steps", []):
@@ -54,6 +87,36 @@ def steps_with(job, fragment):
 
 
 class CiSuiteCoverageTests(unittest.TestCase):
+    def test_windows_unittest_matrix_matches_runner_shards_and_invocation_contract(self):
+        job = workflow()["jobs"]["windows_unittests"]
+        self.assertEqual(
+            job["strategy"]["matrix"]["shard"],
+            list(runner_shards()),
+        )
+
+        matrix_expression = "${{ matrix.shard }}"
+        command = "& $env:PY -B scripts/run_windows_unittests.py --shard"
+        expected_guard = f"{command} {matrix_expression} --list"
+        expected_execution = f"{command} {matrix_expression}"
+        invocations = [
+            (index, step, line.strip())
+            for index, step in enumerate(job["steps"])
+            for line in step.get("run", "").splitlines()
+            if "scripts/run_windows_unittests.py" in line
+        ]
+        guards = [entry for entry in invocations if entry[2] == expected_guard]
+        executions = [entry for entry in invocations if entry[2] == expected_execution]
+        self.assertEqual(1, len(guards))
+        self.assertEqual(1, len(executions))
+        self.assertEqual(2, len(invocations))
+        guard_index, guard_step, guard_command = guards[0]
+        execution_index, execution_step, execution_command = executions[0]
+        self.assertLess(guard_index, execution_index)
+        self.assertNotIn("continue-on-error", guard_step)
+        self.assertNotIn("continue-on-error", execution_step)
+        self.assertIn(matrix_expression, guard_command)
+        self.assertIn(matrix_expression, execution_command)
+
     def test_pull_request_matrix_covers_every_publish_release_portable_suite(self):
         document = workflow()
         triggers = document.get("on", document.get(True))
