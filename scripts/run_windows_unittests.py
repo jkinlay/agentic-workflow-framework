@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Run one of eight deterministic Windows unittest module shards.
+"""Run one of nine deterministic Windows unittest shards.
 
 From the repository root: python -B scripts/run_windows_unittests.py --shard 0
 Add --list to guard all allocations and print this shard without importing tests.
 Paths are repository-relative POSIX strings sorted by Unicode code point, per
 suite; index i belongs to base shard i % 6 after the explicit exclusion below,
-then each dedicated module below moves to its own shard and the rest of base
-shard 1 alternates by position (j % 2) between shards 6 and 7.
+then the rest of base shard 1 alternates by position (j % 2) between shards 6
+and 7. The single module in SPLIT_MODULES is the only exception to whole-module
+sharding: it is selected in both of its shards, and each of them runs a fixed,
+disjoint half of its test methods (the named first half, or everything else).
 Each suite uses a fresh interpreter, the repository cwd and its Linux CI
 discovery top-level contract. Selection is logged before any child is launched;
 discovery and completed module-suite records must match it exactly.
@@ -27,12 +29,30 @@ import unittest
 SUITES = ('.agentic/tests', 'scripts/tests', 'global/awf/tests',
           'global/awf-portable/tests')
 EXPLICIT_TOP = frozenset(SUITES[:2])
-SHARDS = (0, 1, 2, 3, 4, 5, 6, 7)
+SHARDS = (0, 1, 2, 3, 4, 5, 6, 7, 8)
 BASE_SHARDS = 6
-# Base shard 1 exceeded the 60-minute Windows job budget. test_upgrade_matrix
-# (about 33 minutes measured) runs alone in shard 1; the rest of base shard 1
-# alternates between shards 6 and 7.
-DEDICATED_MODULES = {'.agentic/tests/test_upgrade_matrix.py': 1}
+# Base shard 1 exceeded the 60-minute Windows job budget, and test_upgrade_matrix
+# alone then exceeded it on Python 3.13. It is the only module split by test
+# method: shard 1 runs UPGRADE_MATRIX_FIRST_HALF and shard 8 runs the rest
+# (about 943 s and 922 s of the 1865 s measured on 3.13 locally). The rest of
+# base shard 1 alternates between shards 6 and 7.
+UPGRADE_MATRIX = '.agentic/tests/test_upgrade_matrix.py'
+UPGRADE_MATRIX_FIRST_HALF = frozenset({
+    'test_complete_ledger_schema_rejects_changed_column_and_missing_index',
+    'test_direct_and_chained_real_fixture_upgrades_are_byte_identical',
+    'test_fixture_blobs_are_stored_byte_exactly_by_git',
+    'test_fixture_storage_is_exact_deduplicated_and_under_ten_mb',
+    'test_full_contract_validation_archives_exact_key_critic_counterexample',
+    'test_legacy_identification_ignores_installation_level_identifiers',
+    'test_materializer_uses_owner_values_comments_and_both_line_endings',
+    'test_other_refusals_and_dry_run_use_real_fixture_and_write_nothing',
+    'test_real_fixture_modified_managed_file_reports_both_hashes_and_changes_nothing',
+    'test_schema_invalid_operating_refuses_before_any_write',
+    'test_shipped_194_routing_ledger_migrates_exact_schema_and_preserves_rows',
+    'test_shipped_table_matches_every_real_fixture',
+    'test_state_compatibility_is_listed_for_every_adjacent_step',
+})
+SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
 SPLIT_SHARDS = {1: (6, 7)}
 ZERO_TEST_MODULES = frozenset({'.agentic/tests/test_awf36_automation_fixtures.py'})
 # The installed-runtime acceptance suite has its own CI job and budget.
@@ -74,13 +94,14 @@ def allocate(modules):
         shards = {shard: [] for shard in SHARDS}
         for base in range(BASE_SHARDS):
             base_paths = ordered[base::BASE_SHARDS]
-            rest = [path for path in base_paths if path not in DEDICATED_MODULES]
+            rest = [path for path in base_paths if path not in SPLIT_MODULES]
             targets = SPLIT_SHARDS.get(base, (base,))
             for position, shard in enumerate(targets):
                 shards[shard].extend(rest[position::len(targets)])
         for path in ordered:
-            if path in DEDICATED_MODULES:
-                shards[DEDICATED_MODULES[path]].append(path)
+            if path in SPLIT_MODULES:
+                for shard in SPLIT_MODULES[path][0]:
+                    shards[shard].append(path)
         allocation[suite] = {shard: sorted(paths) for shard, paths in shards.items()}
     return allocation
 
@@ -96,12 +117,49 @@ def guard(root, allocation):
                 or any(type(index) is not int for index in shards)):
             raise ValueError(f'invalid shard indices: {suite}')
         counts = Counter(path for paths in shards.values() for path in paths)
-        duplicate = sorted(path for path, count in counts.items() if count != 1)
+        duplicate = sorted(path for path, count in counts.items() if count != copies(path))
+        misplaced = sorted(path for path in SPLIT_MODULES if path in counts
+                           and {index for index, paths in shards.items() if path in paths}
+                           != set(SPLIT_MODULES[path][0]))
         included = set(expected[suite]) - EXCLUDED_MODULES
         unknown = sorted(set(counts) - included)
         missing = sorted(included - set(counts))
-        if duplicate or unknown or missing:
-            raise ValueError(f'{suite}: duplicate={duplicate}, unknown={unknown}, missing={missing}')
+        if duplicate or unknown or missing or misplaced:
+            raise ValueError(f'{suite}: duplicate={duplicate}, unknown={unknown}, '
+                             f'missing={missing}, misplaced={misplaced}')
+
+
+def copies(path):
+    """A split module is selected once in each of its shards; others once."""
+    return len(SPLIT_MODULES[path][0]) if path in SPLIT_MODULES else 1
+
+
+def flatten(tests):
+    for test in tests:
+        if isinstance(test, unittest.TestSuite):
+            yield from flatten(test)
+        else:
+            yield test
+
+
+def split_cases(path, tests, shard):
+    """Return this shard's fixed, disjoint half of a split module's cases."""
+    shards, first_half = SPLIT_MODULES[path]
+    cases = sorted(flatten(tests), key=lambda case: case.id())
+    if any(type(case).__module__ == 'unittest.loader' for case in cases):
+        # Import errors and module-level skips stay visible in both shards.
+        return tests
+    names = [getattr(case, '_testMethodName', None) for case in cases]
+    if len(names) != len(set(names)):
+        raise ValueError(f'{path}: split test names are not unique')
+    absent = sorted(first_half - set(names))
+    if absent:
+        raise ValueError(f'{path}: split names not discovered: {absent}')
+    if not set(names) - first_half:
+        raise ValueError(f'{path}: split second half is empty')
+    first = shards.index(shard) == 0
+    return unittest.TestSuite([case for case, name in zip(cases, names)
+                               if (name in first_half) == first])
 
 
 def reconcile(selected, executed):
@@ -132,10 +190,12 @@ class RecordedSuite(unittest.TestSuite):
 class SelectedLoader(unittest.TestLoader):
     """Filter discovery paths, retaining unittest imports, hooks and fixtures."""
 
-    def __init__(self, root, selected):
+    def __init__(self, root, selected, shard=None):
         super().__init__()
         self.root = root
         self.selected = set(selected)
+        self.shard = shard
+        self.split_cases = {}
         self.discovered = []
         self.executed = []
         self.zero_test_modules = {}
@@ -162,17 +222,22 @@ class SelectedLoader(unittest.TestLoader):
                 if relative not in ZERO_TEST_MODULES:
                     raise ValueError(f'empty discovery for selected module: {relative}')
                 self.zero_test_modules[relative] = 0
+            if relative in SPLIT_MODULES:
+                if self.shard not in SPLIT_MODULES[relative][0]:
+                    raise ValueError(f'split module outside its shards: {relative}')
+                tests = split_cases(relative, tests, self.shard)
+                self.split_cases[relative] = tests.countTestCases()
             self.discovered.append(relative)
             tests = RecordedSuite(tests, relative, self.executed)
         return tests, recurse
 
 
-def run_suite(root, suite, selected):
+def run_suite(root, suite, selected, shard=None):
     """Child entry point: use the suite's existing discovery start/top level."""
     # Match `python -m unittest` from the repository root rather than exposing
     # this script's directory as an extra import location in the child.
     sys.path[0] = str(root)
-    loader = SelectedLoader(root, selected)
+    loader = SelectedLoader(root, selected, shard)
     if selected:
         kwargs = {'top_level_dir': str(root / suite)} if suite in EXPLICIT_TOP else {}
         tests = loader.discover(str(root / suite), **kwargs)
@@ -187,6 +252,7 @@ def run_suite(root, suite, selected):
     print(json.dumps(dict(event='suite_result', suite=suite,
                           discovered=loader.discovered, executed=loader.executed,
                           zero_test_modules=loader.zero_test_modules,
+                          split_cases=loader.split_cases,
                           tests_run=tests_run, successful=successful)), flush=True)
     return 0 if successful else 1
 
@@ -244,9 +310,13 @@ def main(argv=None):
         allocation = allocate(inventory(root))
         guard(root, allocation)
         if args._suite:
-            return run_suite(root, args._suite, allocation[args._suite][args.shard])
+            return run_suite(root, args._suite, allocation[args._suite][args.shard], args.shard)
         print(json.dumps(dict(event='selected', shard=args.shard,
                               excluded=sorted(EXCLUDED_MODULES),
+                              split={path: dict(shards=list(SPLIT_MODULES[path][0]),
+                                                half=SPLIT_MODULES[path][0].index(args.shard))
+                                     for suite in SUITES for path in allocation[suite][args.shard]
+                                     if path in SPLIT_MODULES},
                               modules={suite: allocation[suite][args.shard] for suite in SUITES})),
               flush=True)
         if args.list:

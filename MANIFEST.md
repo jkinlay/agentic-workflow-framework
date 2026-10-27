@@ -77,7 +77,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/examples/status-report.json` | `f29307d27985e040a9d4dc017cba0789a35199d4dfcf424844c9e78c83149b8c` |
 | `.agentic/examples/stream-input.json` | `37097f3c73d5de9941dbd049fa29c7e9f659b7fb02b882b2978916f7d3c9cc33` |
 | `.agentic/examples/unconfigured-project.yaml` | `38b1dc36b81d36967d81554a8a80e4f34172bf8689d1be9185e64cc45764178e` |
-| `.agentic/examples/workflow-content-binding-project.yaml` | `6205d691188daae6af80c957f20ec3bc2a28bcf4d0519e6965182b4755bf157b` |
+| `.agentic/examples/workflow-content-binding-project.yaml` | `f602491665f0bfb5f7146062e2081116d1691c8e9b8aadba332c7fbcfb00e3e2` |
 | `.agentic/launch-surfaces.json` | `10a85af93c9b5e224b30e37232cc6e30e265e10e54dd46f74db739293ce86e8b` |
 | `.agentic/lib/agentic/__init__.py` | `2484733451dd0d77d43ed4f32c96286a2d7549ec74a7964a07785f9021a742cf` |
 | `.agentic/lib/agentic/activation.py` | `ebb73dee3a03be049b46cb11787c77ace16965e938bb2fc371e07851ad00deb7` |
@@ -471,7 +471,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `8d550a32a0754956bef789a454ce284e9ad34e0e7a77fdbf6e90c3350e702f31` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `2e8782f23ad7620ce8b21de2fc448475bd20ebae67b244aeb8e0c41218114424` |
+| `.github/workflows/ci.yml` | `1f18cf1286937953f58cb40f9af4cefe5e6be13c2936520785c596a90a918e12` |
 | `.github/workflows/manifest-check.yml` | `c966a63516568158fd078ac22d4d10e46ef77de795c081d9b7bf322c4a1cc6b4` |
 | `ADR-DESIGN-FIRST-TRIAL.md` | `6702007630ee25d4e8cc64b9913ee0b86e7eaf03ecf8dba0632e124bbe179e16` |
 | `ADR-LANE-MODEL-ROUTING.md` | `c713ee7cb72d5d504674bdd5cfaf7437a9cbb122f738ab49dbac3e70f79bff52` |
@@ -621,7 +621,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
 | `scripts/release_review.py` | `58db97d3cd910658678f3dde6f534f77cee8d8e7884803222d7b077ceadf53f7` |
 | `scripts/run_publication_pre_controller.py` | `1ad6f7c6c06c59aef73bf90ab072c1a62c3e4d2eca4f33cbb52bff7a82de562c` |
-| `scripts/run_windows_unittests.py` | `2bbd540fb17d305631a2201c1d7af686c95d295a26ba3659c8bdba9815d9f815` |
+| `scripts/run_windows_unittests.py` | `6e534d149e1d016a938c91625d9a13898e4991dc18fe78bc8038292cdce0081f` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
 | `scripts/tests/test_ac42_e2e.py` | `8fa7ed4814e86c4db578f7b789f9151773f58cdc4def359aadf8c01e63bcb56e` |
@@ -654,7 +654,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_skill_distribution_ordering.py` | `4897f1406db51a786ccf4179363c93b50e1d99578c28f51a947154e448366955` |
 | `scripts/tests/test_validate_archive_report.py` | `d5e1a5bc555b69976b30011d688e3b142d0bf0008e400b18dc7d836807a34d56` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
-| `scripts/tests/test_windows_unittest_shards.py` | `4c9fa92a505a2d7136aa13c3c6c013dca5f87112c256f0ba05187120feb4f69b` |
+| `scripts/tests/test_windows_unittest_shards.py` | `9ac7c3480d8d579308552daaa766c2d27312057c167b3c03dfab13a6778006c3` |
 | `scripts/validate_archive.py` | `6ec77671ce0fcbb13e22eccbbe965ea905da186416deedac67ca54da1e99488b` |
 | `scripts/validate_git_checkout.py` | `da31f52ab345e19cf580171bef96404958795217d88535c112c4e36278bea174` |
 | `tools/windows/Invoke-AC42.ps1` | `e3ff5069784a18400910674c430ab828c41cc0a0f14c18d297ea795464a5ba57` |
