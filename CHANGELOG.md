@@ -6,6 +6,8 @@ AWF-210 version bump.
 
 AWF-201 7/9: planning retention/recovery, 4,000 events/cycle ceiling, restricted sidecar permissions.
 
+AWF-220: upgrade keeps strict-JSON PROJECT_CONFIG valid JSON.
+
 Ticket inventory by area: planning and controller operation; bounded review, publication, and provenance; installation and upgrade safety; Windows portability; diagnostics; manifests; and release documentation. The complete ticket and ticketless-entry inventory is in the release’s first-parent log.
 
 The 1.9.5 release includes the `.gitignore` replace-in-place installer and a retained Codex machine-log credential detector that refuses only high-confidence secret formats and exact environment credential values.
