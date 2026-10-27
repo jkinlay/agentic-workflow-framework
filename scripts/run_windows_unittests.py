@@ -5,7 +5,8 @@ From the repository root: python -B scripts/run_windows_unittests.py --shard 0
 Add --list to guard all allocations and print this shard without importing tests.
 Paths are repository-relative POSIX strings sorted by Unicode code point, per
 suite; index i belongs to base shard i % 6 after the explicit exclusion below,
-and base shard 1 is split three ways (position j % 3) into shards 1, 6 and 7.
+then each dedicated module below moves to its own shard and the rest of base
+shard 1 alternates by position (j % 2) between shards 6 and 7.
 Each suite uses a fresh interpreter, the repository cwd and its Linux CI
 discovery top-level contract. Selection is logged before any child is launched;
 discovery and completed module-suite records must match it exactly.
@@ -28,8 +29,11 @@ SUITES = ('.agentic/tests', 'scripts/tests', 'global/awf/tests',
 EXPLICIT_TOP = frozenset(SUITES[:2])
 SHARDS = (0, 1, 2, 3, 4, 5, 6, 7)
 BASE_SHARDS = 6
-# Base shard 1 exceeded the Windows job budget, so it is split three ways.
-SPLIT_SHARDS = {1: (1, 6, 7)}
+# Base shard 1 exceeded the 60-minute Windows job budget. test_upgrade_matrix
+# (about 33 minutes measured) runs alone in shard 1; the rest of base shard 1
+# alternates between shards 6 and 7.
+DEDICATED_MODULES = {'.agentic/tests/test_upgrade_matrix.py': 1}
+SPLIT_SHARDS = {1: (6, 7)}
 ZERO_TEST_MODULES = frozenset({'.agentic/tests/test_awf36_automation_fixtures.py'})
 # The installed-runtime acceptance suite has its own CI job and budget.
 EXCLUDED_MODULES = frozenset({'scripts/tests/test_installed_self_test.py'})
@@ -67,13 +71,17 @@ def allocate(modules):
         if len(paths) != len(set(paths)):
             raise ValueError(f'duplicate inventory paths: {suite}')
         ordered = sorted(path for path in paths if path not in EXCLUDED_MODULES)
-        shards = {}
+        shards = {shard: [] for shard in SHARDS}
         for base in range(BASE_SHARDS):
-            targets = SPLIT_SHARDS.get(base, (base,))
             base_paths = ordered[base::BASE_SHARDS]
+            rest = [path for path in base_paths if path not in DEDICATED_MODULES]
+            targets = SPLIT_SHARDS.get(base, (base,))
             for position, shard in enumerate(targets):
-                shards[shard] = base_paths[position::len(targets)]
-        allocation[suite] = {shard: shards[shard] for shard in SHARDS}
+                shards[shard].extend(rest[position::len(targets)])
+        for path in ordered:
+            if path in DEDICATED_MODULES:
+                shards[DEDICATED_MODULES[path]].append(path)
+        allocation[suite] = {shard: sorted(paths) for shard, paths in shards.items()}
     return allocation
 
 
