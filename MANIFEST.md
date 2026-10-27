@@ -479,7 +479,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `ADR-TIER3-CAP-EXTENSION.md` | `1e730fa828682a456e7f7768f2db8d002c2b9b227dbe8521dd6c96565275763b` |
 | `AGENTS.md` | `9abd55f89284a577d31e76122081970ce8e1eac5d75b5fc6e3677a1d25dd121a` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
-| `CHANGELOG.md` | `84243fc40ddc8d16fc176cff03375db06027a6c1089a66ce7b3ac7927127d8da` |
+| `CHANGELOG.md` | `a9ace85babad9348fcb0fe8f55b9abe8db4a3f3604dcf5cf4d13e7259c67907d` |
 | `Claude outputs/AWF-1.9.1-Showcase-Presentation.html` | `5dbf524af67adee2327b33ac12064f63b5fc2314645e0a6cf306abccc8124386` |
 | `Claude outputs/AWF-1.9.2-Speaker-Script.md` | `335b8ff56c006166f155973bac8be8f52614fa78f6454230a3efa73576e35327` |
 | `Claude outputs/awf192-critic-prompt.md` | `77a12deaefd9029554b8ac718efed2da370fd3dc91b80c225bca80cbbaa8877c` |
