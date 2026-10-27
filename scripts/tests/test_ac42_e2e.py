@@ -41,7 +41,8 @@ class AC42HarnessSmokeTests(unittest.TestCase):
             self.assertEqual(set(results.values()), {"PASS"}, report["rows"])
             self.assertEqual(report["rows"]["active_single_status_run"]["evidence"]["project_state"], "ACTIVE")
             active_command = report["rows"]["active_single_status_run"]["evidence"]["command"]
-            self.assertEqual(Path(active_command[2]), Path(raw) / "work/project/.agentic/scripts/workflow.py")
+            self.assertEqual(Path(active_command[2]).resolve(),
+                             (Path(raw) / "work/project/.agentic/scripts/workflow.py").resolve())
             self.assertEqual(active_command[5], "status")
             self.assertEqual(report["result"], "FAIL")  # never a gate pass without the self-test
             self.assertFalse(report["gate_eligible"])

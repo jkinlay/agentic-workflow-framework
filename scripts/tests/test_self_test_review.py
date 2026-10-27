@@ -84,7 +84,7 @@ class SelfTestReviewTests(unittest.TestCase):
             return SimpleNamespace(testsRun=1, failures=[], errors=[], skipped=[], wasSuccessful=lambda: True), 'synthetic test log\n'
         runner = mock.Mock(side_effect=run)
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(self_test, 'ROOT', self.source), mock.patch.object(sys, 'path', sys.path[:]), \
+        with mock.patch.object(self_test, 'ROOT', self.source.resolve()), mock.patch.object(sys, 'path', sys.path[:]), \
                 mock.patch('release_hygiene.check_release', return_value={'status': 'PASS', 'synthetic_fixture_stub': True}), \
                 mock.patch.object(unittest.defaultTestLoader, 'discover', return_value=unittest.TestSuite()), \
                 mock.patch.object(self_test, 'execute_test_suite', runner), \

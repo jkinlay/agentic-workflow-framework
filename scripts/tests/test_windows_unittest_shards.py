@@ -1,9 +1,12 @@
 """Synthetic acceptance tests for the Windows module shard runner."""
 from __future__ import annotations
 
+import ast
+from collections import Counter
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -70,11 +73,105 @@ class ShardTests(unittest.TestCase):
         for suite in ROOTS:
             paths = sorted(inventory[suite])
             self.assertEqual([suite + '/test_B.py'], allocation[suite][0])
-            self.assertEqual(paths[1::6], allocation[suite][1])
-            self.assertEqual(paths[2::6], allocation[suite][2])
-            for shard in (3, 4, 5):
+            self.assertEqual([], allocation[suite][1])
+            self.assertEqual(paths[1::6][0::2], allocation[suite][6])
+            self.assertEqual(paths[1::6][1::2], allocation[suite][7])
+            for shard in (2, 3, 4, 5):
                 self.assertEqual(paths[shard::6], allocation[suite][shard])
         runner.guard(self.root, allocation)
+
+    def test_upgrade_matrix_is_split_into_shards_one_and_eight_only(self):
+        split = self.write(ROOTS[0], 'test_upgrade_matrix.py', PASSING)
+        self.assertEqual({split}, set(runner.SPLIT_MODULES))
+        self.assertEqual((1, 8), runner.SPLIT_MODULES[split][0])
+        for suite in ROOTS:
+            for index in range(40):
+                self.write(suite, f'test_split_{index:02}.py', PASSING)
+        inventory = runner.inventory(self.root)
+        allocation = runner.allocate(inventory)
+        for suite in ROOTS:
+            base = sorted(inventory[suite])[1::6]
+            rest = [path for path in base if path != split]
+            expected_split = [split] if suite == ROOTS[0] else []
+            self.assertEqual(expected_split, allocation[suite][1])
+            self.assertEqual(expected_split, allocation[suite][8])
+            self.assertEqual(rest[0::2], allocation[suite][6])
+            self.assertEqual(rest[1::2], allocation[suite][7])
+            self.assertTrue(allocation[suite][6] and allocation[suite][7])
+            counts = Counter(path for paths in allocation[suite].values() for path in paths)
+            self.assertEqual(set(inventory[suite]), set(counts))
+            for path in inventory[suite]:
+                # No module other than the split one is selected more than once.
+                self.assertEqual(2 if path == split else 1, counts[path], path)
+        runner.guard(self.root, allocation)
+
+    def test_guard_rejects_split_module_in_one_or_the_wrong_shard(self):
+        split = self.write(ROOTS[0], 'test_upgrade_matrix.py', PASSING)
+        allocation = self.allocation()
+        allocation[ROOTS[0]][8].remove(split)
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            runner.guard(self.root, allocation)
+        allocation[ROOTS[0]][3].append(split)
+        with self.assertRaisesRegex(ValueError, 'misplaced'):
+            runner.guard(self.root, allocation)
+        allocation = self.allocation()
+        allocation[ROOTS[0]][6].append(allocation[ROOTS[0]][0][0])
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            runner.guard(self.root, allocation)
+
+    def test_real_upgrade_matrix_halves_cover_every_test_exactly_once(self):
+        real = Path(__file__).resolve().parents[2] / runner.UPGRADE_MATRIX
+        tree = ast.parse(real.read_text(encoding='utf-8'))
+        names = [item.name for node in tree.body if isinstance(node, ast.ClassDef)
+                 for item in node.body
+                 if isinstance(item, ast.FunctionDef) and item.name.startswith('test')]
+        self.assertEqual(len(names), len(set(names)))
+        shards, first_half = runner.SPLIT_MODULES[runner.UPGRADE_MATRIX]
+        self.assertEqual((1, 8), shards)
+        self.assertLessEqual(first_half, set(names))
+        fake = type('UpgradeMatrixTests', (unittest.TestCase,),
+                    {name: (lambda self: None) for name in names})
+        halves = []
+        for shard in shards:
+            suite = unittest.defaultTestLoader.loadTestsFromTestCase(fake)
+            halves.append([case._testMethodName for case in
+                           runner.split_cases(runner.UPGRADE_MATRIX, suite, shard)])
+        self.assertTrue(halves[0] and halves[1])
+        self.assertEqual(set(), set(halves[0]) & set(halves[1]))
+        self.assertCountEqual(names, halves[0] + halves[1])
+        self.assertEqual(first_half, set(halves[0]))
+
+    def test_split_shards_run_disjoint_halves_end_to_end(self):
+        second = ['test_zz_second_a', 'test_zz_second_b']
+        names = sorted(runner.UPGRADE_MATRIX_FIRST_HALF) + second
+        source = 'import unittest\nclass UpgradeMatrixTests(unittest.TestCase):\n' + ''.join(
+            f'    def {name}(self):\n        pass\n' for name in names)
+        split = self.write(ROOTS[0], 'test_upgrade_matrix.py', source)
+        ran = {}
+        for shard in (1, 8):
+            completed = self.invoke(shard)
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            record = next(r for r in self.events(completed, 'suite_result') if r['suite'] == ROOTS[0])
+            ran[shard] = sorted(re.findall(r'^(test_\w+) \(', completed.stderr, re.M))
+            self.assertEqual([split], record['executed'])
+            self.assertEqual(len(ran[shard]), record['tests_run'])
+            self.assertEqual({split: len(ran[shard])}, record['split_cases'])
+            listed, = self.events(self.invoke(shard, '--list'), 'selected')
+            self.assertEqual({split: dict(shards=[1, 8], half=(1, 8).index(shard))}, listed['split'])
+        self.assertEqual(sorted(runner.UPGRADE_MATRIX_FIRST_HALF), ran[1])
+        self.assertEqual(second, ran[8])
+        self.assertCountEqual(names, ran[1] + ran[8])
+
+    def test_split_module_fails_closed_on_missing_name_or_import_error(self):
+        self.write(ROOTS[0], 'test_upgrade_matrix.py', PASSING)
+        completed = self.invoke(1)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn('split names not discovered', completed.stdout + completed.stderr)
+        self.write(ROOTS[0], 'test_upgrade_matrix.py', 'raise ImportError("fixture import")\n')
+        for shard in (1, 8):
+            completed = self.invoke(shard)
+            self.assertNotEqual(0, completed.returncode)
+            self.assertIn('fixture import', completed.stdout + completed.stderr)
 
     def test_inventory_is_dynamic_and_uses_canonical_relative_paths(self):
         self.write(ROOTS[0], 'support.py', 'raise RuntimeError("not a test")\n')
@@ -110,7 +207,7 @@ class ShardTests(unittest.TestCase):
                 runner.guard(self.root, allocation)
 
     def test_guard_rejects_invalid_or_absent_shard_indices(self):
-        for invalid in (-1, 6, '0', True):
+        for invalid in (-1, 9, '0', True):
             allocation = self.allocation()
             allocation[ROOTS[0]] = {key: value for key, value in allocation[ROOTS[0]].items() if key != invalid}
             allocation[ROOTS[0]][invalid] = []
@@ -161,7 +258,7 @@ class ShardTests(unittest.TestCase):
     def test_list_checks_all_shards_without_importing_or_spawning(self):
         for suite in ROOTS:
             self.write(suite, 'test_awf.py', 'raise RuntimeError("must not import")\n')
-        for shard in range(6):
+        for shard in runner.SHARDS:
             with self.subTest(shard=shard), mock.patch.object(runner.subprocess, 'run') as child:
                 with mock.patch('sys.stdout', new_callable=io.StringIO) as output:
                     self.assertEqual(0, runner.main(['--root', str(self.root), '--shard', str(shard), '--list']))
@@ -171,11 +268,11 @@ class ShardTests(unittest.TestCase):
                 self.assertEqual(shard, record['shard'])
                 self.assertEqual(self.allocation(), runner.allocate(runner.inventory(self.root)))
 
-    def test_all_six_cli_shards_cover_each_module_once(self):
+    def test_all_cli_shards_cover_each_module_once(self):
         for suite in ROOTS:
             self.write(suite, 'test_second.py', PASSING)
         selected = []
-        for shard in range(6):
+        for shard in runner.SHARDS:
             completed = self.invoke(shard, '--list')
             self.assertEqual(0, completed.returncode, completed.stderr)
             record, = self.events(completed, 'selected')
@@ -185,7 +282,7 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(len(selected), len(set(selected)))
 
     def test_invalid_cli_shard_fails(self):
-        for shard in (-1, 6):
+        for shard in (-1, 9):
             completed = self.invoke(shard, '--list')
             self.assertNotEqual(0, completed.returncode)
             self.assertIn('invalid choice', completed.stderr)
@@ -200,7 +297,7 @@ class ShardTests(unittest.TestCase):
                        '    def test_example(self):\n'
                        f'        self.assertEqual({index}, helper.VALUE)\n'
                        '        self.assertEqual("repository root", project_helper.VALUE)\n'
-                       f'        self.assertEqual(Path({str(self.root)!r}), Path.cwd())\n')
+                       f'        self.assertEqual(Path({str(self.root)!r}).resolve(), Path.cwd().resolve())\n')
         completed = self.invoke()
         self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
         self.assertEqual('selected', json.loads(completed.stdout.splitlines()[0])['event'])
@@ -406,13 +503,13 @@ def load_tests(loader, tests, pattern):
         with self.assertRaisesRegex(ValueError, 'unknown'):
             runner.guard(self.root, allocation)
 
-    def test_six_shards_cover_inventory_minus_recorded_exclusion_exactly_once(self):
+    def test_all_shards_cover_inventory_minus_recorded_exclusion_exactly_once(self):
         excluded = self.write(ROOTS[1], 'test_installed_self_test.py', 'raise AssertionError("must not import")\n')
         for suite in ROOTS:
             for index in range(13):
                 self.write(suite, f'test_extra_{index:02}.py', PASSING)
         selected = []
-        for shard in range(6):
+        for shard in runner.SHARDS:
             completed = self.invoke(shard, '--list')
             self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
             record, = self.events(completed, 'selected')

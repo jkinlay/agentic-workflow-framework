@@ -131,6 +131,7 @@ class PublicationScanTests(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-publication-test-")
+        self.temp.name = os.path.realpath(self.temp.name)
         self.repo = Repository(self.temp.name)
         self.mapping = self.repo.mapping()
 
@@ -961,6 +962,7 @@ class PublicationScanTests(unittest.TestCase):
 class PublicationRewriteTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-rewrite-test-")
+        self.temp.name = os.path.realpath(self.temp.name)
         self.repo = Repository(self.temp.name)
         self.mapping = self.repo.mapping()
         self.remote = Path(self.temp.name) / "remote.git"
@@ -1933,7 +1935,10 @@ class PublicationRewriteTests(unittest.TestCase):
                 publication._restore_rewrite_reflogs(
                     self.repo.path, snapshot, "refs/heads/awf/EX-6-publication")
             self.assertEqual(b"external junction bytes\n", marker.read_bytes())
-            self.assertTrue(logs.is_junction())
+            details = os.lstat(logs)
+            self.assertTrue(
+                details.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                and details.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
         finally:
             logs.rmdir()
             held.rename(logs)
