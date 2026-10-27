@@ -70,10 +70,27 @@ class ShardTests(unittest.TestCase):
         for suite in ROOTS:
             paths = sorted(inventory[suite])
             self.assertEqual([suite + '/test_B.py'], allocation[suite][0])
-            self.assertEqual(paths[1::6], allocation[suite][1])
-            self.assertEqual(paths[2::6], allocation[suite][2])
-            for shard in (3, 4, 5):
+            self.assertEqual(paths[1::6][0::3], allocation[suite][1])
+            self.assertEqual(paths[1::6][1::3], allocation[suite][6])
+            self.assertEqual(paths[1::6][2::3], allocation[suite][7])
+            for shard in (2, 3, 4, 5):
                 self.assertEqual(paths[shard::6], allocation[suite][shard])
+        runner.guard(self.root, allocation)
+
+    def test_base_shard_one_is_split_three_ways_without_loss(self):
+        for suite in ROOTS:
+            for index in range(40):
+                self.write(suite, f'test_split_{index:02}.py', PASSING)
+        inventory = runner.inventory(self.root)
+        allocation = runner.allocate(inventory)
+        for suite in ROOTS:
+            base = sorted(inventory[suite])[1::6]
+            split = allocation[suite][1] + allocation[suite][6] + allocation[suite][7]
+            self.assertCountEqual(base, split)
+            self.assertEqual(base[0::3], allocation[suite][1])
+            self.assertEqual(base[1::3], allocation[suite][6])
+            self.assertEqual(base[2::3], allocation[suite][7])
+            self.assertTrue(all(allocation[suite][shard] for shard in (1, 6, 7)))
         runner.guard(self.root, allocation)
 
     def test_inventory_is_dynamic_and_uses_canonical_relative_paths(self):
@@ -110,7 +127,7 @@ class ShardTests(unittest.TestCase):
                 runner.guard(self.root, allocation)
 
     def test_guard_rejects_invalid_or_absent_shard_indices(self):
-        for invalid in (-1, 6, '0', True):
+        for invalid in (-1, 8, '0', True):
             allocation = self.allocation()
             allocation[ROOTS[0]] = {key: value for key, value in allocation[ROOTS[0]].items() if key != invalid}
             allocation[ROOTS[0]][invalid] = []
@@ -161,7 +178,7 @@ class ShardTests(unittest.TestCase):
     def test_list_checks_all_shards_without_importing_or_spawning(self):
         for suite in ROOTS:
             self.write(suite, 'test_awf.py', 'raise RuntimeError("must not import")\n')
-        for shard in range(6):
+        for shard in runner.SHARDS:
             with self.subTest(shard=shard), mock.patch.object(runner.subprocess, 'run') as child:
                 with mock.patch('sys.stdout', new_callable=io.StringIO) as output:
                     self.assertEqual(0, runner.main(['--root', str(self.root), '--shard', str(shard), '--list']))
@@ -171,11 +188,11 @@ class ShardTests(unittest.TestCase):
                 self.assertEqual(shard, record['shard'])
                 self.assertEqual(self.allocation(), runner.allocate(runner.inventory(self.root)))
 
-    def test_all_six_cli_shards_cover_each_module_once(self):
+    def test_all_cli_shards_cover_each_module_once(self):
         for suite in ROOTS:
             self.write(suite, 'test_second.py', PASSING)
         selected = []
-        for shard in range(6):
+        for shard in runner.SHARDS:
             completed = self.invoke(shard, '--list')
             self.assertEqual(0, completed.returncode, completed.stderr)
             record, = self.events(completed, 'selected')
@@ -185,7 +202,7 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(len(selected), len(set(selected)))
 
     def test_invalid_cli_shard_fails(self):
-        for shard in (-1, 6):
+        for shard in (-1, 8):
             completed = self.invoke(shard, '--list')
             self.assertNotEqual(0, completed.returncode)
             self.assertIn('invalid choice', completed.stderr)
@@ -406,13 +423,13 @@ def load_tests(loader, tests, pattern):
         with self.assertRaisesRegex(ValueError, 'unknown'):
             runner.guard(self.root, allocation)
 
-    def test_six_shards_cover_inventory_minus_recorded_exclusion_exactly_once(self):
+    def test_all_shards_cover_inventory_minus_recorded_exclusion_exactly_once(self):
         excluded = self.write(ROOTS[1], 'test_installed_self_test.py', 'raise AssertionError("must not import")\n')
         for suite in ROOTS:
             for index in range(13):
                 self.write(suite, f'test_extra_{index:02}.py', PASSING)
         selected = []
-        for shard in range(6):
+        for shard in runner.SHARDS:
             completed = self.invoke(shard, '--list')
             self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
             record, = self.events(completed, 'selected')

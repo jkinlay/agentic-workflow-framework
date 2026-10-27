@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run one of six deterministic Windows unittest module shards.
+"""Run one of eight deterministic Windows unittest module shards.
 
 From the repository root: python -B scripts/run_windows_unittests.py --shard 0
 Add --list to guard all allocations and print this shard without importing tests.
 Paths are repository-relative POSIX strings sorted by Unicode code point, per
-suite; index i belongs to shard i % 6 after the explicit exclusion below.
+suite; index i belongs to base shard i % 6 after the explicit exclusion below,
+and base shard 1 is split three ways (position j % 3) into shards 1, 6 and 7.
 Each suite uses a fresh interpreter, the repository cwd and its Linux CI
 discovery top-level contract. Selection is logged before any child is launched;
 discovery and completed module-suite records must match it exactly.
@@ -25,7 +26,10 @@ import unittest
 SUITES = ('.agentic/tests', 'scripts/tests', 'global/awf/tests',
           'global/awf-portable/tests')
 EXPLICIT_TOP = frozenset(SUITES[:2])
-SHARDS = (0, 1, 2, 3, 4, 5)
+SHARDS = (0, 1, 2, 3, 4, 5, 6, 7)
+BASE_SHARDS = 6
+# Base shard 1 exceeded the Windows job budget, so it is split three ways.
+SPLIT_SHARDS = {1: (1, 6, 7)}
 ZERO_TEST_MODULES = frozenset({'.agentic/tests/test_awf36_automation_fixtures.py'})
 # The installed-runtime acceptance suite has its own CI job and budget.
 EXCLUDED_MODULES = frozenset({'scripts/tests/test_installed_self_test.py'})
@@ -63,7 +67,13 @@ def allocate(modules):
         if len(paths) != len(set(paths)):
             raise ValueError(f'duplicate inventory paths: {suite}')
         ordered = sorted(path for path in paths if path not in EXCLUDED_MODULES)
-        allocation[suite] = {shard: ordered[shard::len(SHARDS)] for shard in SHARDS}
+        shards = {}
+        for base in range(BASE_SHARDS):
+            targets = SPLIT_SHARDS.get(base, (base,))
+            base_paths = ordered[base::BASE_SHARDS]
+            for position, shard in enumerate(targets):
+                shards[shard] = base_paths[position::len(targets)]
+        allocation[suite] = {shard: shards[shard] for shard in SHARDS}
     return allocation
 
 
