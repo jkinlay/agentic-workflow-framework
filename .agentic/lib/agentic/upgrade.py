@@ -772,6 +772,14 @@ def review_tier_defaults(config):
     import copy
     raw = isinstance(config, (bytes, bytearray))
     original_text = bytes(config).decode("utf-8") if raw else None
+    strict_json_input = False
+    if raw:
+        try:
+            json.loads(original_text)
+        except (ValueError, RecursionError):
+            pass
+        else:
+            strict_json_input = True
     json_value = None
     if raw and original_text.lstrip().startswith(("{", "[")):
         try:
@@ -837,7 +845,9 @@ def review_tier_defaults(config):
     if execution_node is None:
         migrated_text = _yaml_insert_mapping_entry(
             original_text, root,
-            "execution: {risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}}",
+            ('"execution": {"risk_tiers": {"tier3_review": {"roles": ["critic", "specialist"], '
+             '"findings": "blocking", "max_rounds": 3}}}' if strict_json_input else
+             "execution: {risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}}"),
             ["execution:", "  risk_tiers:", "    tier3_review:",
              "      roles: [critic, specialist]", "      findings: blocking",
              "      max_rounds: 3"], newline)
@@ -846,14 +856,18 @@ def review_tier_defaults(config):
         if risk_node is None:
             migrated_text = _yaml_insert_mapping_entry(
                 original_text, execution_node,
-                "risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}",
+                ('"risk_tiers": {"tier3_review": {"roles": ["critic", "specialist"], '
+                 '"findings": "blocking", "max_rounds": 3}}' if strict_json_input else
+                 "risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}"),
                 ["risk_tiers:", "  tier3_review:",
                  "    roles: [critic, specialist]", "    findings: blocking",
                  "    max_rounds: 3"], newline)
         else:
             migrated_text = _yaml_insert_mapping_entry(
                 original_text, risk_node,
-                "tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}",
+                ('"tier3_review": {"roles": ["critic", "specialist"], '
+                 '"findings": "blocking", "max_rounds": 3}' if strict_json_input else
+                 "tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}"),
                 ["tier3_review:", "  roles: [critic, specialist]",
                  "  findings: blocking", "  max_rounds: 3"], newline)
     return verified_yaml_output(migrated_text.encode("utf-8"))
