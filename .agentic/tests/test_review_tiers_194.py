@@ -218,6 +218,51 @@ class ReviewTiers194Tests(unittest.TestCase):
         self.assertEqual(3, parsed["execution"]["risk_tiers"]["tier3_review"]["max_rounds"])
         self.assertEqual(migrated.project_config, review_tier_defaults(migrated.project_config))
 
+    def test_awf220_exponent_json_survives_real_194_to_195_chain(self):
+        from agentic.canonical import load_yaml, loads
+        from agentic.upgrade import apply_chain, review_tier_defaults
+
+        before = (b'{"template":{"expected_workflow_version":"1.9.4"},'
+                  b'"project":{"name":1e3},"execution":{"risk_tiers":{}}}')
+        original_json = json.loads(before)
+        with self.assertRaisesRegex(ValidationError, "Only JSON values with integer numbers"):
+            loads(before.decode("utf-8"))
+        original_yaml = load_yaml(before)
+        self.assertEqual("1e3", original_yaml["project"]["name"])
+
+        table = {"target": "1.9.5", "versions": {
+            "1.9.4": {"migration": {"to": "1.9.5", "new_required_settings": []}},
+        }}
+        target = {"source_manifest_sha256": "a" * 64, "_immutable_files": {}}
+        receipt = json.dumps({"template_version": "1.9.4"}).encode()
+        provenance = json.dumps({"template": {"version": "1.9.4"}}).encode()
+
+        migrated, reports = apply_chain(
+            table, "1.9.4", before, None, receipt, provenance, {}, target)
+        self.assertEqual([("1.9.4", "1.9.5")],
+                         [(report["from"], report["to"]) for report in reports])
+
+        expected_yaml = copy.deepcopy(original_yaml)
+        expected_yaml["template"]["expected_workflow_version"] = "1.9.5"
+        expected_yaml["execution"]["risk_tiers"]["tier3_review"] = {
+            "roles": ["critic", "specialist"],
+            "findings": "blocking",
+            "max_rounds": 3,
+        }
+        self.assertEqual(expected_yaml, load_yaml(migrated.project_config))
+
+        migrated_json = json.loads(migrated.project_config)
+        expected_json = copy.deepcopy(original_json)
+        expected_json["template"]["expected_workflow_version"] = "1.9.5"
+        expected_json["execution"]["risk_tiers"]["tier3_review"] = {
+            "roles": ["critic", "specialist"],
+            "findings": "blocking",
+            "max_rounds": 3,
+        }
+        self.assertEqual(expected_json, migrated_json)
+        self.assertEqual(migrated.project_config,
+                         review_tier_defaults(migrated.project_config))
+
     def test_awf16_195_r3_002_inline_yaml_execution_mapping_gets_one_tier3_mapping(self):
         """AWF16-195-R3-002: inline YAML gets one valid additive mapping."""
         from agentic.upgrade import review_tier_defaults

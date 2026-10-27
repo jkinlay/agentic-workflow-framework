@@ -266,6 +266,62 @@ class UpgradeMatrixTests(unittest.TestCase):
                 contracts.validate("operating-change", json.loads(
                     (destination / ".agentic-state/operating/records/operating-change.json").read_bytes()))
 
+    def test_awf220_194_exponent_json_remains_json_after_install(self):
+        destination, evidence = self.fixture("1.9.4")
+        config_path = destination / CONFIG
+        config = load_yaml(evidence["configuration"])
+        for name in ("cloud_id", "provider_project_id", "controller_actor_id"):
+            config["jira"].setdefault(name, None)
+        config["project"]["name"] = "1e3"
+        before = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        occurrence = b'"name": "1e3"'
+        self.assertEqual(1, before.count(occurrence))
+        before = before.replace(occurrence, b'"name": 1e3', 1)
+        original_json = json.loads(before)
+        self.assertEqual("1e3", load_yaml(before)["project"]["name"])
+        config_path.write_bytes(before)
+        Contracts(destination / ".agentic/schemas").validate(
+            "project-config", load_yaml(before))
+        original_receipt = json.loads((destination / INSTALLED).read_bytes())
+        original_provenance = json.loads((destination / PROVENANCE).read_bytes())
+        original_operating = optional_bytes(destination / "OPERATING_CONFIG.yaml")
+        self.assertTrue(all(value is False for value in config["controller"].values()))
+
+        result = self.upgrade(destination)
+        after = config_path.read_bytes()
+        installed_json = json.loads(after)
+
+        expected_json = json.loads(json.dumps(original_json))
+        expected_json["template"]["expected_workflow_version"] = VERSION
+        expected_json["execution"]["risk_tiers"]["tier3_review"] = {
+            "roles": ["critic", "specialist"],
+            "findings": "blocking",
+            "max_rounds": 3,
+        }
+        self.assertEqual(expected_json, installed_json)
+        installed_yaml = load_yaml(after)
+        self.assertEqual("1e3", installed_yaml["project"]["name"])
+        Contracts(destination / ".agentic/schemas").validate(
+            "project-config", installed_yaml)
+        receipt = json.loads((destination / INSTALLED).read_bytes())
+        self.assertEqual(original_provenance["installation"]["install_id"],
+                         receipt["install_id"])
+        self.assertEqual(config["project"]["id"], receipt["project_id"])
+        for relative in (".github/CODEOWNERS", "PROJECT_INSTRUCTIONS.md"):
+            self.assertEqual(evidence["owner_files"][relative],
+                             (destination / relative).read_bytes())
+        self.assertEqual(original_operating,
+                         optional_bytes(destination / "OPERATING_CONFIG.yaml"))
+        actions = {item["path"]: item["action"]
+                   for item in result["upgrade"]["state_migrations"]}
+        self.assertEqual("migrated_schema",
+                         actions[".agentic-state/routing/ledger.sqlite"])
+        self.assertEqual("archived_read_only_copy",
+                         actions[".agentic-state/legacy-note.txt"])
+        self.assertTrue(all(value is False
+                            for value in installed_yaml["controller"].values()))
+        self.assertEqual(self.pin, verify_installed(destination))
+
     def test_upgrade_preserves_owner_lines_around_historical_ignore_block(self):
         destination, before = self.fixture("1.9.3")
         historical = before["owner_files"][".gitignore"]
