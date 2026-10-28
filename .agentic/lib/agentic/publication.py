@@ -309,10 +309,6 @@ _HISTORICAL_SELF_REFERENCES = {
         "91d85c9ffa6f88d94aa442df777d5f623e70600f93f543719f12df18d5e8a170",
         "c6af3ad804842a89ae8a0db0a53e23e84eff7837cf8daa17644ef7deb5324e6c",
     }),
-    # Commit 75fc9bac message line 211: audited public run-location provenance.
-    ("message", "builtin.windows_absolute"): frozenset({
-        "6126da46f095f5e97d7c20eb23f5c004a24092a81afb42edff33799a4a7133c3",
-    }),
     # Historical pre-push machine-local defaults removed by portable-empty source fix.
     ("tools/windows/pre-push-gate.ps1", "builtin.windows_absolute"): frozenset({
         "78581231c44e5c1a15d7bb629cdd20414f1513729fbf484d9221ba387c9a9cae",
@@ -376,6 +372,14 @@ _CLOSED_HISTORICAL_SELF_REFERENCES = frozenset({
     ("global/awf-portable/tests/test_install_skill.py", "patch", "deleted",
      "builtin.windows_absolute",
      "9515f6d34fac1b879b719d088f982fa4ecaffa5957045bbf766890abde5853a2"),
+})
+
+# Commit-bound closed identities: (commit, path, source, detector_id, full-line sha256).
+# The audited 75fc9bac message line is waived only for that exact commit + message channel.
+_COMMIT_BOUND_CLOSED_HISTORICAL_SELF_REFERENCES = frozenset({
+    ("75fc9bacf0adc2fff492560adc21b25bd0ea444e", "message", "message",
+     "builtin.windows_absolute",
+     "6126da46f095f5e97d7c20eb23f5c004a24092a81afb42edff33799a4a7133c3"),
 })
 
 
@@ -952,12 +956,18 @@ def _historical_synthetic_test_reference(path, detector_id, line, value):
         return False
     identities = _HISTORICAL_SYNTHETIC_TEST_REFERENCES.get(path, ())
     return hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest() in identities
-def _closed_historical_self_reference(line, *, path, source, change, detector_id):
-    identity = (path, source, change, detector_id,
-                hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest())
-    return identity in _CLOSED_HISTORICAL_SELF_REFERENCES
+def _closed_historical_self_reference(line, *, path, source, change, detector_id, commit=None):
+    digest = hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest()
+    if (path, source, change, detector_id, digest) in _CLOSED_HISTORICAL_SELF_REFERENCES:
+        return True
+    if commit is not None and (
+            commit, path, source, detector_id, digest
+    ) in _COMMIT_BOUND_CLOSED_HISTORICAL_SELF_REFERENCES:
+        return True
+    return False
 
-def _matching_values(text, *, path, detectors, allows, line_offset=0, source=None, change=None):
+def _matching_values(text, *, path, detectors, allows, line_offset=0, source=None, change=None,
+                     commit=None):
     """Yield detector matches without normalizing the raw matched value."""
     for number, line in enumerate(text.splitlines() or [text], 1):
         for detector in detectors:
@@ -968,7 +978,7 @@ def _matching_values(text, *, path, detectors, allows, line_offset=0, source=Non
                 if (_historical_self_reference(path, detector.detector_id, line)
                         or _closed_historical_self_reference(
                             line, path=path, source=source, change=change,
-                            detector_id=detector.detector_id)):
+                            detector_id=detector.detector_id, commit=commit)):
                     continue
                 if _historical_synthetic_test_reference(path, detector.detector_id, line, value):
                     continue
@@ -983,7 +993,8 @@ def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, 
                base_membership=(), force_blocking=False):
     findings = []
     for number, detector_id, value in _matching_values(
-            text, path=path, detectors=detectors, allows=allows, line_offset=line_offset, source=source, change=change):
+            text, path=path, detectors=detectors, allows=allows, line_offset=line_offset,
+            source=source, change=change, commit=commit):
         classification = "BLOCKING" if force_blocking or change == "added" else (
             "PRE_EXISTING" if (detector_id, value) in base_membership else "BLOCKING")
         findings.append({"commit": commit, "path": path, "line": number,
@@ -1438,26 +1449,48 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                         and after_path in commit_tree and commit_tree[after_path][2] == allowed_large_oids[after_path]):
                     new_text, new_reason = "", None
                 if old_reason or new_reason:
-                    if ((new_reason == "binary" and after_path and after_path in commit_tree
-                         and commit_tree[after_path][1] == "blob")
-                            or (old_reason == "binary" and (new_reason in {None, "binary"})
-                                and before_path and before_path in old_tree
-                                and old_tree[before_path][1] == "blob" and after_path is None)):
-                        target_path = after_path or before_path
-                        target_oid = (commit_tree[after_path][2] if after_path and after_path in commit_tree
-                                      else old_tree[before_path][2])
-                        sq_findings, sq_unscanned = _scan_registered_sqlite_blob(
-                            root, target_oid, target_path, commit=commit, source="patch",
-                            parent=parent, detectors=detectors, allows=allows, extra_env=extra_env,
-                            base_membership=base_membership,
-                            force_blocking=bool(after_path))
-                        findings += sq_findings
-                        if sq_unscanned:
+                    # Inspect BOTH sides independently. Never drop an old-side
+                    # reason/content when the new side is a registered specimen.
+                    handled = False
+                    if (old_reason and before_path and before_path in old_tree
+                            and old_tree[before_path][1] == "blob"):
+                        handled = True
+                        old_out = _path_for_output(before_path, detectors, allows)
+                        if old_reason == "binary":
+                            sq_findings, sq_unscanned = _scan_registered_sqlite_blob(
+                                root, old_tree[before_path][2], before_path, commit=commit,
+                                source="patch", parent=parent, detectors=detectors,
+                                allows=allows, extra_env=extra_env,
+                                base_membership=base_membership, force_blocking=False)
+                            findings += sq_findings
                             unscanned.extend(sq_unscanned)
-                        elif not sq_findings and not sq_unscanned:
-                            # Registered fixture scanned cleanly with no detector hits.
-                            pass
-                    else:
+                        else:
+                            unscanned.append({"commit": commit, "path": old_out, "source": "patch",
+                                              "reason": old_reason, "parent": parent})
+                    elif old_reason:
+                        handled = True
+                        unscanned.append({"commit": commit, "path": output_path, "source": "patch",
+                                          "reason": old_reason, "parent": parent})
+                    if (new_reason and after_path and after_path in commit_tree
+                            and commit_tree[after_path][1] == "blob"):
+                        handled = True
+                        new_out = _path_for_output(after_path, detectors, allows)
+                        if new_reason == "binary":
+                            sq_findings, sq_unscanned = _scan_registered_sqlite_blob(
+                                root, commit_tree[after_path][2], after_path, commit=commit,
+                                source="patch", parent=parent, detectors=detectors,
+                                allows=allows, extra_env=extra_env,
+                                base_membership=base_membership, force_blocking=True)
+                            findings += sq_findings
+                            unscanned.extend(sq_unscanned)
+                        else:
+                            unscanned.append({"commit": commit, "path": new_out, "source": "patch",
+                                              "reason": new_reason, "parent": parent})
+                    elif new_reason:
+                        handled = True
+                        unscanned.append({"commit": commit, "path": output_path, "source": "patch",
+                                          "reason": new_reason, "parent": parent})
+                    if not handled:
                         unscanned.append({"commit": commit, "path": output_path, "source": "patch",
                                           "reason": old_reason or new_reason, "parent": parent})
                     continue
@@ -1474,7 +1507,7 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                                     (detector_id, value)
                                     for _number, detector_id, value in _matching_values(
                                         line, path=before_path, detectors=detectors, allows=allows,
-                                        source="patch", change="deleted")
+                                        source="patch", change="deleted", commit=commit)
                                 }
                                 membership = base_membership | sync_membership
                             findings += _scan_text(line, commit=commit, path=output_path,

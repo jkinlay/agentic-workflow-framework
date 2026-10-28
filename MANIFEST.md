@@ -36,7 +36,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/28-EXTERNAL-REVIEW.md` | `f3e911e18321548798715136195f7a886e1b267f9b2eb0073ac839ddd6ed2c7a` |
 | `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `b3354577177c8095ffad69f3574f5df6d3a1fd7f81b8cf65ab8878e1d51267c8` |
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `be2b7bab26761b55fa4ad2b3b42f104a1d3a9ec89b07f2cd8cc6477062a71bad` |
-| `.agentic/docs/31-PUBLICATION-SAFETY.md` | `cf5c27e3c1e747a7399d7183dcb600822f52d3de0cd0ae0ff1d65269ee10f722` |
+| `.agentic/docs/31-PUBLICATION-SAFETY.md` | `4c04342e867dd6ba2e8a4e2f70d5037ebb6806d486b02b71b17fe23f1d44bad7` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `ae31819b369af19165a9179e2bdfab11d1922b5b03398e3455126f83601a8845` |
 | `.agentic/docs/32-RELEASE-PUBLISHING.md` | `546138501c163e6163966dfc593abe2db32c6ddba7b453792e7c6595f467abfe` |
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `fca50ff47c86935859a56e785fb788e3b0da8f3e2b8b45e06ffd3ee3614a9c2a` |
@@ -132,7 +132,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/providers/github_review_host.py` | `dee323827e12bc17350cbbaee9502590cb1db1ba5c997953a469cccce566da8b` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
-| `.agentic/lib/agentic/publication.py` | `73dbd667954d9f0fcc2c67ce95dab6a66867e1fdb08e01dbf346bc8b25981cb4` |
+| `.agentic/lib/agentic/publication.py` | `8c0fdff8272d7300d90f430aad69f53b0017b4ac5a1756d3ad979ebcd186dbbe` |
 | `.agentic/lib/agentic/publication_readiness.py` | `cbc0a38cb74bc646bd77b81d914c088b7d2088ded6944c7d4a4cd631ca1e466e` |
 | `.agentic/lib/agentic/publication_sqlite_fixture.py` | `5d652443163f6ff2072b14eeb1c3ecf0b7b9a17cd81964cde66bb217261d4e0e` |
 | `.agentic/lib/agentic/release_trust.py` | `a8d468759d1c974b5a06ae3855b7bf17ea2e1a937edf4d0c1c76a7bef8988896` |
@@ -420,7 +420,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication.py` | `1063315552dfa623f88378c0e02a289fc9770488e0701bd3336561b9c47da9c4` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |
 | `.agentic/tests/test_publication_records.py` | `b1ce877b5836821ab3671c3c2191e59d91d79ebfff4bb7d4e2ea7ad08e53acd9` |
-| `.agentic/tests/test_publication_sqlite_fixture.py` | `7f44a0fc7a9d107e1276a39675f5f216b33919c705dc6681dc54935356a0590e` |
+| `.agentic/tests/test_publication_sqlite_fixture.py` | `39d79931d050b81757c2f1d69320787428771aa6b5de3bfe12f69b4b250d881d` |
 | `.agentic/tests/test_publication_sync_merge.py` | `b522354cc6b31b50da5f6cf916d5204d14d4a52bbe9b872b0ba77160baed48af` |
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
 | `.agentic/tests/test_ready_authorization.py` | `fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d` |
@@ -648,7 +648,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_installed_self_test.py` | `083e749a159bb6798bf13b31fb08017f87bc0ec2824bd3f4e021f8fccec8219c` |
 | `scripts/tests/test_manifest_conflicts.py` | `6a9b19eded244de59583346b28d344b72f77c8d916f71a7426f61f09302c8a09` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
-| `scripts/tests/test_pre_push_gate_portable.py` | `c4c06561c5e05d76511ddc6f7ece3078f8ee5dc8acf1413d5cd5814da025c3a4` |
+| `scripts/tests/test_pre_push_gate_portable.py` | `f51e13e918b8075e38d9088ddda7de49d36c2d1525fe2c84dd00a0db17396d73` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
 | `scripts/tests/test_publish_release.py` | `f39f098c7836b34733b789536fae5c7949326b694b5efa18b1e71506aa0fbd64` |
 | `scripts/tests/test_release_hygiene.py` | `6f7f69dcfad944b02de6c1ef8d3bf159af7c2ee6f0319ecb1fedf9ab5962c00e` |
