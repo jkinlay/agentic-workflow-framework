@@ -420,7 +420,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication.py` | `1063315552dfa623f88378c0e02a289fc9770488e0701bd3336561b9c47da9c4` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |
 | `.agentic/tests/test_publication_records.py` | `b1ce877b5836821ab3671c3c2191e59d91d79ebfff4bb7d4e2ea7ad08e53acd9` |
-| `.agentic/tests/test_publication_sqlite_fixture.py` | `39d79931d050b81757c2f1d69320787428771aa6b5de3bfe12f69b4b250d881d` |
+| `.agentic/tests/test_publication_sqlite_fixture.py` | `907224315a99eb2017ec179aee85b29978a04a11f31e7215da9c27c19649e8f8` |
 | `.agentic/tests/test_publication_sync_merge.py` | `b522354cc6b31b50da5f6cf916d5204d14d4a52bbe9b872b0ba77160baed48af` |
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
 | `.agentic/tests/test_ready_authorization.py` | `fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d` |
@@ -648,7 +648,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_installed_self_test.py` | `083e749a159bb6798bf13b31fb08017f87bc0ec2824bd3f4e021f8fccec8219c` |
 | `scripts/tests/test_manifest_conflicts.py` | `6a9b19eded244de59583346b28d344b72f77c8d916f71a7426f61f09302c8a09` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
-| `scripts/tests/test_pre_push_gate_portable.py` | `f51e13e918b8075e38d9088ddda7de49d36c2d1525fe2c84dd00a0db17396d73` |
+| `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
 | `scripts/tests/test_publish_release.py` | `f39f098c7836b34733b789536fae5c7949326b694b5efa18b1e71506aa0fbd64` |
 | `scripts/tests/test_release_hygiene.py` | `6f7f69dcfad944b02de6c1ef8d3bf159af7c2ee6f0319ecb1fedf9ab5962c00e` |

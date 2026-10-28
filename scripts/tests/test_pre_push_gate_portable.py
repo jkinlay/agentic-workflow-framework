@@ -62,7 +62,10 @@ class PrePushGatePortableTests(unittest.TestCase):
                 continue
         if pwsh is None:
             self.skipTest("pwsh/powershell unavailable on this host")
-        script = r"""
+        # Use a disposable -File helper so -GatePath binds even when the path
+        # contains spaces (Windows CI workdir "awf windows"). -Command plus a
+        # trailing -GatePath does not bind that parameter correctly.
+        helper = r"""
 param([string]$GatePath)
 $errors = $null
 $tokens = $null
@@ -79,9 +82,13 @@ if ($pyDefault -ne "''" -and $pyDefault -ne '""') { "Py default not empty: $pyDe
 if ($rootDefault -ne "''" -and $rootDefault -ne '""') { "ControllerRoot default not empty: $rootDefault"; exit 5 }
 'OK'
 """
-        result = subprocess.run(
-            [pwsh, "-NoLogo", "-NoProfile", "-Command", script, "-GatePath", str(GATE)],
-            capture_output=True, text=True, timeout=60, check=False)
+        with tempfile.TemporaryDirectory(prefix="awf-pwsh-ast-") as temporary:
+            helper_path = Path(temporary) / "parse-gate-params.ps1"
+            helper_path.write_text(helper, encoding="utf-8", newline="\n")
+            result = subprocess.run(
+                [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive",
+                 "-File", str(helper_path), "-GatePath", str(GATE)],
+                capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertIn("OK", result.stdout)
 

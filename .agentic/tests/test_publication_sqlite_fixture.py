@@ -4,10 +4,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic.publication import (
     _COMMIT_BOUND_CLOSED_HISTORICAL_SELF_REFERENCES,
