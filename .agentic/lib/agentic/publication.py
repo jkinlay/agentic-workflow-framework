@@ -41,6 +41,13 @@ from .interaction import writer_commit_message
 from .provenance import (parse_writer_trailer, validate_commit_message,
                          validate_ref_locator)
 from .safeio import ChildEnvironmentSnapshot, Tree, relative_parts, run_bounded
+from .publication_sqlite_fixture import (
+    REGISTERED_PATH as _REGISTERED_SQLITE_PATH,
+    REGISTERED_SHA256 as _REGISTERED_SQLITE_SHA256,
+    content_addressed_blob_path as _sqlite_fixture_blob_path,
+    registered_fixture_identity as _registered_sqlite_identity,
+    validate_registered_sqlite_fixture as _validate_registered_sqlite_fixture,
+)
 
 
 # Complete canonical record.json envelope, including escaped payload and key.
@@ -251,6 +258,65 @@ _HISTORICAL_SELF_REFERENCES = {
     }),
     (".agentic/tests/fixtures/upgrades/blobs/f6fb0ab95c1aa0689a3459298106994075749729f89ec0110e9e8ab21b391c6c", "builtin.windows_absolute"): frozenset({
         "a34f47277920fd175fd2170362ba9c3312e08d77bd4a5191ea951297b216a7f3",
+    }),
+    # Audited 1.9.5 publication-scan exact line identities (path + detector + full-line digest).
+    # No broad allow, no regex. installed-self-test 229/306 and 291/368 share two digests.
+    (".agentic/lib/agentic/child_process.py", "builtin.windows_absolute"): frozenset({
+        "0d589b71c730efb9d81f7e3a99158b783293b3d97f37da6f19582cd3705ea3ec",
+    }),
+    (".agentic/tests/test_child_process.py", "builtin.home_path"): frozenset({
+        "16b44281e0244ed636f0558497b84d4d8496afdc1a72c783acbd9946f41a3ee5",
+    }),
+    (".agentic/tests/test_child_process.py", "builtin.unc_path"): frozenset({
+        "4e4439d4d4634320e898570a82459393b1406efab33877abe33ad3d07e461e61",
+    }),
+    (".agentic/tests/test_child_process.py", "builtin.windows_absolute"): frozenset({
+        "16b44281e0244ed636f0558497b84d4d8496afdc1a72c783acbd9946f41a3ee5",
+    }),
+    (".agentic/tests/test_safeio_process.py", "builtin.home_path"): frozenset({
+        "cd491224460529341dac97b4568df88ca3442cef4b4ace1d431a2bf1c7f18e58",
+        "cffb3d0dd28e2a44f411e54bf877003ed71df7d3e170ca29149f19f4582dc05b",
+        "4c96c6830e257c4b2592a051b555e63c49887da66f95c1d8d162a08622ea02c0",
+        "8b0c1d84c4b28c7c3b00e23b1d6d998eea83b2682c22d32311ff2c74b7f2c5b7",
+        "1c442d86b3e720232988e5153914e1c0204340860cd8ceadaafa17a82a775a98",
+    }),
+    (".agentic/tests/test_safeio_process.py", "builtin.unc_path"): frozenset({
+        "8a392f188d9e493a965084f76100300852b2373275aaf708c8059ccd6be69c95",
+        "cffb3d0dd28e2a44f411e54bf877003ed71df7d3e170ca29149f19f4582dc05b",
+        "f6f85d03b1f085ec45908d3cd5b2257693eb9f09e20696b450906d46b2da5d66",
+    }),
+    (".agentic/tests/test_safeio_process.py", "builtin.windows_absolute"): frozenset({
+        "cd491224460529341dac97b4568df88ca3442cef4b4ace1d431a2bf1c7f18e58",
+        "00e984165fe277f84b8c4576ac7ae6172a7a6de1f4232952260a4bc8859b3889",
+        "4c96c6830e257c4b2592a051b555e63c49887da66f95c1d8d162a08622ea02c0",
+    }),
+    (".agentic/tests/fixtures/upgrades/blobs/b3d641c9cadcc6b713a5b0ac9550e48c25f4e61200f946ae5372f20dc0e205f4", "builtin.windows_absolute"): frozenset({
+        "d7fbe3c12939f4b8cc678ef0df2b0ccef6be82e32573a497a8ceec9b152e5623",
+        "d14fb78c046c0ef864260fe66d0942cef801f6e2b52c9358648d58fc5a46556a",
+        "bf62c11b0d9d2b50b0a90bfc98b89eeeef5671d914a23b65da2426c0aa1e3556",
+        "43c6c0fd1a7da22f4509715fe37cc4e707972b3371b6927e9bc2bcdb3623ea04",
+        "b1967f3102b3339b073b3592cd2ac53091acc21a9e6d341cbe7f8810cd6e0863",
+        "b52fe38587f1b343a408ad51e1136b29eaf10ed43ce87950122e50d90cd32c38",
+        "3670657890e919af3fd1ff9433954b72da855899ee8c4fcd09eb7c5f716e3cf3",
+    }),
+    (".agentic/tests/fixtures/upgrades/blobs/de9a77354f000206249cbc3d50b20252c27b8ac187a76d4f8d9c45400733dfa4", "builtin.windows_absolute"): frozenset({
+        "c68711dab3492c11b407e1d891d004dafcb6d7b5c9408b14a91378142726a607",
+        "d22f82a2b608d74cc2faeb526575e04c74f5437889fb4a496b1dd9130fd8ed34",
+        "21ec298dc9f0515ab566448c090f41ec58f6be00b7e2c2729bc5bd268f40c1d2",
+        "d59b852d7f635320fea135330df7eccfe3f5a303bdb4405daf512976ef8d8ce8",
+    }),
+    ("scripts/tests/test_installed_self_test.py", "builtin.unc_path"): frozenset({
+        "91d85c9ffa6f88d94aa442df777d5f623e70600f93f543719f12df18d5e8a170",
+        "c6af3ad804842a89ae8a0db0a53e23e84eff7837cf8daa17644ef7deb5324e6c",
+    }),
+    # Commit 75fc9bac message line 211: audited public run-location provenance.
+    ("message", "builtin.windows_absolute"): frozenset({
+        "6126da46f095f5e97d7c20eb23f5c004a24092a81afb42edff33799a4a7133c3",
+    }),
+    # Historical pre-push machine-local defaults removed by portable-empty source fix.
+    ("tools/windows/pre-push-gate.ps1", "builtin.windows_absolute"): frozenset({
+        "78581231c44e5c1a15d7bb629cdd20414f1513729fbf484d9221ba387c9a9cae",
+        "547f782b98c9385876a1c483caecddc3f8adec35dc4708a91f98b2a075f78599",
     }),
 }
 
@@ -963,6 +1029,52 @@ def _blob(root, oid, extra_env=None, *, classification=False):
         return None, "invalid-utf8"
 
 
+def _blob_bytes(root, oid, extra_env=None):
+    """Return raw blob bytes or an unscanned reason; null bytes are retained."""
+    size_result = _git(root, "cat-file", "-s", oid, extra_env=extra_env, check=False)
+    if size_result.returncode:
+        raise ValidationError("Git blob size could not be verified before reading")
+    try:
+        size = int(size_result.stdout.strip())
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Git blob size is invalid") from exc
+    if size > MAX_TEXT_BYTES:
+        return None, "oversize"
+    value = _git(root, "cat-file", "blob", oid, extra_env=extra_env).stdout
+    if len(value) > MAX_TEXT_BYTES:
+        return None, "oversize"
+    return value, None
+
+
+def _scan_registered_sqlite_blob(root, oid, path, *, commit, source, parent, detectors, allows,
+                                 extra_env=None, base_membership=(), force_blocking=False):
+    """Scan a closed registered SQLite fixture; otherwise keep binary/unscanned."""
+    raw, reason = _blob_bytes(root, oid, extra_env)
+    if reason:
+        return [], [{"commit": commit, "path": path, "source": source, "reason": reason, "parent": parent}]
+    digest = hashlib.sha256(raw).hexdigest()
+    identity = _registered_sqlite_identity(path, digest)
+    if identity is None:
+        # Registered path or its content-addressed store with a drifted digest is a
+        # changed fixture (BLOCKING). All other binaries stay unscanned.
+        if path in {_REGISTERED_SQLITE_PATH, _sqlite_fixture_blob_path(_REGISTERED_SQLITE_SHA256)}:
+            return ([{"commit": commit, "path": path, "line": None, "source": source, "change": None,
+                      "detector_id": "fixture.sqlite.changed", "classification": "BLOCKING",
+                      "redacted_excerpt": "sha256:" + digest}], [])
+        return [], [{"commit": commit, "path": path, "source": source, "reason": "binary", "parent": parent}]
+    views, fail_reason = _validate_registered_sqlite_fixture(raw, path=path, sha256=digest)
+    if fail_reason is not None:
+        return ([{"commit": commit, "path": path, "line": None, "source": source, "change": None,
+                  "detector_id": "fixture.sqlite." + fail_reason, "classification": "BLOCKING",
+                  "redacted_excerpt": "sha256:" + digest}], [])
+    findings = []
+    for view in views:
+        findings += _scan_text(view, commit=commit, path=path, source=source, detectors=detectors,
+                               allows=allows, base_membership=base_membership,
+                               force_blocking=force_blocking)
+    return findings, []
+
+
 def _validate_large_file_allowances(value):
     """Validate explicit, reviewed baseline entries before inspecting content."""
     if not isinstance(value, (list, tuple)) or len(value) > MAX_LARGE_FILE_ALLOWANCES:
@@ -1326,8 +1438,28 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                         and after_path in commit_tree and commit_tree[after_path][2] == allowed_large_oids[after_path]):
                     new_text, new_reason = "", None
                 if old_reason or new_reason:
-                    unscanned.append({"commit": commit, "path": output_path, "source": "patch",
-                                      "reason": old_reason or new_reason, "parent": parent})
+                    if ((new_reason == "binary" and after_path and after_path in commit_tree
+                         and commit_tree[after_path][1] == "blob")
+                            or (old_reason == "binary" and (new_reason in {None, "binary"})
+                                and before_path and before_path in old_tree
+                                and old_tree[before_path][1] == "blob" and after_path is None)):
+                        target_path = after_path or before_path
+                        target_oid = (commit_tree[after_path][2] if after_path and after_path in commit_tree
+                                      else old_tree[before_path][2])
+                        sq_findings, sq_unscanned = _scan_registered_sqlite_blob(
+                            root, target_oid, target_path, commit=commit, source="patch",
+                            parent=parent, detectors=detectors, allows=allows, extra_env=extra_env,
+                            base_membership=base_membership,
+                            force_blocking=bool(after_path))
+                        findings += sq_findings
+                        if sq_unscanned:
+                            unscanned.extend(sq_unscanned)
+                        elif not sq_findings and not sq_unscanned:
+                            # Registered fixture scanned cleanly with no detector hits.
+                            pass
+                    else:
+                        unscanned.append({"commit": commit, "path": output_path, "source": "patch",
+                                          "reason": old_reason or new_reason, "parent": parent})
                     continue
                 old_lines, new_lines = old_text.splitlines(), new_text.splitlines()
                 matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
@@ -1374,7 +1506,14 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
         new_text, reason = _blob(root, head_tree[path][2], extra_env)
         if reason == "oversize" and path in allowed_large_oids and head_tree[path][2] == allowed_large_oids[path]:
             continue
-        if reason:
+        if reason == "binary":
+            sq_findings, sq_unscanned = _scan_registered_sqlite_blob(
+                root, head_tree[path][2], path, commit=head_sha, source="current-file",
+                parent=None, detectors=detectors, allows=allows, extra_env=extra_env,
+                base_membership=base_membership)
+            findings += sq_findings
+            unscanned.extend(sq_unscanned)
+        elif reason:
             unscanned.append({"commit": head_sha, "path": output_path, "source": "current-file", "reason": reason,
                               "parent": None})
         else:

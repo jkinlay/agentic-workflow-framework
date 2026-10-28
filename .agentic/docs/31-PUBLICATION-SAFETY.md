@@ -57,11 +57,19 @@ Detector/value pairs proven in the base are `PRE_EXISTING`; candidate additions
 are `BLOCKING`. Unknown base coverage, binary, invalid-UTF-8 or oversize content
 blocks a pass. Renames cover both paths; reads and hashes are bounded.
 
+### Registered SQLite fixture
+
+Only registered `.agentic-state/routing/ledger.sqlite` at pinned SHA-256
+`c0b83f21…5f98dd` (also under `…/upgrades/blobs/<sha256>`) may leave the
+binary path. Validate UTF-8/schema/types/size/integrity; scan logical TEXT
+and raw Latin-1/surrogateescape views. All other binaries stay blocked.
+
 Built-ins detect network shares, absolute drive/home paths, private IPv4 and
 unique-local IPv6. Findings name the commit, path/channel, line, detector ID
-and SHA-256 match digest. Published-history exceptions are exact code-owned
-line hashes scoped to path and detector; mappings cannot broaden them or apply them
-to provider text.
+and SHA-256 match digest. Published-history exceptions are exact path +
+detector + full-line SHA-256 identities (no broad allow/regex); mappings
+cannot broaden them or apply them to provider text. Pre-push gate defaults
+are portable empties resolved from worktree/PATH—no `awf194`/`awf195` paths.
 
 Preserve the JSON receipt. Its base, head and `pr_body_sha256` must match the
 pushed candidate and exact body. Counts bind their arrays. `PASS` permits only
@@ -71,14 +79,12 @@ change invalidates it. Scan prospective comments with `--comment FILE`.
 ## Draft-to-ready authorization
 
 A publication-scan PASS, current validation or green CI never authorizes a
-draft-state change. Mark-ready requires an explicit owner/manager authorization
-record bound to the exact PR and head. Render the pre-issued request ID, issue
-time and expiry before creating the owner comment. Require authenticated
-immutable provider observation binding accepted configuration and trusted time;
-comment time is observation, not signed input. Persist authorization before mutation and observe `draft_cleared`.
-If authorization is absent, invalid, mismatched or only
-offline-consistent, persist the refusal record, leave the PR draft and do not
-dispatch review.
+draft-state change. Mark-ready needs an explicit owner/manager authorization
+bound to the exact PR and head. Render the pre-issued request ID, issue time
+and expiry before the owner comment. Require authenticated immutable provider
+observation binding accepted configuration and trusted time. Persist
+authorization before mutation and observe `draft_cleared`. Absent, invalid,
+mismatched or offline-only authorization leaves the PR draft.
 
 `PRE_EXISTING` applies only here. Private deny baseline acceptance is the
 separate [`37-PRIVATE-DENY-SCAN.md`](37-PRIVATE-DENY-SCAN.md) gate; neither
@@ -88,16 +94,14 @@ receipt waives the other.
 
 `publication-rewrite --base BASE --branch BRANCH --commits 1 --message-file FILE`
 scans a quarantined one-commit replacement and proves tree equality. Under the
-repository-wide AWF rewrite lock it snapshots all refs, pseudorefs, worktree
-HEADs/state, reflogs, indexes, object storage and objects; installs the recorded
-objects; performs exact CAS; and proves the final census. Every AWF writer must
-honor the lock. Upstreams, remote branches, dirty state, unsupported counts or
-other claimants of old commits are refused. Published-history rewrites require
-an owner decision.
+AWF rewrite lock it snapshots refs/pseudorefs/worktrees/reflogs/indexes/objects,
+installs recorded objects, performs exact CAS and proves the final census.
+Upstreams, remotes, dirty state, unsupported counts or other claimants of old
+commits are refused. Published-history rewrites need an owner decision.
 
-The replacement uses repository-local `user.name` and `user.email`, validated
-by Git and passed explicitly to `commit-tree`; global config remains isolated.
-Missing or invalid values return `IDENTITY_REQUIRED` before snapshot/creation.
+The replacement uses repository-local `user.name`/`user.email` passed to
+`commit-tree`; global config stays isolated. Missing/invalid values return
+`IDENTITY_REQUIRED` before snapshot/creation.
 
 ### Rewrite refusal and recovery
 

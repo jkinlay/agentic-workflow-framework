@@ -10,12 +10,22 @@ Preconditions: worktree HEAD == -Commit (when given) and no tracked modification
 param(
   [Parameter(Mandatory)][string]$Worktree,
   [string]$Commit = '', [string]$Label = '',
-  [string]$Py = 'C:\awf-review-scratch\awf194\venv\Scripts\python.exe',
-  [string]$ControllerRoot = 'C:\awf-review-scratch\awf195',
+  # Portable defaults: no machine-local absolute paths. Callers should pass -Py and
+  # -ControllerRoot explicitly; otherwise Py resolves from PATH and ControllerRoot
+  # falls back to Worktree (which is already caller-supplied).
+  [string]$Py = '',
+  [string]$ControllerRoot = '',
   [string]$BaseCommit = '', [string]$Ticket = '', [string]$RulingsPath = '',
   [string]$PipelineLog = '', [string]$StatusPath = '', [string]$AlertsPath = ''
 )
-$ErrorActionPreference = 'Continue'; $W = $ControllerRoot; $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+$ErrorActionPreference = 'Continue'
+if (-not $ControllerRoot) { $ControllerRoot = $Worktree }
+if (-not $Py) {
+  $cmd = Get-Command -Name python -ErrorAction SilentlyContinue
+  if ($null -eq $cmd) { Write-Error 'pre-push-gate.ps1: -Py is required when python is not on PATH'; exit 3 }
+  $Py = $cmd.Source
+}
+$W = $ControllerRoot; $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
 New-Item -ItemType Directory -Force "$W\gate-logs" | Out-Null; $log = "$W\gate-logs\gate-$ts-$((Split-Path $Worktree -Leaf) -replace '[^\w-]','_').log"
 function Out($m) { $m; "$(Get-Date -Format o) $m" | Out-File -Append -Encoding utf8 $log }
 function Done($code, $m) { Out "GATE $(if ($code -eq 0) { 'PASS' } else { 'FAIL' }) ($Label): $m [log $log]"; "$(Get-Date -Format o)`t$Label`t$Worktree`t$(git -C $Worktree rev-parse HEAD 2>$null)`t$(if ($code -eq 0) { 'PASS' } else { "FAIL:$code" })`t$m" | Out-File -Append -Encoding utf8 "$W\gate-logs\GATE-RUNS.tsv"; exit $code }
