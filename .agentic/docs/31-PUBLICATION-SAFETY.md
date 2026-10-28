@@ -50,24 +50,29 @@ never allowance authority. Working-tree edits cannot grant allowances.
 python -B .agentic/scripts/workflow.py publication-scan --base BASE --head HEAD --pr-body PR_BODY --json
 ```
 
-The scan covers strict-UTF-8 commit messages, each parent's added and deleted
-lines (including roots and merges), complete head content for touched paths,
-and supplied provider text. Committed or supplied generated output is covered.
-Detector/value pairs proven in the base are `PRE_EXISTING`; candidate additions
-are `BLOCKING`. Unknown base coverage, binary, invalid-UTF-8 or oversize content
-blocks a pass. Renames cover both paths; reads and hashes are bounded.
+Covers strict-UTF-8 messages, each parent's added/deleted lines (roots/merges),
+touched head paths, and provider text. Base-proven pairs are `PRE_EXISTING`;
+additions are `BLOCKING`. Unknown base coverage, binary, invalid-UTF-8 or
+oversize blocks a pass. Renames cover both paths; reads/hashes bounded.
+
+### Registered SQLite fixture
+
+Only `.agentic-state/routing/ledger.sqlite` at pinned SHA-256 `c0b83f21…5f98dd`
+(also `…/upgrades/blobs/<sha256>`) may leave the binary path after
+UTF-8/schema/types/size/integrity checks; scan logical TEXT and raw
+Latin-1/surrogateescape views. Other binaries stay blocked.
 
 Built-ins detect network shares, absolute drive/home paths, private IPv4 and
-unique-local IPv6. Findings name the commit, path/channel, line, detector ID
-and SHA-256 match digest. Published-history exceptions are exact code-owned
-line hashes scoped to path and detector; mappings cannot broaden them or apply them
-to provider text.
+unique-local IPv6. Findings name commit, path/channel, line, detector ID and
+SHA-256 digest. Published-history exceptions are exact path+detector+full-line
+SHA-256 identities (commit+source when closed); mappings cannot broaden them or
+apply them to provider text. Pre-push defaults are portable empties from
+worktree/PATH—no `awf194`/`awf195` paths.
 
-Preserve the JSON receipt. Its base, head and `pr_body_sha256` must match the
-pushed candidate and exact body. Counts bind their arrays. `PASS` permits only
-`PRE_EXISTING` findings; blocking/unscanned content, inconsistency, or tuple/body
-change invalidates it. Scan prospective comments with `--comment FILE`.
-
+Preserve the JSON receipt. Base, head and `pr_body_sha256` must match candidate
+and body. Counts bind arrays. `PASS` allows only `PRE_EXISTING`; blocking,
+unscanned, inconsistency or tuple/body change invalidates it. `--comment FILE`
+scans comments.
 ## Draft-to-ready authorization
 
 A publication-scan PASS, current validation or green CI never authorizes a
