@@ -420,7 +420,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication.py` | `1063315552dfa623f88378c0e02a289fc9770488e0701bd3336561b9c47da9c4` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |
 | `.agentic/tests/test_publication_records.py` | `b1ce877b5836821ab3671c3c2191e59d91d79ebfff4bb7d4e2ea7ad08e53acd9` |
-| `.agentic/tests/test_publication_sqlite_fixture.py` | `907224315a99eb2017ec179aee85b29978a04a11f31e7215da9c27c19649e8f8` |
+| `.agentic/tests/test_publication_sqlite_fixture.py` | `442c3c8eb78ce82636865cfd542699a17bc46d2e4c8f4d4de5df51863961cd0d` |
 | `.agentic/tests/test_publication_sync_merge.py` | `b522354cc6b31b50da5f6cf916d5204d14d4a52bbe9b872b0ba77160baed48af` |
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
 | `.agentic/tests/test_ready_authorization.py` | `fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d` |

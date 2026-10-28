@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import source_only  # noqa: E402,F401
+from source_only import skip_unless_source_repo  # noqa: E402
 
 from agentic.publication import (
     _COMMIT_BOUND_CLOSED_HISTORICAL_SELF_REFERENCES,
@@ -98,6 +98,7 @@ def audited_75fc9bac_message_line():
     )
 
 
+@skip_unless_source_repo()
 class RegisteredSqliteFixtureTests(unittest.TestCase):
     def setUp(self):
         self.specimen = load_pinned_specimen_bytes()
@@ -304,6 +305,7 @@ class CommitBoundHistoricalMessageTests(unittest.TestCase):
             for item in scan["findings"]), scan["findings"])
 
 
+@skip_unless_source_repo()
 class BothSideBinaryCoverageTests(unittest.TestCase):
     """MAJOR2: old-side binary/invalid/oversize coverage is never dropped."""
 
