@@ -1,6 +1,6 @@
 # Change history
 
-## 1.9.5 (unreleased)
+## 1.9.5 (2026-10-28)
 
 AWF-210 version bump.
 
