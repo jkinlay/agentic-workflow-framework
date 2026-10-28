@@ -72,6 +72,18 @@ def restrict_state_permissions(path):
     """Limit a newly created ledger and its current SQLite sidecars to its owner."""
     path = Path(path)
     mode = stat.S_IRUSR | stat.S_IWUSR
-    for item in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
-        if item.exists():
-            os.chmod(item, mode)
+    if path.exists():
+        os.chmod(path, mode)
+    for suffix in ("-wal", "-shm", "-journal"):
+        item = Path(str(path) + suffix)
+        try:
+            if item.exists():
+                os.chmod(item, mode)
+        except FileNotFoundError:
+            # SQLite may remove a sidecar after the existence check.
+            continue
+        except OSError as exc:
+            # Windows may deny chmod while another connection holds a sidecar.
+            # POSIX chmod failures and unrelated Windows errors remain fatal.
+            if os.name != "nt" or getattr(exc, "winerror", None) not in (5, 32, 33):
+                raise

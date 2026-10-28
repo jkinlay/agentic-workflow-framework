@@ -61,6 +61,8 @@ Adapter loading alone grants no live execution, publication, review, push, merge
 
 `UPGRADED` alone does not establish CONFIGURED. Require successful installed verification and configuration evidence with matching digests; review the complete upgrade diff and preserved owner bytes; run the installed self-test with a fresh report path and run project tests separately.
 
+Known issue: upgraded projects with owner-customised configuration may report self-test parsing or default-model false failures; the fix is deferred to 1.9.6.
+
 ACTIVE additionally requires acceptance of the receipt-changing upgrade and current governed bytes on the observed default branch. Before durable commit, authenticated recovery can restore the old managed/runtime state; afterward it completes the committed endpoint and is not a downgrade.
 
 For a completed upgrade, use an owner-reviewed restoration or revert plan based on preserved backups and accepted history. Use only restore commands and subsequent ACTIVE-acceptance steps published with the accepted release.
