@@ -51,4 +51,4 @@ Post-#249, the reference adapter supplies the cycle CLI's planning operations an
 
 [Install and adoption runbook](runbook/INDEX.md)
 
-[Full User Interface text (repository-only; not included in the release ZIP)](showcase/AWF-1.9.5-User-Interface.md)
+[Full User Interface text (repository-only; not included in the release ZIP)](https://github.com/jkinlay/agentic-workflow-framework/blob/8ad399943c8f5e4f17db72f3e321b9365ee27782/docs/showcase/AWF-1.9.5-User-Interface.md)

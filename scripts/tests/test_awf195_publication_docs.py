@@ -8,6 +8,8 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
+sys.path.insert(0, str(ROOT / '.agentic/tests'))
+from source_only import skip_unless_source_assets
 from release_hygiene import word_budget
 from agentic.installer import release_member
 
@@ -24,12 +26,22 @@ PINS = {
 
 class PublicationDocsTests(unittest.TestCase):
     def test_relative_markdown_links_resolve(self):
-        documents = (
+        self.assert_relative_links_resolve((
             'docs/AWF-1.9.5-Whats-New.md',
             'docs/AWF-1.9.5-User-Interface.md',
+        ))
+
+    @skip_unless_source_assets(
+        'Historical full-text documents are repository-only, outside the source ZIP',
+        'docs/showcase/AWF-1.9.5-Whats-New.md',
+        'docs/showcase/AWF-1.9.5-User-Interface.md')
+    def test_repository_full_text_relative_markdown_links_resolve(self):
+        self.assert_relative_links_resolve((
             'docs/showcase/AWF-1.9.5-Whats-New.md',
             'docs/showcase/AWF-1.9.5-User-Interface.md',
-        )
+        ))
+
+    def assert_relative_links_resolve(self, documents):
         for document in documents:
             source = ROOT / document
             text = source.read_text(encoding='utf-8')
@@ -45,6 +57,10 @@ class PublicationDocsTests(unittest.TestCase):
                     self.assertTrue(target.is_relative_to(ROOT), str(target))
                     self.assertTrue(target.is_file(), str(target))
 
+    @skip_unless_source_assets(
+        'Historical full-text documents are repository-only, outside the source ZIP',
+        'docs/showcase/AWF-1.9.5-Whats-New.md',
+        'docs/showcase/AWF-1.9.5-User-Interface.md')
     def test_full_text_bytes_and_publication_membership(self):
         for name, pin in PINS.items():
             with self.subTest(name=name):
@@ -52,9 +68,22 @@ class PublicationDocsTests(unittest.TestCase):
                 self.assertEqual(pin, hashlib.sha256((ROOT / path).read_bytes()).hexdigest())
                 self.assertEqual((None, 'showcase_material'), word_budget(path))
                 self.assertFalse(release_member(path.as_posix()))
-                summary = Path(f'docs/AWF-1.9.5-{name}.md')
-                self.assertTrue(release_member(summary.as_posix()))
-                self.assertEqual((800, 'documentation'), word_budget(summary))
+
+    def test_summary_publication_membership_is_always_checked(self):
+        for name in PINS:
+            summary = Path(f'docs/AWF-1.9.5-{name}.md')
+            self.assertTrue((ROOT / summary).is_file())
+            self.assertTrue(release_member(summary.as_posix()))
+            self.assertEqual((800, 'documentation'), word_budget(summary))
+
+    def test_shipped_full_text_links_are_immutable_published_permalinks(self):
+        published = '8ad399943c8f5e4f17db72f3e321b9365ee27782'
+        for name in PINS:
+            text = (ROOT / f'docs/AWF-1.9.5-{name}.md').read_text(encoding='utf-8')
+            expected = ('https://github.com/jkinlay/agentic-workflow-framework/blob/'
+                        + published + f'/docs/showcase/AWF-1.9.5-{name}.md')
+            self.assertIn('](' + expected + ')', text)
+            self.assertNotIn(f'](showcase/AWF-1.9.5-{name}.md)', text)
 
     def test_summaries_have_strict_budget_and_standalone_limitation(self):
         for name in PINS:

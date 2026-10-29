@@ -18,8 +18,8 @@ if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
 from agentic import VERSION, ValidationError
-from agentic.installer import verify_release
-from agentic.safeio import Tree
+from agentic.installer import release_member, verify_release
+from agentic.safeio import Tree, relative_parts
 from agentic.operating import (INSTALLED as INSTALLATION_RECEIPT, SOURCE_MARKER,
                                filesystem_reader,
                                is_awf_source_repository as _is_awf_source_repository)
@@ -131,3 +131,28 @@ def committed_git_tuple(root: Path):
             raise RuntimeError(f"Git returned an invalid committed {revision} object ID")
         values.append(value.lower())
     return tuple(values)
+
+
+def skip_unless_source_assets(reason: str, *paths: str):
+    """Require excluded test assets; only verified Gitless archives may skip."""
+    if not paths:
+        raise ValueError("Source asset guard requires exact excluded file paths")
+    for path in paths:
+        relative_parts(path)
+        if release_member(path):
+            raise ValueError("Source asset guard cannot omit release content: " + path)
+    if not is_awf_source_repository(ROOT):
+        return unittest.skip(SOURCE_ONLY_REASON)
+    with Tree(ROOT) as tree:
+        missing = [path for path in paths if tree.inspect(path) is None]
+    if not missing:
+        return unittest.skipUnless(True, reason)
+    try:
+        (ROOT / ".git").lstat()
+    except FileNotFoundError:
+        # This reuses canonical source/manifest verification and never discovers
+        # a parent's Git tree. None from an OWN unborn Git repo is insufficient.
+        if committed_git_tuple(ROOT) is not None:
+            raise RuntimeError("Missing source assets did not resolve to a closed archive")
+        return unittest.skip(reason + "; verified closed source archive omits: " + ", ".join(missing))
+    raise RuntimeError("Required excluded source asset missing from Git checkout: " + ", ".join(missing))

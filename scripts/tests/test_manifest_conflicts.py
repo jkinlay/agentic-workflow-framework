@@ -291,6 +291,13 @@ class ManifestConflictTests(unittest.TestCase):
                 ".git", "__pycache__", "*.pyc", ".tmp", "tmp", ".tmp-tests"
             ),
         )
+        # The fixture deliberately tests ignored bytecode residue. A closed
+        # source ZIP omits repository-only ignore policy, so declare this
+        # synthetic fixture's policy without changing the shipped source.
+        if not (root / ".gitignore").exists():
+            shipped = (root / ".agentic/templates/operating.gitignore").read_bytes()
+            (root / ".gitignore").write_bytes(
+                shipped + b"\n__pycache__/\n*.pyc\n.tmp-tests/\n")
         self.git(root, "init", "-b", "main")
         self.git(root, "config", "user.name", "Manifest Fixture")
         self.git(root, "config", "user.email", "manifest@example.invalid")

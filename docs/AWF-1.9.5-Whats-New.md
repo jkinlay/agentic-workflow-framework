@@ -46,6 +46,6 @@ Historical publication blockers include the controller assertion conflicting wit
 
 [Install and adoption runbook](runbook/INDEX.md)
 
-[Full What's New text (repository-only; not included in the release ZIP)](showcase/AWF-1.9.5-Whats-New.md)
+[Full What's New text (repository-only; not included in the release ZIP)](https://github.com/jkinlay/agentic-workflow-framework/blob/8ad399943c8f5e4f17db72f3e321b9365ee27782/docs/showcase/AWF-1.9.5-Whats-New.md)
 
 The companion draft was supplied after the cutoff review, where it was absent. Its historical link remains provisional; the current operational route is the index above. Supplied documentation does not certify integrated upgrade acceptance.
