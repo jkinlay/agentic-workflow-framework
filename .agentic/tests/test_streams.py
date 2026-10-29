@@ -300,7 +300,7 @@ class PlannerTests(unittest.TestCase):
             plan_inventory(raw, sha256(raw), NOW, True)
 
     def test_ambiguous_and_governance_write_boundaries_reject(self):
-        for path in ["../outside", "C:/outside", "src/*", "src/CON", ".agentic", "AGENTS.md", "src/AGENTS.md", ".github/workflows", "STREAMS.md"]:
+        for path in ["../outside", synthetic_drive_path("outside").replace(chr(92), "/"), "src/*", "src/CON", ".agentic", "AGENTS.md", "src/AGENTS.md", ".github/workflows", "STREAMS.md"]:
             with self.subTest(path=path):
                 changed = deepcopy(self.value)
                 changed["tickets"][0]["write_paths"] = [path]
