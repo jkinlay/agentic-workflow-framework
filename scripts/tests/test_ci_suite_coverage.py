@@ -124,7 +124,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
 
         checks = document["jobs"]["checks"]
         self.assertEqual(
-            {"3.11", "3.13"},
+            {"3.11", "3.12", "3.13"},
             {str(version) for version in checks["strategy"]["matrix"]["python-version"]},
         )
         expected = publish_release_suites()
@@ -148,9 +148,10 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertEqual(1, len(harness_jobs))
         job_id, job = harness_jobs[0]
         self.assertEqual("installed-runtime-self-test", job_id)
-        self.assertEqual("Windows installed-runtime self-test", job["name"])
+        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }})", job["name"])
         self.assertEqual("windows-latest", job["runs-on"])
-        self.assertEqual("3.13.3", str(next(
+        self.assertEqual({"3.12.13", "3.13.3"}, set(job["strategy"]["matrix"]["python-version"]))
+        self.assertEqual("${{ matrix.python-version }}", str(next(
             step["with"]["python-version"]
             for step in job["steps"]
             if step.get("uses") == "actions/setup-python@v5"

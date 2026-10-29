@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 import json
 from pathlib import Path
 import re
@@ -173,9 +174,12 @@ class WindowsFinalCandidateCiTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(manifest))
         self.assertNotIn("if", manifest[0])
+        self.assertEqual(["3.11", "3.12", "3.13"], checks["strategy"]["matrix"]["python-version"])
+        preserved = deepcopy(checks)
+        preserved["strategy"]["matrix"]["python-version"] = ["3.11", "3.13"]
         self.assertEqual(
             "94cb1791a3e2f1cb3e00976f8f9467a6da91a95a1d8b1c66330eac64abf37f49",
-            digest(checks),
+            digest(preserved),
         )
         self.assertFalse(windows_job_runs(
             event_name="pull_request", action="opened", draft=True, changed=True,
@@ -193,9 +197,20 @@ class WindowsFinalCandidateCiTests(unittest.TestCase):
         )
         windows = document["jobs"]["installed-runtime-self-test"]
         self.assertIn("github.event.pull_request.draft == false", windows["if"])
+        self.assertEqual({"fail-fast": False, "matrix": {"python-version": ["3.12.13", "3.13.3"]}}, windows["strategy"])
+        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }})", windows["name"])
+        preserved = deepcopy(windows)
+        preserved.pop("strategy")
+        preserved["name"] = "Windows installed-runtime self-test"
+        setup = next(step for step in preserved["steps"] if step.get("uses") == "actions/setup-python@v5")
+        self.assertEqual("${{ matrix.python-version }}", setup["with"]["python-version"])
+        setup["with"]["python-version"] = "3.13.3"
+        upload = next(step for step in preserved["steps"] if step.get("uses") == "actions/upload-artifact@v4")
+        self.assertEqual("windows-installed-runtime-self-test-${{ matrix.python-version }}-${{ github.run_attempt }}", upload["with"]["name"])
+        upload["with"]["name"] = "windows-installed-runtime-self-test-${{ github.run_attempt }}"
         self.assertEqual(
             "83409085d8ed77668c9e266b832a61f39778eb6670e8a32e7a8fddab656b695e",
-            digest({key: value for key, value in windows.items() if key != "if"}),
+            digest({key: value for key, value in preserved.items() if key != "if"}),
         )
 
 

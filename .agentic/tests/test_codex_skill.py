@@ -36,6 +36,19 @@ class CodexSkillTests(unittest.TestCase):
             "USERPROFILE": str(self.home),
             "CODEX_HOME": str(self.codex_home),
         }
+        # Enumerate/normalize real fixture paths without reading ambient host skills.
+        from agentic import codex_skill
+        from agentic.path_containment import is_within
+        enumerate_candidates = codex_skill._candidate_skills
+
+        def fixture_candidates(launch_directory, environment):
+            pinned, candidates = enumerate_candidates(launch_directory, environment)
+            return pinned, [(path, visibility) for path, visibility in candidates
+                            if is_within(path, self.root)]
+
+        isolated = patch.object(codex_skill, "_candidate_skills", side_effect=fixture_candidates)
+        isolated.start()
+        self.addCleanup(isolated.stop)
 
     @staticmethod
     def skill(path, version):
