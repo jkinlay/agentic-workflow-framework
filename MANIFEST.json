@@ -459,7 +459,7 @@
     ".agentic/tests/test_streams.py": "cb861a5409a28620059f3868945e7a3498bda61c2659c31295229253cb80f3c7",
     ".agentic/tests/test_twelve_streams.py": "26795f03972fc8066cdd51faa542ea91076c4a41b7eaacd8e45ec3938a9fe387",
     ".agentic/tests/test_upgrade_194.py": "acc608a62950d885069483dc985472ba8bbeb87220d47e0dc5e14509e8ebd2b0",
-    ".agentic/tests/test_upgrade_195.py": "1bc37410da05679f5e1f540078038a63e35239dd53c22fc658da3f511d47b879",
+    ".agentic/tests/test_upgrade_195.py": "2b117a1f32be93eb1fc8d1014576aca049ca98deaa2a15aca62926ba6c7af820",
     ".agentic/tests/test_upgrade_journal.py": "449c96d3f8a9138335bfdf1cd413d453cf2b5f35be5125d860a3726d1d260270",
     ".agentic/tests/test_upgrade_matrix.py": "5792a7023b9f156c72d8e2e819e8e809dea034aed0d95576a42d530c63d3a8d3",
     ".agentic/tests/test_upgrade_pycache.py": "1d09c8b67c2321a67f82e2f09ddf1191ab0e015425ee5a359e0e305343cdaadd",

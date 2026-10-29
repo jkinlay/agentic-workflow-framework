@@ -79,7 +79,7 @@ class Published195UpgradeTests(unittest.TestCase):
         self.assertEqual([item["exit_code"] for item in checks], [0, 0], checks)
         return result
 
-    def test_upgrade_preserves_operator_choices_accounting_and_prior_archives(self):
+    def test_published195_upgrade_preserves_choices_history_rollback_and_runtime(self):
         table = load_known_versions((ROOT / ".agentic/upgrade/known-versions.json").read_bytes())
         entry = table["versions"]["1.9.5"]
         self.assertEqual(entry["source_manifest_sha256"], PUBLISHED_PIN)
@@ -111,6 +111,39 @@ class Published195UpgradeTests(unittest.TestCase):
         self.assertTrue(audits, "genuine bootstrap must establish operating audit history")
         preserved = [routing, self.project / "OPERATING_CONFIG.yaml", ledger_path, prior, *audits]
         before = {str(p.relative_to(self.project)): p.read_bytes() for p in preserved}
+        # Exercise all recovery boundaries on one genuine historical bootstrap.
+        # Reusing this fixture avoids three expensive baseline runtime installs.
+        operating = self.project / "OPERATING_CONFIG.yaml"
+        historical_operating = operating.read_bytes()
+        changes = self.project / ".agentic-state/operating/changes"
+        audit_before = {p.name: p.read_bytes() for p in changes.iterdir() if p.is_file()}
+        operating.unlink()
+        with self.assertRaisesRegex(ValidationError, "missing with retained audit history"):
+            install(ROOT, self.project, self.target_pin, mode="upgrade", configure=True, discover=False)
+        self.assertFalse(operating.exists())
+        self.assertEqual(audit_before, {p.name: p.read_bytes() for p in changes.iterdir() if p.is_file()})
+        operating.write_bytes(historical_operating)
+        receipt = self.project / ".agentic/installed-manifest.json"
+        config = self.project / ".agentic/PROJECT_CONFIG.yaml"
+        identity_before = {p: p.read_bytes() for p in (receipt, config)}
+        with self.assertRaisesRegex(OSError, "Injected installation failure"):
+            install(ROOT, self.project, self.target_pin, mode="upgrade", configure=True,
+                    discover=False, fail_after=4)
+        for p, raw in identity_before.items():
+            self.assertEqual(p.read_bytes(), raw)
+        for p in preserved:
+            self.assertEqual(p.read_bytes(), before[str(p.relative_to(self.project))], str(p))
+        python = self.project / ".agentic/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        for command in ("verify-installation", "validate-config"):
+            checked = subprocess.run([str(python), "-B", "-I", str(self.project / ".agentic/scripts/workflow.py"),
+                "--root", str(self.project), command, "--json"], capture_output=True, text=True,
+                encoding="utf-8", env=child_env(), timeout=60)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            observation = json.loads(checked.stdout)
+            if command == "verify-installation":
+                self.assertTrue(observation["integrity_valid"])
+            else:
+                self.assertEqual(observation["status"], "ACCEPTED")
         result = self.bootstrap(ROOT, self.target_pin, "upgrade")
         self.assertEqual(result["upgrade"]["detected_version"], "1.9.5")
         for p in preserved:
@@ -123,37 +156,6 @@ class Published195UpgradeTests(unittest.TestCase):
         for p in preserved:
             self.assertEqual(p.read_bytes(), before[str(p.relative_to(self.project))], str(p))
 
-    def test_missing_audited_operating_refuses_without_resetting_history(self):
-        (self.project / "OPERATING_CONFIG.yaml").unlink()
-        changes = self.project / ".agentic-state/operating/changes"
-        before = {p.name: p.read_bytes() for p in changes.iterdir() if p.is_file()}
-        self.assertTrue(before)
-        with self.assertRaisesRegex(ValidationError, "missing with retained audit history"):
-            install(ROOT, self.project, self.target_pin, mode="upgrade", configure=True, discover=False)
-        self.assertFalse((self.project / "OPERATING_CONFIG.yaml").exists())
-        self.assertEqual(before, {p.name: p.read_bytes() for p in changes.iterdir() if p.is_file()})
-
-    def test_interrupted_upgrade_restores_published_receipt_and_runtime(self):
-        paths = [self.project / ".agentic/installed-manifest.json",
-                 self.project / ".agentic/PROJECT_CONFIG.yaml", self.project / "OPERATING_CONFIG.yaml"]
-        before = {str(p): p.read_bytes() for p in paths}
-        with self.assertRaisesRegex(OSError, "Injected installation failure"):
-            install(ROOT, self.project, self.target_pin, mode="upgrade", configure=True,
-                    discover=False, fail_after=4)
-        for p in paths:
-            self.assertEqual(p.read_bytes(), before[str(p)])
-        python = self.project / ".agentic/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        for command in ("verify-installation", "validate-config"):
-            checked = subprocess.run([str(python), "-B", "-I", str(self.project / ".agentic/scripts/workflow.py"),
-                "--root", str(self.project), command, "--json"], capture_output=True, text=True,
-                encoding="utf-8", env=child_env(), timeout=60)
-            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
-            observation = json.loads(checked.stdout)
-            if command == "verify-installation":
-                self.assertTrue(observation["integrity_valid"])
-            else:
-                self.assertEqual(observation["status"], "ACCEPTED")
-        self.bootstrap(ROOT, self.target_pin, "upgrade")
 
 
 if __name__ == "__main__":
