@@ -1,15 +1,18 @@
 import importlib.util
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from source_only import write_awf_source_fixture  # noqa: E402,F401
+from source_only import skip_unless_source_repo, write_awf_source_fixture  # noqa: E402,F401
 
 from agentic.canonical import canonical, loads, sha256
+from agentic.child_process import child_env
 from agentic.intake_assignment import assign_intake
+from routing_fixtures import fixture_policy
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +26,42 @@ class PlanStreamsScriptTests(unittest.TestCase):
         )
         cls.cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.cli)
+
+    @skip_unless_source_repo("requires fresh release source defaults; installed projects retain owner policy",
+                            "scripts/build_release.py")
+    def test_real_cli_synthetic_release_defaults_bind_current_policy(self):
+        fixture = ROOT / ".agentic/examples/stream-input.json"
+        with tempfile.TemporaryDirectory(prefix="awf-current-synthetic-") as temporary:
+            project = Path(temporary).resolve()
+            command = [sys.executable, "-B", str(ROOT / ".agentic/scripts/plan_streams.py"),
+                       "--input", str(fixture), "--expected-input-sha256", sha256(fixture.read_bytes()),
+                       "--project-root", str(project), "--allow-synthetic",
+                       "--now", "2026-09-11T10:00:00Z"]
+            done = subprocess.run(command, cwd=ROOT, env=child_env(), capture_output=True,
+                                  text=True, timeout=60)
+            self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+            planned = loads(done.stdout)
+            self.assertEqual("READY", planned["project_status"])
+            self.assertEqual(["A", "B", "C"], planned["stream_labels"])
+            self.assertEqual(3, len(planned["dispatch_packets"]))
+            self.assertTrue(all(not packet["live_dispatch_eligible"]
+                                for packet in planned["dispatch_packets"]))
+            self.assertFalse(planned["execution_authority"])
+            self.assertFalse(planned["prompt_user"])
+            self.assertEqual(3, planned["capacity"]["operating_count"])
+            self.assertEqual("explicit_synthetic_release_defaults",
+                             planned["capacity"]["execution_provenance"]["source"])
+            self.assertFalse((project / ".agentic/PROJECT_CONFIG.yaml").exists())
+            self.assertFalse((project / "OPERATING_CONFIG.yaml").exists())
+            refresh = subprocess.run(command + ["--expected-plan-sha256", planned["plan_sha256"],
+                                               "--host-writer-capacity", "5"],
+                                     cwd=ROOT, env=child_env(), capture_output=True,
+                                     text=True, timeout=60)
+            self.assertEqual(0, refresh.returncode, refresh.stdout + refresh.stderr)
+            observed = loads(refresh.stdout)
+            self.assertEqual(3, observed["capacity"]["effective_writer_capacity"])
+            self.assertEqual(3, len(observed["dispatch_packets"]))
+            self.assertFalse(observed["capacity"]["host_admission_confirmed"])
 
     def test_snapshot_config_path_is_relative_or_placeholder(self):
         with tempfile.TemporaryDirectory(prefix="awf-plan-streams-") as temporary:
@@ -46,6 +85,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
             project = fixture_root / "project"
             (project / ".agentic").mkdir(parents=True)
             config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+            config["execution"]["model_routing"] = fixture_policy()
             config_bytes = canonical(config)
             (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(config_bytes)
             (project / "OPERATING_CONFIG.yaml").write_bytes(
@@ -80,6 +120,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
             (project / ".agentic").mkdir(parents=True)
             config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
             config["merge_gate"]["trusted_owner_ids"] = [1001]
+            config["execution"]["model_routing"] = fixture_policy()
             config_bytes = canonical(config)
             (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(config_bytes)
             (project / "OPERATING_CONFIG.yaml").write_bytes(

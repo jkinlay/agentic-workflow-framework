@@ -1,12 +1,12 @@
 # Native coordination runbook
 
-Version 1.9.5. Coordinator guidance for a delegation host. The planner neither launches agents nor authenticates active writers.
+Version 1.9.6. Coordinator guidance for a delegation host. The planner neither launches agents nor authenticates active writers.
 
-See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Three default workers share one independent critic/adversarial handler; with the controller, this uses five slots. The review barrier awaits every reviewer frozen for a candidate. Configured ceilings do not prove host availability.
+See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Fresh projects default to twelve workers sharing one independent critic/adversarial handler; with the controller, this requires fourteen slots. The review barrier awaits every reviewer frozen for a candidate. Configured ceilings do not prove host availability.
 
 ## Plan and dispatch
 
-Inspect scope, inventory, owners and path conflicts; use provisional local IDs before Jira. The planner supports streams A-F. `effective_ceiling` is the minimum of six, protected `execution.max_parallel_tickets`, and `execution.host_broker.max_workers` when its broker is enabled. Disabled broker limits do not bind. The governance-path/source fields identify configured limits; observed host slots remain separate. Root `OPERATING_CONFIG.yaml` selects the active count, initially three. Refuse invalid counts and excess streams.
+Inspect scope, inventory, owners and path conflicts; use provisional local IDs before Jira. The planner supports streams A-L. `effective_ceiling` is the minimum of the lane cap (legacy default six), protected `execution.max_parallel_tickets`, and `execution.host_broker.max_workers` when its broker is enabled. Disabled broker limits do not bind. The governance-path/source fields identify configured limits; observed host slots remain separate. Root `OPERATING_CONFIG.yaml` selects the active count, initially twelve for fresh projects. Refuse invalid counts and excess streams.
 
 Read `execution.native_streams.enabled`, `dispatch_policy`, both parallel-ticket limits and `max_spawn_depth` from reviewed config alongside observed host capacity. Never infer omitted settings from examples.
 

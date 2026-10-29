@@ -11,6 +11,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -104,6 +105,18 @@ class SelfTestReviewTests(unittest.TestCase):
         self.assertTrue(value['release_qualified'])
         self.assertEqual('all_manifest_content', value['current_review']['coverage_basis'])
         self.assertFalse(value['execution_authority'])
+
+    def test_real_git_source_release_reviews_before_and_after_bounded_tests(self):
+        subprocess.run(["git", "-C", str(self.source), "init", "-q"], check=True)
+        with mock.patch.object(release_review, "review_source", wraps=release_review.review_source) as review:
+            code, output, error, calls = self.invoke(
+                ["--release", *self.review_arguments(), "--report", str(self.report)])
+        self.assertEqual((0, 1, 2), (code, calls, review.call_count), output + error)
+        self.assertTrue(all(call.kwargs["allow_source_checkout"] is True
+                            for call in review.call_args_list))
+        value = json.loads(self.report.read_bytes())
+        self.assertTrue(value["release_qualified"])
+        self.assertEqual("PASS", value["current_review"]["status"])
 
     def test_checks_only_can_pass_components_without_release_qualification(self):
         with mock.patch.object(release_review, 'review_source', wraps=release_review.review_source) as review:

@@ -102,6 +102,27 @@ class ShippedReviewEntryPointTests(unittest.TestCase):
         self.assertTrue(result['release_qualified'])
         self.assertFalse(result['authenticates_reviewers'])
 
+    def test_real_source_checkout_requires_explicit_mode_and_same_review_bytes(self):
+        expected = review_source(self.source, self.manifest_pin, self.reviews, self.review_pin)
+        subprocess.run(["git", "-C", str(self.source), "init", "-q"], check=True)
+        done = self.command()
+        self.assertEqual(2, done.returncode)
+        self.assertIn("Root Git metadata", done.stderr.decode())
+        actual = review_source(self.source, self.manifest_pin, self.reviews, self.review_pin,
+                               allow_source_checkout=True)
+        self.assertEqual(expected, actual)
+        (self.source / "code.py").write_bytes(b"changed after review\n")
+        with self.assertRaisesRegex(ValidationError, "Source digest mismatch"):
+            review_source(self.source, self.manifest_pin, self.reviews, self.review_pin,
+                          allow_source_checkout=True)
+
+    def test_source_checkout_mode_does_not_allow_unrelated_source_entries(self):
+        subprocess.run(["git", "-C", str(self.source), "init", "-q"], check=True)
+        (self.source / "unreviewed.py").write_bytes(b"unreviewed\n")
+        with self.assertRaisesRegex(ValidationError, "membership mismatch"):
+            review_source(self.source, self.manifest_pin, self.reviews, self.review_pin,
+                          allow_source_checkout=True)
+
     def test_post_review_edit_even_after_manifest_reseal_fails(self):
         (self.source/'README.md').write_bytes(b'Changed after review\n')
         self.seal()

@@ -18,7 +18,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
-from agentic import ValidationError
+from agentic import VERSION, ValidationError
 from agentic.canonical import fingerprint
 
 
@@ -709,10 +709,10 @@ class BatchObjectTransportTests(unittest.TestCase):
 
     def commit(self, *, test="import unittest\nclass Upgrade(unittest.TestCase):\n def test_ok(self): pass\n",
                valid=True, parent=None):
-        files = {".agentic/tests/test_upgrade_195.py": test.encode(),
+        files = {f".agentic/tests/test_upgrade_{VERSION.replace('.', '')}.py": test.encode(),
                  ".gitattributes": b".agentic/tests/* export-ignore\n",
                  "payload.txt": b"new object bytes\n"}
-        manifest = {"format": "awf-manifest-1", "template_version": "1.9.5",
+        manifest = {"format": "awf-manifest-1", "template_version": VERSION,
                     "files": {name: hashlib.sha256(value).hexdigest()
                               for name, value in files.items()}}
         if not valid:

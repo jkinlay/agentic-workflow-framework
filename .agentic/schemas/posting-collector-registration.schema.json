@@ -48,5 +48,5 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:awf:1.2:posting-collector-registration",
-  "title": "Agentic Workflow 1.9.5 \u2014 posting-collector-registration"
+  "title": "Agentic Workflow 1.9.6 \u2014 posting-collector-registration"
 }

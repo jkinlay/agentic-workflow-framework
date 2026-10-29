@@ -21,7 +21,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo  # noqa: E402
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_assets, skip_unless_source_repo  # noqa: E402
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 from agentic import ValidationError, VERSION
@@ -718,7 +718,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(sha256(receipt["source_manifest_json"].encode()), self.pin)
         self.assertEqual(verify_installed(self.dest), self.pin)
 
-    @skip_unless_source_repo()
+    @skip_unless_source_assets("needs excluded historical upgrade fixtures", ".agentic/tests/fixtures/upgrades/versions.json")
     def test_192_upgrade_changes_only_version_line_in_owner_config(self):
         from upgrade_fixtures import materialize
         materialize("1.9.2", self.dest)
@@ -750,7 +750,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         null_bindings = (b'    "cloud_id": null,\r\n    "provider_project_id": null,\r\n'
                          b'    "controller_actor_id": null,\r\n')
         expected = before.replace(b'"expected_workflow_version": "1.9.2"',
-                                  b'"expected_workflow_version": "1.9.5"'
+                                  b'"expected_workflow_version": "1.9.6"'
                                   ).replace(jira_anchor, jira_anchor + null_bindings).replace(
                                       b'"risk_tiers": {',
                                       b'"risk_tiers": {tier3_review: {roles: [critic, specialist], '
@@ -771,7 +771,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(old_install_id, second["install_id"])
         self.assertEqual(verify_installed(self.dest), self.pin)
 
-    @skip_unless_source_repo()
+    @skip_unless_source_assets("needs excluded historical upgrade fixtures", ".agentic/tests/fixtures/upgrades/versions.json")
     def test_192_pure_migration_changes_only_version_line(self):
         from types import MappingProxyType
         from agentic.upgrade import MigrationBundle, load_known_versions, migrate_1_9_2_to_1_9_3

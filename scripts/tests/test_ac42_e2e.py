@@ -10,6 +10,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+sys.path.insert(0, str(ROOT / ".agentic/tests"))
+from source_only import committed_git_tuple  # noqa: E402
 from agentic.child_process import child_env  # noqa: E402
 from agentic.publication import scan_repository  # noqa: E402
 
@@ -126,7 +128,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
               b"# retained formatting\n")
     AFTER = (b"# owner comment\n"
              b"{\n"
-             b'  "template": {"expected_workflow_version": "1.9.5"},\n'
+             b'  "template": {"expected_workflow_version": "1.9.6"},\n'
              b'  "jira": {\n'
              b'    "enabled": false,\n'
              b'    "cloud_id": null,\n'
@@ -210,7 +212,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
                   b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
         expected = before.replace(
             b"expected_workflow_version: !!str 1.9.2",
-            b"expected_workflow_version: !!str 1.9.5")
+            b"expected_workflow_version: !!str 1.9.6")
         harness = _load_harness()
         self.assertEqual(expected, harness.expected_project_config(before))
 
@@ -221,7 +223,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
                   b"  controller_actor_id: KEEP,\n"
                   b"  site: https://jira.example.invalid}\n"
                   b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
-        expected = before.replace(b"1.9.2", b"1.9.5", 1)
+        expected = before.replace(b"1.9.2", b"1.9.6", 1)
         harness = _load_harness()
         self.assertEqual(expected, harness.expected_project_config(before))
         self.assertEqual(1, expected.count(b"cloud_id:"))
@@ -235,7 +237,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
                   b"execution: {risk_tiers: {tier1_review: KEEP}}\n")
         tier = (b"tier3_review: {roles: [critic, specialist], findings: blocking, "
                 b"max_rounds: 3}")
-        expected = before.replace(b"1.9.2", b"1.9.5", 1).replace(
+        expected = before.replace(b"1.9.2", b"1.9.6", 1).replace(
             b"execution: {risk_tiers: {",
             b"execution: {risk_tiers: {" + tier + b", ")
         harness = _load_harness()
@@ -414,10 +416,13 @@ class WindowsLauncherPublicationTests(unittest.TestCase):
             git(repository, "commit", "-q", "-m", "base")
             base = git(repository, "rev-parse", "HEAD").decode("ascii").strip()
 
-            # Scan the exact source blobs in this checkout's merged tree. Deleted
-            # base-side diff lines are intentionally absent from these blobs.
+            # Source checkouts use raw committed blobs; a verified closed
+            # archive supplies its exact released bytes without inventing Git.
+            source_tuple = committed_git_tuple(ROOT)
             for relative in paths:
-                (repository / relative).write_bytes(git(ROOT, "show", f"HEAD:{relative}"))
+                raw = (git(ROOT, "show", f"HEAD:{relative}") if source_tuple is not None
+                       else (ROOT / relative).read_bytes())
+                (repository / relative).write_bytes(raw)
             git(repository, "add", "--", *paths)
             git(repository, "commit", "-q", "-m", "candidate")
 

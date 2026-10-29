@@ -108,8 +108,11 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         self.commit_tree(downstream)
         self.assertFalse(github_review_host.is_source_repository(
             downstream, git_runner=self.git_runner))
+        source = self.tree()
+        write_awf_source_fixture(source)
+        self.commit_tree(source)
         self.assertTrue(github_review_host.is_source_repository(
-            ROOT, git_runner=self.git_runner))
+            source, git_runner=self.git_runner))
 
     def test_revision_detector_fails_closed_without_a_readable_git_tree(self):
         root = self.tree()
@@ -199,6 +202,66 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
             decorated = source_only.skip_unless_source_repo()(lambda: None)
         self.assertFalse(getattr(decorated, "__unittest_skip__", False))
 
+    def test_excluded_asset_guard_skips_only_verified_closed_archive(self):
+        root = self.tree()
+        write_awf_source_fixture(root)
+        asset = ".agentic/tests/fixtures/upgrades/versions.json"
+        with mock.patch.object(source_only, "ROOT", root), \
+                mock.patch("source_only.subprocess.run") as git:
+            decorated = source_only.skip_unless_source_assets("historical test asset", asset)(lambda: None)
+        self.assertTrue(decorated.__unittest_skip__)
+        self.assertIn(asset, decorated.__unittest_skip_why__)
+        self.assertIn("verified closed source archive", decorated.__unittest_skip_why__)
+        git.assert_not_called()
+
+    def test_excluded_asset_guard_runs_when_required_file_is_present(self):
+        asset = ".agentic/tests/fixtures/upgrades/versions.json"
+        root = self.tree(asset)
+        write_awf_source_fixture(root)
+        self.commit_tree(root)
+        with mock.patch.object(source_only, "ROOT", root):
+            decorated = source_only.skip_unless_source_assets("historical test asset", asset)(lambda: 17)
+        self.assertFalse(getattr(decorated, "__unittest_skip__", False))
+        self.assertEqual(17, decorated())
+
+    def test_excluded_asset_guard_refuses_missing_file_in_own_git(self):
+        asset = ".agentic/tests/fixtures/upgrades/versions.json"
+        for kind in ("committed", "unborn", "malformed", "unavailable"):
+            with self.subTest(kind=kind):
+                root = self.tree()
+                write_awf_source_fixture(root)
+                if kind == "committed":
+                    self.commit_tree(root)
+                elif kind == "malformed":
+                    (root / ".git").write_text("invalid Git metadata\n", encoding="utf-8")
+                else:
+                    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+                with mock.patch.object(source_only, "ROOT", root), \
+                        mock.patch("source_only.subprocess.run", side_effect=OSError("git unavailable")):
+                    with self.assertRaisesRegex(RuntimeError, "missing from Git checkout"):
+                        source_only.skip_unless_source_assets("historical test asset", asset)
+
+    def test_excluded_asset_guard_refuses_corrupt_closed_archive(self):
+        root = self.tree()
+        write_awf_source_fixture(root)
+        (root / SOURCE_MARKER).write_bytes(b"changed after sealing\n")
+        with mock.patch.object(source_only, "ROOT", root):
+            with self.assertRaisesRegex(RuntimeError, "integrity verification failed"):
+                source_only.skip_unless_source_assets("historical test asset",
+                    ".agentic/tests/fixtures/upgrades/versions.json")
+
+    def test_excluded_asset_guard_preserves_installed_skip_reason(self):
+        root = self.installed_downstream_tree()
+        with mock.patch.object(source_only, "ROOT", root):
+            decorated = source_only.skip_unless_source_assets("historical test asset",
+                ".agentic/tests/fixtures/upgrades/versions.json")(lambda: None)
+        self.assertTrue(decorated.__unittest_skip__)
+        self.assertEqual(SOURCE_ONLY_REASON, decorated.__unittest_skip_why__)
+
+    def test_excluded_asset_guard_cannot_skip_regular_release_content(self):
+        with self.assertRaisesRegex(ValueError, "cannot omit release content"):
+            source_only.skip_unless_source_assets("missing current code", SOURCE_MARKER)
+
     def test_self_test_uses_shared_source_detection(self):
         spec = importlib.util.spec_from_file_location(
             "awf_self_test_source_detection", ROOT / ".agentic/scripts/self_test.py")
@@ -228,6 +291,7 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         root = self.tree()
         write_awf_source_fixture(root)
         self.assertTrue(is_awf_source_repository(root))
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
         failed = subprocess.CompletedProcess(
             ["git"], 128, stdout="", stderr="fatal: detected dubious ownership")
         with mock.patch("source_only.subprocess.run", return_value=failed):
@@ -235,9 +299,52 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
                 committed_git_tuple(root)
 
     def test_unavailable_git_is_not_a_commitless_skip(self):
+        root = self.tree()
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
         with mock.patch("source_only.subprocess.run", side_effect=OSError("git unavailable")):
             with self.assertRaisesRegex(RuntimeError, "Git execution failed"):
-                committed_git_tuple(self.tree())
+                committed_git_tuple(root)
+
+    def test_verified_closed_source_archive_has_no_git_tuple(self):
+        root = self.tree()
+        write_awf_source_fixture(root)
+        with mock.patch("source_only.subprocess.run") as git:
+            self.assertIsNone(committed_git_tuple(root))
+        git.assert_not_called()
+
+    def test_closed_source_archive_does_not_inherit_parent_git(self):
+        parent = self.tree()
+        subprocess.run(["git", "-C", str(parent), "init", "-q"], check=True)
+        root = parent / "archive"
+        root.mkdir()
+        write_awf_source_fixture(root)
+        self.assertIsNone(committed_git_tuple(root))
+
+    def test_corrupt_closed_source_archive_cannot_skip_git_tests(self):
+        root = self.tree()
+        write_awf_source_fixture(root)
+        (root / SOURCE_MARKER).write_bytes(b"changed after sealing\n")
+        with self.assertRaisesRegex(RuntimeError, "integrity verification failed"):
+            committed_git_tuple(root)
+
+    def test_plain_non_git_directory_cannot_skip_git_tests(self):
+        with self.assertRaisesRegex(RuntimeError, "own Git metadata"):
+            committed_git_tuple(self.tree())
+
+    def test_invalid_own_git_directory_cannot_inherit_parent_head(self):
+        parent = self.tree("parent.txt")
+        self.commit_tree(parent)
+        root = parent / "archive"
+        (root / ".git").mkdir(parents=True)
+        write_awf_source_fixture(root)
+        with self.assertRaisesRegex(RuntimeError, "does not resolve own test root"):
+            committed_git_tuple(root)
+
+    def test_present_malformed_git_marker_cannot_skip_git_tests(self):
+        root = self.tree(".git")
+        write_awf_source_fixture(root)
+        with self.assertRaisesRegex(RuntimeError, "does not have a verified unborn HEAD"):
+            committed_git_tuple(root)
 
 
 if __name__ == "__main__":

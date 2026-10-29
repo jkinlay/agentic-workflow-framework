@@ -82,13 +82,16 @@ def pinned_json(path, expected, source):
 
 
 def review_source(source, manifest_sha256, reviews, reviews_sha256,
-                  required_paths=None, required_paths_sha256=None):
-    """Verify every current claim, with all-content or pinned operator coverage."""
+                  required_paths=None, required_paths_sha256=None, *, allow_source_checkout=False):
+    """Verify review bytes; only source self-tests opt into root Git metadata."""
     source = Path(source).resolve(strict=True)
     if not isinstance(manifest_sha256, str) or re.fullmatch('[0-9a-f]{64}', manifest_sha256) is None:
         raise ValidationError('Current review requires an independently approved manifest SHA-256')
+    if type(allow_source_checkout) is not bool:
+        raise ValidationError('Source-checkout mode must be an explicit boolean')
     with Tree(source) as tree:
-        manifest, files = verify_release(tree, manifest_sha256)
+        manifest, files = verify_release(tree, manifest_sha256,
+                                         allow_source_checkout=allow_source_checkout)
     if reviews is None or reviews_sha256 is None:
         raise ValidationError('Current release review evidence and its SHA-256 are required')
     document = pinned_json(reviews, reviews_sha256, source)

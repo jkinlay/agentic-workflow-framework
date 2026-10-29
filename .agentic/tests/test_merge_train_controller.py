@@ -66,6 +66,8 @@ class MergeTrainControllerTests(unittest.TestCase):
         # remain open owner questions. The dictionaries below describe only
         # T11's proposed Python seam, not a new canonical record schema.
         config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text("utf-8"))
+        # This synthetic fixture owns main, independent of the adopting project.
+        config["github"]["base_branch"] = "main"
         config["jira"].update({
             "enabled": True,
             "cloud_id": "cloud-1",
@@ -191,6 +193,8 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         self.path = Path(self.temporary.name) / "state.sqlite"
         self.store = controller.ContinuousControllerStore(self.path, ["B"])
         self.config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text("utf-8"))
+        # This synthetic fixture owns main, independent of the adopting project.
+        self.config["github"]["base_branch"] = "main"
         self.config["jira"].update(enabled=True, cloud_id="cloud-1",
             site="https://jira.example.invalid", provider_project_id="project-1",
             project_key="AWF", controller_actor_id="controller-1")

@@ -300,7 +300,7 @@ class PlannerTests(unittest.TestCase):
             plan_inventory(raw, sha256(raw), NOW, True)
 
     def test_ambiguous_and_governance_write_boundaries_reject(self):
-        for path in ["../outside", "C:/outside", "src/*", "src/CON", ".agentic", "AGENTS.md", "src/AGENTS.md", ".github/workflows", "STREAMS.md"]:
+        for path in ["../outside", synthetic_drive_path("outside").replace(chr(92), "/"), "src/*", "src/CON", ".agentic", "AGENTS.md", "src/AGENTS.md", ".github/workflows", "STREAMS.md"]:
             with self.subTest(path=path):
                 changed = deepcopy(self.value)
                 changed["tickets"][0]["write_paths"] = [path]
@@ -864,13 +864,13 @@ class NativeCapacityTests(unittest.TestCase):
         plan = self.plan(host=5)
         capacity = plan["capacity"]
         self.assertEqual(capacity["project_writer_limit"], 5)
-        self.assertEqual(capacity["planner_writer_limit"], 6)
+        self.assertEqual(capacity["planner_writer_limit"], 12)
         self.assertEqual(capacity["effective_writer_capacity"], 3)
         self.assertEqual(capacity["limiting_sources"], ["observed_host_capacity", "operating_count"])
         self.assertEqual(len(plan["dispatch_packets"]), 3)
         self.assertEqual(self.execution, before)
         self.assertEqual(capacity["operating_state"], "UNOBSERVED_LEGACY")
-        self.assertIn("Planner structural writer limit: 6", render_markdown(plan).decode())
+        self.assertIn("Planner structural writer limit: 12", render_markdown(plan).decode())
 
     def test_default_review_pool_assigns_one_shared_critic_not_per_ticket(self):
         plan = self.plan(host=7)

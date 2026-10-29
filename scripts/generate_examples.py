@@ -116,7 +116,7 @@ def workflow_blob_sha(repository):
     return derived
 
 
-def config(example=True, routing_policy=None):
+def config(example=True, routing_policy=None, *, fresh_defaults=False):
     role = {"model": "fixture-model" if example else "CHANGE_ME_APPROVED_MODEL", "reasoning_effort": "high",
             "fallback": "deny", "approved_model_ids": ["fixture-model" if example else "CHANGE_ME_APPROVED_MODEL"],
             "permission_profile": "documented-reference-profile", "network_allowlist": []}
@@ -186,11 +186,18 @@ def config(example=True, routing_policy=None):
         "critic": ("gpt-5.6-sol", "high"),
         "specialist": ("gpt-5.6-sol", "high"),
     }
+    if fresh_defaults:
+        project_role_defaults = {name: (pair["model"], pair["reasoning_effort"])
+                                 for name, pair in routing["role_defaults"].items()}
+        result["execution"].update(max_lanes=12, max_parallel_tickets=12)
+        result["execution"]["host_broker"]["max_workers"] = 12
     for name, (model, effort) in project_role_defaults.items():
         result["execution"]["roles"][name].update(
             model=model, reasoning_effort=effort,
             approved_model_ids=routing["role_allowed_models"][name])
     if example:
+        # Synthetic legacy scenarios must not inherit source/operator routing edits.
+        result["execution"]["model_routing"] = copy.deepcopy(routing)
         result["publication"] = {"deny_literals": [], "deny_regexes": [], "internal_hostnames": [],
                                  "large_file_allowances": []}
     return result
@@ -437,12 +444,15 @@ def generate(output_root, source_root=ROOT):
         source_root / ".agentic/tests/fixtures/routing/valid.yaml")
     write(output_root / ".agentic/examples/reference-controller-adapter.json", controller_adapter_config())
     from agentic.operating import default_operating
+    fresh_policy = default_policy(source_root / ".agentic/defaults/routing.yaml")
+    fresh_operating = default_operating(fresh_policy, count=12)
     operating = default_operating(generation_policy)
-    write(output_root / "OPERATING_CONFIG.yaml", operating)
+    write(output_root / "OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", operating)
-    write(output_root / ".agentic/templates/source-config/OPERATING_CONFIG.yaml", operating)
+    write(output_root / ".agentic/templates/source-config/OPERATING_CONFIG.yaml", fresh_operating)
+    write(output_root / ".agentic/defaults/OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/workflow.yaml", definition())
-    source_config = config(False, generation_policy)
+    source_config = config(False, fresh_policy, fresh_defaults=True)
     write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)
     write(output_root / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
     unconfigured = config(False, generation_policy)

@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "source": "default",
+  "streams": {
+    "count": 12,
+    "A": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "B": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "C": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "D": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "E": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "F": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "G": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "H": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "I": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "J": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "K": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    },
+    "L": {
+      "worker": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high"
+      }
+    }
+  },
+  "critic": {
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "high"
+  },
+  "controller": {
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "high"
+  },
+  "specialist": {
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "high"
+  },
+  "simple_worker": {
+    "enabled": true,
+    "model": "gpt-6-luna",
+    "reasoning_effort": "high"
+  }
+}

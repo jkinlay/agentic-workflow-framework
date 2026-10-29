@@ -17,7 +17,9 @@ LIB = Path(__file__).resolve().parent.parent / "lib"
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
-from agentic import VERSION
+from agentic import VERSION, ValidationError
+from agentic.installer import release_member, verify_release
+from agentic.safeio import Tree, relative_parts
 from agentic.operating import (INSTALLED as INSTALLATION_RECEIPT, SOURCE_MARKER,
                                filesystem_reader,
                                is_awf_source_repository as _is_awf_source_repository)
@@ -57,7 +59,7 @@ AWF_SOURCE_REPOSITORY = is_awf_source_repository(ROOT)
 SOURCE_ONLY_REASON = "needs AWF source-repository files absent from installed projects"
 COMMITTED_GIT_REASON = (
     "requires a Git repository with a committed HEAD; "
-    "installed commitless runtimes have no source-checkout tuple"
+    "commitless installed runtimes and verified closed source archives have no Git tuple"
 )
 
 
@@ -71,11 +73,23 @@ def committed_git_tuple(root: Path):
     """Return the committed HEAD/tree tuple, or ``None`` for a verified unborn HEAD.
 
     Test modules use this during import, so an installed project's initialized
-    but commitless repository must be an ordinary unavailable fixture rather
-    than a module-load error. Every other Git failure is an error: source
+    but commitless repository and a manifest-verified closed source archive
+    have no committed tuple. Every other Git failure is an error: source
     checkouts must not silently skip suites because Git is unavailable, unsafe,
     misconfigured, permission-denied, or corrupt.
     """
+    try:
+        (root / ".git").lstat()
+    except FileNotFoundError:
+        if not is_awf_source_repository(root):
+            raise RuntimeError("Test tuple requires own Git metadata or a verified closed source archive")
+        try:
+            with Tree(root) as tree:
+                verify_release(tree)
+        except (ValidationError, OSError, ValueError) as exc:
+            raise RuntimeError("Closed source archive integrity verification failed") from exc
+        return None
+
     def run(*arguments):
         try:
             return subprocess.run(
@@ -86,6 +100,11 @@ def committed_git_tuple(root: Path):
                 "Git execution failed while resolving the committed test tuple"
             ) from exc
 
+    top = run("rev-parse", "--show-toplevel")
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
+        raise RuntimeError(
+            "Git does not resolve own test root and does not have a verified unborn HEAD"
+        )
     head = run("rev-parse", "--verify", "HEAD")
     if head.returncode != 0:
         inside = run("rev-parse", "--is-inside-work-tree")
@@ -112,3 +131,28 @@ def committed_git_tuple(root: Path):
             raise RuntimeError(f"Git returned an invalid committed {revision} object ID")
         values.append(value.lower())
     return tuple(values)
+
+
+def skip_unless_source_assets(reason: str, *paths: str):
+    """Require excluded test assets; only verified Gitless archives may skip."""
+    if not paths:
+        raise ValueError("Source asset guard requires exact excluded file paths")
+    for path in paths:
+        relative_parts(path)
+        if release_member(path):
+            raise ValueError("Source asset guard cannot omit release content: " + path)
+    if not is_awf_source_repository(ROOT):
+        return unittest.skip(SOURCE_ONLY_REASON)
+    with Tree(ROOT) as tree:
+        missing = [path for path in paths if tree.inspect(path) is None]
+    if not missing:
+        return unittest.skipUnless(True, reason)
+    try:
+        (ROOT / ".git").lstat()
+    except FileNotFoundError:
+        # This reuses canonical source/manifest verification and never discovers
+        # a parent's Git tree. None from an OWN unborn Git repo is insufficient.
+        if committed_git_tuple(ROOT) is not None:
+            raise RuntimeError("Missing source assets did not resolve to a closed archive")
+        return unittest.skip(reason + "; verified closed source archive omits: " + ", ".join(missing))
+    raise RuntimeError("Required excluded source asset missing from Git checkout: " + ", ".join(missing))

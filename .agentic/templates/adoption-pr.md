@@ -1,4 +1,4 @@
-# Adopt AWF 1.9.5
+# Adopt AWF 1.9.6
 
 This draft changes governance files and preserves project-owned instructions, configuration and history. Complete fields from observed evidence; this template supplies no authorization.
 

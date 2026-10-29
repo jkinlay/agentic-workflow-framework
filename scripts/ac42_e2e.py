@@ -2,7 +2,7 @@
 """AC42 end-to-end upgrade gate harness (AWF-11).
 
 Upgrades a recorded historical installation fixture (default 1.9.1, as AC42
-specifies) to this 1.9.5 source in a fresh Git repository, then records one
+specifies) to this 1.9.6 source in a fresh Git repository, then records one
 PASS / FAIL / NOT_COVERED row per AC42 clause in an evidence JSON file.
 
 The adoption-PR merge and the GitHub observations are a recorded synthetic

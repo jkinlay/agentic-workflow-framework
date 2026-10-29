@@ -11,14 +11,15 @@ import re
 import sqlite3
 from types import MappingProxyType
 
-from . import ValidationError
+from . import VERSION, ValidationError
 from .canonical import load_yaml, loads, sha256
 
 CONFIG = ".agentic/PROJECT_CONFIG.yaml"
 INSTALLED = ".agentic/installed-manifest.json"
 PROVENANCE = ".agentic/workflow-version.yaml"
 OPERATING = "OPERATING_CONFIG.yaml"
-ARCHIVE_ROOT = ".agentic-state/archive/upgrade-to-1.9.5"
+ARCHIVE_ROOT = f".agentic-state/archive/upgrade-to-{VERSION}"
+_ARCHIVE_PREFIXES = (".agentic-state/archive/upgrade-to-1.9.5/", ARCHIVE_ROOT + "/")
 CURRENT_RECEIPT_SCHEMA = "awf-installed-receipt-embedded-manifest-1"
 
 
@@ -565,7 +566,7 @@ def state_schema(path, raw):
 def state_migration_plan(state, migrated, previous, current):
     actions = []
     for path, raw in sorted(state.items()):
-        if path.startswith(ARCHIVE_ROOT + "/"):
+        if path.startswith(_ARCHIVE_PREFIXES):
             continue
         schema, source_reason = _state_validation(path, raw, allow_legacy=previous in {"1.8.3", "1.8.9"})
         target_schema, target_reason = _state_validation(
@@ -912,7 +913,7 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
 def state_archive_plan(state):
     unknown = {path: (raw, _state_validation(path, raw)[1]) for path, raw in state.items()
                if _state_validation(path, raw)[0] is None
-               and not path.startswith(ARCHIVE_ROOT + "/")}
+               and not path.startswith(_ARCHIVE_PREFIXES)}
     if not unknown:
         return {}, []
     files = []
@@ -924,7 +925,7 @@ def state_archive_plan(state):
         files.append({"source": path, "archive": archive, "sha256": sha256(raw),
                       "source_retained": True, "validation_path": path,
                       "validation_reason": reason})
-    manifest = {"format": "awf-state-archive-1", "target_version": "1.9.5", "files": files}
+    manifest = {"format": "awf-state-archive-1", "target_version": VERSION, "files": files}
     additions[f"{ARCHIVE_ROOT}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
     return additions, [{"path": item["source"], "action": "archived_read_only_copy",
                         "archive": item["archive"],

@@ -11,7 +11,7 @@
   ],
   "properties": {
     "version": {
-      "const": "1.9.5"
+      "const": "1.9.6"
     },
     "project_state": {
       "oneOf": [

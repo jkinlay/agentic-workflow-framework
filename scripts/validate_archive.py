@@ -1,10 +1,12 @@
 """Independent fresh-extraction/CLI/installation smoke validation of a built ZIP."""
 from pathlib import Path
+from datetime import datetime, timezone
 import hashlib
 import argparse
 import json
 import os
 import stat
+import shutil
 import subprocess
 import sys
 import uuid
@@ -14,9 +16,13 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
-from agentic.child_process import child_env
+from agentic.child_process import child_env, isolated_git_env
+from agentic.canonical import loads
+from agentic.installer import SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX, verify_release
+from agentic.safeio import Tree
 from agentic.runtime_commands import installed_paths
 from release_review import add_review_arguments, review_arguments, review_source
+from release_modes import FORMAT as RAW_MODES_FORMAT, REGULAR_MODES
 RELEASE_LINE = VERSION.removesuffix('.0')
 PREFIX = f'agentic-workflow-template-v{RELEASE_LINE}/'
 
@@ -61,6 +67,86 @@ def checked_scratch_root():
     return scratch
 
 
+def seed_source_configuration(source):
+    """Supply generator fixtures from exact pinned logical ZIP members only."""
+    source = Path(source)
+    prefix = source / SOURCE_CONFIG_PREFIX.rstrip('/')
+    for directory in (source, prefix.parent.parent, prefix.parent):
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+                or directory.resolve(strict=True) != directory):
+            raise ValueError('Source configuration fixture needs canonical owned directories')
+    try:
+        prefix.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError('Closed source already contains the excluded configuration fixture prefix')
+    manifest = loads((source / 'MANIFEST.json').read_text(encoding='utf-8'))
+    pending = []
+    for logical in sorted(SOURCE_CONFIG_PATHS):
+        raw = (source / logical).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if manifest.get('files', {}).get(logical) != digest:
+            raise ValueError('Source configuration fixture differs from its approved logical member: ' + logical)
+        pending.append((logical, raw, digest))
+    prefix.mkdir()
+    records = []
+    for logical, raw, digest in pending:
+        target = prefix / Path(logical).name
+        with target.open('xb') as stream:
+            stream.write(raw)
+        records.append({'logical_member': logical, 'fixture': target.relative_to(source).as_posix(),
+                        'sha256': digest})
+    return records
+
+
+
+def example_configuration_fixture(source, destination):
+    """Pair the legacy example policy and OP in an owned verified source copy."""
+    source, destination = Path(source), Path(destination)
+    with Tree(source) as tree:
+        _, content = verify_release(tree, allow_source_checkout=True)
+        content.update({name: tree.read(name) for name in ('MANIFEST.json', 'MANIFEST.md')})
+    destination.mkdir()
+    with Tree(destination) as tree:
+        for name, raw in content.items():
+            tree.write(name, raw)
+    seed_source_configuration(destination)
+    with Tree(destination) as tree:
+        tree.write('OPERATING_CONFIG.yaml', content['.agentic/examples/OPERATING_CONFIG.yaml'])
+    return destination / '.agentic/examples/PROJECT_CONFIG.yaml'
+
+
+def archive_rebuild_metadata(archive):
+    """Recover canonical rebuild inputs from the independently pinned ZIP."""
+    if archive.comment:
+        raise ValueError('Source ZIP must have an empty archive comment')
+    modes, timestamps = {}, set()
+    for entry in archive.infolist():
+        if not entry.filename.startswith(PREFIX) or entry.is_dir():
+            raise ValueError('Source ZIP rebuild metadata needs regular release members')
+        mode = format(entry.external_attr >> 16, '06o')
+        if (entry.create_system != 3 or mode not in REGULAR_MODES
+                or entry.external_attr != (int(mode, 8) << 16)):
+            raise ValueError('Source ZIP member lacks a canonical regular raw Git mode: ' + entry.filename)
+        if entry.compress_type != zipfile.ZIP_STORED or entry.extra or entry.comment:
+            raise ValueError('Source ZIP member has noncanonical compression or metadata: ' + entry.filename)
+        relative = entry.filename[len(PREFIX):]
+        if relative in modes:
+            raise ValueError('Duplicate source ZIP rebuild member: ' + relative)
+        modes[relative] = mode
+        timestamps.add(entry.date_time)
+    if not modes or len(timestamps) != 1:
+        raise ValueError('Source ZIP members must share one canonical UTC DOS timestamp')
+    timestamp = next(iter(timestamps))
+    # DOS timestamps have two-second precision. Use the approved archive value,
+    # never host timezone, filesystem timestamps or an invented epoch/mode.
+    epoch = int(datetime(*timestamp, tzinfo=timezone.utc).timestamp())
+    return {'format': RAW_MODES_FORMAT, 'files': modes}, epoch
+
+
 def preflight(archive_path, approved_digest, workdir, report_path):
     """Validate paths, pin and complete inventory before creating any outputs."""
     archive_path = Path(archive_path).resolve(strict=True)
@@ -95,9 +181,79 @@ def preflight(archive_path, approved_digest, workdir, report_path):
                 raise ValueError('Unsafe ZIP inventory')
         if PREFIX + 'MANIFEST.json' not in names:
             raise ValueError('ZIP inventory lacks source manifest')
+        archive_rebuild_metadata(archive)
         if archive.testzip() is not None:
             raise ValueError('ZIP CRC failed')
     return archive_path, workdir, report_path
+
+
+def initialize_unborn_fixture(root, environment):
+    """Prepare this owned installed fixture, never infer Git from an ancestor."""
+    root = Path(root)
+    marker = root / '.git'
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError('Installed acceptance fixture already has Git metadata')
+    executable = shutil.which('git')
+    if executable is None:
+        raise ValueError('Git is required for the installed acceptance fixture')
+    commands = [(['init', '-q', '-b', 'trunk'], 0),
+                (['symbolic-ref', '-q', 'HEAD'], 0),
+                (['rev-parse', '--verify', '--quiet', 'HEAD'], 1),
+                (['show-ref', '--verify', '--quiet', 'refs/heads/trunk'], 1),
+                (['status', '--porcelain=v1', '--untracked-files=all'], 0)]
+    results = []
+    for arguments, expected in commands:
+        done = subprocess.run([executable, '--no-replace-objects', '-C', str(root), *arguments],
+                              env=child_env(isolated_git_env(environment)), capture_output=True, timeout=180)
+        if done.returncode != expected:
+            raise RuntimeError('Installed acceptance fixture does not have a verified unborn HEAD')
+        results.append(done)
+    info = marker.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+            or results[1].stdout.strip() != b'refs/heads/trunk'):
+        raise RuntimeError('Installed acceptance fixture Git identity is invalid')
+
+
+def quarantine_source_auxiliary(source, run, relative):
+    """Retain known test/generator output outside the exact closed source tree."""
+    destinations = {'.tmp-tests': 'retained-source-self-test-diagnostics',
+                    SOURCE_CONFIG_PREFIX.rstrip('/'): 'retained-source-generator-templates'}
+    if relative not in destinations:
+        raise ValueError('Only recognized source diagnostic/fixture paths may be retained')
+    source, run = Path(source), Path(run)
+    candidate, retained = source / relative, run / destinations[relative]
+    if source.parent != run or not candidate.is_relative_to(source) or retained.parent != run:
+        raise ValueError('Source diagnostic move must stay inside its owned validation run')
+    try:
+        original = candidate.lstat()
+    except FileNotFoundError:
+        return None
+    directories = [run, source, *reversed(candidate.parents[:len(candidate.relative_to(source).parts) - 1]), candidate]
+    for directory in directories:
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+                or directory.resolve(strict=True) != directory):
+            raise ValueError('Refusing linked, reparse-point or noncanonical source diagnostic directory')
+    try:
+        retained.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError('Retained source diagnostic destination already exists')
+    # Both literal absolute targets have been checked under the fresh owned RUN.
+    # Rename preserves the entire diagnostic tree without following its children.
+    os.rename(candidate, retained)
+    current = retained.lstat()
+    if ((current.st_dev, current.st_ino) != (original.st_dev, original.st_ino)
+            or retained.resolve(strict=True) != retained):
+        raise ValueError('Retained source diagnostic identity changed during the move')
+    return retained
 
 
 def expected_post_install_commands(destination):
@@ -194,17 +350,30 @@ def validate(argv=None):
     RUN = WORK / ('extraction-' + uuid.uuid4().hex)
     RUN.mkdir()
     with zipfile.ZipFile(ARCHIVE) as archive:
+        rebuild_modes, rebuild_epoch = archive_rebuild_metadata(archive)
         for entry in archive.infolist():
             target = RUN.joinpath(*entry.filename.split('/'))
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read(entry))
+            if os.name != 'nt':
+                target.chmod(int(rebuild_modes['files'][entry.filename[len(PREFIX):]], 8) & 0o777)
+    rebuild_mode_manifest = RUN / 'rebuild-git-modes.json'
+    with rebuild_mode_manifest.open('x', encoding='utf-8', newline='\n') as stream:
+        json.dump(rebuild_modes, stream, indent=2, sort_keys=True)
+        stream.write('\n')
     SOURCE = RUN / PREFIX.rstrip('/')
     MANIFEST = hashlib.sha256((SOURCE / 'MANIFEST.json').read_bytes()).hexdigest()
     env = dict(os.environ)
     env.pop('PYTHONPATH', None)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
-    checks = []
+    env['SOURCE_DATE_EPOCH'] = str(rebuild_epoch)
+    checks = [{'check': 'Rebuild modes and UTC timestamp come from the approved ZIP metadata',
+               'status': 'PASS', 'source_date_epoch': rebuild_epoch,
+               'raw_mode_manifest_sha256': hashlib.sha256(rebuild_mode_manifest.read_bytes()).hexdigest()}]
+    seeds = seed_source_configuration(SOURCE)
+    checks.append({'check': 'Generator fixtures copy exact approved ZIP configuration bytes',
+                   'status': 'PASS', 'configuration_fixture_mapping': seeds})
     try:
         current_review = review_source(SOURCE, MANIFEST, args.reviews, args.expected_reviews_sha256,
                                       args.review_required_paths, args.expected_review_required_paths_sha256)
@@ -295,8 +464,8 @@ def validate(argv=None):
     assert capabilities['project_coordination']['launches_native_agents'] is False
     assert capabilities['project_coordination']['attests_active_writers'] is False
     assert capabilities['project_coordination']['native_streams_enabled_by_default'] is True
-    assert capabilities['project_coordination']['default_max_parallel_tickets'] == 6
-    assert capabilities['project_coordination']['default_operating_streams'] == 3
+    assert capabilities['project_coordination']['default_max_parallel_tickets'] == 12
+    assert capabilities['project_coordination']['default_operating_streams'] == 12
     assert capabilities['project_coordination']['requires_separate_concurrency_activation'] is False
     assert capabilities['project_coordination']['requires_reference_controller_or_broker'] is False
     assert capabilities['separate_host_review_loop']['max_active_host_ticks'] == 1
@@ -323,21 +492,28 @@ def validate(argv=None):
     assert planned['capacity']['effective_writer_capacity'] is None
     assert hashlib.sha256((PLANNED/'STREAMS.md').read_bytes()).hexdigest()==planned['markdown_sha256']
     assert hashlib.sha256((PLANNED/'STREAMS.json').read_bytes()).hexdigest()==planned['plan_sha256']
-    observed = json.loads(command(planner+['--allow-synthetic','--now','2026-09-11T10:00:00Z','--expected-plan-sha256',planned['plan_sha256'],'--host-writer-capacity','3'],name='Refresh stream plan with pinned history and three observed writer slots'))
+    observed = json.loads(command(planner+['--allow-synthetic','--now','2026-09-11T10:00:00Z','--expected-plan-sha256',planned['plan_sha256'],'--host-writer-capacity','5'],name='Refresh stream plan with pinned history and five total host slots including two reviewer/controller reservations'))
     assert observed['capacity']['effective_writer_capacity']==3 and len(observed['dispatch_packets'])==3
     assert observed['capacity']['host_admission_confirmed'] is False
     command(['.agentic/scripts/review_loop.py','--help'],name='Host review loop CLI entry point')
     command(['.agentic/scripts/review_loop.py','--config','.agentic/review-loop/host-config.example.json','check'],code=2,name='Unqualified host cannot launch')
     command([workflow,'verify-installation'],name='Source integrity CLI')
     command([workflow,'validate-config'],code=2,name='Unconfigured project is rejected')
-    command([workflow,'validate-config','--config','.agentic/examples/PROJECT_CONFIG.yaml'],name='Fixture configuration CLI')
+    example_project = RUN/'example-configuration-project'
+    example_config = example_configuration_fixture(SOURCE, example_project)
+    command([example_project/workflow,'--root',example_project,'validate-config','--config',example_config],
+            name='Fixture configuration CLI with its matching operating policy')
     evaluation_state = RUN / 'evaluation-assignment-state.json'
     write_evaluation_assignment_state(SOURCE, evaluation_state, '2026-09-09T11:00:00Z')
     gate = json.loads(command(evaluation_command(
         workflow, '.agentic/examples/evidence-bundle.json',
         '.agentic/examples/PROJECT_CONFIG.yaml', evaluation_state,
-        '2026-09-09T12:00:00Z'), name='Offline evaluator CLI'))
-    assert gate['conclusion']=='READY_FOR_OWNER_AUTHORIZATION' and gate['execution_authority'] is False
+        '2026-09-09T12:00:00Z'), name='Offline evaluator refuses unobserved provenance and posting'))
+    assert gate['conclusion']=='NOT_READY' and gate['execution_authority'] is False
+    assert {name for name, result in gate['gates'].items()
+            if result['result'] not in {'PASS', 'N_A'}} == {'verdict_posting', 'provenance'}
+    assert any('Commit provenance runtime inputs are missing' in risk
+               for risk in gate['residual_risks'])
     command(evaluation_command(
         workflow, '.agentic/examples/evidence-bundle.json',
         '.agentic/examples/PROJECT_CONFIG.yaml', evaluation_state,
@@ -364,12 +540,21 @@ def validate(argv=None):
     assert '@maintainer' in (DEST/'.github/CODEOWNERS').read_text(encoding='utf-8')
     assert '.github/CODEOWNERS' not in json.loads((DEST/'.agentic/installed-manifest.json').read_bytes())['immutable_files']
     installed_configuration = json.loads((DEST/'.agentic/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
-    assert installed_configuration['execution']['max_parallel_tickets'] == 6
+    assert installed_configuration['execution']['max_parallel_tickets'] == 12
     installed_operating = json.loads((DEST/'OPERATING_CONFIG.yaml').read_text(encoding='utf-8'))
-    assert installed_operating['streams']['count'] == 3
+    assert installed_operating['streams']['count'] == 12
+    assert set(installed_operating['streams']) == {'count', *'ABCDEFGHIJKL'}
+    for role in ('worker', 'controller', 'critic', 'specialist'):
+        assert installed_configuration['execution']['roles'][role]['model'] == 'gpt-6.1-sol'
+        assert installed_configuration['execution']['roles'][role]['reasoning_effort'] == 'high'
+    assert installed_operating['simple_worker']['model'] == 'gpt-6-luna'
+    assert installed_operating['simple_worker']['reasoning_effort'] == 'high'
     assert installed_configuration['execution']['max_parallel_tickets_per_stream'] == 1
     assert installed_configuration['execution']['native_streams'] == {'enabled': True, 'dispatch_policy': 'ready_independent'}
-    assert all(value is False for value in installed_configuration['controller'].values())
+    assert all(installed_configuration['controller'][key] is False for key in (
+        'dispatch_enabled', 'auto_dispatch', 'auto_request_critic',
+        'auto_resume_amendments', 'auto_transition_jira'))
+    assert installed_configuration['controller']['status_cadence_seconds'] == 600
     assert uuid.UUID(installed_configuration['project']['id']).version == 4
     assert installed_configuration['jira']['enabled'] is False
     assert installed_configuration['jira']['site'] is None and installed_configuration['jira']['project_key'] is None
@@ -382,7 +567,7 @@ def validate(argv=None):
     unconfigured_status = json.loads(installed_command([workflow,'--root',DEST,'status','--json'],cwd=DEST,
         name='Installed status names unconfigured paths and never claims active'))
     assert unconfigured_status['project_state']=='INSTALLED' and unconfigured_status['integrity_valid'] is True
-    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED - streams 3/6'
+    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED - streams 12/12'
     assert unconfigured_status['ci_gate']=='NOT_CONFIGURED' and unconfigured_status['accepted_checkout']=='UNOBSERVED'
     assert {item['path'] for item in unconfigured_status['configuration']['unresolved']}==expected_residue
     assert all(path in unconfigured_status['next_action'] for path in expected_residue)
@@ -419,7 +604,7 @@ def validate(argv=None):
         '--expected-manifest-sha256',MANIFEST,'--gh',RUN/'unavailable-gh-for-offline-acceptance'],cwd=ADOPTION,
         name='Configured status remains non-active without remote acceptance observations'))
     assert configured_status['project_state']=='CONFIGURED' and configured_status['integrity_valid'] is True
-    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED - streams 3/6'
+    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED - streams 12/12'
     assert configured_status['configuration']['status']=='ACCEPTED' and configured_status['configuration']['unresolved']==[]
     assert configured_status['ci_gate']=='NOT_CONFIGURED' and configured_status['accepted_checkout']=='UNOBSERVED'
     assert configured_status['adoption']=='UNOBSERVED' and configured_status['execution_authority'] is False
@@ -432,6 +617,8 @@ def validate(argv=None):
     # Component self-tests validate project-owned configuration. Run them on
     # the configured fixture; retain DEST's deliberate residue until mapping it
     # for the separate configuration/ownership/stream preservation upgrade.
+    initialize_unborn_fixture(ADOPTION, env)
+    checks.append({'check': 'Configured installed acceptance fixture has a verified unborn Git HEAD', 'status': 'PASS'})
     installed_command(['.agentic/scripts/self_test.py','--report',RUN/'installed-self-test.json'],cwd=ADOPTION,name='Complete configured installed self-test',timeout=selected_self_test_timeout)
     installed_command([status_cli,'report','.agentic/examples/project-status.json'],cwd=DEST,name='Installed project status Markdown CLI')
     cycle_markdown = installed_command([status_cli,'cycle','.agentic/examples/project-cycle.json','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed whole-project continuation and authorization presentation')
@@ -439,14 +626,21 @@ def validate(argv=None):
     installed_plan = json.loads(installed_command(['.agentic/scripts/plan_streams.py','--input','.agentic/examples/stream-input.json','--expected-input-sha256',hashlib.sha256(inventory.read_bytes()).hexdigest(),'--project-root',DEST,'--allow-synthetic','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed planner writes into project root'))
     assert installed_plan['stream_labels']==['A','B','C'] and (DEST/'STREAMS.md').is_file()
     installed_streams = (DEST/'STREAMS.md').read_bytes(), (DEST/'STREAMS.json').read_bytes()
+    custom_config = json.loads((ADOPTION/'.agentic/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
+    # Configure this fixture before an audited operating write. Keep its own
+    # persisted identity and current ceiling until the stream count is reduced.
+    custom_config['project']['id'] = installed_configuration['project']['id']
+    assert custom_config['execution']['max_parallel_tickets'] == 12
+    (DEST/'.agentic/PROJECT_CONFIG.yaml').write_bytes(
+        (json.dumps(custom_config,indent=2)+'\n').encode('utf-8'))
+    configured_for_operating = json.loads(installed_command(
+        [workflow,'--root',DEST,'validate-config'],cwd=DEST,
+        name='Configured policy accepted before audited operating reduction'))
+    assert configured_for_operating['status'] == 'ACCEPTED'
     installed_command([workflow,'--root',DEST,'operating','set','--instruction','Synthetic acceptance: preserve one operating stream under a lower governance ceiling',
         '--set','streams.count=1'],cwd=DEST,name='Audited operating reduction before lower-ceiling governance fixture')
     preserved_operating = (DEST/'OPERATING_CONFIG.yaml').read_bytes()
     assert json.loads(preserved_operating)['streams']['count'] == 1
-    custom_config = json.loads((SOURCE/'.agentic/examples/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
-    # Map the synthetic policy without replacing this installation's persisted
-    # project identity with the example project's unrelated UUID.
-    custom_config['project']['id'] = installed_configuration['project']['id']
     custom_config['execution']['max_parallel_tickets'] = 1
     custom_config_bytes = (json.dumps(custom_config,indent=2)+'\n').encode('utf-8')
     (DEST/'.agentic/PROJECT_CONFIG.yaml').write_bytes(custom_config_bytes)
@@ -467,12 +661,18 @@ def validate(argv=None):
     installed_command([workflow,'--root',DEST,'validate-config'],cwd=DEST,name='Configuration preserved after upgrade')
     limited = json.loads(command(['.agentic/scripts/plan_streams.py','--input',inventory,'--expected-input-sha256',hashlib.sha256(inventory.read_bytes()).hexdigest(),'--project-root',DEST,'--allow-synthetic','--now','2026-09-11T10:00:00Z','--host-writer-capacity','3','--expected-plan-sha256',installed_plan['plan_sha256']],name='External runtime honors the target project\'s explicit lower capacity'))
     assert limited['capacity']['effective_writer_capacity']==1 and len(limited['dispatch_packets'])==1
-    assert len(limited['deferred_dispatch_packets'])==2 and limited['prompt_user'] is False
-    command(['scripts/validate_git_checkout.py','--source',SOURCE,'--expected-manifest-sha256',MANIFEST,
-        '--workdir',RUN/'g','--report',RUN/'git-checkout.json','--runtime-wheelhouse',runtime_wheelhouse],
-        name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
-    git_checkout = json.loads((RUN/'git-checkout.json').read_text(encoding='utf-8'))
-    assert git_checkout['status']=='PASS'
+    assert limited['stream_labels']==['A'] and limited['deferred_dispatch_packets']==[]
+    assert limited['prompt_user'] is False and limited['execution_authority'] is False
+    assert limited['dispatch_packets'][0]['ticket_id']=='DEMO-11'
+    assert limited['dispatch_packets'][0]['live_dispatch_eligible'] is False
+    expected_tickets = {'DEMO-11', 'DEMO-12', 'DEMO-21', 'DEMO-31'}
+    assert limited['ticket_streams']=={ticket:'A' for ticket in expected_tickets}
+    reduced_plan = json.loads((DEST/'STREAMS.json').read_text(encoding='utf-8'))
+    assert set(reduced_plan['tickets'])==expected_tickets and len(reduced_plan['streams'])==1
+    assert reduced_plan['streams'][0]['ready_ticket_ids']==['DEMO-11', 'DEMO-21', 'DEMO-31']
+    assert [(barrier['ticket_id'], barrier['prerequisite'], barrier['cross_stream'])
+            for barrier in reduced_plan['dependency_barriers']]==[('DEMO-12', 'DEMO-11', False)]
+    assert reduced_plan['tickets']['DEMO-12']['dependencies'][0]['state']=='unresolved'
     before = (SOURCE/'MANIFEST.json').read_bytes()
     command(['scripts/generate_contracts.py'],name='Regenerate complete schemas')
     command(['scripts/generate_prompts.py'],name='Regenerate versioned role prompts')
@@ -482,9 +682,19 @@ def validate(argv=None):
     command([workflow,'verify-installation'],name='Generated files reproduce approved bytes')
     assert before == (SOURCE/'MANIFEST.json').read_bytes()
     REBUILT = RUN/'rebuilt.zip'
-    command(['scripts/build_release.py','--output',REBUILT],name='Rebuild deterministic ZIP')
+    command(['scripts/build_release.py','--output',REBUILT,'--git-mode-manifest',rebuild_mode_manifest],name='Rebuild deterministic ZIP')
     assert ARCHIVE.read_bytes()==REBUILT.read_bytes()
+    for relative in ('.tmp-tests', SOURCE_CONFIG_PREFIX.rstrip('/')):
+        retained = quarantine_source_auxiliary(SOURCE, RUN, relative)
+        if retained is not None:
+            checks.append({'check': 'Generated source auxiliary files retained outside the closed source',
+                           'status': 'PASS', 'source_relative_path': relative, 'retained_path': str(retained)})
     checks.append({'check':'ZIP byte-for-byte reproducibility','status':'PASS'})
+    command(['scripts/validate_git_checkout.py','--source',SOURCE,'--expected-manifest-sha256',MANIFEST,
+        '--workdir',RUN/'g','--report',RUN/'git-checkout.json','--runtime-wheelhouse',runtime_wheelhouse],
+        name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
+    git_checkout = json.loads((RUN/'git-checkout.json').read_text(encoding='utf-8'))
+    assert git_checkout['status']=='PASS'
     extracted_tests = json.loads((RUN/'extracted-self-test.json').read_text())
     installed_tests = json.loads((RUN/'installed-self-test.json').read_text())
     report = {'template_version':VERSION,'status':'PASS','archive':ARCHIVE.name,

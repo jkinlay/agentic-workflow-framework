@@ -42,7 +42,7 @@ OVERRIDE_KEYS = {'windows.sandbox'}
 CODEX_LOG_LIMIT = 64 * 1024 * 1024
 CODEX_RESULT_LIMIT = 1024 * 1024
 MANIFEST_PATHS = ('MANIFEST.json', 'MANIFEST.md')
-ROUTING_SOURCE = '.agentic/tests/fixtures/routing/valid.yaml'
+ROUTING_SOURCE = '.agentic/defaults/routing.yaml'
 _SUBPROCESS_RUN = subprocess.run
 
 
@@ -1810,4 +1810,7 @@ class HostDriver:
 def manifest_reproducer_sha256():
     """Bind reviewed policy to the exact production reproducer source."""
     source = inspect.getsource(HostDriver._reproduce_manifests)
-    return sha256(source.encode('utf-8'))
+    binding = {"source": source,
+               "source_config_projection": {**dict(SOURCE_CONFIGS), ROUTING: ROUTING_SOURCE},
+               "release_excluded_prefixes": list(RELEASE_EXCLUDED_PREFIXES)}
+    return sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode('utf-8'))

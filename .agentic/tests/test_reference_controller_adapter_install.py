@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.canonical import load_yaml, sha256
 from agentic.installer import install, verify_installed
-from source_only import skip_unless_source_repo
+from source_only import skip_unless_source_assets, skip_unless_source_repo
 from test_reference_controller_adapter import _base_config, NOW, cycle_requirements
 
 SWITCHES = ("dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments")
@@ -140,6 +140,7 @@ class InstalledReferenceAdapterLoadTests(unittest.TestCase):
         self.assertFalse(result["installer_launches_agents"])
         self.load_for_cycle(project)
 
+    @skip_unless_source_assets("needs excluded historical upgrade fixtures", ".agentic/tests/fixtures/upgrades/versions.json")
     def test_upgraded_194_reference_adapter_loads_for_cycle(self):
         from upgrade_fixtures import fixture_index, materialize, verify_materialized
         if "1.9.4" not in fixture_index()["versions"]:

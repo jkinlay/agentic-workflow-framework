@@ -12,6 +12,7 @@ import re
 import sqlite3
 import uuid
 
+from .lane_labels import STREAM_LABELS
 from . import ValidationError
 from .canonical import canonical, fingerprint, fresh, loads, sha256, timestamp
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions
@@ -75,13 +76,13 @@ def _request(config, request):
     repository_name(github.get("repository"))
     branch_name(github.get("base_branch"))
     streams = request["streams"]
-    _require(isinstance(streams, list) and 1 <= len(streams) <= 6, "Handoff needs one to six completed streams")
+    _require(isinstance(streams, list) and 1 <= len(streams) <= len(STREAM_LABELS), "Handoff needs one to twelve completed streams")
     seen_streams, seen_branches, seen_tickets = set(), set(), set()
     for item in streams:
         _require(isinstance(item, dict) and set(item) == {
             "stream", "ticket", "slug", "branch", "head", "title", "body", "completed_result_sha256", "stream_state"},
             "Malformed completed-stream handoff")
-        _require(item["stream"] in tuple("ABCDEF") and item["stream"] not in seen_streams,
+        _require(item["stream"] in STREAM_LABELS and item["stream"] not in seen_streams,
                  "Stream identities must be unique")
         _eligible_branch(github, item["ticket"], item["slug"], item["branch"])
         _require(item["branch"] not in seen_branches and item["ticket"] not in seen_tickets,

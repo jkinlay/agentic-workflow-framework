@@ -4,6 +4,7 @@ This module never dispatches models. Callers must authenticate facts, protect th
 policy/ledger and enforce the reserved token/cost ceilings at their host boundary.
 """
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
@@ -13,6 +14,7 @@ import sqlite3
 import unicodedata
 import uuid
 
+from .lane_labels import STREAM_LABELS
 from agentic import ValidationError
 from agentic.canonical import validate_value
 
@@ -63,7 +65,9 @@ BUDGET_KEYS = frozenset({
     "max_cost_microusd_per_project_day",
 })
 ROUTING_REFERENCE = ".agentic/routing.yaml"
-RELEASE_ROUTING_SOURCE = Path(__file__).resolve().parents[2] / "tests/fixtures/routing/valid.yaml"
+_PLANNED_ROUTING = ContextVar("awf_planned_routing", default=None)
+RELEASE_ROUTING_SOURCE = Path(__file__).resolve().parents[2] / "defaults/routing.yaml"
+LEGACY_ROUTING_SOURCE = Path(__file__).resolve().parents[2] / "tests/fixtures/routing/valid.yaml"
 ROUTING_PROJECT_POLICY_KEYS = frozenset({
     "high_risk_flags", "agent_overrides", "ticket_overrides", "escalation",
     "budgets", "adaptive", "reconciliation",
@@ -201,9 +205,21 @@ def __getattr__(name):
     raise AttributeError(name)
 
 
+@contextmanager
+def routing_context(raw, source):
+    """Bind validated target bytes while planning an isolated adoption."""
+    token = _PLANNED_ROUTING.set(load_routing_content(raw, source))
+    try:
+        yield
+    finally:
+        _PLANNED_ROUTING.reset(token)
+
+
 def default_policy(routing_path=None):
     """Return an independent editable Balanced policy from operator routing."""
-    routing = load_routing(routing_path)
+    routing = _PLANNED_ROUTING.get() if routing_path is None else None
+    if routing is None:
+        routing = load_routing(routing_path)
     models = list(routing["catalog"])
 
     def policy_pair(pair):
@@ -568,7 +584,7 @@ def _request(request):
     _require(request.get("verification") in ("strong", "limited", "none"), "verification must be strong, limited, or none")
     _require(isinstance(request.get("risk_flags"), list) and all(isinstance(x, str) for x in request["risk_flags"]), "risk_flags must be a string list")
     if "stream" in request:
-        _require(request["stream"] in tuple("ABCDEF"), "stream must be A through F")
+        _require(request["stream"] in STREAM_LABELS, "stream must be A through L")
     if request.get("epic_id") is not None:
         _name(request["epic_id"], "epic_id")
         _require("epic_risk_flags" in request, "Epic-scoped work requires host-observed inherited epic_risk_flags, including an explicit empty list")
@@ -596,8 +612,8 @@ def select_route(policy, request, capabilities, *, operating=None, governance=No
     """Read-only proposal with explicit legacy attribution or a validated snapshot."""
     config, binding = _operating_binding(operating, governance, policy)
     result = _select_route(policy, request, capabilities, config)
-    draining = bool(operating is not None and request.get("stream") in tuple("ABCDEF")
-                    and tuple("ABCDEF").index(request["stream"]) >= operating.count)
+    draining = bool(operating is not None and request.get("stream") in STREAM_LABELS
+                    and STREAM_LABELS.index(request["stream"]) >= operating.count)
     return {**result, **binding, "draining": draining,
             "admission_requirement": "Only a previously admitted ticket in this surplus stream may finish; no new ticket admission" if draining else None}
 
@@ -627,16 +643,19 @@ def _select_route(policy, request, capabilities, operating_config):
     selected = deepcopy(policy["role_defaults"][policy_role])
     reasons = ["balanced role default"]
     default_operating = bool(operating_config and operating_config.get("source") == "default")
-    release_defaults = default_policy(RELEASE_ROUTING_SOURCE) if default_operating else None
+    baselines = ([default_policy(RELEASE_ROUTING_SOURCE), default_policy(LEGACY_ROUTING_SOURCE)]
+                 if default_operating else [])
+    release_defaults = next((baseline for baseline in baselines
+                             if baseline["model_order"] == policy["model_order"]
+                             and baseline["models"] == policy["models"]), None)
+    default_operating = default_operating and release_defaults is not None
 
-    def effective_default(route, policy_route, released_route):
-        """Resolve generated, unpinned defaults through the current routing policy."""
-        released_pair = bool(default_operating and route is not None and all(
-            route.get(key) == released_route[key]
-            for key in ("model", "reasoning_effort")
-        ))
-        if (default_operating and released_pair
-                and not route.get("pinned", False)):
+    def effective_default(route, policy_route, *released_routes):
+        """Resolve unpinned generated defaults through current routing policy."""
+        released_pair = bool(default_operating and route is not None and any(
+            all(route.get(key) == pair.get(key) for key in ("model", "reasoning_effort"))
+            for pair in released_routes))
+        if released_pair and not route.get("pinned", False):
             return deepcopy(policy_route)
         return route
 
@@ -666,15 +685,14 @@ def _select_route(policy, request, capabilities, operating_config):
     if role == "worker" and simple and simple_enabled:
         pinned = simple_route.get("pinned", False)
     if operating_config and role in ("worker", "fix", "critic"):
-        _require("stream" in request, "Operating worker/reviewer routing requires an observed stream A–F")
+        _require("stream" in request, "Operating worker/reviewer routing requires an observed stream A–L")
         stream_config = operating_config["streams"].get(request["stream"], {})
         stream_route = (_critic_route(operating_config.get("critic"), stream_config.get("reviewer"))
                         if role == "critic" else stream_config.get("worker"))
         _require(stream_route is not None, "Requested stream has no retained operating route; reconcile stream ownership")
         stream_route = effective_default(
             stream_route, policy["role_defaults"][policy_role],
-            release_defaults["role_defaults"][policy_role]
-            if release_defaults else {})
+            release_defaults["role_defaults"][policy_role] if release_defaults else {})
         # An ordinary unpinned stream route is the normal-work default. Keeping
         # the simple option effective avoids overriding Luna with default Terra.
         ordinary_default = all(stream_route[k] == policy["role_defaults"][policy_role][k]
@@ -1055,7 +1073,7 @@ class RoutingLedger:
         _require(connection.execute("SELECT 1 FROM model_runs WHERE project_id=? AND status='quarantined' LIMIT 1", (project_id,)).fetchone() is None,
                  "project has a quarantined host mismatch or budget overrun; reconcile with authorized operator evidence")
         ticket_rows = list(connection.execute("SELECT * FROM model_runs WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, request["ticket_id"])))
-        if operating is not None and request.get("stream") in tuple("ABCDEF") and tuple("ABCDEF").index(request["stream"]) >= operating.count:
+        if operating is not None and request.get("stream") in STREAM_LABELS and STREAM_LABELS.index(request["stream"]) >= operating.count:
             retained = [row for row in ticket_rows if row["operating_hash"] is not None
                         and json.loads(row["request"]).get("stream") == request["stream"]]
             _require(retained, "Operating stream is draining: no previously admitted ticket exists in this stream; no new ticket admission")

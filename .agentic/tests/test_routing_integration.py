@@ -7,6 +7,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
 from agentic.canonical import load
 from agentic.contracts import Contracts
@@ -23,7 +24,7 @@ class RoutingConfigurationTests(unittest.TestCase):
         self.contracts = Contracts(ROOT / '.agentic/schemas')
 
     def configured(self):
-        routing = default_policy()
+        routing = fixture_policy()
         self.config['execution']['model_routing'] = routing
         for role, pair in routing['role_defaults'].items():
             self.config['execution']['roles'][role].update(deepcopy(pair))

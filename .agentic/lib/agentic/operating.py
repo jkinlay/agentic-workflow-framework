@@ -22,6 +22,7 @@ import uuid
 from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
+from .lane_labels import MAX_LANES
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
@@ -32,7 +33,6 @@ STATE = ".agentic-state/operating"
 LOCK = STATE + "/lock"
 JOURNAL = STATE + "/pending.json"
 DEFAULT_MAX_LANES = 6
-MAX_LANES = 12
 DEFAULT_MAX_LANES_SOURCE = ".agentic/schemas/operating-config.schema.json#/properties/streams/properties/count/maximum"
 EPIC_ID = r"[A-Z][A-Z0-9_]*-[1-9][0-9]*"
 STAGING_NAME = r"\.awf-operating-[0-9a-f]{32}\.tmp"
@@ -131,15 +131,15 @@ def _stream(policy=None):
     return {"worker": deepcopy(policy["role_defaults"]["worker"])}
 
 
-def default_operating(policy=None):
+def default_operating(policy=None, *, count=3):
     from .model_routing import default_policy, validate_policy
 
     policy = default_policy() if policy is None else validate_policy(deepcopy(policy))
     defaults = policy["role_defaults"]
     stream = _stream(policy)
     return {"version": 1, "source": "default",
-            "streams": {"count": 3,
-                        **{label: deepcopy(stream) for label in stream_labels(3)}},
+            "streams": {"count": count,
+                        **{label: deepcopy(stream) for label in stream_labels(count)}},
             "critic": deepcopy(defaults["critic"]),
             "controller": deepcopy(defaults["controller"]),
             "specialist": deepcopy(defaults["specialist"]),
@@ -614,15 +614,18 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     return _snapshot(tree, governance)
 
 
-def plan_initialize_operating(project_root, governance, *, change_id=None, created_at=None):
+def plan_initialize_operating(project_root, governance, *, change_id=None, created_at=None, initial_operating=None):
     """Validate operating semantics and return the exact bootstrap writes without mutating the tree."""
     with Tree(project_root) as tree:
         if _read(tree, JOURNAL) is not None:
             fail("$", "Pending operating transaction: inspect and recover before upgrade")
         before = _read(tree, CONFIG)
         events = _events(tree)
+        if before is None and events:
+            fail("$", "Operating configuration is missing with retained audit history; restore its audited bytes before upgrade")
         if before is None:
-            value = _upgrade_safe_operating(governance)
+            value = (deepcopy(initial_operating) if initial_operating is not None
+                     else _upgrade_safe_operating(governance))
         else:
             snapshot = validate_operating(load_yaml(before), governance)
             if events and events[-1]["after_hash"] != snapshot.operating_hash:
@@ -673,7 +676,7 @@ def initialize_operating(project_root, governance):
                 return snapshot
             value = snapshot.config
         else:
-            value = default_operating()
+            value = _upgrade_safe_operating(governance)
         return _commit(tree, governance, before, value, None, [], "bootstrap")
 
 
@@ -811,7 +814,7 @@ def _editable_snapshot(tree, governance, initialize):
             fail("$", "Operating file is absent; explicitly use --initialize with reviewed --set choices")
         if _events(tree):
             fail("$", "Missing audited operating bytes require recovery, not reinitialization")
-        value = default_operating()
+        value = _upgrade_safe_operating(governance)
         return OperatingSnapshot(canonical(value), fingerprint("operating", value), fingerprint("operating-governance", governance)), None
     if initialize:
         fail("$", "--initialize cannot overwrite an existing operating file")

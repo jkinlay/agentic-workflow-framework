@@ -15,27 +15,29 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
 from agentic import operating as op
 from agentic.canonical import canonical, load, sha256
-from agentic.model_routing import MODELS, RoutingLedger, default_policy, policy_from_config, select_route
+from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, select_route
 from agentic.operating import default_operating, validate_operating
 from agentic.store import Store
 from agentic.streams import DEFAULT_NATIVE_EXECUTION, _antichain, plan_inventory, recommendation_groups
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-11T10:00:00Z"
+MODELS = tuple(fixture_policy()["model_order"])
 
 
 def governance():
-    policy = default_policy()
+    policy = fixture_policy()
     return {"project": {"id": "synthetic-operating-project"}, "execution": {
         **deepcopy(DEFAULT_NATIVE_EXECUTION), "model_routing": policy,
         "roles": {role: {**pair, "approved_model_ids": list(MODELS)} for role, pair in policy["role_defaults"].items()}}}
 
 
 def configuration(count=3):
-    result = default_operating()
+    result = default_operating(fixture_policy())
     result["streams"]["count"] = count
     for label in "ABCDEF"[:count]:
         result["streams"].setdefault(label, deepcopy(result["streams"]["A"]))
@@ -51,7 +53,7 @@ def request(**changes):
 
 
 def capabilities():
-    return {"models": {model: data["reasoning_efforts"] for model, data in default_policy()["models"].items()}}
+    return {"models": {model: data["reasoning_efforts"] for model, data in fixture_policy()["models"].items()}}
 
 
 def outcome(run, **changes):
@@ -238,7 +240,7 @@ class OperatingRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "ledger.sqlite"
             ledger = RoutingLedger(path)
-            run = ledger.reserve("synthetic", default_policy(), request(), capabilities())
+            run = ledger.reserve("synthetic", fixture_policy(), request(), capabilities())
             ledger.settle(run["run_id"], outcome(run))
             with closing(sqlite3.connect(path)) as connection:
                 before = connection.execute("SELECT policy_hash,request,route,outcome FROM model_runs").fetchone()
@@ -248,7 +250,7 @@ class OperatingRoutingTests(unittest.TestCase):
             with closing(sqlite3.connect(path)) as connection:
                 self.assertEqual(connection.execute("SELECT policy_hash,request,route,outcome FROM model_runs").fetchone(), before)
                 self.assertIsNone(connection.execute("SELECT operating_hash FROM model_runs").fetchone()[0])
-            self.assertIsNone(again.evidence("synthetic", default_policy())["groups"][0]["operating_hash"])
+            self.assertIsNone(again.evidence("synthetic", fixture_policy())["groups"][0]["operating_hash"])
 
     def test_reference_budget_events_inherit_reserved_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
