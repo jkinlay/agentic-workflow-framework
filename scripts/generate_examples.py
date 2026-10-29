@@ -196,6 +196,8 @@ def config(example=True, routing_policy=None, *, fresh_defaults=False):
             model=model, reasoning_effort=effort,
             approved_model_ids=routing["role_allowed_models"][name])
     if example:
+        # Synthetic legacy scenarios must not inherit source/operator routing edits.
+        result["execution"]["model_routing"] = copy.deepcopy(routing)
         result["publication"] = {"deny_literals": [], "deny_regexes": [], "internal_hostnames": [],
                                  "large_file_allowances": []}
     return result
@@ -445,12 +447,13 @@ def generate(output_root, source_root=ROOT):
     fresh_policy = default_policy(source_root / ".agentic/defaults/routing.yaml")
     fresh_operating = default_operating(fresh_policy, count=12)
     operating = default_operating(generation_policy)
-    write(output_root / "OPERATING_CONFIG.yaml", operating)
+    write(output_root / "OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", operating)
     write(output_root / ".agentic/templates/source-config/OPERATING_CONFIG.yaml", fresh_operating)
+    write(output_root / ".agentic/defaults/OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/workflow.yaml", definition())
     source_config = config(False, fresh_policy, fresh_defaults=True)
-    write(output_root / ".agentic/PROJECT_CONFIG.yaml", config(False, generation_policy))
+    write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)
     write(output_root / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
     unconfigured = config(False, generation_policy)
     unconfigured["execution"]["model_routing"] = copy.deepcopy(generation_policy)

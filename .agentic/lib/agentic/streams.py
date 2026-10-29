@@ -676,13 +676,13 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     if not enabled:
         reasons.append("Native streams are disabled by the supplied execution policy; preserve existing owners and do not issue new native assignments.")
     if policy["max_parallel_tickets"] > PLANNER_WRITER_LIMIT:
-        reasons.append(f"The A–F planner has a structural limit of {PLANNER_WRITER_LIMIT} writers; execution.max_parallel_tickets remains configured as {policy['max_parallel_tickets']}.")
+        reasons.append(f"The A–L planner has a structural limit of {PLANNER_WRITER_LIMIT} writers; execution.max_parallel_tickets remains configured as {policy['max_parallel_tickets']}.")
     if policy["max_parallel_tickets"] < PLANNER_WRITER_LIMIT:
         reasons.append(f"Project execution.max_parallel_tickets limits total writers to {policy['max_parallel_tickets']}.")
     if policy.get("host_broker", {}).get("enabled"):
         reasons.append(f"Enabled execution.host_broker.max_workers limits configured writers to {policy['host_broker']['max_workers']}; observed host slots remain separate.")
     if policy["max_parallel_tickets_per_stream"] != 1:
-        reasons.append("The A–F planner keeps one writer per stream even when the broader configuration permits more.")
+        reasons.append("The A–L planner keeps one writer per stream even when the broader configuration permits more.")
     reasons.append(f"Operating count {operating_count} limits new stream admissions independently of the governance ceiling.")
     if draining_labels:
         reasons.append("Surplus streams " + ", ".join(draining_labels) + " retain current owners and finish their current tickets; no new ticket is assigned while they drain.")

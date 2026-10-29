@@ -364,12 +364,21 @@ def validate(argv=None):
     assert '@maintainer' in (DEST/'.github/CODEOWNERS').read_text(encoding='utf-8')
     assert '.github/CODEOWNERS' not in json.loads((DEST/'.agentic/installed-manifest.json').read_bytes())['immutable_files']
     installed_configuration = json.loads((DEST/'.agentic/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
-    assert installed_configuration['execution']['max_parallel_tickets'] == 6
+    assert installed_configuration['execution']['max_parallel_tickets'] == 12
     installed_operating = json.loads((DEST/'OPERATING_CONFIG.yaml').read_text(encoding='utf-8'))
-    assert installed_operating['streams']['count'] == 3
+    assert installed_operating['streams']['count'] == 12
+    assert set(installed_operating['streams']) == {'count', *'ABCDEFGHIJKL'}
+    for role in ('worker', 'controller', 'critic', 'specialist'):
+        assert installed_configuration['execution']['roles'][role]['model'] == 'gpt-6.1-sol'
+        assert installed_configuration['execution']['roles'][role]['reasoning_effort'] == 'high'
+    assert installed_operating['simple_worker']['model'] == 'gpt-6-luna'
+    assert installed_operating['simple_worker']['reasoning_effort'] == 'high'
     assert installed_configuration['execution']['max_parallel_tickets_per_stream'] == 1
     assert installed_configuration['execution']['native_streams'] == {'enabled': True, 'dispatch_policy': 'ready_independent'}
-    assert all(value is False for value in installed_configuration['controller'].values())
+    assert all(installed_configuration['controller'][key] is False for key in (
+        'dispatch_enabled', 'auto_dispatch', 'auto_request_critic',
+        'auto_resume_amendments', 'auto_transition_jira'))
+    assert installed_configuration['controller']['status_cadence_seconds'] == 600
     assert uuid.UUID(installed_configuration['project']['id']).version == 4
     assert installed_configuration['jira']['enabled'] is False
     assert installed_configuration['jira']['site'] is None and installed_configuration['jira']['project_key'] is None
@@ -382,7 +391,7 @@ def validate(argv=None):
     unconfigured_status = json.loads(installed_command([workflow,'--root',DEST,'status','--json'],cwd=DEST,
         name='Installed status names unconfigured paths and never claims active'))
     assert unconfigured_status['project_state']=='INSTALLED' and unconfigured_status['integrity_valid'] is True
-    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED - streams 3/6'
+    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED - streams 12/12'
     assert unconfigured_status['ci_gate']=='NOT_CONFIGURED' and unconfigured_status['accepted_checkout']=='UNOBSERVED'
     assert {item['path'] for item in unconfigured_status['configuration']['unresolved']}==expected_residue
     assert all(path in unconfigured_status['next_action'] for path in expected_residue)
@@ -419,7 +428,7 @@ def validate(argv=None):
         '--expected-manifest-sha256',MANIFEST,'--gh',RUN/'unavailable-gh-for-offline-acceptance'],cwd=ADOPTION,
         name='Configured status remains non-active without remote acceptance observations'))
     assert configured_status['project_state']=='CONFIGURED' and configured_status['integrity_valid'] is True
-    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED - streams 3/6'
+    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED - streams 12/12'
     assert configured_status['configuration']['status']=='ACCEPTED' and configured_status['configuration']['unresolved']==[]
     assert configured_status['ci_gate']=='NOT_CONFIGURED' and configured_status['accepted_checkout']=='UNOBSERVED'
     assert configured_status['adoption']=='UNOBSERVED' and configured_status['execution_authority'] is False

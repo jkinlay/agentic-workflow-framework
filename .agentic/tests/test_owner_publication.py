@@ -85,7 +85,7 @@ class OwnerPublicationTests(unittest.TestCase):
                 item[kind]["receipt_sha256"] = f"{index:064x}"
         prepared = self.store.prepare(self.config, request, authorization, now=NOW)
         retained = self.store.snapshot(prepared["batch_id"], self.config)
-        self.assertEqual(list("ABCDEFGHIJKL"), [item["stream"] for item in retained["streams"]])
+        self.assertEqual(list("ABCDEFGHIJKL"), [item["stream"] for item in retained["operations"]])
 
     def heads(self, snapshot):
         return {"source": "host_observation", "host": "https://github.com", "repository": "fixture/example",
