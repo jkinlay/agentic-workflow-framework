@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +21,7 @@ from agentic.child_process import child_env
 from agentic.installer import install
 from agentic.model_routing import RoutingLedger, policy_from_config, routing_context
 from agentic.upgrade import load_known_versions
+from agentic.safeio import run_bounded
 
 PUBLISHED_COMMIT = "8ad399943c8f5e4f17db72f3e321b9365ee27782"
 PUBLISHED_PIN = "1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7"
@@ -62,10 +64,16 @@ class Published195UpgradeTests(unittest.TestCase):
                    "--github-repo", "example-org/example-repo", "--repository-id", "101",
                    "--default-branch", "main", "--test-command", "python -m unittest",
                    "--codeowner", "@fixture-owner"]
-        completed = subprocess.run(command, cwd=self.base, capture_output=True,
-                                   text=True, encoding="utf-8", env=child_env(), timeout=180)
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        result = json.loads(completed.stdout)
+        started = time.monotonic()
+        print("historical upgrade bootstrap start: " + mode + " " + pin[:12], file=sys.stderr, flush=True)
+        completed = run_bounded(command, cwd=self.base, env=child_env(), timeout=600,
+                                stdout_limit=4 * 1024 * 1024, stderr_limit=1024 * 1024)
+        print("historical upgrade bootstrap seconds: " + str(round(time.monotonic() - started, 3)),
+              file=sys.stderr, flush=True)
+        output = completed.stdout.decode("utf-8")
+        error = completed.stderr.decode("utf-8")
+        self.assertEqual(completed.returncode, 0, output + error)
+        result = json.loads(output)
         self.assertEqual(result["status"], "CONFIGURED", result)
         checks = result["post_install_checks"]
         self.assertEqual([item["exit_code"] for item in checks], [0, 0], checks)
