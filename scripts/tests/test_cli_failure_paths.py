@@ -30,6 +30,15 @@ def snapshot(root):
 
 
 class ValidatorCommandContractTests(unittest.TestCase):
+    def test_archive_launcher_passes_the_real_environment_scrubbing_gate(self):
+        from agentic.launch_surfaces import python_launch_findings
+        with tempfile.TemporaryDirectory(prefix='awf-archive-launch-surface-') as raw:
+            owned = Path(raw)
+            script = owned / 'scripts/validate_archive.py'
+            script.parent.mkdir()
+            script.write_bytes((ROOT / 'scripts/validate_archive.py').read_bytes())
+            self.assertEqual([], python_launch_findings(owned))
+
     def test_expected_installed_commands_are_canonical_and_noninstalling(self):
         destination = ROOT / '.tmp-tests' / 'nonexistent project with spaces'
         expected_root, expected_interpreter, expected_entry = validate_archive.installed_paths(destination)

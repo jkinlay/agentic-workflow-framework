@@ -190,7 +190,7 @@ def initialize_unborn_fixture(root, environment):
     results = []
     for arguments, expected in commands:
         done = subprocess.run([executable, '--no-replace-objects', '-C', str(root), *arguments],
-                              env=isolated_git_env(environment), capture_output=True, timeout=180)
+                              env=child_env(isolated_git_env(environment)), capture_output=True, timeout=180)
         if done.returncode != expected:
             raise RuntimeError('Installed acceptance fixture does not have a verified unborn HEAD')
         results.append(done)

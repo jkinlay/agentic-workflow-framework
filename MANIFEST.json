@@ -642,7 +642,7 @@
     "scripts/tests/test_build_release_adoptable_source.py": "c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae",
     "scripts/tests/test_ci_suite_coverage.py": "6a7a1349df8ddd270c87dcee6daca750fd2795ff2609f89f2f356f0bdd357f10",
     "scripts/tests/test_ci_windows_final_candidate.py": "ad67c1f6542c059cb40dbc11913b14c56ac3b9873575515ba3b21a40f9c71877",
-    "scripts/tests/test_cli_failure_paths.py": "d940f989c163aa30f05d968fce16424f076ca4dec891b1e3d61091cac72c9dd5",
+    "scripts/tests/test_cli_failure_paths.py": "6a8dca9d05f0772858d5ad4a32d4e1b1a753c67d97c984ed71ad0ef9f2a31b37",
     "scripts/tests/test_fresh_bootstrap.py": "114263345bca51b1da74feda0af61da1cd94cd0e872109979522cbb9d98f4c76",
     "scripts/tests/test_generate_contracts_status_report.py": "19460ce0be0e6c96ae98a31b4f21d529596cf442cbf18207ee2f843b930c2225",
     "scripts/tests/test_generate_contracts_ticket_plan.py": "9832f4e378264281e8394ac948d137b924f7c811470425fd39ad712ae7a93269",
@@ -665,7 +665,7 @@
     "scripts/tests/test_validate_archive_report.py": "d5e1a5bc555b69976b30011d688e3b142d0bf0008e400b18dc7d836807a34d56",
     "scripts/tests/test_validate_git_checkout.py": "8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900",
     "scripts/tests/test_windows_unittest_shards.py": "9ac7c3480d8d579308552daaa766c2d27312057c167b3c03dfab13a6778006c3",
-    "scripts/validate_archive.py": "6e53102dbdeddf88f286f3bde32f5919f02151177f586f0eb4aaadddd8d365ed",
+    "scripts/validate_archive.py": "6fa11119b51ee3448c2632097c4eded10cb4b4775b420589102f971611897132",
     "scripts/validate_git_checkout.py": "da31f52ab345e19cf580171bef96404958795217d88535c112c4e36278bea174",
     "tools/windows/Invoke-AC42.ps1": "e3ff5069784a18400910674c430ab828c41cc0a0f14c18d297ea795464a5ba57",
     "tools/windows/pre-push-gate.ps1": "57aa332dc71ba1921d5b293f1246b640dfedb43612f540f3832da6adfe584e47"
