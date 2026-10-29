@@ -45,7 +45,8 @@ class Upgrade196Tests(unittest.TestCase):
             destination = Path(temporary).resolve()
             before = materialize('1.9.4', destination)
             verify_materialized('1.9.4', destination)
-            old_receipt = json.loads((destination / INSTALLED).read_bytes())
+            # Historical provenance carries the canonical UUID; receipt fixtures may use a marker.
+            old_install_id = load_yaml((destination / PROVENANCE).read_bytes())['installation']['install_id']
             ledger = destination / '.agentic-state/routing/ledger.sqlite'
             self.assertTrue(ledger.is_file())
             accounting = self.accounting(ledger)
@@ -66,10 +67,10 @@ class Upgrade196Tests(unittest.TestCase):
             self.assertEqual(pin, verify_installed(destination))
             receipt = json.loads((destination / INSTALLED).read_bytes())
             self.assertEqual(VERSION, receipt['template_version'])
-            self.assertEqual(old_receipt['install_id'], receipt['install_id'])
+            self.assertEqual(old_install_id, receipt['install_id'])
             provenance = load_yaml((destination / PROVENANCE).read_bytes())
             self.assertEqual(VERSION, provenance['template']['version'])
-            self.assertEqual(old_receipt['install_id'], provenance['installation']['install_id'])
+            self.assertEqual(old_install_id, provenance['installation']['install_id'])
             self.assert_retained(load_yaml(before['configuration']),
                                  load_yaml((destination / CONFIG).read_bytes()))
             self.assertIsNotNone(before['operating'])
