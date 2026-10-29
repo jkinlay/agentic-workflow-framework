@@ -392,7 +392,7 @@
     ".agentic/tests/test_merge_train.py": "0457d5b10b53a69f42c0d674f36a1d07776dad947784db422b8118b0b61da6f2",
     ".agentic/tests/test_merge_train_batch_gate.py": "e4080f96fd54e99a19bd0b2588ec4827dd8cde7f90283c5d02d5d47be5ec0f3a",
     ".agentic/tests/test_merge_train_closeout.py": "8c25472f42ec224f1c0764a301c4d17b3bfe146304abf6707adc9423c9efb1fb",
-    ".agentic/tests/test_merge_train_controller.py": "d2e81625f18b4aa038ae5dc9df29c8abd7df0ebbc777604a04d22c343e774447",
+    ".agentic/tests/test_merge_train_controller.py": "fbafd17b7d6b0fc5fcb70b1f7d3a78bede3c01d937765e338abe06b15800dc06",
     ".agentic/tests/test_merge_train_lifecycle.py": "18bf9f869c2d12d6544ede2aa8b365e4a5e10ff7f555d11d4716c7e439cc25be",
     ".agentic/tests/test_merge_train_publication.py": "91b4d2b5cf7662b571dfae1a954d3ab014b1af54da2531f04d97846e5b03ffb0",
     ".agentic/tests/test_model_routing.py": "83762fe60dc8d84d96d551e65b50c41603e7cacdf2e581a4c9ab39ea604e7c30",
