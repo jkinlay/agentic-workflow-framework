@@ -27,9 +27,10 @@ class PortableDocumentationTests(unittest.TestCase):
         self.assertIsNone(re.search(r'upgrade mode\s+is\s+same-version only', portable_text, re.I))
 
         workflow = (ROOT / 'references/workflow.md').read_text(encoding='utf-8')
-        for version in ('1.8.3', '1.8.9', '1.9.1', '1.9.2', '1.9.3'):
+        for version in ('1.8.3', '1.8.9', '1.9.1', '1.9.2', '1.9.3', '1.9.4', '1.9.5'):
             self.assertIn(version, workflow)
-        self.assertRegex(workflow, r'upgrade directly to 1\.9\.5 with `--mode upgrade`')
+        current_version = (ROOT.parents[1] / 'VERSION').read_text(encoding='utf-8').strip()
+        self.assertRegex(workflow, rf'upgrade directly to {re.escape(current_version)} with `--mode upgrade`')
         self.assertRegex(workflow, r'Fresh installation never needs an earlier release')
 
 

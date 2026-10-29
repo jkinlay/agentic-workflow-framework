@@ -18,7 +18,7 @@ python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 
 python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 TRUSTED_SHA256 --runtime-wheelhouse ABS_VERIFIED_WHEELHOUSE --codeowner '@handle' --on-conflict backup
 ```
 
-Ownership defaults: `@maintainer`; override with `--codeowner '@handle'` or `'@organization/team'`. Preserve CODEOWNERS/reviewers; verify access/eligibility. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies evidence; conflicts reject. Fresh: no predecessor. Verified 1.8.3/1.8.9/1.9.1/1.9.2/1.9.3 upgrades: `--mode upgrade`; follow release-source migration guidance. Preserve backups/journals; recover unfinished installation.
+Ownership defaults: `@maintainer`; override with `--codeowner '@handle'` or `'@organization/team'`. Preserve CODEOWNERS/reviewers; verify access/eligibility. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies evidence; conflicts reject. Fresh: no predecessor. Verified 1.8.3/1.8.9/1.9.1/1.9.2/1.9.3/1.9.4/1.9.5 upgrades: `--mode upgrade`; follow release-source migration guidance. Preserve backups/journals; recover unfinished installation.
 
 5. Bootstrap preserves existing configuration, deriving missing values from observed target metadata. Review derivation/residue:
 
