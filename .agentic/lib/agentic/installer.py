@@ -1,7 +1,7 @@
 """Manifest-verified, journaled installation of managed workflow files."""
 from __future__ import annotations
 import base64
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -1759,7 +1759,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         planned[CONFIG] = json_bytes(cfg)
     if dry_run and not destination.exists():
         # Pin the existing parent without creating the destination.
-        with Tree(destination.parent), routing_context(planned[ROUTING], ROUTING):
+        with Tree(destination.parent), (routing_context(planned[ROUTING], ROUTING)
+                                       if ROUTING in planned else nullcontext()):
             if configure:
                 configure_plan()
             ignore_plan()
@@ -1776,7 +1777,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         existing_routing = _exists_read(dst, ROUTING)
         if existing_routing is not None and ROUTING in content:
             planned[ROUTING] = existing_routing
-        planning_context.enter_context(routing_context(planned[ROUTING], ROUTING))
+        if ROUTING in planned:
+            planning_context.enter_context(routing_context(planned[ROUTING], ROUTING))
         receipt_raw = _exists_read(dst, INSTALLED)
         try:
             existing_receipt = loads(receipt_raw.decode()) if receipt_raw is not None else None
