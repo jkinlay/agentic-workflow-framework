@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
 from agentic.child_process import child_env, isolated_git_env
 from agentic.canonical import loads
-from agentic.installer import SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX
+from agentic.installer import SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX, verify_release
+from agentic.safeio import Tree
 from agentic.runtime_commands import installed_paths
 from release_review import add_review_arguments, review_arguments, review_source
 from release_modes import FORMAT as RAW_MODES_FORMAT, REGULAR_MODES
@@ -99,6 +100,23 @@ def seed_source_configuration(source):
         records.append({'logical_member': logical, 'fixture': target.relative_to(source).as_posix(),
                         'sha256': digest})
     return records
+
+
+
+def example_configuration_fixture(source, destination):
+    """Pair the legacy example policy and OP in an owned verified source copy."""
+    source, destination = Path(source), Path(destination)
+    with Tree(source) as tree:
+        _, content = verify_release(tree, allow_source_checkout=True)
+        content.update({name: tree.read(name) for name in ('MANIFEST.json', 'MANIFEST.md')})
+    destination.mkdir()
+    with Tree(destination) as tree:
+        for name, raw in content.items():
+            tree.write(name, raw)
+    seed_source_configuration(destination)
+    with Tree(destination) as tree:
+        tree.write('OPERATING_CONFIG.yaml', content['.agentic/examples/OPERATING_CONFIG.yaml'])
+    return destination / '.agentic/examples/PROJECT_CONFIG.yaml'
 
 
 def archive_rebuild_metadata(archive):
@@ -481,14 +499,21 @@ def validate(argv=None):
     command(['.agentic/scripts/review_loop.py','--config','.agentic/review-loop/host-config.example.json','check'],code=2,name='Unqualified host cannot launch')
     command([workflow,'verify-installation'],name='Source integrity CLI')
     command([workflow,'validate-config'],code=2,name='Unconfigured project is rejected')
-    command([workflow,'validate-config','--config','.agentic/examples/PROJECT_CONFIG.yaml'],name='Fixture configuration CLI')
+    example_project = RUN/'example-configuration-project'
+    example_config = example_configuration_fixture(SOURCE, example_project)
+    command([example_project/workflow,'--root',example_project,'validate-config','--config',example_config],
+            name='Fixture configuration CLI with its matching operating policy')
     evaluation_state = RUN / 'evaluation-assignment-state.json'
     write_evaluation_assignment_state(SOURCE, evaluation_state, '2026-09-09T11:00:00Z')
     gate = json.loads(command(evaluation_command(
         workflow, '.agentic/examples/evidence-bundle.json',
         '.agentic/examples/PROJECT_CONFIG.yaml', evaluation_state,
-        '2026-09-09T12:00:00Z'), name='Offline evaluator CLI'))
-    assert gate['conclusion']=='READY_FOR_OWNER_AUTHORIZATION' and gate['execution_authority'] is False
+        '2026-09-09T12:00:00Z'), name='Offline evaluator refuses unobserved provenance and posting'))
+    assert gate['conclusion']=='NOT_READY' and gate['execution_authority'] is False
+    assert {name for name, result in gate['gates'].items()
+            if result['result'] not in {'PASS', 'N_A'}} == {'verdict_posting', 'provenance'}
+    assert any('Commit provenance runtime inputs are missing' in risk
+               for risk in gate['residual_risks'])
     command(evaluation_command(
         workflow, '.agentic/examples/evidence-bundle.json',
         '.agentic/examples/PROJECT_CONFIG.yaml', evaluation_state,
@@ -601,14 +626,21 @@ def validate(argv=None):
     installed_plan = json.loads(installed_command(['.agentic/scripts/plan_streams.py','--input','.agentic/examples/stream-input.json','--expected-input-sha256',hashlib.sha256(inventory.read_bytes()).hexdigest(),'--project-root',DEST,'--allow-synthetic','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed planner writes into project root'))
     assert installed_plan['stream_labels']==['A','B','C'] and (DEST/'STREAMS.md').is_file()
     installed_streams = (DEST/'STREAMS.md').read_bytes(), (DEST/'STREAMS.json').read_bytes()
+    custom_config = json.loads((ADOPTION/'.agentic/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
+    # Configure this fixture before an audited operating write. Keep its own
+    # persisted identity and current ceiling until the stream count is reduced.
+    custom_config['project']['id'] = installed_configuration['project']['id']
+    assert custom_config['execution']['max_parallel_tickets'] == 12
+    (DEST/'.agentic/PROJECT_CONFIG.yaml').write_bytes(
+        (json.dumps(custom_config,indent=2)+'\n').encode('utf-8'))
+    configured_for_operating = json.loads(installed_command(
+        [workflow,'--root',DEST,'validate-config'],cwd=DEST,
+        name='Configured policy accepted before audited operating reduction'))
+    assert configured_for_operating['status'] == 'ACCEPTED'
     installed_command([workflow,'--root',DEST,'operating','set','--instruction','Synthetic acceptance: preserve one operating stream under a lower governance ceiling',
         '--set','streams.count=1'],cwd=DEST,name='Audited operating reduction before lower-ceiling governance fixture')
     preserved_operating = (DEST/'OPERATING_CONFIG.yaml').read_bytes()
     assert json.loads(preserved_operating)['streams']['count'] == 1
-    custom_config = json.loads((ADOPTION/'.agentic/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
-    # Map the synthetic policy without replacing this installation's persisted
-    # project identity with the separately configured fixture's UUID.
-    custom_config['project']['id'] = installed_configuration['project']['id']
     custom_config['execution']['max_parallel_tickets'] = 1
     custom_config_bytes = (json.dumps(custom_config,indent=2)+'\n').encode('utf-8')
     (DEST/'.agentic/PROJECT_CONFIG.yaml').write_bytes(custom_config_bytes)
@@ -629,12 +661,18 @@ def validate(argv=None):
     installed_command([workflow,'--root',DEST,'validate-config'],cwd=DEST,name='Configuration preserved after upgrade')
     limited = json.loads(command(['.agentic/scripts/plan_streams.py','--input',inventory,'--expected-input-sha256',hashlib.sha256(inventory.read_bytes()).hexdigest(),'--project-root',DEST,'--allow-synthetic','--now','2026-09-11T10:00:00Z','--host-writer-capacity','3','--expected-plan-sha256',installed_plan['plan_sha256']],name='External runtime honors the target project\'s explicit lower capacity'))
     assert limited['capacity']['effective_writer_capacity']==1 and len(limited['dispatch_packets'])==1
-    assert len(limited['deferred_dispatch_packets'])==2 and limited['prompt_user'] is False
-    command(['scripts/validate_git_checkout.py','--source',SOURCE,'--expected-manifest-sha256',MANIFEST,
-        '--workdir',RUN/'g','--report',RUN/'git-checkout.json','--runtime-wheelhouse',runtime_wheelhouse],
-        name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
-    git_checkout = json.loads((RUN/'git-checkout.json').read_text(encoding='utf-8'))
-    assert git_checkout['status']=='PASS'
+    assert limited['stream_labels']==['A'] and limited['deferred_dispatch_packets']==[]
+    assert limited['prompt_user'] is False and limited['execution_authority'] is False
+    assert limited['dispatch_packets'][0]['ticket_id']=='DEMO-11'
+    assert limited['dispatch_packets'][0]['live_dispatch_eligible'] is False
+    expected_tickets = {'DEMO-11', 'DEMO-12', 'DEMO-21', 'DEMO-31'}
+    assert limited['ticket_streams']=={ticket:'A' for ticket in expected_tickets}
+    reduced_plan = json.loads((DEST/'STREAMS.json').read_text(encoding='utf-8'))
+    assert set(reduced_plan['tickets'])==expected_tickets and len(reduced_plan['streams'])==1
+    assert reduced_plan['streams'][0]['ready_ticket_ids']==['DEMO-11', 'DEMO-21', 'DEMO-31']
+    assert [(barrier['ticket_id'], barrier['prerequisite'], barrier['cross_stream'])
+            for barrier in reduced_plan['dependency_barriers']]==[('DEMO-12', 'DEMO-11', False)]
+    assert reduced_plan['tickets']['DEMO-12']['dependencies'][0]['state']=='unresolved'
     before = (SOURCE/'MANIFEST.json').read_bytes()
     command(['scripts/generate_contracts.py'],name='Regenerate complete schemas')
     command(['scripts/generate_prompts.py'],name='Regenerate versioned role prompts')
@@ -652,6 +690,11 @@ def validate(argv=None):
             checks.append({'check': 'Generated source auxiliary files retained outside the closed source',
                            'status': 'PASS', 'source_relative_path': relative, 'retained_path': str(retained)})
     checks.append({'check':'ZIP byte-for-byte reproducibility','status':'PASS'})
+    command(['scripts/validate_git_checkout.py','--source',SOURCE,'--expected-manifest-sha256',MANIFEST,
+        '--workdir',RUN/'g','--report',RUN/'git-checkout.json','--runtime-wheelhouse',runtime_wheelhouse],
+        name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
+    git_checkout = json.loads((RUN/'git-checkout.json').read_text(encoding='utf-8'))
+    assert git_checkout['status']=='PASS'
     extracted_tests = json.loads((RUN/'extracted-self-test.json').read_text())
     installed_tests = json.loads((RUN/'installed-self-test.json').read_text())
     report = {'template_version':VERSION,'status':'PASS','archive':ARCHIVE.name,

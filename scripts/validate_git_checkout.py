@@ -32,6 +32,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env
 from agentic.runtime_commands import installed_paths
@@ -76,8 +77,10 @@ def _json(raw):
     return json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
 
 
-def _files(root):
-    """Read ordinary fixture/source files; allow only exact-root Git metadata."""
+def _files(root, *, installed_runtime=False):
+    """Read strict source files, or ignore only a plain installed runtime root."""
+    require(type(installed_runtime) is bool, "Installed runtime mode must be boolean")
+    root = Path(root)
     result = {}
     for directory, directories, names in os.walk(root, followlinks=False):
         directory = Path(directory)
@@ -87,6 +90,10 @@ def _files(root):
             require(not stat.S_ISLNK(metadata.st_mode) and not getattr(metadata, "st_file_attributes", 0) & 0x400,
                     f"Linked or reparse-point validation input: {path}")
             require(stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode), f"Unsupported validation input: {path}")
+            if installed_runtime and path == root / ".agentic/.venv":
+                require(stat.S_ISDIR(metadata.st_mode), f"Installed runtime boundary is not a directory: {path}")
+                directories.remove(name)
+                continue
             if stat.S_ISREG(metadata.st_mode):
                 require(metadata.st_nlink == 1, f"Hardlinked validation input: {path}")
         if directory == root:
@@ -380,7 +387,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         (installed / ".gitattributes").write_bytes(merged_attributes)
         check("Disposable manual merge retains the existing policy prefix", merged_attributes.startswith(original_attributes))
         verify("Installed fixture integrity passes before Git", installed, installed_runtime=True)
-        expected_installed = {name: data for name, data in _files(installed).items() if _managed(name)}
+        expected_installed = {name: data for name, data in _files(installed, installed_runtime=True).items() if _managed(name)}
         require(".agentic/installed-manifest.json" in expected_installed and ".agentic/workflow-version.yaml" in expected_installed,
                 "Installed manifest/provenance missing from comparison inventory")
         create_repo("Installed project", installed)
@@ -388,7 +395,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
                                       ["ls-files", "--", ".agentic/.venv"], installed).stdout
         check("Installed project Git inventory contains no canonical runtime", tracked_runtime == b"")
         clone_repo("Installed project", installed, installed_clone)
-        actual_installed = {name: data for name, data in _files(installed_clone).items() if _managed(name)}
+        actual_installed = {name: data for name, data in _files(installed_clone, installed_runtime=True).items() if _managed(name)}
         installed_changes = sorted(name for name in set(expected_installed) | set(actual_installed)
                                    if expected_installed.get(name) != actual_installed.get(name))
         check("Every installed managed file survives autocrlf unchanged", not installed_changes,
@@ -412,6 +419,10 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
 
         dirty = run / "d"
         _copy(payload, dirty)
+        from validate_archive import seed_source_configuration
+        seed_source_configuration(dirty)
+        command("Canonical LF builder fixture passes before CRLF mutation",
+                [python, "-B", "scripts/build_release.py", "--check-manifest"], dirty)
         target = dirty / "scripts/validate_git_checkout.py"
         original = target.read_bytes()
         require(b"\n" in original and b"\r\n" not in original, "Builder negative fixture must begin with LF source")

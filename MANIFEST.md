@@ -241,7 +241,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/integration_queue.py` | `66fae5e6bb1edd3636cbfb418e5aa32126558d9118941343c2142a353d4605c3` |
 | `.agentic/scripts/merge_train.py` | `5fb079e3dbb24af29408daad3027fdbd3687d0c22cdce38c4aa94075ad4dad52` |
 | `.agentic/scripts/operating.py` | `0ec1e1805a241ef585ae371d9ac32c29a52f53f459c4f0e504e7ae9fcd060a38` |
-| `.agentic/scripts/plan_streams.py` | `b1165b1187dca2d5f9ac3563ac170d15da316ce945fd4bafb2268cc173ba8ab5` |
+| `.agentic/scripts/plan_streams.py` | `8a6342f4593c426e185ee2994301838488952d0d3d6582ee2c7ee93a057e7bab` |
 | `.agentic/scripts/prepare_routine_pilot.py` | `71e64de5acadd42bd933d444725f8b9d3bf0d0f66b9450d64b272848bc96f8bf` |
 | `.agentic/scripts/project_status.py` | `a9848284eb4f81b6f9ecc909f18c26e40a19e908ab3fc14c3317b880bbf5920e` |
 | `.agentic/scripts/publisher_tree.py` | `4c66353574b507971a58f3511aa4686d98cdb3042d9e99ef5d0aaa90df5bf15d` |
@@ -412,7 +412,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_operating_integration.py` | `e1d8bbee6335d1a34a76b814a04c6ea9b066a40ff6981b005fcee10dcc62593d` |
 | `.agentic/tests/test_owner_publication.py` | `55f480b09a3cb1fabb61f0ed489fe75136d12263aa937eece999c59e2834e8a8` |
 | `.agentic/tests/test_path_containment.py` | `18cb0c113915b08d88ff94e067f1d4c5fbe9a7dab7fecec75e0e2ad59b8dbf67` |
-| `.agentic/tests/test_plan_streams.py` | `0e84bf54ba2b3864e98162358a50f31cbef4455f08fdee6150c30fc5fbc11a69` |
+| `.agentic/tests/test_plan_streams.py` | `130332ea54b9432555c619a97fe4f172e3fa288754498e90400e7cc51691f540` |
 | `.agentic/tests/test_planning.py` | `423657c612c0a9d186dec17863796e33f4e73457aa4161401ae1fe3ad0e8460c` |
 | `.agentic/tests/test_planning_graph.py` | `4cf3eb0767f1a29d73a4b6567de439f42d1618e2bed3f0318757e8af13719173` |
 | `.agentic/tests/test_planning_overlap_allowances.py` | `966b013dceedfa4aa48cac294a274f0e482181486c9bc5bfcd5358c545d6e448` |
@@ -594,12 +594,12 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf-portable/references/update-channel.example.json` | `bf98973fda46023e0346de0c049e7e8141b7e64feb4b19308f7a44c1d9066198` |
 | `global/awf-portable/references/update-channel.md` | `7e2095c1b5cd17b71935ba230c4e4dca799fc17e36bd7e91341123659a0d1914` |
 | `global/awf-portable/references/workflow.md` | `e9a376749da44cf9e581cdedf5aa19215c252cc28d5a357352fe3dbe7a8756ae` |
-| `global/awf-portable/scripts/awf.py` | `a1c751a81507e578b1880a8034b8cfe365c3c03db69403f7c45720325749fb05` |
+| `global/awf-portable/scripts/awf.py` | `3d13f347835770acdd10fd1da6ad8b9cabebca24d59d2bbc9cb4828a4dcb3389` |
 | `global/awf-portable/scripts/check_updates.py` | `2290ea667a15eb97b223bbefdc692cdf7dce43db029b2aaa1cc7e754120e60bc` |
 | `global/awf-portable/scripts/install_skill.py` | `78f23f1f8ed69d19190e522ec89a2f42b94fcb5f8a8e503f7c05fcc32e175f4a` |
 | `global/awf-portable/scripts/prepare_release.py` | `23fb697c6ce2ac9acfb06b751a693b02fbae5081c834ea1b315c7792280ab4be` |
 | `global/awf-portable/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
-| `global/awf-portable/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
+| `global/awf-portable/tests/test_discovery_codeowners.py` | `d65c343881ce106030637bad0006bd594cebd113e03c1efdce3cf15e6f211a2f` |
 | `global/awf-portable/tests/test_documentation.py` | `bccbe6b73b6c4c14ac9ef6bac58676fa85e2d29c3b06ffd7626d4926aadd6b19` |
 | `global/awf-portable/tests/test_install_skill.py` | `a58053ca1e91118a6ac0f07049cc94f7fcdbb580c7b9fd730e14d8a7544c1586` |
 | `global/awf-portable/tests/test_prepare_release.py` | `95ee6f8f4366195b4acfd6f9f45c9dfd83a553a33f4f0669a80016be491e8e63` |
@@ -608,9 +608,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf/catalog-location.example.json` | `705051f90507da2a983ae675ce0899615c3fa341ae02471dd5bc60563b89875a` |
 | `global/awf/references/model-routing.md` | `575a92600429dd92bf4436b775a5f7b25a4a3ed1bbe817a059b4f2644fecd965` |
 | `global/awf/references/workflow.md` | `75b82564fbfedfa42098d0ab6df20d45e01984d5f0398ffcb1a08f84f3072bfc` |
-| `global/awf/scripts/awf.py` | `39c03ed1a17a82cdd0f0625892ef29e11738e8d12e32f8afab3f92eea012ad69` |
+| `global/awf/scripts/awf.py` | `19a1e8d72a0f3ebf1043303e1ce57f410ecac48ab348c17d22cb0cce5cbf0ef0` |
 | `global/awf/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
-| `global/awf/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
+| `global/awf/tests/test_discovery_codeowners.py` | `d65c343881ce106030637bad0006bd594cebd113e03c1efdce3cf15e6f211a2f` |
 | `presentation/AWF-1.9.5-Showcase-Presentation.html` | `a4586b58a00e8f64729f604a4b9f21230873daa01a10f7fba899065d29b0597e` |
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
 | `scripts/ac42_e2e.py` | `625b0ba9769d82de2300d593041e0afc3a757de022954d51389800c201cf0710` |
@@ -648,7 +648,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_build_release_adoptable_source.py` | `c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae` |
 | `scripts/tests/test_ci_suite_coverage.py` | `6a7a1349df8ddd270c87dcee6daca750fd2795ff2609f89f2f356f0bdd357f10` |
 | `scripts/tests/test_ci_windows_final_candidate.py` | `ad67c1f6542c059cb40dbc11913b14c56ac3b9873575515ba3b21a40f9c71877` |
-| `scripts/tests/test_cli_failure_paths.py` | `6a8dca9d05f0772858d5ad4a32d4e1b1a753c67d97c984ed71ad0ef9f2a31b37` |
+| `scripts/tests/test_cli_failure_paths.py` | `aca4c871800945c4b912cdc36854a20d9bd65b0b086942c4050e5d8473413b47` |
 | `scripts/tests/test_fresh_bootstrap.py` | `114263345bca51b1da74feda0af61da1cd94cd0e872109979522cbb9d98f4c76` |
 | `scripts/tests/test_generate_contracts_status_report.py` | `19460ce0be0e6c96ae98a31b4f21d529596cf442cbf18207ee2f843b930c2225` |
 | `scripts/tests/test_generate_contracts_ticket_plan.py` | `9832f4e378264281e8394ac948d137b924f7c811470425fd39ad712ae7a93269` |
@@ -671,7 +671,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_validate_archive_report.py` | `d5e1a5bc555b69976b30011d688e3b142d0bf0008e400b18dc7d836807a34d56` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
 | `scripts/tests/test_windows_unittest_shards.py` | `9ac7c3480d8d579308552daaa766c2d27312057c167b3c03dfab13a6778006c3` |
-| `scripts/validate_archive.py` | `6fa11119b51ee3448c2632097c4eded10cb4b4775b420589102f971611897132` |
-| `scripts/validate_git_checkout.py` | `da31f52ab345e19cf580171bef96404958795217d88535c112c4e36278bea174` |
+| `scripts/validate_archive.py` | `d729bc06d5f9384624df1802bc57a35db384a2bc1dfe27d44c6bd4e19672e21d` |
+| `scripts/validate_git_checkout.py` | `d8d9a2e85a611d16bfea7e5f67bc9666885a2b5c112aa6ea3ddad189b38c29bf` |
 | `tools/windows/Invoke-AC42.ps1` | `e3ff5069784a18400910674c430ab828c41cc0a0f14c18d297ea795464a5ba57` |
 | `tools/windows/pre-push-gate.ps1` | `57aa332dc71ba1921d5b293f1246b640dfedb43612f540f3832da6adfe584e47` |

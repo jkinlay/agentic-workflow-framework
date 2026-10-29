@@ -13,7 +13,8 @@ from agentic import ValidationError
 from agentic.canonical import MAX_DOCUMENT_BYTES, load_yaml, loads, now_text, sha256
 from agentic.interaction import rejected_next_step
 from agentic.installer import verify_installed
-from agentic.operating import locked_operating, validate_operating
+from agentic.model_routing import policy_from_config
+from agentic.operating import default_operating, locked_operating, validate_operating
 from agentic.safeio import Tree
 from agentic.streams import EXTERNAL_CONFIG_PLACEHOLDER, native_execution_policy, write_project_plan
 
@@ -129,8 +130,7 @@ def main(argv=None, owner_source_verifier=None):
         if args.now and not synthetic:
             raise ValidationError("--now is restricted to explicitly allowed synthetic fixtures; live planning uses the actual clock")
         if synthetic and provenance_source == "explicit_synthetic_release_defaults":
-            with Tree(ROOT / ".agentic/examples") as examples:
-                fixture = load_yaml(examples.read("OPERATING_CONFIG.yaml", maximum=MAX_DOCUMENT_BYTES))
+            fixture = default_operating(policy_from_config(config), count=3)
             operating_context = nullcontext(validate_operating(fixture, config))
         else:
             operating_context = locked_operating(args.project_root, config)

@@ -39,6 +39,57 @@ class ValidatorCommandContractTests(unittest.TestCase):
             script.write_bytes((ROOT / 'scripts/validate_archive.py').read_bytes())
             self.assertEqual([], python_launch_findings(owned))
 
+    def test_example_configuration_cli_uses_matching_owned_operating_fixture(self):
+        from agentic.child_process import child_env
+        source_operating = (ROOT / 'OPERATING_CONFIG.yaml').read_bytes()
+        example_operating = (ROOT / '.agentic/examples/OPERATING_CONFIG.yaml').read_bytes()
+        with tempfile.TemporaryDirectory(prefix='awf-example-configuration-') as raw:
+            fixture = Path(raw).resolve() / 'project'
+            config = validate_archive.example_configuration_fixture(ROOT, fixture)
+            self.assertEqual(example_operating, (fixture / 'OPERATING_CONFIG.yaml').read_bytes())
+            self.assertEqual((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_bytes(), config.read_bytes())
+            done = subprocess.run([sys.executable, '-B', str(fixture / '.agentic/scripts/workflow.py'),
+                                   '--root', str(fixture), 'validate-config', '--config', str(config)],
+                                  cwd=fixture, env=child_env(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+            self.assertEqual('ACCEPTED', json.loads(done.stdout)['status'])
+        self.assertEqual(source_operating, (ROOT / 'OPERATING_CONFIG.yaml').read_bytes())
+
+    def test_offline_evaluation_cli_refuses_unobserved_provenance_and_posting(self):
+        from agentic.child_process import child_env
+        with tempfile.TemporaryDirectory(prefix='awf-offline-evaluation-') as raw:
+            state = Path(raw).resolve() / 'assignment.json'
+            validate_archive.write_evaluation_assignment_state(ROOT, state, '2026-09-09T11:00:00Z')
+            args = validate_archive.evaluation_command(
+                ROOT / '.agentic/scripts/workflow.py',
+                ROOT / '.agentic/examples/evidence-bundle.json',
+                ROOT / '.agentic/examples/PROJECT_CONFIG.yaml', state, '2026-09-09T12:00:00Z')
+            done = subprocess.run([sys.executable, '-B', *map(str, args)],
+                                  cwd=ROOT, env=child_env(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+            gate = json.loads(done.stdout)
+            self.assertEqual('NOT_READY', gate['conclusion'])
+            self.assertFalse(gate['execution_authority'])
+            self.assertEqual({'verdict_posting', 'provenance'},
+                             {name for name, result in gate['gates'].items()
+                              if result['result'] not in {'PASS', 'N_A'}})
+            self.assertTrue(any('Commit provenance runtime inputs are missing' in risk
+                                for risk in gate['residual_risks']))
+
+    def test_git_checkout_api_resolves_its_trusted_archive_helper(self):
+        from agentic.child_process import child_env
+        program = (
+            "from pathlib import Path; import sys; "
+            "root=Path(sys.argv[1]); sys.path.insert(0,str(root)); "
+            "import scripts.validate_git_checkout; import validate_archive; "
+            "assert Path(validate_archive.__file__).resolve()==root/'scripts/validate_archive.py'"
+        )
+        with tempfile.TemporaryDirectory(prefix='awf-checkout-api-import-') as raw:
+            done = subprocess.run([sys.executable, '-B', '-I', '-c', program, str(ROOT)],
+                                  cwd=Path(raw).resolve(), env=child_env(),
+                                  capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+
     def test_expected_installed_commands_are_canonical_and_noninstalling(self):
         destination = ROOT / '.tmp-tests' / 'nonexistent project with spaces'
         expected_root, expected_interpreter, expected_entry = validate_archive.installed_paths(destination)
@@ -71,6 +122,60 @@ class ValidatorCommandContractTests(unittest.TestCase):
         self.assertFalse(managed('.agentic/.venv/Scripts/python.exe'))
         windows_path = chr(92).join((".agentic", ".venv", "bin", "python"))
         self.assertFalse(managed(windows_path))
+
+    def test_installed_inventory_prunes_only_the_exact_plain_runtime(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-inventory-') as raw:
+            root = Path(raw).resolve()
+            runtime = root / '.agentic/.venv'
+            runtime.mkdir(parents=True)
+            (runtime / 'python.stub').write_bytes(b'Ignored owned runtime')
+            (root / '.agentic/managed.txt').write_bytes(b'Managed')
+            sibling = root / '.agentic/.venv-backup'
+            sibling.mkdir()
+            (sibling / 'retained.txt').write_bytes(b'Not the canonical runtime')
+            self.assertEqual({'.agentic/managed.txt': b'Managed',
+                              '.agentic/.venv-backup/retained.txt': b'Not the canonical runtime'},
+                             validate_git_checkout._files(root, installed_runtime=True))
+            self.assertIn('.agentic/.venv/python.stub', validate_git_checkout._files(root))
+
+    def test_installed_inventory_rejects_a_runtime_file_boundary(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-file-') as raw:
+            root = Path(raw).resolve()
+            (root / '.agentic').mkdir()
+            (root / '.agentic/.venv').write_bytes(b'Invalid directory boundary')
+            with self.assertRaisesRegex(ValueError, 'not a directory'):
+                validate_git_checkout._files(root, installed_runtime=True)
+
+    def test_installed_inventory_prunes_runtime_alias_contents_but_source_stays_strict(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-alias-') as raw:
+            root = Path(raw).resolve()
+            runtime = root / '.agentic/.venv'
+            (runtime / 'lib').mkdir(parents=True)
+            try:
+                (runtime / 'lib64').symlink_to('lib', target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest('Symlink creation unavailable: ' + str(error))
+            self.assertEqual({}, validate_git_checkout._files(root, installed_runtime=True))
+            with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
+                validate_git_checkout._files(root)
+
+    def test_installed_inventory_rejects_runtime_boundary_and_outside_aliases(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-boundary-alias-') as raw:
+            base = Path(raw).resolve()
+            root, outside = base / 'project', base / 'outside'
+            (root / '.agentic').mkdir(parents=True)
+            outside.mkdir()
+            alias = root / '.agentic/.venv'
+            try:
+                alias.symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest('Symlink creation unavailable: ' + str(error))
+            with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
+                validate_git_checkout._files(root, installed_runtime=True)
+            alias.unlink()
+            (root / '.agentic/other-alias').symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
+                validate_git_checkout._files(root, installed_runtime=True)
 
     def test_installed_clone_runtime_provisioner_uses_target_and_pinned_wheelhouse(self):
         destination = ROOT / '.tmp-tests' / 'pure clone selector'
