@@ -381,7 +381,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_gittree.py` | `0e0ad6e18da3cc1638f66df688c87f8be729f041ad51d6f59824be1990e3da95` |
 | `.agentic/tests/test_handoff.py` | `f972720af71fcc21579d39f59476ac7ac9c5e29e0c3afba4f6a5586c0fed47ca` |
 | `.agentic/tests/test_heavy_validation.py` | `fc718eb7e95689b8548e19e756e8ba63c51025e4621fa585eb7d05463fc4f496` |
-| `.agentic/tests/test_host_preflight_split_root.py` | `71d996b32ae2ef3744786fee6bc56c65cd4fc71ec0299706ead251df6a320d89` |
+| `.agentic/tests/test_host_preflight_split_root.py` | `34b67b4cf21afc541bb03f8cbdcacaf4a0d18a027184f9990418696f7d109bce` |
 | `.agentic/tests/test_host_process.py` | `37ab4cdb1749551d6f2201268107188874a951bdd66298f092a6e4746b0f50e9` |
 | `.agentic/tests/test_installation_hygiene_awf206.py` | `3ff91748d614c9ce72216662c52bcdf5a21cad9418d95414c23a8c40551595a1` |
 | `.agentic/tests/test_intake_assignment.py` | `c518d8bdd68af2f5fbdd7c2a5e60b4c7697df3e89f53bfdc7a2e9566dc459a11` |
