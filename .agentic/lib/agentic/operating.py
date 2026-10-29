@@ -674,7 +674,7 @@ def initialize_operating(project_root, governance):
                 return snapshot
             value = snapshot.config
         else:
-            value = default_operating()
+            value = _upgrade_safe_operating(governance)
         return _commit(tree, governance, before, value, None, [], "bootstrap")
 
 
@@ -812,7 +812,7 @@ def _editable_snapshot(tree, governance, initialize):
             fail("$", "Operating file is absent; explicitly use --initialize with reviewed --set choices")
         if _events(tree):
             fail("$", "Missing audited operating bytes require recovery, not reinitialization")
-        value = default_operating()
+        value = _upgrade_safe_operating(governance)
         return OperatingSnapshot(canonical(value), fingerprint("operating", value), fingerprint("operating-governance", governance)), None
     if initialize:
         fail("$", "--initialize cannot overwrite an existing operating file")

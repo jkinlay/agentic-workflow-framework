@@ -75,6 +75,9 @@ class FreshBootstrapIntegrationTests(unittest.TestCase):
             self.assertEqual(0, built.returncode, built.stderr)
             manifest = fixture_source / "MANIFEST.json"
             pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            # Mutable source operating choices must not seed a new installation.
+            (fixture_source / "OPERATING_CONFIG.yaml").write_text(
+                '{"streams":{"count":1}}', encoding="utf-8")
             destination = Path(raw) / "empty-project"
             destination.mkdir()
             self.assertFalse((destination / ".agentic").exists())
@@ -99,6 +102,13 @@ class FreshBootstrapIntegrationTests(unittest.TestCase):
             self.assertTrue(checks[0]["output"]["integrity_valid"])
             self.assertEqual(checks[1]["output"]["status"], "ACCEPTED")
             self.assertEqual(checks[0]["output"]["source_manifest_sha256"], pin)
+            operating = json.loads((destination / "OPERATING_CONFIG.yaml").read_text())
+            self.assertEqual(12, operating["streams"]["count"])
+            routing = json.loads((destination / ".agentic/routing.yaml").read_text())
+            for role in ("worker", "controller", "critic", "specialist"):
+                self.assertEqual({"model":"gpt-6.1-sol", "effort":"high"}, routing["role_defaults"][role])
+            self.assertEqual({"model":"gpt-6-luna", "effort":"high"}, routing["simple_worker"])
+
 
 
 if __name__ == "__main__":

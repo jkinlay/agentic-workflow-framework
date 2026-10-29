@@ -9,7 +9,7 @@ import unittest
 from agentic import ValidationError
 from agentic.canonical import load
 from agentic.lane_labels import STREAM_LABELS
-from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, select_route
+from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, routing_context, select_route
 from agentic.operating import default_operating, plan_initialize_operating, validate_operating
 from agentic.streams import LABELS
 
@@ -91,6 +91,21 @@ class TwelveStreamTests(unittest.TestCase):
             old = plan_initialize_operating(temporary, legacy)
             self.assertEqual(3, old["inspection"]["streams"])
             self.assertEqual(6, old["inspection"]["effective_ceiling"])
+
+    def test_planned_target_routing_is_scoped_and_explicit_paths_remain_independent(self):
+        fresh_path = ROOT / ".agentic/defaults/routing.yaml"
+        legacy_path = ROOT / ".agentic/tests/fixtures/routing/valid.yaml"
+        legacy = default_policy(legacy_path)
+        ambient = default_policy()
+        with routing_context(legacy_path.read_bytes(), "preserved target routing"):
+            self.assertEqual(legacy, default_policy())
+            self.assertEqual(self.policy["role_defaults"], default_policy(fresh_path)["role_defaults"])
+            with self.assertRaisesRegex(RuntimeError, "reset"):
+                with routing_context(fresh_path.read_bytes(), "fresh target routing"):
+                    self.assertEqual("gpt-6.1-sol", default_policy()["role_defaults"]["worker"]["model"])
+                    raise RuntimeError("reset")
+            self.assertEqual(legacy, default_policy())
+        self.assertEqual(ambient, default_policy())
 
     def test_release_routing_and_generated_new_project_defaults_agree(self):
         if not (ROOT / "scripts/generate_examples.py").is_file():

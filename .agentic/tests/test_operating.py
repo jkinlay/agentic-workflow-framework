@@ -800,7 +800,7 @@ class OperatingFileTests(unittest.TestCase):
         event = next(item for item in self.events() if item["id"] == repaired.last_change_id)
         removals = {change["path"]: change for change in event["changes"] if change["after"] is None}
         self.assertEqual({"streams.G", "streams.H"}, set(removals))
-        self.assertTrue(all(change["before"] == op._stream() for change in removals.values()))
+        self.assertTrue(all(change["before"] == op._stream(fixture_policy()) for change in removals.values()))
 
     def test_lowered_max_lanes_prunes_retained_routes_on_any_audited_change(self):
         op.set_operating(self.root, self.gov, "use all six streams", ["streams.count=6"])

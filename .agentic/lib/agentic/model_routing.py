@@ -4,6 +4,7 @@ This module never dispatches models. Callers must authenticate facts, protect th
 policy/ledger and enforce the reserved token/cost ceilings at their host boundary.
 """
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
@@ -64,6 +65,7 @@ BUDGET_KEYS = frozenset({
     "max_cost_microusd_per_project_day",
 })
 ROUTING_REFERENCE = ".agentic/routing.yaml"
+_PLANNED_ROUTING = ContextVar("awf_planned_routing", default=None)
 RELEASE_ROUTING_SOURCE = Path(__file__).resolve().parents[2] / "defaults/routing.yaml"
 LEGACY_ROUTING_SOURCE = Path(__file__).resolve().parents[2] / "tests/fixtures/routing/valid.yaml"
 ROUTING_PROJECT_POLICY_KEYS = frozenset({
@@ -203,9 +205,21 @@ def __getattr__(name):
     raise AttributeError(name)
 
 
+@contextmanager
+def routing_context(raw, source):
+    """Bind validated target bytes while planning an isolated adoption."""
+    token = _PLANNED_ROUTING.set(load_routing_content(raw, source))
+    try:
+        yield
+    finally:
+        _PLANNED_ROUTING.reset(token)
+
+
 def default_policy(routing_path=None):
     """Return an independent editable Balanced policy from operator routing."""
-    routing = load_routing(routing_path)
+    routing = _PLANNED_ROUTING.get() if routing_path is None else None
+    if routing is None:
+        routing = load_routing(routing_path)
     models = list(routing["catalog"])
 
     def policy_pair(pair):
