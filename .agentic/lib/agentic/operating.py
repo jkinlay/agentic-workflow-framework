@@ -621,6 +621,8 @@ def plan_initialize_operating(project_root, governance, *, change_id=None, creat
             fail("$", "Pending operating transaction: inspect and recover before upgrade")
         before = _read(tree, CONFIG)
         events = _events(tree)
+        if before is None and events:
+            fail("$", "Operating configuration is missing with retained audit history; restore its audited bytes before upgrade")
         if before is None:
             value = (deepcopy(initial_operating) if initial_operating is not None
                      else _upgrade_safe_operating(governance))

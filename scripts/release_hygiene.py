@@ -52,6 +52,15 @@ SHOWCASE_PATHS = {
     'Claude outputs/AWF-1.9.2-Speaker-Script.md',
 }
 HISTORICAL_RELEASE_ARTIFACTS = {
+    # Retained 1.9.5 guides and their dated source observations.
+    'docs/AWF-1.9.5-User-Interface.md',
+    'docs/AWF-1.9.5-Whats-New.md',
+    'docs/runbook/00-runbook-introduction.md',
+    'docs/runbook/07-runbook-distribution-and-source-preparation.md',
+    'docs/runbook/10-runbook-windows-powershell.md',
+    'docs/runbook/11-runbook-macos-posix-shell.md',
+    'docs/runbook/12-runbook-linux-posix-shell.md',
+    'docs/runbook/INDEX.md',
     '.agentic/validation/five-slot-adversarial-regressions.json',  # Historical inventory ID; jk-slack-0606 item 1
     'Claude outputs/awf192-critic-prompt.md',
     'Claude outputs/awf192-fix1-prompt.md',
@@ -102,7 +111,7 @@ def stale_versions(body, current):
     current_tuple = version_tuple(current)
     # References to retained migration/disposition documents are historical links.
     body = re.sub(r'(?:MIGRATION-|RED-TEAM-DISPOSITION-v)[A-Za-z0-9.>_-]+\.md', '', body)
-    for path in SHOWCASE_PATHS:
+    for path in SHOWCASE_PATHS | HISTORICAL_RELEASE_ARTIFACTS:
         body = body.replace(path, '')
     if 'urn:awf:1.2:' in body:
         body = body.replace('Agentic Workflow 1.2 —', 'Authorization protocol —')

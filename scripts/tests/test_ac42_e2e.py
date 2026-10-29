@@ -126,7 +126,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
               b"# retained formatting\n")
     AFTER = (b"# owner comment\n"
              b"{\n"
-             b'  "template": {"expected_workflow_version": "1.9.5"},\n'
+             b'  "template": {"expected_workflow_version": "1.9.6"},\n'
              b'  "jira": {\n'
              b'    "enabled": false,\n'
              b'    "cloud_id": null,\n'
@@ -210,7 +210,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
                   b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
         expected = before.replace(
             b"expected_workflow_version: !!str 1.9.2",
-            b"expected_workflow_version: !!str 1.9.5")
+            b"expected_workflow_version: !!str 1.9.6")
         harness = _load_harness()
         self.assertEqual(expected, harness.expected_project_config(before))
 
@@ -221,7 +221,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
                   b"  controller_actor_id: KEEP,\n"
                   b"  site: https://jira.example.invalid}\n"
                   b"execution: {risk_tiers: {tier3_review: KEEP}}\n")
-        expected = before.replace(b"1.9.2", b"1.9.5", 1)
+        expected = before.replace(b"1.9.2", b"1.9.6", 1)
         harness = _load_harness()
         self.assertEqual(expected, harness.expected_project_config(before))
         self.assertEqual(1, expected.count(b"cloud_id:"))
@@ -235,7 +235,7 @@ class ProjectValuesPreservedTests(unittest.TestCase):
                   b"execution: {risk_tiers: {tier1_review: KEEP}}\n")
         tier = (b"tier3_review: {roles: [critic, specialist], findings: blocking, "
                 b"max_rounds: 3}")
-        expected = before.replace(b"1.9.2", b"1.9.5", 1).replace(
+        expected = before.replace(b"1.9.2", b"1.9.6", 1).replace(
             b"execution: {risk_tiers: {",
             b"execution: {risk_tiers: {" + tier + b", ")
         harness = _load_harness()

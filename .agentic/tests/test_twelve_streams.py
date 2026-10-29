@@ -14,7 +14,7 @@ from agentic import ValidationError
 from agentic.canonical import load
 from agentic.lane_labels import STREAM_LABELS
 from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, routing_context, select_route
-from agentic.operating import default_operating, plan_initialize_operating, validate_operating
+from agentic.operating import initialize_operating, default_operating, plan_initialize_operating, validate_operating
 from agentic.streams import LABELS
 
 
@@ -93,6 +93,18 @@ class TwelveStreamTests(unittest.TestCase):
             old = plan_initialize_operating(temporary, legacy)
             self.assertEqual(3, old["inspection"]["streams"])
             self.assertEqual(6, old["inspection"]["effective_ceiling"])
+
+    def test_missing_audited_operating_refuses_without_writing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".agentic").mkdir()
+            (root / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(self.gov), encoding="utf-8")
+            initialize_operating(root, self.gov)
+            (root / "OPERATING_CONFIG.yaml").unlink()
+            before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            with self.assertRaisesRegex(ValidationError, "missing with retained audit history"):
+                plan_initialize_operating(root, self.gov)
+            self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()})
 
     def test_planned_target_routing_is_scoped_and_explicit_paths_remain_independent(self):
         fresh_path = ROOT / ".agentic/defaults/routing.yaml"

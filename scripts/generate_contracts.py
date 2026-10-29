@@ -1215,7 +1215,7 @@ def catalog(*, include_ticket_plan=True):
     schemas["posting-collector-registration"].update({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "urn:awf:1.2:posting-collector-registration",
-        "title": "Agentic Workflow 1.9.5 — posting-collector-registration",
+        "title": f"Agentic Workflow {VERSION} — posting-collector-registration",
     })
     return schemas
 

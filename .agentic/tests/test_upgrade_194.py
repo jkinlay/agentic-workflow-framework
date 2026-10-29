@@ -30,14 +30,14 @@ class Upgrade194Tests(unittest.TestCase):
             self.assertEqual(result["conflicts"], [])
             diff = result["upgrade"]["configuration_diff_total"]
             self.assertIn('-    "expected_workflow_version": "1.9.3"', diff)
-            self.assertIn('+    "expected_workflow_version": "1.9.5"', diff)
+            self.assertIn('+    "expected_workflow_version": "1.9.6"', diff)
             self.assertEqual(diff.count("\n-"), 2)
             self.assertEqual(diff.count("\n+"), 3)  # header, scalar and additive policy
             self.assertIn('+    "risk_tiers": {tier3_review: {roles: [critic, specialist], '
                           'findings: blocking, max_rounds: 3},', diff)
             steps = result["upgrade"]["steps"]
             self.assertEqual([(step["from"], step["to"]) for step in steps],
-                             [("1.9.3", "1.9.4"), ("1.9.4", "1.9.5")])
+                             [("1.9.3", "1.9.4"), ("1.9.4", "1.9.5"), ("1.9.5", "1.9.6")])
             historical_diff = steps[0]["configuration_diff"]
             self.assertIn('-    "expected_workflow_version": "1.9.3"', historical_diff)
             self.assertIn('+    "expected_workflow_version": "1.9.4"', historical_diff)

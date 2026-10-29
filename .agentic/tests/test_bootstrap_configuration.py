@@ -750,7 +750,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         null_bindings = (b'    "cloud_id": null,\r\n    "provider_project_id": null,\r\n'
                          b'    "controller_actor_id": null,\r\n')
         expected = before.replace(b'"expected_workflow_version": "1.9.2"',
-                                  b'"expected_workflow_version": "1.9.5"'
+                                  b'"expected_workflow_version": "1.9.6"'
                                   ).replace(jira_anchor, jira_anchor + null_bindings).replace(
                                       b'"risk_tiers": {',
                                       b'"risk_tiers": {tier3_review: {roles: [critic, specialist], '
