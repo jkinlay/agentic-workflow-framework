@@ -717,7 +717,12 @@ class PublicationScanTests(unittest.TestCase):
         value = private_locator()
         mapping = {"aliases": {"raw_estate": [value]}}
         self.assertEqual("use {raw_estate}", render_aliases("use " + value, mapping))
-        ignored = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-v", "--no-index",
+        # Exercise shipped ignore bytes in our owned Git fixture. Closed source
+        # archives ship the operating template rather than the repository file.
+        ignore_source = (ROOT / ".gitignore" if source_only.committed_git_tuple(ROOT) is not None
+                         else ROOT / ".agentic/templates/operating.gitignore")
+        self.repo.write(".gitignore", data=ignore_source.read_bytes())
+        ignored = subprocess.run(["git", "-C", str(self.repo.path), "check-ignore", "-v", "--no-index",
                                   ".agentic-state/publication-deny.json"], capture_output=True, text=True)
         self.assertEqual(0, ignored.returncode, ignored.stderr)
         self.assertIn(".agentic-state/publication-deny.json", ignored.stdout)

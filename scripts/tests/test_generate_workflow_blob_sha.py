@@ -22,6 +22,7 @@ from agentic.contracts import Contracts  # noqa: E402
 from agentic.model_routing import default_policy  # noqa: E402
 from agentic.operating import default_operating  # noqa: E402
 from routing_fixtures import fixture_policy  # noqa: E402
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple  # noqa: E402
 
 
 class WorkflowBlobGenerationTests(unittest.TestCase):
@@ -89,6 +90,8 @@ class WorkflowBlobGenerationTests(unittest.TestCase):
         )
 
     def test_checked_in_workflow_pin_is_byte_exact_and_git_observed(self):
+        if committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         workflow = (ROOT / ".github/workflows/ci.yml").read_bytes()
         expected = hashlib.sha1(
             b"blob " + str(len(workflow)).encode("ascii") + b"\0" + workflow

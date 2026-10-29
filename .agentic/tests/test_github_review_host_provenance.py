@@ -21,7 +21,7 @@ from agentic.provenance import (check_commit_range, record_owner_override,
                                 verify_provider_owner_override,
                                 render_owner_override)
 from agentic.safeio import run_bounded
-from source_only import skip_unless_source_repo
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo
 
 
 CODEX_THREAD_ID = '01a1317f-dadb-7071-80de-12832161734c'
@@ -288,6 +288,8 @@ class ProviderProvenanceTests(unittest.TestCase):
 
     @skip_unless_source_repo()
     def test_registered_manifest_reproducer_accepts_real_generator_commit(self):
+        if committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         git = shutil.which('git')
         if not git:
             self.skipTest('Git unavailable')

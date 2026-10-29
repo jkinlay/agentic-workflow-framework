@@ -291,7 +291,8 @@ def main(argv=None):
                 from release_review import review_source
                 report['current_review'] = review_source(ROOT, args.expected_manifest_sha256,
                     args.reviews, args.expected_reviews_sha256, args.review_required_paths,
-                    args.expected_review_required_paths_sha256)
+                    args.expected_review_required_paths_sha256,
+                    allow_source_checkout=(ROOT / '.git').exists())
         else:
             if release_mode:
                 raise ValueError('Source release qualification does not apply to installed component checks')
@@ -415,7 +416,8 @@ def main(argv=None):
         if report['current_review'].get('release_qualified') is True:
             final_review = review_source(ROOT, args.expected_manifest_sha256,
                 args.reviews, args.expected_reviews_sha256, args.review_required_paths,
-                args.expected_review_required_paths_sha256)
+                args.expected_review_required_paths_sha256,
+                allow_source_checkout=(ROOT / '.git').exists())
             if final_review != report['current_review']:
                 raise ValueError('Current review inputs changed during source validation')
         report['release_qualified'] = result.wasSuccessful() and report['current_review'].get('release_qualified') is True

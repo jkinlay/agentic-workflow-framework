@@ -10,6 +10,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+sys.path.insert(0, str(ROOT / ".agentic/tests"))
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple  # noqa: E402
 
 import build_release  # noqa: E402
 from agentic.canonical import sha256  # noqa: E402
@@ -38,6 +40,8 @@ class AdoptableSourceTests(unittest.TestCase):
         self.base = Path(self.temporary.name)
 
     def prepare_clone(self):
+        if committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         self.clone = self.base / "clone"
         cloned = subprocess.run(
             ["git", "clone", "--quiet", "--no-hardlinks", str(ROOT), str(self.clone)],

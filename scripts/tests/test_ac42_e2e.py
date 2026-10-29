@@ -10,6 +10,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+sys.path.insert(0, str(ROOT / ".agentic/tests"))
+from source_only import committed_git_tuple  # noqa: E402
 from agentic.child_process import child_env  # noqa: E402
 from agentic.publication import scan_repository  # noqa: E402
 
@@ -414,10 +416,13 @@ class WindowsLauncherPublicationTests(unittest.TestCase):
             git(repository, "commit", "-q", "-m", "base")
             base = git(repository, "rev-parse", "HEAD").decode("ascii").strip()
 
-            # Scan the exact source blobs in this checkout's merged tree. Deleted
-            # base-side diff lines are intentionally absent from these blobs.
+            # Source checkouts use raw committed blobs; a verified closed
+            # archive supplies its exact released bytes without inventing Git.
+            source_tuple = committed_git_tuple(ROOT)
             for relative in paths:
-                (repository / relative).write_bytes(git(ROOT, "show", f"HEAD:{relative}"))
+                raw = (git(ROOT, "show", f"HEAD:{relative}") if source_tuple is not None
+                       else (ROOT / relative).read_bytes())
+                (repository / relative).write_bytes(raw)
             git(repository, "add", "--", *paths)
             git(repository, "commit", "-q", "-m", "candidate")
 
