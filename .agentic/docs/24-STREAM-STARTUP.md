@@ -2,7 +2,7 @@
 
 Version 1.9.6. Coordinator guidance for a delegation host. The planner neither launches agents nor authenticates active writers.
 
-See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Three default workers share one independent critic/adversarial handler; with the controller, this uses five slots. The review barrier awaits every reviewer frozen for a candidate. Configured ceilings do not prove host availability.
+See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Fresh projects default to twelve workers sharing one independent critic/adversarial handler; with the controller, this requires fourteen slots. The review barrier awaits every reviewer frozen for a candidate. Configured ceilings do not prove host availability.
 
 ## Plan and dispatch
 

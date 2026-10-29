@@ -33,7 +33,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `e5a356eefcabed02816f108c836bdf6c5b94e83e391b8c5371d3e5dc6ce47699` |
 | `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `6a73c87729ff8489c8f9fe6c125e5ba31fcc31566ef78c205d3566c726c61d76` |
 | `.agentic/docs/23-TICKET-LIFECYCLE.md` | `4b55b7a6da6164e2480bcd81f7f03639caac2bcaefc3477ba89888020701b3ef` |
-| `.agentic/docs/24-STREAM-STARTUP.md` | `46032eb51d992d94312e335e91d2a20f6c39fbb1ad7457a22aec4ca101c960f3` |
+| `.agentic/docs/24-STREAM-STARTUP.md` | `2b6555b25742a0036502f5c6812197153e08d19e7dfef46a31746983b3b1db43` |
 | `.agentic/docs/27-MODEL-ROUTING.md` | `3b775b64515915ae63badf9177971de03c48f49b7dac37f53dda02661517f66e` |
 | `.agentic/docs/28-EXTERNAL-REVIEW.md` | `d4ac3884ea24f40153cf87690edbc495b975ffc4510ba3c64cdcf38830d78b42` |
 | `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `7be432262b32b56fc96c569dff408b7c21a34925140f562476141b99572309b3` |
