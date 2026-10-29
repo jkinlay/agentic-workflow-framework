@@ -14,12 +14,14 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 import generate_contracts  # noqa: E402
 import generate_examples  # noqa: E402
 from agentic.contracts import Contracts  # noqa: E402
 from agentic.model_routing import default_policy  # noqa: E402
 from agentic.operating import default_operating  # noqa: E402
+from routing_fixtures import fixture_policy  # noqa: E402
 
 
 class WorkflowBlobGenerationTests(unittest.TestCase):
@@ -148,7 +150,7 @@ class WorkflowBlobGenerationTests(unittest.TestCase):
         Contracts(ROOT / ".agentic/schemas").validate("project-config", content)
 
     def test_unconfigured_generator_twins_remain_exact_and_unpinned(self):
-        expected = generate_examples.config(False)
+        expected = generate_examples.config(False, default_policy(), fresh_defaults=True)
         for relative in (
             ".agentic/PROJECT_CONFIG.yaml",
             ".agentic/templates/source-config/PROJECT_CONFIG.yaml",
@@ -160,11 +162,11 @@ class WorkflowBlobGenerationTests(unittest.TestCase):
         unconfigured = json.loads(
             (ROOT / ".agentic/examples/unconfigured-project.yaml").read_text(
                 encoding="utf-8"))
-        self.assertEqual(default_policy(), unconfigured["execution"]["model_routing"])
+        self.assertEqual(fixture_policy(), unconfigured["execution"]["model_routing"])
         self.assertEqual([], unconfigured["validation"]["required_ci_checks"])
 
     def test_generated_content_example_matches_and_check_mode_is_clean(self):
-        expected = generate_examples.content_binding_config(ROOT)
+        expected = generate_examples.content_binding_config(ROOT, fixture_policy())
         actual = json.loads(
             (ROOT / ".agentic/examples/workflow-content-binding-project.yaml").read_text(
                 encoding="utf-8"

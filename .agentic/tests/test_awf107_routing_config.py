@@ -17,7 +17,8 @@ from agentic.model_routing import (RoutingConfigError, default_policy,
                                    load_routing, policy_from_config,
                                    select_route, validate_policy)
 from agentic.installer import OPERATOR_CONFIG_PATHS, managed
-from agentic.operating import validate_operating
+from agentic.operating import default_operating, validate_operating
+from routing_fixtures import fixture_policy
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / ".agentic/tests/fixtures/routing"
@@ -119,8 +120,7 @@ class RoutingConfigTests(unittest.TestCase):
         )
         governance = json.loads(
             (ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
-        operating = json.loads(
-            (ROOT / "OPERATING_CONFIG.yaml").read_text(encoding="utf-8"))
+        operating = default_operating(fixture_policy())
         request = {
             "ticket_id": "AWF-107",
             "agent_id": "writer-a",
@@ -176,7 +176,7 @@ class RoutingConfigTests(unittest.TestCase):
             def read(self, name):
                 if name == ".agentic/routing.yaml":
                     return self.routing
-                if name == ".agentic/tests/fixtures/routing/valid.yaml":
+                if name == ".agentic/defaults/routing.yaml":
                     return original.encode("utf-8")
                 return fixed
 

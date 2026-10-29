@@ -21,7 +21,8 @@ from agentic.contracts import Contracts
 from agentic.handoff import (BASES, REQUIRED_FIELDS, build_snapshot, compare_snapshot,
                              render_markdown, safe_origin)
 from agentic.lifecycle import definition
-from agentic.operating import read_operating
+from agentic.operating import default_operating, read_operating
+from routing_fixtures import fixture_policy
 from agentic.store import Store
 
 STATUS = {"project_state": "ACTIVE", "integrity_valid": True, "adoption": "MERGED",
@@ -56,7 +57,7 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.config_report = inspect_config(self.config, definition(), contracts)
         self.assertEqual(self.config_report["status"], "ACCEPTED", self.config_report)
         (self.root / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(self.config), encoding="utf-8")
-        self.operating_config = json.loads((ROOT / "OPERATING_CONFIG.yaml").read_text(encoding="utf-8"))
+        self.operating_config = default_operating(fixture_policy())
         (self.root / "OPERATING_CONFIG.yaml").write_text(json.dumps(self.operating_config), encoding="utf-8")
         git(self.root, "commit", "-q", "--allow-empty", "-m", "base")
         git(self.root, "commit", "-q", "--allow-empty", "-m", "complete SYN-7")

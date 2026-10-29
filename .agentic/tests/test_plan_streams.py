@@ -10,6 +10,7 @@ from source_only import write_awf_source_fixture  # noqa: E402,F401
 
 from agentic.canonical import canonical, loads, sha256
 from agentic.intake_assignment import assign_intake
+from routing_fixtures import fixture_policy
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +47,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
             project = fixture_root / "project"
             (project / ".agentic").mkdir(parents=True)
             config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+            config["execution"]["model_routing"] = fixture_policy()
             config_bytes = canonical(config)
             (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(config_bytes)
             (project / "OPERATING_CONFIG.yaml").write_bytes(
@@ -80,6 +82,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
             (project / ".agentic").mkdir(parents=True)
             config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
             config["merge_gate"]["trusted_owner_ids"] = [1001]
+            config["execution"]["model_routing"] = fixture_policy()
             config_bytes = canonical(config)
             (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(config_bytes)
             (project / "OPERATING_CONFIG.yaml").write_bytes(
