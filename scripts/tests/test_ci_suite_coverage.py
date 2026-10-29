@@ -150,7 +150,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertEqual("installed-runtime-self-test", job_id)
         self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }})", job["name"])
         self.assertEqual("windows-latest", job["runs-on"])
-        self.assertEqual({"3.12.13", "3.13.3"}, set(job["strategy"]["matrix"]["python-version"]))
+        self.assertEqual({"3.12.10", "3.13.3"}, set(job["strategy"]["matrix"]["python-version"]))
         self.assertEqual("${{ matrix.python-version }}", str(next(
             step["with"]["python-version"]
             for step in job["steps"]

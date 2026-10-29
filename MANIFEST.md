@@ -483,7 +483,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `8d550a32a0754956bef789a454ce284e9ad34e0e7a77fdbf6e90c3350e702f31` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `ec0c30c885957d674aeab8abfc29e40eacc5cdb8e87844cbc0a01ef31b14df30` |
+| `.github/workflows/ci.yml` | `41ef36087e902b0e5cace5916eb6d36fa9ebb26edccca5603546f61826984144` |
 | `.github/workflows/manifest-check.yml` | `3384a4a4ccb9b96471fccc65d110294726fb7e9bd85802aeccd3efd8ce905776` |
 | `ADR-DESIGN-FIRST-TRIAL.md` | `6702007630ee25d4e8cc64b9913ee0b86e7eaf03ecf8dba0632e124bbe179e16` |
 | `ADR-LANE-MODEL-ROUTING.md` | `c713ee7cb72d5d504674bdd5cfaf7437a9cbb122f738ab49dbac3e70f79bff52` |
@@ -645,8 +645,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
 | `scripts/tests/test_awf88_resource_ceilings.py` | `593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae` |
-| `scripts/tests/test_ci_suite_coverage.py` | `99fb5dc1cf396ff6317ccb948b9dedafd2afe658bb05bc765fb0a3a4e780d433` |
-| `scripts/tests/test_ci_windows_final_candidate.py` | `d5b57d466e585572b1378f34977395983d432c7a68fe734647096c103b692201` |
+| `scripts/tests/test_ci_suite_coverage.py` | `6a7a1349df8ddd270c87dcee6daca750fd2795ff2609f89f2f356f0bdd357f10` |
+| `scripts/tests/test_ci_windows_final_candidate.py` | `ad67c1f6542c059cb40dbc11913b14c56ac3b9873575515ba3b21a40f9c71877` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `114263345bca51b1da74feda0af61da1cd94cd0e872109979522cbb9d98f4c76` |
 | `scripts/tests/test_generate_contracts_status_report.py` | `19460ce0be0e6c96ae98a31b4f21d529596cf442cbf18207ee2f843b930c2225` |

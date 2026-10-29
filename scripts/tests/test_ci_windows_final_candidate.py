@@ -197,7 +197,7 @@ class WindowsFinalCandidateCiTests(unittest.TestCase):
         )
         windows = document["jobs"]["installed-runtime-self-test"]
         self.assertIn("github.event.pull_request.draft == false", windows["if"])
-        self.assertEqual({"fail-fast": False, "matrix": {"python-version": ["3.12.13", "3.13.3"]}}, windows["strategy"])
+        self.assertEqual({"fail-fast": False, "matrix": {"python-version": ["3.12.10", "3.13.3"]}}, windows["strategy"])
         self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }})", windows["name"])
         preserved = deepcopy(windows)
         preserved.pop("strategy")
