@@ -31,6 +31,10 @@ PUBLISHED_PIN = "1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab
 class Published195UpgradeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        try:
+            (ROOT / ".git").lstat()
+        except FileNotFoundError:
+            raise unittest.SkipTest("historical Git objects are absent from closed release archives")
         cls.temporary = tempfile.TemporaryDirectory(prefix="awf-published195-upgrade-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.base = Path(cls.temporary.name).resolve()
@@ -136,7 +140,7 @@ class Published195UpgradeTests(unittest.TestCase):
         python = self.project / ".agentic/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         for command in ("verify-installation", "validate-config"):
             checked = subprocess.run([str(python), "-B", "-I", str(self.project / ".agentic/scripts/workflow.py"),
-                "--root", str(self.project), command, "--json"], capture_output=True, text=True,
+                "--root", str(self.project), command], capture_output=True, text=True,
                 encoding="utf-8", env=child_env(), timeout=60)
             self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
             observation = json.loads(checked.stdout)
