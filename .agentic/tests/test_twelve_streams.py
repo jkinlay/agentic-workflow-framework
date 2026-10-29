@@ -4,7 +4,11 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import load
@@ -12,8 +16,6 @@ from agentic.lane_labels import STREAM_LABELS
 from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, routing_context, select_route
 from agentic.operating import default_operating, plan_initialize_operating, validate_operating
 from agentic.streams import LABELS
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 class TwelveStreamTests(unittest.TestCase):

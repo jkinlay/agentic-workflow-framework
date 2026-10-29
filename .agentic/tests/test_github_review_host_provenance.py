@@ -276,6 +276,17 @@ class ProviderProvenanceTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 5)
 
     @skip_unless_source_repo()
+    def test_manifest_reproducer_pin_binds_source_projection(self):
+        before = manifest_reproducer_sha256()
+        with patch.object(github_review_host, "ROUTING_SOURCE", ".agentic/changed-routing.yaml"):
+            self.assertNotEqual(before, manifest_reproducer_sha256())
+        with patch.dict(github_review_host.SOURCE_CONFIGS, {"synthetic": "changed.yaml"}):
+            self.assertNotEqual(before, manifest_reproducer_sha256())
+        with patch.object(github_review_host, "RELEASE_EXCLUDED_PREFIXES", ("changed-prefix/",)):
+            self.assertNotEqual(before, manifest_reproducer_sha256())
+        self.assertEqual(before, manifest_reproducer_sha256())
+
+    @skip_unless_source_repo()
     def test_registered_manifest_reproducer_accepts_real_generator_commit(self):
         git = shutil.which('git')
         if not git:

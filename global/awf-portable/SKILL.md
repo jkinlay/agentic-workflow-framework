@@ -24,9 +24,9 @@ Verify and prepare [bundled source](assets/agentic-workflow-template-v1.9.5.zip)
 python -B PATH_TO_SKILL/scripts/prepare_release.py --cache-dir ABSOLUTE_EXTERNAL_CACHE --version 1.9.5
 ```
 
-Use Python 3.11+ and a separate cache with an existing parent. Preserve differing/incomplete caches. Use the catalog. Read verified AGENTS, specification and configuration, then the relevant runbook.
+Use Python 3.11+ and a separate cache with existing parent. Preserve differing/incomplete caches. Use the catalog. Read verified AGENTS, specification and configuration, then the relevant runbook.
 
-For execution, read [routing](references/model-routing.md). Fresh defaults: twelve worker streams, one shared independent critic/adversarial handler, and one controller (fourteen slots total); host capacity still binds. Keep one writer per path and independent reviewer contexts.
+For execution, read [routing](references/model-routing.md). Fresh defaults: twelve workers, one shared independent critic/adversarial handler and one controller (fourteen slots); host capacity binds. Keep one writer per path and independent reviewer contexts.
 
 When adoption reaches CONFIGURED, show `workflow.py operating show` and offer: keep defaults, review Epics and recommend, or custom. Operating changes on direct user instruction: translate, echo, run `operating set`, show results. Stay within governance ceilings/allowlists/floors; name exact refusals and the governance PR needed. Recommendations require acceptance. Scope Epic routes with `--epic EPIC-ID`. Changes affect subsequent dispatch; preserve running reservations. See the verified operating guide.
 

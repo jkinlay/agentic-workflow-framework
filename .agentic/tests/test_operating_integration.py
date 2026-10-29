@@ -19,13 +19,14 @@ from routing_fixtures import fixture_policy
 from agentic import ValidationError
 from agentic import operating as op
 from agentic.canonical import canonical, load, sha256
-from agentic.model_routing import MODELS, RoutingLedger, default_policy, policy_from_config, select_route
+from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, select_route
 from agentic.operating import default_operating, validate_operating
 from agentic.store import Store
 from agentic.streams import DEFAULT_NATIVE_EXECUTION, _antichain, plan_inventory, recommendation_groups
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-11T10:00:00Z"
+MODELS = tuple(fixture_policy()["model_order"])
 
 
 def governance():
