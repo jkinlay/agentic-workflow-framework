@@ -80,7 +80,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/examples/status-report.json` | `f29307d27985e040a9d4dc017cba0789a35199d4dfcf424844c9e78c83149b8c` |
 | `.agentic/examples/stream-input.json` | `37097f3c73d5de9941dbd049fa29c7e9f659b7fb02b882b2978916f7d3c9cc33` |
 | `.agentic/examples/unconfigured-project.yaml` | `29f47fc48566540f48294a9ca86097a0e6a2ca7fc9497bf1b6ff28746662502d` |
-| `.agentic/examples/workflow-content-binding-project.yaml` | `e2ccb28742d176ee6dbbcc437f244a870a9176b905104796d50ce4f64a815169` |
+| `.agentic/examples/workflow-content-binding-project.yaml` | `18a0eb4f052706a191ccb986f20fd99fa2727d800620f2f16b94cd0a62a42b72` |
 | `.agentic/launch-surfaces.json` | `10a85af93c9b5e224b30e37232cc6e30e265e10e54dd46f74db739293ce86e8b` |
 | `.agentic/lib/agentic/__init__.py` | `88b32f93f1bb5d80292b4996f85a8bd2c4b6f56defc8673bef0306876395034e` |
 | `.agentic/lib/agentic/activation.py` | `ebb73dee3a03be049b46cb11787c77ace16965e938bb2fc371e07851ad00deb7` |
