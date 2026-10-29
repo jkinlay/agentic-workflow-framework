@@ -662,7 +662,7 @@
     "scripts/tests/test_self_test_review.py": "30b77515f97fdb3f909fe7a1b8c17f650cf7417ae4dbef5011df31970268dc7e",
     "scripts/tests/test_skill_distribution_launcher.py": "26fcfe891d4be5a7fbaa638f0b6dbbfe418f6831d1973f889ebc97fe6a6dc64c",
     "scripts/tests/test_skill_distribution_ordering.py": "4897f1406db51a786ccf4179363c93b50e1d99578c28f51a947154e448366955",
-    "scripts/tests/test_validate_archive_report.py": "d5e1a5bc555b69976b30011d688e3b142d0bf0008e400b18dc7d836807a34d56",
+    "scripts/tests/test_validate_archive_report.py": "8e874742d889b3eb82a18a745f7384b873bc4f27b41c904d3b17b2464f0510c7",
     "scripts/tests/test_validate_git_checkout.py": "8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900",
     "scripts/tests/test_windows_unittest_shards.py": "9ac7c3480d8d579308552daaa766c2d27312057c167b3c03dfab13a6778006c3",
     "scripts/validate_archive.py": "d729bc06d5f9384624df1802bc57a35db384a2bc1dfe27d44c6bd4e19672e21d",
