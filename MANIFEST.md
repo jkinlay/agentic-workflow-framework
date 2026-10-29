@@ -478,7 +478,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/validation/five-slot-adversarial-regressions.json` | `1c2f70d75f51f30426b8d1f9240653fd90729f2d01d7e2f2a8ec2a7de727ce72` |
 | `.agentic/validation/pr26-owner-accepted-finding-provenance.json` | `b9254e379df2a3bbe408fd5cd9d8a6148b660a9c3df93d97c0f1baeaf33cb6f9` |
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
-| `.agentic/workflow-version.yaml` | `7cef0246a03463d98816e8c5595860859014cf1789fd76ea0a89581364d83a4f` |
+| `.agentic/workflow-version.yaml` | `2fc7aaae4da5627bd781ec1210e968dbaa93f4a11f3550c764cbc6cac4f41255` |
 | `.agentic/workflow.yaml` | `e3f0feb768f4c2823095768548082f10222e5b94eb7f134d2f06224ff2255db0` |
 | `.gitattributes` | `8d550a32a0754956bef789a454ce284e9ad34e0e7a77fdbf6e90c3350e702f31` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
