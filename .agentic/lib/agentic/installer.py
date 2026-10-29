@@ -1884,7 +1884,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         if applicability["status"] == "NOT_APPLICABLE":
             operating_plan = {"files": {}, "actions": [], "inspection": applicability}
         else:
-            operating_plan = plan_initialize_operating(destination, governance)
+            initial_operating = (load_yaml(content[OPERATING])
+                                 if mode == "install" and existing_config is None and OPERATING in content else None)
+            operating_plan = plan_initialize_operating(destination, governance, initial_operating=initial_operating)
         for path, data in operating_plan["files"].items():
             planned[path] = data
         if upgrade_report is not None:

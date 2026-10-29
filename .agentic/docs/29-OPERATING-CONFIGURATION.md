@@ -1,6 +1,6 @@
 # Operating configuration by conversation
 
-At CONFIGURED, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste table in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
+Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste table in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 ## Two configuration layers
 
@@ -24,7 +24,7 @@ Generated schemas accept `streams.count` 1–12 with A–L routes and optional p
 | `host-lease` | `heavy_slots`, `gpu_slots` | 0–1000 |
 | `host-lease`, `run-attestation` | `resources_held[].slots` | 1–1000 |
 
-`OPERATING_CONFIG.yaml`: unprotected project choices. Defaults: three `gpt-5.6-luna`/medium workers; one shared `gpt-5.6-sol`/high critic/adversarial handler; `gpt-5.6-sol`/high controller/specialists; `gpt-5.6-luna`/low simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
+`OPERATING_CONFIG.yaml`: unprotected project choices. Fresh defaults: twelve `gpt-6.1-sol`/high workers; shared critic, controller and specialists on `gpt-6.1-sol`/high; `gpt-6-luna`/high simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
 
 `independent_reviewers.allocation: shared_critic` uses one reviewer slot. Legacy `one_per_stream` and fixed counts remain binding. `--propose-operating-capacity` only proposes ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
 

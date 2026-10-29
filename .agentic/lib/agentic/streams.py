@@ -15,13 +15,14 @@ import os
 from pathlib import Path
 import re
 
+from .lane_labels import STREAM_LABELS
 from . import VERSION, ValidationError
 from .canonical import canonical, fingerprint, fresh, loads, sha256, timestamp
 from .interaction import next_step
 from .operating import filesystem_reader, is_awf_source_repository
 from .safeio import Tree, relative_parts
 
-LABELS = tuple("ABCDEF")
+LABELS = STREAM_LABELS
 PLANNER_WRITER_LIMIT = len(LABELS)
 FINAL = {"done", "cancelled"}
 PLAN = "STREAMS.json"

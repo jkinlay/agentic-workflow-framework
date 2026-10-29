@@ -61,7 +61,7 @@
   },
   "execution": {
     "profile": "manual_reference",
-    "max_parallel_tickets": 6,
+    "max_parallel_tickets": 12,
     "max_parallel_tickets_per_stream": 1,
     "child_env_strip_extra": [],
     "native_streams": {
@@ -119,48 +119,52 @@
     "one_writer_per_ticket": true,
     "roles": {
       "controller": {
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.1-sol",
         "reasoning_effort": "high",
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
           "gpt-5.6-sol",
+          "gpt-6-luna",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
       },
       "worker": {
-        "model": "gpt-5.6-luna",
-        "reasoning_effort": "medium",
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high",
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
           "gpt-5.6-sol",
+          "gpt-6-luna",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
       },
       "critic": {
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.1-sol",
         "reasoning_effort": "high",
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
           "gpt-5.6-sol",
+          "gpt-6-luna",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
       },
       "specialist": {
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.1-sol",
         "reasoning_effort": "high",
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
           "gpt-5.6-sol",
+          "gpt-6-luna",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -175,7 +179,7 @@
       "enabled": false,
       "broker_id": "",
       "lease_before_dispatch": true,
-      "max_workers": 3,
+      "max_workers": 12,
       "max_heavy_jobs": 1,
       "max_gpu_jobs": 0,
       "resources": {}
@@ -218,7 +222,8 @@
         "authorized_operator_ids": [],
         "max_reconciled_incident_retries_per_ticket": 2
       }
-    }
+    },
+    "max_lanes": 12
   },
   "validation": {
     "commands": [

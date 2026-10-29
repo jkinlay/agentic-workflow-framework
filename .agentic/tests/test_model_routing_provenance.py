@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
 from agentic.model_routing import (RoutingLedger, default_policy,
                                    load_routing,
@@ -45,7 +46,7 @@ def provenance(**updates):
 
 class ModelRoutingProvenanceTests(unittest.TestCase):
     def setUp(self):
-        self.policy = default_policy()
+        self.policy = fixture_policy()
         self.temp = tempfile.TemporaryDirectory(prefix="awf-routing-provenance-")
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "routing.sqlite"

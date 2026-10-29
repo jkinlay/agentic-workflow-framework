@@ -15,6 +15,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
 from agentic.contracts import Contracts
 from agentic.model_routing import (RoutingLedger, default_policy, load_routing,
@@ -35,7 +36,7 @@ def request(**updates):
 
 
 def capabilities():
-    return {"models": {m: v["reasoning_efforts"] for m, v in default_policy()["models"].items()}}
+    return {"models": {m: v["reasoning_efforts"] for m, v in fixture_policy()["models"].items()}}
 
 
 def outcome(reservation, **updates):
@@ -50,7 +51,7 @@ def outcome(reservation, **updates):
 
 class ModelRoutingTests(unittest.TestCase):
     def setUp(self):
-        self.policy = default_policy()
+        self.policy = fixture_policy()
         self.temp = tempfile.TemporaryDirectory(prefix="awf-routing-")
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "routing.sqlite"
