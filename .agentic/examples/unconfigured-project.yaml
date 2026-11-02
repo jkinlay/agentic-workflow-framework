@@ -9,7 +9,7 @@
     "short_name": "CHANGE_ME"
   },
   "jira": {
-    "enabled": false,
+    "enabled": true,
     "cloud_id": null,
     "site": null,
     "provider_project_id": null,

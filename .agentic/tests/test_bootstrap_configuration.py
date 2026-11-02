@@ -156,7 +156,7 @@ class ConfigurationDerivationTests(unittest.TestCase):
         self.assertEqual(uuid.UUID(config["project"]["id"]).version, 4)
         self.assertEqual(config["project"]["name"], "widget")
         self.assertEqual(config["project"]["short_name"], "widget")
-        self.assertEqual(config["jira"]["enabled"], False)
+        self.assertTrue(config["jira"]["enabled"])
         self.assertIsNone(config["jira"]["site"])
         self.assertEqual(config["validation"]["required_ci_checks"], [])
         self.assertEqual(config["merge_gate"]["trusted_owner_ids"], [])
@@ -169,6 +169,48 @@ class ConfigurationDerivationTests(unittest.TestCase):
         report = inspect_config(config, load(ROOT / ".agentic/workflow.yaml"), Contracts(ROOT / ".agentic/schemas"))
         self.assertEqual(report["status"], "ACCEPTED", report)
         self.assertEqual(report["ci_gate"], "NOT_CONFIGURED")
+
+    def test_fresh_jira_default_is_unbound_scoped_and_side_effect_free(self):
+        from agentic.policy import inside_scope
+        from agentic.provider_identity import ProviderIdentityError, require_jira_write_identity
+        source = template()
+        source["jira"].update(cloud_id="fixture-source-cloud", site="https://source.example.invalid",
+                              provider_project_id="99", project_key="SOURCE",
+                              controller_actor_id="fixture-source-actor")
+        with patch("agentic.provider_identity.observe_jira_identity", side_effect=AssertionError("no Jira lookup")), \
+                patch("agentic.jira_lifecycle.write_tier_assignment", side_effect=AssertionError("no Jira write")):
+            result = adoption.prepare_config(source, overrides=explicit(), discover=False)
+        jira = result["config"]["jira"]
+        self.assertTrue(jira["enabled"])
+        for key in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):
+            self.assertIsNone(jira[key])
+        self.assertFalse(jira["scope"]["allow_entire_project"])
+        self.assertEqual(jira["scope"]["included_epics"], [])
+        self.assertFalse(inside_scope({"project_key": "SOURCE"}, result["config"]))
+        self.assertFalse(result["execution_authority"])
+        with self.assertRaises(ProviderIdentityError) as refusal:
+            require_jira_write_identity(result["config"], {})
+        self.assertEqual(refusal.exception.code, "IDENTITY_UNBOUND")
+
+    def test_existing_explicit_jira_opt_out_survives_bootstrap_flags(self):
+        original = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]
+        original["jira"]["enabled"] = False
+        before = json.loads(json.dumps(original["jira"]))
+        for overrides in (explicit(), {**explicit(), "jira_site": "https://fixture.atlassian.net", "jira_key": "FIX"}):
+            with self.subTest(overrides=overrides):
+                result = adoption.prepare_config(template(), existing=original, overrides=overrides, discover=False)
+                self.assertEqual(result["config"]["jira"], before)
+                self.assertEqual(original["jira"], before)
+
+    def test_fresh_source_forms_request_jira_without_target_identities(self):
+        for path in (ROOT / ".agentic/PROJECT_CONFIG.yaml", ROOT / ".agentic/examples/unconfigured-project.yaml",
+                     ROOT / ".agentic/templates/source-config/PROJECT_CONFIG.yaml"):
+            with self.subTest(path=path):
+                jira = load(path)["jira"]
+                self.assertTrue(jira["enabled"])
+                self.assertTrue(all(jira[key] is None for key in
+                    ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")))
+                self.assertFalse(jira["scope"]["allow_entire_project"])
 
     def test_new_adoption_budget_defaults(self):
         config = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]

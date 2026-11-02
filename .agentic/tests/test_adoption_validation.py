@@ -94,6 +94,21 @@ class AdoptionValidationTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ACCEPTED')
         self.assertIn('JIRA_IDENTITY_UNBOUND', {item['code'] for item in result['warnings']})
 
+    def test_enabled_fully_unbound_jira_is_adoptable_without_live_authority(self):
+        from agentic.provider_identity import ProviderIdentityError, require_jira_write_identity
+        self.config["jira"].update(enabled=True, cloud_id=None, site=None,
+                                   provider_project_id=None, project_key=None,
+                                   controller_actor_id=None)
+        self.config["jira"]["scope"].update(included_epics=[], labels_any=[], components_any=[])
+        result = inspect_config(self.config, definition(), self.contracts)
+        self.assertEqual(result["status"], "ACCEPTED", result)
+        codes = {item["code"] for item in result["warnings"]}
+        self.assertTrue({"JIRA_IDENTITY_UNBOUND", "JIRA_SCOPE_NOT_CONFIGURED"} <= codes)
+        self.assertFalse(inside_scope({"project_key": "EX"}, self.config))
+        with self.assertRaises(ProviderIdentityError) as refusal:
+            require_jira_write_identity(self.config, {})
+        self.assertEqual(refusal.exception.code, "IDENTITY_UNBOUND")
+
     def test_unbound_github_actor_or_profile_warns(self):
         self.config['github'].update(expected_actor_id=None, expected_actor_login=None,
                                      auth_profile=None)
