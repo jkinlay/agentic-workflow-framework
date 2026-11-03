@@ -42,7 +42,10 @@ def config():
             "tier3_review": {"roles": ["critic", "specialist"], "findings": "blocking", "max_rounds": 3},
         }},
         "scope": {"protected_paths": [".agentic/**", ".github/workflows/**", "AGENTS.md"]},
-        "jira": {"enabled": True, "controller_actor_id": "controller-1"},
+        "jira": {"enabled": True, "controller_actor_id": "controller-1", "project_key": "AWF",
+                 "scope": {"allow_entire_project": False, "selector_mode": "all",
+                           "included_epics": ["AWF-1"], "labels_any": [], "components_any": [],
+                                                     "ownership_required": True, "additional_jql": ""}},
         "merge_gate": {"trusted_owner_ids": [1001, 1002]},
     }
 
@@ -56,7 +59,8 @@ def ticket(key="AWF-100", **updates):
 
 class FakeJira:
     def __init__(self, keys=("AWF-100",)):
-        self.issues = {key: {"labels": ["backlog"], "comments": []} for key in keys}
+        self.issues = {key: {"issue_id": key, "project_key": "AWF", "epic_ids": ["AWF-1"],
+                             "component_ids": [], "labels": ["backlog"], "comments": []} for key in keys}
         self.calls = []
         self.mismatch = False
 
@@ -150,7 +154,7 @@ class IntakeRecordsAssignment(unittest.TestCase):
         self.assertEqual(record, state["tier_assignments"]["AWF-100"])
         self.assertIn("tier-2", jira.issues["AWF-100"]["labels"])
         self.assertIn("Round cap: 2", jira.issues["AWF-100"]["comments"][0]["body"])
-        self.assertEqual(["read", "labels", "comment", "read"], [row[0] for row in jira.calls])
+        self.assertEqual(["read", "labels", "read", "comment", "read"], [row[0] for row in jira.calls])
         self.assertEqual("VERIFIED", record["jira"]["read_back_status"])
 
     def test_read_back_mismatch_fails_closed_without_state_record(self):
@@ -213,7 +217,7 @@ class IntakeRecordsAssignment(unittest.TestCase):
         record = assign_intake(config(), ticket(), matching_state, matching_jira, now=NOW,
                                controller_actor_id="controller-1")
         self.assertEqual("VERIFIED", record["jira"]["read_back_status"])
-        self.assertEqual(["read", "labels", "comment", "read"],
+        self.assertEqual(["read", "labels", "read", "comment", "read"],
                          [call[0] for call in matching_jira.calls])
 
 

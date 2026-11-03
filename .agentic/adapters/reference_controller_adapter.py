@@ -654,7 +654,8 @@ def _build(config):
 		record = value['record']
 		_require(record.get('record_id') == request['transition_record_id'] and record.get('binding') == request['binding'] and (record.get('binding', {}).get('issue_id') == request['issue_id']) and (record.get('jira_provider') == provider) and (record.get('producer_id') == provider['controller_actor_id']) and (record.get('lifecycle_event') == 'JIRA_RECONCILED') and (record.get('status') == 'SUCCEEDED') and (record.get('to_status_id') == request['expected_status_id']), 'Jira transition evidence differs from the requested reconciliation')
 		issue = jira_json('GET', '/rest/api/3/issue/' + quote(request['issue_id'], safe='') + '?fields=status&expand=changelog')
-		_require(issue.get('id') == request['issue_id'], 'Jira reconciliation readback returned a different issue')
+		identity_field = 'key' if re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', request['issue_id']) else 'id'
+		_require(issue.get(identity_field) == request['issue_id'], 'Jira reconciliation readback returned a different issue')
 		current_status = issue.get('fields', {}).get('status', {}).get('id')
 		_require(current_status == request['expected_status_id'], 'Jira issue is not currently at the configured terminal status')
 		read_back = record.get('read_back')
@@ -1355,6 +1356,60 @@ def _build(config):
 			'Jira canonical issue key is missing or malformed')
 		return {'issue_key': value['key'], 'observed_at': _clock_text(clock)}
 
+	def jira_scope_config():
+		# Use the same pinned accepted project bytes as closeout, never an
+		# adapter-local selector or a ticket-supplied scope assertion.
+		value = observe_accepted_project_config({'operation': 'ACCEPTED_PROJECT_CONFIG',
+			'source_identity': {'kind': 'installed_project_configuration', 'path': '.agentic/PROJECT_CONFIG.yaml'}})
+		return load_yaml(base64.b64decode(value['result']['raw_bytes_base64'], validate=True))
+
+	def observe_issue_policy(issue):
+		_require(isinstance(issue, str) and re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', issue) is not None,
+			'Jira scope needs a canonical issue key')
+		policy = jira_scope_config()
+		from agentic.provider_identity import require_jira_write_identity
+		provider = provider_identity()
+		require_jira_write_identity(policy, provider)
+		fields_query = '?fields=project,parent,labels,components,issuetype,summary'
+		current, seen, epics, snapshot, kind = issue, set(), [], None, None
+		for _ in range(16):
+			_require(current not in seen, 'Jira scope ancestry is cyclic')
+			seen.add(current)
+			value = jira_json('GET', '/rest/api/3/issue/' + quote(current, safe='') + fields_query)
+			_require(isinstance(value, dict) and value.get('key') == current, 'Jira scope issue key differs from the requested key')
+			fields = value.get('fields', {})
+			project = fields.get('project', {})
+			_require(project.get('key') == policy['jira']['project_key'] and
+				str(project.get('id')) == policy['jira']['provider_project_id'], 'Jira scope issue belongs to a different project')
+			issue_type = fields.get('issuetype', {})
+			_require(isinstance(issue_type, dict) and isinstance(issue_type.get('name'), str), 'Jira scope issue type is missing')
+			is_epic = issue_type['name'].casefold() == 'epic' or issue_type.get('hierarchyLevel') == 1
+			if snapshot is None:
+				components = fields.get('components')
+				_require(isinstance(components, list) and all(isinstance(item, dict) and
+					isinstance(item.get('id'), str) and item['id'] for item in components), 'Jira scope components are missing or malformed')
+				_require(isinstance(fields.get('summary'), str), 'Jira scope summary is missing')
+				snapshot = {'issue_id': issue, 'project_key': project['key'], 'epic_ids': epics,
+					'labels': fields.get('labels'), 'component_ids': [item['id'] for item in components],
+					'summary': fields['summary']}
+				kind = 'EPIC' if is_epic else 'LEAF'
+			elif is_epic:
+				epics.append(current)
+				break
+			if not policy['jira']['scope']['included_epics']:
+				break
+			parent = fields.get('parent')
+			if parent is None:
+				break
+			_require(isinstance(parent, dict) and isinstance(parent.get('key'), str) and
+				re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', parent['key']) is not None, 'Jira scope parent is malformed')
+			current = parent['key']
+		else:
+			raise ValidationError('Jira scope ancestry exceeded its 16-issue bound')
+		from agentic.jira_lifecycle import require_jira_issue_scope
+		require_jira_issue_scope(policy, issue, snapshot)
+		return {'issue_key': issue, 'issue_type': kind, 'snapshot': snapshot, 'observed_at': _clock_text(clock)}
+
 	def read_current_status(binding):
 		_require(isinstance(binding, dict) and isinstance(binding.get('issue_id'), str), 'Jira status read needs an issue identity')
 		value = jira_json('GET', '/rest/api/3/issue/' + quote(binding['issue_id'], safe='') + '?fields=status')
@@ -1368,6 +1423,10 @@ def _build(config):
 		_require(isinstance(record, dict) and isinstance(record.get('binding'), dict), 'Jira transition record is missing its binding')
 		issue_id = record['binding']['issue_id']
 		_require(isinstance(record.get('transition_id'), str) and record['transition_id'], 'Jira transition identity is missing')
+		provider = provider_identity()
+		_require(record.get('jira_provider') == provider, 'Jira transition provider differs from the configured identity')
+		policy = observe_issue_policy(issue_id)
+		_require(policy['issue_type'] == 'LEAF', 'Epics are never transitioned')
 		attempted_at = _clock_text(clock)
 		jira_json('POST', '/rest/api/3/issue/' + quote(issue_id, safe='') + '/transitions', {'transition': {'id': record['transition_id']}})
 		return {'operation_id': record['operation_id'], 'issue_id': issue_id, 'status': 'ATTEMPTED', 'observed_at': attempted_at, 'jira_provider': record['jira_provider']}
@@ -1592,7 +1651,7 @@ def _build(config):
 		_require(isinstance(body, str) and comment['user'].get('id') == request['actor_id'] and body == owner_source.get('raw_body') and sha256(body.encode('utf-8')) == request['raw_body_sha256'], 'GitHub owner comment differs from the recorded owner source')
 		_require(comment.get('created_at') == comment.get('updated_at') == owner_source.get('created_at'), 'GitHub owner comment was edited or differs from its recorded time')
 		return {'status': 'VERIFIED', 'actor_id': request['actor_id'], 'binding': deepcopy(request['binding']), 'raw_body_sha256': request['raw_body_sha256'], 'source_id': 'github-comment:' + comment['node_id'], 'observed_at': _clock_text(clock)}
-	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
+	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'observe_issue_policy': observe_issue_policy, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
 
 def build_adapters(config):
 	return _build(config)

@@ -80,6 +80,8 @@ class PlanStreamsScriptTests(unittest.TestCase):
             (project / ".agentic").mkdir(parents=True)
             config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
             config["merge_gate"]["trusted_owner_ids"] = [1001]
+            # This local planning fixture intentionally has no Jira adapter.
+            config["jira"]["enabled"] = False
             config_bytes = canonical(config)
             (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(config_bytes)
             (project / "OPERATING_CONFIG.yaml").write_bytes(

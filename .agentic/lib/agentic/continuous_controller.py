@@ -1918,6 +1918,10 @@ def production_batch_closeout(store, *, config, request, coordinator,
 	def guarded_write(record):
 		require_jira_write_identity(config, observe_provider_identity())
 		_require_canonical_issue(record['binding']['issue_id'], observe_issue_identity=observe_issue_identity, now=now)
+		policy = _observe_jira_write_policy(config, record['binding']['issue_id'], observe_issue_policy, now)
+		_require(policy['issue_type'] == 'LEAF', 'Epics are never transitioned')
+		from .jira_lifecycle import owner_closure_required
+		_require(not owner_closure_required(config, policy['snapshot']), 'Owner closure is required before the Done write')
 		return write_transition(record)
 	result = production_batch_jira_reconciliation(store, config=config, role='controller',
 		batch=batch, observed_merge=observed_merge, now=now, read_current_status=read_current_status,
@@ -1973,7 +1977,7 @@ def _batch_jira_inputs(config, batch, observed_merge, policy_context, now):
 		_require(facts.get('issue_type', 'LEAF') in {'LEAF', 'EPIC'} and type(facts.get('owner_closure_required', False)) is bool, 'Invalid constituent policy facts')
 		if 'snapshot' in facts:
 			snapshot = facts['snapshot']
-			_require(isinstance(snapshot, dict) and set(snapshot) <= {'summary', 'labels'} and isinstance(snapshot.get('summary'), str) and
+			_require(isinstance(snapshot, dict) and set(snapshot) <= {'issue_id', 'project_key', 'epic_ids', 'component_ids', 'summary', 'labels'} and isinstance(snapshot.get('summary'), str) and
 				isinstance(snapshot.get('labels', []), list) and all(isinstance(label, str) for label in snapshot.get('labels', [])), 'Invalid owner-closure snapshot')
 	return {'config': config, 'batch': batch, 'observed_merge': observed_merge, 'policy_context': policy_context}
 
@@ -2211,6 +2215,8 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 			observation, operation = None, None
 			try:
 				facts = policy_context.get(issue, {})
+				from .jira_lifecycle import require_jira_issue_scope
+				require_jira_issue_scope(config, issue, facts.get('snapshot'))
 				owner_hold = facts.get('owner_closure_required', False)
 				if 'snapshot' in facts:
 					owner_hold = owner_hold or owner_closure_required(config, facts['snapshot'])
@@ -2776,8 +2782,23 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	streams = store.snapshot()
 	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'errors': errors, 'execution_authority': False}
 
-def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None):
+def _observe_jira_write_policy(config, issue, observer, now):
+	"""Obtain fresh canonical scope evidence from the reviewed adapter."""
+	from .canonical import fresh
+	from .jira_lifecycle import require_jira_issue_scope
+	_require(callable(observer), 'Jira scope observer is unavailable')
+	value = deepcopy(observer(issue))
+	_require(isinstance(value, dict) and set(value) == {'issue_key', 'issue_type', 'snapshot', 'observed_at'} and
+		value['issue_key'] == issue and value['issue_type'] in {'LEAF', 'EPIC'},
+		'Jira scope observation differs from the canonical issue')
+	fresh(value['observed_at'], now, 1800)
+	require_jira_issue_scope(config, issue, value['snapshot'])
+	return value
+
+
+def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None, observe_issue_policy=None):
 	_require(isinstance(store, ContinuousControllerStore), 'Jira lifecycle production needs the protected controller store')
+	config = deepcopy(config)
 	_require(all((callable(adapter) for adapter in (read_current_status, write_transition, read_transition))), 'Jira lifecycle read/write/readback adapters must be callable')
 	if config.get('jira', {}).get('enabled', True) is False:
 		return {'planned': False, 'reason': 'Jira is disabled; no reads or writes', 'execution_authority': False}
@@ -2805,6 +2826,11 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	except Exception as exc:
 		return {'planned': False, 'status': 'IDENTITY_UNOBSERVED', 'reason': 'Jira provider identity observation failed: ' + type(exc).__name__, 'expected_identity': expected, 'observed_identity': None, 'issue_lookups': 0, 'writes_stopped': True, 'reads_allowed': True, 'execution_authority': False}
 	_require_canonical_issue(issue, observe_issue_identity=observe_issue_identity, now=now)
+	try:
+		policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
+		_require(policy['issue_type'] == issue_type, 'Jira issue type differs from its observed policy')
+	except Exception as exc:
+		return {'planned': False, 'status': 'SCOPE_REFUSED', 'reason': str(exc), 'writes_stopped': True, 'execution_authority': False}
 	adapter_binding = {'issue_id': issue, 'jira_provider': provider}
 	# Check before ordinary recovery/replay: a batch stop belongs to the issue,
 	# and an ordinary readback cannot resolve or replace that batch intent.
@@ -2875,6 +2901,12 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 		if not issue_owned or batch_stop is not None:
 			store.finish_jira_operation(record['operation_id'], 'FAILED', None, now)
 			return {'planned': False, 'reason': 'Jira issue is owned or durably stopped; no write attempted', 'writes_stopped': True, 'operation_id': record['operation_id'], 'execution_authority': False}
+		try:
+			policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
+			_require(policy['issue_type'] == issue_type, 'Jira issue type changed before the write')
+		except Exception as exc:
+			store.finish_jira_operation(record['operation_id'], 'FAILED', None, now)
+			return {'planned': False, 'status': 'SCOPE_REFUSED', 'reason': str(exc), 'writes_stopped': True, 'execution_authority': False}
 		try:
 			operation = write_transition(record)
 			_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'} and (operation['operation_id'] == record['operation_id']) and (operation['issue_id'] == issue) and (operation['jira_provider'] == provider) and (operation['status'] == 'ATTEMPTED'), 'Jira write receipt is missing or mismatched')

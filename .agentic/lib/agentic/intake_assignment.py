@@ -226,7 +226,7 @@ def _jira_receipt(config, jira_client, record, controller_actor_id, state):
         raise ValidationError("Enabled Jira tier assignment requires the controller Jira adapter")
     try:
         return write_tier_assignment(jira_client, record, controller_actor_id=controller_actor_id,
-                                     acting_actor_id=controller_actor_id)
+                                     acting_actor_id=controller_actor_id, config=config)
     except TierAssignmentOutcomeError as exc:
         state.setdefault("jira_assignment_write_stops", {})[record["ticket_key"]] = copy.deepcopy(exc.outcome)
         raise

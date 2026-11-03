@@ -787,11 +787,15 @@ def prepare_config(template, *, existing=None, receipt_project_id=None, project_
         fill(project, key, overrides.get(key, name), key)
     for rule in config["specialist_reviews"].values():
         fill(rule, "reviewer_identity", codeowner, "codeowner")
-    if existing is None or (unresolved(jira.get("site")) and unresolved(jira.get("project_key"))):
-        if "jira_site" not in overrides and "jira_key" not in overrides:
-            jira.update(enabled=False, site=None, project_key=None)
-        else:
-            jira.update(enabled=True, site=overrides.get("jira_site"), project_key=overrides.get("jira_key"))
+    if existing is None:
+        # Request Jira by default, without selecting a target or borrowing any
+        # source/example identity. Binding and scoped live access remain separate.
+        jira.update(enabled=True, cloud_id=None, provider_project_id=None,
+                    controller_actor_id=None, site=overrides.get("jira_site"),
+                    project_key=overrides.get("jira_key"))
+    elif jira.get("enabled") is False:
+        if "jira_site" in overrides or "jira_key" in overrides:
+            warnings.append("Preserved explicitly disabled Jira; enable it in reviewed PROJECT_CONFIG.yaml before binding a site/project")
     else:
         for key, flag in (("site", "jira_site"), ("project_key", "jira_key")):
             fill(jira, key, overrides.get(flag), flag)

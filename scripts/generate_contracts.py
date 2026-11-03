@@ -1041,10 +1041,12 @@ def catalog(*, include_ticket_plan=True):
     jira["allOf"] = [{"if": {"properties": {"enabled": {"const": False}}, "required": ["enabled"]},
         "then": {"properties": {key: {"type": "null"} for key in
                                   ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")}},
-        "else": {"properties": {"cloud_id": nullable(text()), "site": text(format="uri"),
-                                  "provider_project_id": nullable(text()),
-                                  "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
-                                  "controller_actor_id": nullable(text())}}}]
+        "else": {"if": {"properties": {key: {"type": "null"} for key in
+                    ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")}},
+                 "else": {"properties": {"cloud_id": nullable(text()), "site": text(format="uri"),
+                                           "provider_project_id": nullable(text()),
+                                           "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
+                                           "controller_actor_id": nullable(text())}}}}]
     # Optional for migrated static configurations. Routing has a strict semantic
     # validator in model_routing.py, shared by configuration validation and CLI.
     schemas["project-config"]["properties"]["execution"]["properties"]["model_routing"] = {"type": "object"}

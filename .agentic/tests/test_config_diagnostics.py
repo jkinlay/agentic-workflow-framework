@@ -37,7 +37,7 @@ class ConfigDiagnosticTests(unittest.TestCase):
                      "$.github.repository", "$.github.repository_id", "$.validation.commands[0]"]:
             self.assertIn(path, reason)
         self.assertIn("zero UUID placeholder", reason)
-        self.assertIs(default['jira']['enabled'], False)
+        self.assertIs(default['jira']['enabled'], True)
         self.assertIsNone(default['jira']['site'])
         self.assertIsNone(default['jira']['project_key'])
         self.assertEqual(default['validation']['required_ci_checks'], [])

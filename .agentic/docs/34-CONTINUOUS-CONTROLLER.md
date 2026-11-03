@@ -131,7 +131,7 @@ Adapter: 1 MiB stderr cap, credentials stripped, fail-closed, and
 
 ### Required adapter operations
 
-Commands load a reviewed, SHA-pinned module exposing
+Load a reviewed, SHA-pinned module exposing
 `build_adapters(config)`, returning callable operations. None means no reviewed
 adapter operations, regardless of state/configuration requirements or effects.
 Source: `.agentic/scripts/continuous_controller.py`.
@@ -139,7 +139,7 @@ Source: `.agentic/scripts/continuous_controller.py`.
 | Controller subcommand | Required adapter operations | CLI source lines |
 |---|---|---|
 | `cycle` | `observe_inventory`, `observe_reservations`, `dispatch_ticket`, `observe_dispatch`, `deliver_status`, `observe_publication`, `observe_host_resources`, `verify_host_observation`, `observe_planning_backlog`, `verify_planning_backlog`, `observe_planning_events`, `verify_planning_events`, `verify_planning_owner` | 225–232 |
-| `jira-lifecycle` | `observe_provider_identity`, `observe_issue_identity`, `read_current_status`, `write_transition`, `read_transition` | 243–244 |
+| `jira-lifecycle` | `observe_provider_identity`, `observe_issue_identity`, `observe_issue_policy`, `read_current_status`, `write_transition`, `read_transition` | 243–244 |
 | `merge-observed` | `reconcile_merged_ticket`, `fetch_scope_page`, `observe_accepted_project_config`, `observe_closeout_record`; additionally `observe_jira_reconciliation` when the supplied project configuration (--project-config) has `jira.enabled is True`, not additionally `observe_jira_reconciliation` when accepted project configuration has `jira.enabled is True` | 246–252 |
 | `owner-publication-prepare` | `authorize_owner_publication` | 217–218 |
 | `owner-publication-resume` | `observe_identity`, `observe_remote_heads`, `create_draft_pr`, `observe_draft_pr` | 220–221 |
@@ -162,12 +162,14 @@ unconditional load-time set:
 - `reconcile_overlap_sync`: UNKNOWN receipt-only recovery.
 - `observe_dispatch_quiescence`: terminal proof for accepted dispatches.
 
+See [Jira scope](JIRA-WRITE-SCOPE.md).
+
 Runtime overlap paths require the corresponding callback. This controller contract applies; the reference adapter lacks
 owner-publication and batch operations.
 
 ## Controller automation switches
 
-The reviewed project configuration's `controller` mapping supplies four boolean
+The `controller` mapping supplies four boolean
 switches. Shipped configuration and examples set all four to `false`.
 `dispatch_enabled` is the master gate; `auto_dispatch` permits implementation
 writers, `auto_request_critic` permits independent critic requests, and
@@ -180,8 +182,7 @@ Disabling automation cancels never-started pending work; uncertain launches
 reconcile by observation without relaunching.
 
 Install and upgrade require all five automation switches, including
-`auto_transition_jira`, to be false. Operators enable the four dispatch switches
-only afterwards, under their governance. Upgrades preserve existing values;
+`auto_transition_jira`, to be false. Enable dispatch switches afterwards under project governance. Upgrades preserve existing values;
 no controller-switch migration is needed. `auto_transition_jira` is unchanged.
 The switches grant no publication, review, merge or adapter qualification.
 Until AWF-36 and AWF-32 ship, no project runs the continuous controller with
