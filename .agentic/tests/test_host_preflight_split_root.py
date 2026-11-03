@@ -74,7 +74,8 @@ class SplitRootPreflightTests(unittest.TestCase):
         self.assertEqual(rows["process_launch"]["status"], "PASS")
         self.assertEqual(rows["repository_writable"]["status"], "PASS")
         self.assertEqual(rows["external_workspace_roots"]["status"], "PASS")
-        self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS")
+        self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS",
+                         rows["external_resource:{raw_estate}"])
         self.assertEqual(len(resource_commands), 1)
         if os.name == "nt":
             self.assertTrue(Path(resource_commands[0][0]).is_absolute())
@@ -125,7 +126,8 @@ class SplitRootPreflightTests(unittest.TestCase):
             self.assertEqual(rows["process_launch"]["status"], "PASS")
             self.assertEqual(rows["repository_writable"]["status"], "PASS")
             self.assertEqual(rows["external_workspace_roots"]["status"], "PASS")
-            self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS")
+            self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS",
+                         rows["external_resource:{raw_estate}"])
             after = (sample.read_bytes(), sample.stat().st_mtime_ns,
                      sorted(p.name for p in estate.iterdir()))
             self.assertEqual(after, before)

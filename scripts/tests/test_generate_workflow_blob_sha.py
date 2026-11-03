@@ -149,6 +149,13 @@ class WorkflowBlobGenerationTests(unittest.TestCase):
 
     def test_unconfigured_generator_twins_remain_exact_and_unpinned(self):
         expected = generate_examples.config(False)
+        self.assertIs(expected["jira"]["enabled"], True)
+        for field in ("cloud_id", "site", "provider_project_id", "project_key",
+                      "controller_actor_id"):
+            self.assertIsNone(expected["jira"][field])
+        self.assertFalse(expected["jira"]["scope"]["allow_entire_project"])
+        for selector in ("included_epics", "labels_any", "components_any"):
+            self.assertEqual([], expected["jira"]["scope"][selector])
         for relative in (
             ".agentic/PROJECT_CONFIG.yaml",
             ".agentic/templates/source-config/PROJECT_CONFIG.yaml",
