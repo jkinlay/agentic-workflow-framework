@@ -19,6 +19,19 @@ PROVIDER = dict(cloud_id="cloud-1", site="https://jira.example.invalid",
     project_id="project-1", project_key="AWF", controller_actor_id="controller-1")
 
 
+def scope_snapshot(key):
+    return {"issue_id": key, "project_key": "AWF", "epic_ids": ["AWF-9"],
+            "component_ids": [], "labels": [], "summary": "Routine work"}
+
+
+def scope_lifecycle(controller, *args, **kwargs):
+    # Existing identity/durability cases use an explicit admitted scope fixture.
+    kwargs.setdefault("observe_issue_policy", lambda key: {
+        "issue_key": key, "issue_type": kwargs["issue_type"], "observed_at": kwargs["now"],
+        "snapshot": scope_snapshot(key)})
+    return controller.production_jira_lifecycle(*args, **kwargs)
+
+
 class JiraSpy:
     """In-memory provider callbacks; never import or contact a Jira client."""
 
@@ -74,6 +87,7 @@ class MergeTrainControllerTests(unittest.TestCase):
             "project_key": "AWF",
             "controller_actor_id": "controller-1",
         })
+        config["jira"]["scope"].update(included_epics=["AWF-9"], labels_any=[], components_any=[])
         # Deliberately neither ticket nor PR sorted: preserve batch merge order.
         tickets = ["AWF-303", "AWF-101", "AWF-202"]
         constituents = [
@@ -126,6 +140,7 @@ class MergeTrainControllerTests(unittest.TestCase):
                     write_transition=spy.write_transition,
                     read_transition=spy.read_transition,
                     observe_issue_identity=lambda key: {"issue_key": key, "observed_at": NOW},
+                    policy_context={key: {"snapshot": scope_snapshot(key)} for key in tickets},
                 )
 
             # Disabled Jira forbids all issue access through every role.
@@ -194,6 +209,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         self.config["jira"].update(enabled=True, cloud_id="cloud-1",
             site="https://jira.example.invalid", provider_project_id="project-1",
             project_key="AWF", controller_actor_id="controller-1")
+        self.config["jira"]["scope"].update(included_epics=["AWF-9"], labels_any=[], components_any=[])
         self.batch = {"batch_id": "batch-1", "pr_number": 44,
             "merge_commit_sha": "d" * 40, "constituents": [
                 {"binding": {"issue_id": issue}, "pr_number": number,
@@ -212,6 +228,15 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
             write_transition=spy.write_transition, read_transition=spy.read_transition,
             observe_issue_identity=lambda key: {"issue_key": key, "observed_at": inputs["now"]})
         inputs.update(overrides)
+        policies = deepcopy(inputs.get("policy_context", {}))
+        for member in inputs["batch"]["constituents"]:
+            key = member["binding"]["issue_id"]
+            facts = policies.setdefault(key, {})
+            observed = {"issue_id": key, "project_key": "AWF", "epic_ids": ["AWF-9"],
+                        "labels": [], "component_ids": [], "summary": "Routine work"}
+            observed.update(facts.get("snapshot", {}))
+            facts["snapshot"] = observed
+        inputs["policy_context"] = policies
         return self.controller.production_batch_jira_reconciliation(self.store, **inputs)
 
     def test_ordinary_lifecycle_after_successful_batch_uses_full_binding(self):
@@ -227,7 +252,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
                 writes.append(record)
                 return {"operation_id": record["operation_id"], "issue_id": "AWF-1",
                         "status": "ATTEMPTED", "observed_at": NOW, "jira_provider": provider}
-            return self.controller.production_jira_lifecycle(self.store,
+            return scope_lifecycle(self.controller,self.store,
                 config=self.config, contract={}, event="WORKER_STARTED",
                 facts={"run_registered": True, "worktree_verified": True}, binding=binding,
                 issue_type="LEAF", state="DISPATCHED", producer_id="controller-1",
@@ -258,7 +283,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
                 writes.append(record)
                 return {"operation_id": record["operation_id"], "issue_id": issue,
                         "status": "ATTEMPTED", "observed_at": NOW, "jira_provider": provider}
-            return self.controller.production_jira_lifecycle(self.store,
+            return scope_lifecycle(self.controller,self.store,
                 config=self.config, contract={}, event="WORKER_STARTED",
                 facts={"run_registered": True, "worktree_verified": True},
                 binding={"issue_id": issue, "project_id": "local-project",
@@ -338,7 +363,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
                 during_write()
             return {"operation_id": record["operation_id"], "issue_id": issue,
                     "status": "ATTEMPTED", "observed_at": NOW, "jira_provider": provider}
-        return self.controller.production_jira_lifecycle(self.store,
+        return scope_lifecycle(self.controller,self.store,
             config=self.config, contract={}, event="WORKER_STARTED",
             facts={"run_registered": True, "worktree_verified": True},
             binding={"issue_id": issue, "project_id": "local-project",
@@ -462,7 +487,9 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         import textwrap
         fixture = Path(self.temporary.name) / "process-input.json"
         fixture.write_text(json.dumps({"config": self.config, "batch": self.batch,
-            "observed_merge": self.merge, "now": NOW}), encoding="utf-8")
+            "observed_merge": self.merge, "now": NOW,
+            "policy_context": {member["binding"]["issue_id"]: {"snapshot": scope_snapshot(member["binding"]["issue_id"])}
+                              for member in self.batch["constituents"]}}), encoding="utf-8")
         source = textwrap.dedent("""
         import json, os, sys
         from pathlib import Path
@@ -929,7 +956,7 @@ class CanonicalIdentitySnapshotTests(unittest.TestCase):
                     return ownership(selected_store, issue_id=issue_id)
 
                 with patch.object(self.controller, "_batch_jira_ownership", side_effect=lock):
-                    result = self.controller.production_jira_lifecycle(store,
+                    result = scope_lifecycle(self.controller,store,
                         config=self.config, contract={}, event="WORKER_STARTED",
                         facts={"run_registered": True, "worktree_verified": True},
                         binding=binding, issue_type="LEAF", state="DISPATCHED",
@@ -952,7 +979,7 @@ class MissingCanonicalObserverTests(unittest.TestCase):
 
     def test_ordinary_missing_issue_observer_records_refusal_without_transition(self):
         spy = JiraSpy()
-        result = self.controller.production_jira_lifecycle(self.store,
+        result = scope_lifecycle(self.controller,self.store,
             config=self.config, contract={}, event="WORKER_STARTED",
             facts={"run_registered": True, "worktree_verified": True},
             binding={"issue_id": "AWF-1"}, issue_type="LEAF", state="DISPATCHED",
@@ -1092,7 +1119,7 @@ class OperationalControllerTests(unittest.TestCase):
                     raise OSError('stop after admission')
                 if mode == 'unbound':
                     config['jira']['cloud_id'] = None
-                result = self.controller.production_jira_lifecycle(self.store,
+                result = scope_lifecycle(self.controller,self.store,
                     config=config, contract={}, event='WORKER_STARTED', facts={},
                     binding={'issue_id':'AWF-1'}, issue_type='LEAF', state='DISPATCHED',
                     producer_id='controller-1', run_id='fixture', now=NOW,
@@ -1199,7 +1226,7 @@ class OperationalControllerTests(unittest.TestCase):
             coordinator=self.coordinator, merge_observer_id='merge-fixture', merge_observer_registry=registry,
             observe_issue_identity=lambda key: {'issue_key': key, 'observed_at': NOW},
             observe_issue_policy=lambda key: {'issue_key':key, 'issue_type':'LEAF',
-                'snapshot':{'summary':'Routine work', 'labels':[]}, 'observed_at':NOW},
+                'snapshot':{'issue_id':key, 'project_key':'AWF', 'epic_ids':['AWF-9'], 'component_ids':[], 'summary':'Routine work', 'labels':[]}, 'observed_at':NOW},
             observe_provider_identity=lambda: {'cloud_id':'cloud-1','site':'https://jira.example.invalid',
                 'project_id':'project-1','project_key':'AWF','controller_actor_id':'controller-1'},
             now=NOW, read_current_status=spy.read_current_status,
@@ -1220,7 +1247,7 @@ class OperationalControllerTests(unittest.TestCase):
             with self.store.connection() as db:
                 self.assertEqual(0, db.execute('SELECT count(*) FROM controller_batch_jira_operation').fetchone()[0])
             with self.assertRaisesRegex(ValidationError, 'canonical'):
-                self.controller.production_jira_lifecycle(self.store, config=self.config,
+                scope_lifecycle(self.controller,self.store, config=self.config,
                     contract={}, event='WORKER_STARTED', facts={}, binding={'issue_id':alias},
                     issue_type='LEAF', state='DISPATCHED', producer_id='controller-1', run_id='fixture',
                     now=NOW, evidence=[], transition_id='31', read_current_status=spy.read_current_status,
@@ -1244,7 +1271,7 @@ class OperationalControllerTests(unittest.TestCase):
                 read_current_status=forbidden, write_transition=forbidden,
                 read_transition=forbidden)
         with self.assertRaisesRegex(ValidationError, 'canonical'):
-            self.controller.production_jira_lifecycle(self.store, config=self.config,
+            scope_lifecycle(self.controller,self.store, config=self.config,
                 contract={}, event='WORKER_STARTED', facts={}, binding={'issue_id':'2001'},
                 issue_type='LEAF', state='DISPATCHED', producer_id='controller-1', run_id='fixture',
                 now=NOW, evidence=[], transition_id='31', observe_provider_identity=forbidden,
@@ -1288,6 +1315,38 @@ class OperationalControllerTests(unittest.TestCase):
         with self.store.connection() as db:
             self.assertEqual('UNKNOWN', db.execute("SELECT status FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()[0])
 
+    def test_fresh_batch_policy_turning_leaf_into_epic_never_writes(self):
+        spy = JiraSpy()
+        inputs = self.operational_inputs(spy)
+        observations = {}
+        def policy(key):
+            observations[key] = observations.get(key, 0) + 1
+            return {"issue_key": key, "issue_type": "LEAF" if observations[key] == 1 else "EPIC",
+                    "snapshot": scope_snapshot(key), "observed_at": NOW}
+        inputs["observe_issue_policy"] = policy
+        result = self.controller.production_batch_closeout(self.store, **inputs)
+        self.assertFalse(spy.writes)
+        self.assertFalse(result["jira"]["complete"])
+        self.assertIsNotNone(result["jira"]["conflict"])
+        self.assertEqual(2, observations["AWF-1"])
+
+    def test_fresh_batch_owner_closure_hold_prevents_done_write(self):
+        spy = JiraSpy()
+        inputs = self.operational_inputs(spy)
+        observations = {}
+        def policy(key):
+            observations[key] = observations.get(key, 0) + 1
+            value = scope_snapshot(key)
+            if observations[key] > 1:
+                value["summary"] = "Release acceptance"
+            return {"issue_key": key, "issue_type": "LEAF",
+                    "snapshot": value, "observed_at": NOW}
+        inputs["observe_issue_policy"] = policy
+        result = self.controller.production_batch_closeout(self.store, **inputs)
+        self.assertFalse(spy.writes)
+        self.assertFalse(result["jira"]["complete"])
+        self.assertIsNotNone(result["jira"]["conflict"])
+
     def test_operational_provider_policy_holds_and_disabled_jira(self):
         for issue_type, summary in [('EPIC','Routine work'), ('LEAF','Release acceptance')]:
             self.store = self.controller.ContinuousControllerStore(
@@ -1295,7 +1354,7 @@ class OperationalControllerTests(unittest.TestCase):
             spy = JiraSpy()
             inputs = self.operational_inputs(spy)
             inputs['observe_issue_policy'] = lambda key: {'issue_key':key,
-                'issue_type':issue_type, 'snapshot':{'summary':summary,'labels':[]},'observed_at':NOW}
+                'issue_type':issue_type, 'snapshot':{**scope_snapshot(key), 'summary':summary},'observed_at':NOW}
             result = self.controller.production_batch_closeout(self.store, **inputs)
             self.assertEqual(['AWF-1','AWF-2'], result['jira']['held'])
             self.assertFalse(result['count_allowed'])
@@ -1658,7 +1717,7 @@ class RetainedReceiptStorageTests(unittest.TestCase):
                 writes.append(record)
             return dict(operation_id=record['operation_id'], issue_id='AWF-1',
                         status='ATTEMPTED', observed_at=NOW, jira_provider=provider)
-        return self.controller.production_jira_lifecycle(self.store,
+        return scope_lifecycle(self.controller,self.store,
             config=self.config, contract={}, event='WORKER_STARTED',
             facts=dict(run_registered=True, worktree_verified=True), binding=binding,
             issue_type='LEAF', state='DISPATCHED', producer_id='controller-1',

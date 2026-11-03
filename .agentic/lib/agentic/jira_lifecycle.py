@@ -128,7 +128,53 @@ def tier_assignment_comment(assignment):
     return "\n".join(lines)
 
 
-def write_tier_assignment(client, assignment, *, controller_actor_id, acting_actor_id):
+def require_jira_issue_scope(config, issue_key, snapshot):
+    """Refuse every write without a complete adapter-observed scoped issue."""
+    from .policy import inside_scope
+    if not isinstance(config, dict) or config.get("jira", {}).get("enabled") is not True:
+        raise ValidationError("Jira scope refuses writes without enabled reviewed configuration")
+    scope = config["jira"].get("scope")
+    scope_fields = {"allow_entire_project", "selector_mode", "included_epics",
+                    "labels_any", "components_any", "additional_jql", "ownership_required"}
+    if (not isinstance(scope, dict) or set(scope) != scope_fields or
+            scope.get("ownership_required") is not True or scope.get("additional_jql") != "" or
+            type(scope.get("allow_entire_project")) is not bool or
+            scope.get("selector_mode") not in {"all", "any"} or
+            not isinstance(config["jira"].get("project_key"), str) or not config["jira"]["project_key"].strip() or
+            config["jira"]["project_key"].strip() != config["jira"]["project_key"]):
+        raise ValidationError("Jira scope configuration is incomplete or malformed")
+    for selector in ("included_epics", "labels_any", "components_any"):
+        values = scope.get(selector)
+        if (not isinstance(values, list) or
+                not all(isinstance(item, str) and item.strip() and item == item.strip() for item in values) or
+                len(values) != len(set(values))):
+            raise ValidationError("Jira scope configuration has malformed " + selector)
+    required = {"issue_id", "project_key", "epic_ids", "labels", "component_ids"}
+    if not isinstance(snapshot, dict) or not required.issubset(snapshot):
+        raise ValidationError("Jira scope observation is missing required issue fields")
+    if (snapshot["issue_id"] != issue_key or
+            not isinstance(snapshot["project_key"], str) or not snapshot["project_key"].strip() or
+            snapshot["project_key"] != snapshot["project_key"].strip() or
+            not isinstance(issue_key, str) or re.fullmatch(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*", issue_key) is None):
+        raise ValidationError("Jira scope observation names a different or unbound issue")
+    for field in ("epic_ids", "labels", "component_ids"):
+        value = snapshot[field]
+        if (not isinstance(value, list) or
+                not all(isinstance(item, str) and item.strip() and item == item.strip() for item in value) or
+                len(value) != len(set(value))):
+            raise ValidationError("Jira scope observation has malformed " + field)
+    if config.get("jira", {}).get("scope", {}).get("additional_jql"):
+        raise ValidationError("Jira writes require qualified additional-JQL scope evidence")
+    try:
+        allowed = inside_scope(snapshot, config)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValidationError("Jira scope configuration is incomplete or malformed") from exc
+    if not allowed:
+        raise ValidationError("Jira scope refuses an unrelated or out-of-scope issue")
+    return copy.deepcopy(snapshot)
+
+
+def write_tier_assignment(client, assignment, *, controller_actor_id, acting_actor_id, config=None):
     """Write one tier label/comment and require an exact controller read-back.
 
     The adapter surface is deliberately tiny and testable: ``read_issue``,
@@ -141,6 +187,7 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
     key = assignment.get("ticket_key")
     if not isinstance(key, str) or not key:
         raise ValidationError("Jira tier assignment requires a ticket key")
+    config = copy.deepcopy(config)
     try:
         before = client.read_issue(key)
     except Exception as exc:
@@ -149,6 +196,7 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
                    "observed_actor": None, "observed_at": None,
                    "reason": "Jira tier assignment read-before-write failed"}
         raise TierAssignmentOutcomeError(outcome["reason"], outcome) from exc
+    require_jira_issue_scope(config, key, before)
     labels = before.get("labels") if isinstance(before, dict) else None
     if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
         raise ValidationError("Jira tier assignment read did not return labels")
@@ -159,6 +207,7 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
     try:
         client.set_labels(key, updated, actor_id=acting_actor_id)
         stage = "comment"
+        require_jira_issue_scope(config, key, client.read_issue(key))
         client.add_comment(key, comment, actor_id=acting_actor_id)
         stage = "read_back"
         after = client.read_issue(key)

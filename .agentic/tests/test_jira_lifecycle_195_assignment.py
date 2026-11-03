@@ -13,7 +13,8 @@ from agentic.jira_lifecycle import TierAssignmentOutcomeError, write_tier_assign
 
 class FakeJira:
     def __init__(self):
-        self.issue = {"labels": ["ready", "tier-1"], "comments": []}
+        self.issue = {"issue_id": "AWF-48", "project_key": "AWF", "epic_ids": ["AWF-1"],
+                      "component_ids": [], "labels": ["ready", "tier-1"], "comments": []}
         self.calls = []
 
     def read_issue(self, key):
@@ -37,8 +38,11 @@ class JiraAssignmentWrites(unittest.TestCase):
     def test_controller_writes_label_and_comment_then_reads_back(self):
         jira = FakeJira()
         result = write_tier_assignment(jira, self.assignment(), controller_actor_id="controller",
-                                       acting_actor_id="controller")
-        self.assertEqual(["read", "labels", "comment", "read"], jira.calls)
+                                       acting_actor_id="controller", config={"jira": {"enabled": True, "project_key": "AWF",
+                                           "scope": {"allow_entire_project": False, "selector_mode": "all",
+                                                     "included_epics": ["AWF-1"], "labels_any": [], "components_any": [],
+                                                     "ownership_required": True, "additional_jql": ""}}})
+        self.assertEqual(["read", "labels", "read", "comment", "read"], jira.calls)
         self.assertEqual(["ready", "tier-3"], jira.issue["labels"])
         self.assertEqual("VERIFIED", result["read_back_status"])
         self.assertEqual("7", result["comment_id"])
@@ -58,7 +62,10 @@ class JiraAssignmentWrites(unittest.TestCase):
         jira.add_comment = fail_comment
         with self.assertRaises(TierAssignmentOutcomeError) as raised:
             write_tier_assignment(jira, self.assignment(), controller_actor_id="controller",
-                                  acting_actor_id="controller")
+                                  acting_actor_id="controller", config={"jira": {"enabled": True, "project_key": "AWF",
+                                           "scope": {"allow_entire_project": False, "selector_mode": "all",
+                                                     "included_epics": ["AWF-1"], "labels_any": [], "components_any": [],
+                                                     "ownership_required": True, "additional_jql": ""}}})
         self.assertEqual("UNKNOWN", raised.exception.outcome["status"])
         self.assertEqual("comment", raised.exception.outcome["write_stage"])
         self.assertTrue(raised.exception.outcome["writes_stopped"])

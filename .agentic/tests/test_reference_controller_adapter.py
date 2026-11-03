@@ -131,6 +131,10 @@ class FakeHttp:
 			return (200, json.dumps({'issues': [issue], 'total': 2}))
 		if url.endswith('?fields=key'):
 			return (200, json.dumps({'id': '100', 'key': 'EX-42'}))
+		if '?fields=project,parent,labels,components,issuetype,summary' in url:
+			key = url.split('/issue/', 1)[1].split('?', 1)[0]
+			return (200, json.dumps({'key': key, 'fields': {'project': {'id': 'project-1', 'key': 'EX'},
+				'labels': ['awf-fixture'], 'components': [], 'issuetype': {'name': 'Task'}, 'summary': 'Routine work'}}))
 		if '/rest/api/3/issue/' in url and method == 'GET':
 			self.issue_reads += 1
 			if 'expand=changelog' in url:
@@ -178,7 +182,18 @@ def _base_config(root):
 	auth.write_text('{"fixture":"auth-material"}\n', encoding='utf-8')
 	if os.name != 'nt':
 		auth.chmod(384)
-	return {'codex': {'executable': {'path': str(codex), 'sha256': sha256(codex.read_bytes())}, 'roles': {'writer': {'model': 'writer-model', 'reasoning_effort': 'high', 'sandbox': 'workspace-write'}, 'critic': {'model': 'critic-model', 'reasoning_effort': 'medium', 'sandbox': 'read-only'}}, 'isolated_home': str(isolated_home), 'windows_sandbox': 'elevated', 'worktree_root': str(worktree), 'run_record_directory': str(root / 'runs'), 'timeout_seconds': 20}, 'github': {'host': 'https://github.com', 'repository': 'example/project', 'repository_id': 101, 'project_id': 'project-1', 'scope_sha256': 'a' * 64, 'base_branch': 'main', 'branch_pattern': 'codex/{ticket}-{slug}', 'expected_actor_id': 1001, 'auth_profile': 'smoke', 'executable': {'path': str(gh), 'sha256': sha256(gh.read_bytes())}, 'page_size': 100}, 'jira': {'enabled': True, 'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'provider_project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller', 'token_env': 'AWF_JIRA_TOKEN', 'merged_status_id': 'Done', 'merged_transition_id': 'done-transition', 'page_size': 1}, 'outbox': {'directory': str(root / 'outbox')}}
+	project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+	project_config['github'].update(host='https://github.com', repository='example/project', repository_id=101, base_branch='main')
+	project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid',
+		provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
+	project_path = root / 'accepted-project.json'
+	project_path.write_text(json.dumps(project_config), encoding='utf-8')
+	closeout_dir, jira_dir = root / 'closeout', root / 'jira-evidence'
+	closeout_dir.mkdir(); jira_dir.mkdir()
+	observations = {'accepted_project_config': {'path': str(project_path),
+		'sha256': sha256(project_path.read_bytes()), 'blob_sha': 'e' * 40, 'acceptance_receipt_id': 'fixture-acceptance'},
+		'closeout_directory': str(closeout_dir), 'jira_transition_directory': str(jira_dir)}
+	return {'observations': observations, 'codex': {'executable': {'path': str(codex), 'sha256': sha256(codex.read_bytes())}, 'roles': {'writer': {'model': 'writer-model', 'reasoning_effort': 'high', 'sandbox': 'workspace-write'}, 'critic': {'model': 'critic-model', 'reasoning_effort': 'medium', 'sandbox': 'read-only'}}, 'isolated_home': str(isolated_home), 'windows_sandbox': 'elevated', 'worktree_root': str(worktree), 'run_record_directory': str(root / 'runs'), 'timeout_seconds': 20}, 'github': {'host': 'https://github.com', 'repository': 'example/project', 'repository_id': 101, 'project_id': 'project-1', 'scope_sha256': 'a' * 64, 'base_branch': 'main', 'branch_pattern': 'codex/{ticket}-{slug}', 'expected_actor_id': 1001, 'auth_profile': 'smoke', 'executable': {'path': str(gh), 'sha256': sha256(gh.read_bytes())}, 'page_size': 100}, 'jira': {'enabled': True, 'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'provider_project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller', 'token_env': 'AWF_JIRA_TOKEN', 'merged_status_id': 'Done', 'merged_transition_id': 'done-transition', 'page_size': 1}, 'outbox': {'directory': str(root / 'outbox')}}
 
 def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False, binary=False):
 	original = list(heads)
@@ -345,8 +360,8 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		config_path = self.root / 'config.json'
 		config_path.write_text(json.dumps(self.config), encoding='utf-8')
 		adapters, loader = _load_real(self.adapter, config_path)
-		self.assertEqual(set(adapters), {'observe_issue_identity', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'})
-		loader._require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'})
+		self.assertEqual(set(adapters), {'observe_issue_identity', 'observe_issue_policy', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'})
+		loader._require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'})
 		with self.assertRaisesRegex(ValidationError, 'SHA-256 pin'):
 			loader._load_reviewed_adapters(self.adapter, '0' * 64, config_path)
 
@@ -933,7 +948,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'jira-timing.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
 		self.assertIn('record', result, result)
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
 
@@ -1140,7 +1155,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		config['jira'].update({k: self.config['jira'][k] for k in ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')})
 		store = ContinuousControllerStore(self.root / 'identity.sqlite', ['A'], worktree_roots=[self.root / 'worktree'])
 		binding = {'issue_id': issue}
-		return production_jira_lifecycle(store, config=config, contract={}, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', **{k: adapters[k] for k in ('observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition')})
+		return production_jira_lifecycle(store, config=config, contract={}, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', **{k: adapters[k] for k in ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition')})
 
 	def test_issue_identity_returns_provider_key_and_completion_time(self):
 		clock = FakeClock()
@@ -1296,7 +1311,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		binding = {'issue_id': 'EX-42'}
 		store = ContinuousControllerStore(self.root / 'jira.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
 		self.assertTrue(result['planned'])
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
 		self.assertEqual(http.asserted_transition_id, '3')
@@ -1314,7 +1329,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'foreign.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
 		self.assertNotEqual(result.get('record', {}).get('status'), 'SUCCEEDED')
 		self.assertIn('writes_stopped', result)
 
@@ -1694,7 +1709,7 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 				rows.append(cells)
 		expected = {
 			'cycle': {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'},
-			'jira-lifecycle': {'observe_provider_identity', 'observe_issue_identity', 'read_current_status', 'write_transition', 'read_transition'},
+			'jira-lifecycle': {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'},
 			'merge-observed': {'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation'},
 			'owner-publication-prepare': {'authorize_owner_publication'},
 			'owner-publication-resume': {'observe_identity', 'observe_remote_heads', 'create_draft_pr', 'observe_draft_pr'},

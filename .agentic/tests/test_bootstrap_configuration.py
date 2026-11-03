@@ -202,6 +202,8 @@ class ConfigurationDerivationTests(unittest.TestCase):
                 self.assertEqual(result["config"]["jira"], before)
                 self.assertEqual(original["jira"], before)
 
+    @skip_unless_source_repo("Source configuration forms are not shipped in installed runtimes",
+                             ".agentic/templates/source-config/PROJECT_CONFIG.yaml")
     def test_fresh_source_forms_request_jira_without_target_identities(self):
         for path in (ROOT / ".agentic/PROJECT_CONFIG.yaml", ROOT / ".agentic/examples/unconfigured-project.yaml",
                      ROOT / ".agentic/templates/source-config/PROJECT_CONFIG.yaml"):
