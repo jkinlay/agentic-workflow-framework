@@ -138,8 +138,8 @@ class FakeHttp:
 		if '/rest/api/3/issue/' in url and method == 'GET':
 			self.issue_reads += 1
 			if 'expand=changelog' in url:
-				status = 'Done' if '/issue/100?' in url else 'In Progress'
-				return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status}}, 'changelog': {'histories': [{'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'to': status, 'toString': status}]}]}}))
+				status = 'Done' if '/issue/EX-100?' in url else 'In Progress'
+				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}}, 'changelog': {'histories': [{'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'to': status, 'toString': status}]}]}}))
 			status = 'Ready' if self.issue_reads == 1 else 'In Progress'
 			return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status}}}))
 		if method == 'POST' and '/transitions' in url:
@@ -1338,8 +1338,8 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		clock = FakeClock()
 		cfg = {**self.config, '_http_transport': http, '_clock': clock}
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](cfg)
-		progress = {'jira_enabled': True, 'merged_ticket': '100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': {}, 'max_pages': 5, 'max_items': 10}
-		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), patch('agentic.closeout.require_jira_reconciliation_before_counts', return_value={'status': 'PASS', 'count_allowed': True, 'ticket': '100'}):
+		progress = {'jira_enabled': True, 'merged_ticket': 'EX-100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': {}, 'max_pages': 5, 'max_items': 10}
+		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), patch('agentic.closeout.require_jira_reconciliation_before_counts', return_value={'status': 'PASS', 'count_allowed': True, 'ticket': 'EX-100'}):
 			result = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
 		self.assertEqual(result['state'], 'MERGED')
 		self.assertEqual(result['jira_progress']['jira_state'], 'COUNTED')
@@ -1377,7 +1377,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		jira_dir.mkdir()
 		project_path = evidence / 'PROJECT_CONFIG.yaml'
 		project_path.write_bytes(project_bytes)
-		binding = {'project_id': project_config['project']['id'], 'repository_id': 101, 'issue_id': '100', 'requirements_hash': 'a' * 64, 'contract_hash': 'b' * 64, 'policy_hash': policy_hash(project_config, definition()), 'candidate_id': 'd' * 64}
+		binding = {'project_id': project_config['project']['id'], 'repository_id': 101, 'issue_id': 'EX-100', 'requirements_hash': 'a' * 64, 'contract_hash': 'b' * 64, 'policy_hash': policy_hash(project_config, definition()), 'candidate_id': 'd' * 64}
 		transition_id = '10000000-0000-0000-0000-000000000001'
 		merge_result_id = '10000000-0000-0000-0000-000000000002'
 		closeout_id = '10000000-0000-0000-0000-000000000003'
@@ -1385,26 +1385,44 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		transition = {'schema_version': 3, 'record_id': transition_id, 'created_at': NOW, 'producer_id': 'controller', 'run_id': '10000000-0000-0000-0000-000000000007', 'binding': binding, 'operation_id': '10000000-0000-0000-0000-000000000008', 'merge_result_id': merge_result_id, 'jira_provider': {'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller'}, 'lifecycle_event': 'JIRA_RECONCILED', 'from_status_id': '3', 'to_status_id': 'Done', 'transition_id': 'done-transition', 'status': 'SUCCEEDED', 'evidence': ['urn:awf:fixture:jira-transition'], 'read_back': {'observed_status': 'Done', 'observed_actor': 'controller', 'observed_at': NOW}}
 		(closeout_dir / (closeout_id + '.json')).write_bytes(canonical({'record': closeout, 'merge_result_id': merge_result_id, 'merge_observed_at': NOW}))
 		(jira_dir / (transition_id + '.json')).write_bytes(canonical({'record': transition}))
-		adapter_config = {**self.config, '_http_transport': FakeHttp(), '_clock': FakeClock(), 'observations': {'accepted_project_config': {'path': str(project_path), 'sha256': sha256(project_bytes), 'blob_sha': 'e' * 40, 'acceptance_receipt_id': 'fixture-acceptance'}, 'closeout_directory': str(closeout_dir), 'jira_transition_directory': str(jira_dir)}}
+		http = FakeHttp()
+		adapter_config = {**self.config, '_http_transport': http, '_clock': FakeClock(), 'observations': {'accepted_project_config': {'path': str(project_path), 'sha256': sha256(project_bytes), 'blob_sha': 'e' * 40, 'acceptance_receipt_id': 'fixture-acceptance'}, 'closeout_directory': str(closeout_dir), 'jira_transition_directory': str(jira_dir)}}
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](adapter_config)
 		import importlib.util
 		spec = importlib.util.spec_from_file_location('test_awf76_controller_loader', ROOT / '.agentic/scripts/continuous_controller.py')
 		controller_script = importlib.util.module_from_spec(spec)
 		spec.loader.exec_module(controller_script)
 		count_gate = controller_script._count_gate_inputs({'closeout_record': closeout}, config=project_config, repository=repository, contracts=Contracts(ROOT / '.agentic/schemas'), adapters=adapters, adapter_sha256=sha256(self.adapter.read_bytes()), observed_at=NOW)
-		progress = {'jira_enabled': True, 'merged_ticket': '100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': count_gate, 'max_pages': 5, 'max_items': 10}
+		progress = {'jira_enabled': True, 'merged_ticket': 'EX-100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': count_gate, 'max_pages': 5, 'max_items': 10}
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
 			result = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
 		self.assertEqual(result['state'], 'MERGED')
 		self.assertEqual(result['jira_progress']['jira_state'], 'COUNTED')
 		self.assertEqual(result['jira_progress']['closed'], 1)
+		original_request = http.request
+		for returned_key in (None, 'EX-999'):
+			with self.subTest(returned_key=returned_key):
+				def wrong_readback(method, url, **kwargs):
+					status, body = original_request(method, url, **kwargs)
+					if 'expand=changelog' in url:
+						value = json.loads(body)
+						value['id'] = 'EX-100'  # An id must not substitute for the bound canonical key.
+						value['key'] = returned_key
+						body = json.dumps(value)
+					return status, body
+				posts_before = sum(call[0] == 'POST' for call in http.calls)
+				with patch.object(http, 'request', side_effect=wrong_readback), patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
+					refused = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
+				self.assertEqual('UNOBSERVED', refused['jira_progress']['jira_state'])
+				self.assertIn('closeout count gate failed', refused['jira_progress']['reason'])
+				self.assertEqual(posts_before, sum(call[0] == 'POST' for call in http.calls))
 
 	def test_jira_advancing_page_time_is_not_counted(self):
 		http = AdvancingPageHttp()
 		cfg = {**self.config, '_http_transport': http, '_clock': FakeClock()}
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](cfg)
-		progress = {'jira_enabled': True, 'merged_ticket': '100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': {}, 'max_pages': 5, 'max_items': 10}
-		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), patch('agentic.closeout.require_jira_reconciliation_before_counts', return_value={'status': 'PASS', 'count_allowed': True, 'ticket': '100'}):
+		progress = {'jira_enabled': True, 'merged_ticket': 'EX-100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': {}, 'max_pages': 5, 'max_items': 10}
+		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), patch('agentic.closeout.require_jira_reconciliation_before_counts', return_value={'status': 'PASS', 'count_allowed': True, 'ticket': 'EX-100'}):
 			result = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
 		self.assertEqual(result['jira_progress']['jira_state'], 'RECONCILED')
 

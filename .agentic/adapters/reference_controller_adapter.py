@@ -654,7 +654,8 @@ def _build(config):
 		record = value['record']
 		_require(record.get('record_id') == request['transition_record_id'] and record.get('binding') == request['binding'] and (record.get('binding', {}).get('issue_id') == request['issue_id']) and (record.get('jira_provider') == provider) and (record.get('producer_id') == provider['controller_actor_id']) and (record.get('lifecycle_event') == 'JIRA_RECONCILED') and (record.get('status') == 'SUCCEEDED') and (record.get('to_status_id') == request['expected_status_id']), 'Jira transition evidence differs from the requested reconciliation')
 		issue = jira_json('GET', '/rest/api/3/issue/' + quote(request['issue_id'], safe='') + '?fields=status&expand=changelog')
-		_require(issue.get('id') == request['issue_id'], 'Jira reconciliation readback returned a different issue')
+		identity_field = 'key' if re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', request['issue_id']) else 'id'
+		_require(issue.get(identity_field) == request['issue_id'], 'Jira reconciliation readback returned a different issue')
 		current_status = issue.get('fields', {}).get('status', {}).get('id')
 		_require(current_status == request['expected_status_id'], 'Jira issue is not currently at the configured terminal status')
 		read_back = record.get('read_back')
