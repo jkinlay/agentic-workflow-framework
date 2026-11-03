@@ -582,7 +582,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf-portable/references/skill-installation.md` | `897ce9bc0c0df43f47f0a543964830ae22b0e75a62548a0479a39a422527bca6` |
 | `global/awf-portable/references/update-channel.example.json` | `bf98973fda46023e0346de0c049e7e8141b7e64feb4b19308f7a44c1d9066198` |
 | `global/awf-portable/references/update-channel.md` | `6685bfe2ba43657e30070e20977f1845e33dcfa48ccbd17f4439ad5343ab4325` |
-| `global/awf-portable/references/workflow.md` | `846682519abda9d841863d32267a3267d6a02ad739ffad0d58d832c9ebc889ae` |
+| `global/awf-portable/references/workflow.md` | `61a98aed9e9eb952e5f71392db1c4c49da75ba6c703831c7457319d73c0ff24a` |
 | `global/awf-portable/scripts/awf.py` | `a1c751a81507e578b1880a8034b8cfe365c3c03db69403f7c45720325749fb05` |
 | `global/awf-portable/scripts/check_updates.py` | `2290ea667a15eb97b223bbefdc692cdf7dce43db029b2aaa1cc7e754120e60bc` |
 | `global/awf-portable/scripts/install_skill.py` | `78f23f1f8ed69d19190e522ec89a2f42b94fcb5f8a8e503f7c05fcc32e175f4a` |
@@ -596,7 +596,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf/SKILL.md` | `a4fdddd572c4c5c1325e1089d8b966b6f565f2a5dd2502e1df9cdb6b933723f5` |
 | `global/awf/catalog-location.example.json` | `705051f90507da2a983ae675ce0899615c3fa341ae02471dd5bc60563b89875a` |
 | `global/awf/references/model-routing.md` | `9d612967a2ae021a897a0fdb81a68befa60af68b3762cf6826fa7340fceb212a` |
-| `global/awf/references/workflow.md` | `8b048895a9612100f0522c88e2160a32aa6b80f0d13aea3efd765b92f49f4fdd` |
+| `global/awf/references/workflow.md` | `dd0f0d2e2f0497cbacd69c519fc1f5a595ab957787f165854e1646284bc9ad9d` |
 | `global/awf/scripts/awf.py` | `39c03ed1a17a82cdd0f0625892ef29e11738e8d12e32f8afab3f92eea012ad69` |
 | `global/awf/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
 | `global/awf/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
