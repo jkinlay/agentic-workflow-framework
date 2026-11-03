@@ -421,7 +421,7 @@
     ".agentic/tests/test_publication_sync_merge_history.py": "ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e",
     ".agentic/tests/test_ready_authorization.py": "fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d",
     ".agentic/tests/test_reference.py": "ca4af76b4de3bfd0d084cd0c33bdc59150f1d8c9e2e2da3d8b2a5cddc69ff503",
-    ".agentic/tests/test_reference_controller_adapter.py": "b298d888f66b1a7548c6262adcbf372402132806eba7691f74a23427b86e9a2e",
+    ".agentic/tests/test_reference_controller_adapter.py": "94d180528432b957ce3d7911da6a7dceee83ad172df0c1a336217e26a0036169",
     ".agentic/tests/test_reference_controller_adapter_install.py": "701d0a2138abfc903834433b6439f38b9c0003cc5959d3e880cc62c3c700ba8d",
     ".agentic/tests/test_release_trust.py": "5ee524663da11f15a04ed83c19ffcc7a951f5d89715784610799ce4709c0eed4",
     ".agentic/tests/test_repository_rules.py": "c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68",

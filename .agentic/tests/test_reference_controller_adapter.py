@@ -1411,10 +1411,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 						body = json.dumps(value)
 					return status, body
 				posts_before = sum(call[0] == 'POST' for call in http.calls)
-				with patch.object(http, 'request', side_effect=wrong_readback), patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-					refused = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
-				self.assertEqual('UNOBSERVED', refused['jira_progress']['jira_state'])
-				self.assertIn('closeout count gate failed', refused['jira_progress']['reason'])
+				request = {'operation': 'JIRA_RECONCILIATION', 'provider_identity': transition['jira_provider'], 'source_identity': 'jira_issue_transition_and_readback', 'binding': binding, 'issue_id': 'EX-100', 'transition_record_id': transition_id, 'expected_status_id': 'Done'}
+				with patch.object(http, 'request', side_effect=wrong_readback), patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), self.assertRaisesRegex(ValidationError, 'different issue'):
+					adapters['observe_jira_reconciliation'](request)
 				self.assertEqual(posts_before, sum(call[0] == 'POST' for call in http.calls))
 
 	def test_jira_advancing_page_time_is_not_counted(self):
