@@ -36,17 +36,30 @@ def materialize_published(repository, destination, *, commit=PUBLISHED_COMMIT):
 
 
 def materialize_candidate(repository, destination):
-    """Use the unmodified committed candidate, without regenerating manifests.
+    """Project current source; generate manifests only inside the disposable copy.
 
-    In-process installer tests exercise the working library against this source
-    payload. This does not qualify the installed working-tree candidate.
+    Historical bytes/pins and the checkout's generated artifacts stay immutable.
+    This development source identity is not final release acceptance.
     """
-    import publish_release
-    arguments = (*publish_release.RAW_GIT_ARGUMENTS, '-c',
-                 'safe.directory=' + Path(repository).resolve().as_posix())
-    with patch.object(publish_release, 'RAW_GIT_ARGUMENTS', arguments):
-        head = publish_release.git(repository, 'rev-parse', 'HEAD').strip()
-        return publish_release.materialize_commit(repository, head, destination)
+    import build_release
+    from agentic.safeio import Tree
+    destination = Path(destination)
+    destination.mkdir()
+    with Tree(repository) as tree:
+        for relative in build_release.release_paths(tree):
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(build_release.release_bytes(tree, relative))
+        for relative in build_release.SOURCE_CONFIGS.values():
+            template = destination / relative
+            template.parent.mkdir(parents=True, exist_ok=True)
+            template.write_bytes(tree.read(relative))
+    result = run_bounded([sys.executable, '-B', str(destination / 'scripts/build_release.py'),
+                          '--manifest-only'], cwd=destination, env=child_env(), timeout=120,
+                         stdout_limit=4 * 1024 * 1024, stderr_limit=1024 * 1024)
+    if result.returncode:
+        raise AssertionError('Disposable candidate generation failed: ' + result.stderr.decode('utf-8'))
+    return destination
 
 
 def verify_published(source):

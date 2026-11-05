@@ -1,4 +1,4 @@
-"""Read-only upgrade planning and external preservation evidence; never a live upgrader.
+"""Disposable upgrade qualification and external preservation evidence; never live rollout.
 
 Reports contain digests rather than owner file contents. Keep reports and allowed
 delta files in approved external storage. This tool grants no release authority.
@@ -12,11 +12,14 @@ import os
 from pathlib import Path
 import stat
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic.canonical import load_yaml
-from agentic.installer import install
+from agentic.installer import install, CONFIG, INSTALLED, PROVENANCE
+from agentic.safeio import Tree, run_bounded
+from agentic.child_process import child_env
 
 FORMAT = 'awf-upgrade-preservation-1'
 EXCLUDED = {'.git', '.venv', '__pycache__'}
@@ -119,6 +122,121 @@ def plan(source, project, expected_manifest_sha256):
             'qualification_status': 'NOT_QUALIFIED'}
 
 
+def checked_bootstrap(result, project, pin):
+    """Validate actual bootstrap subprocess receipts, including canonical argv."""
+    runtime = project / '.agentic/.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    script = project / '.agentic/scripts/workflow.py'
+    checks = result.get('post_install_checks', [])
+    if len(checks) != 2 or result.get('status') != 'CONFIGURED':
+        raise ValueError('Bootstrap did not establish CONFIGURED with two installed checks')
+    for check, action in zip(checks, ('verify-installation', 'validate-config')):
+        expected = [str(runtime), '-B', '-I', str(script), '--root', str(project), action]
+        if check.get('command') != expected or check.get('exit_code') != 0 or check.get('diagnostic') is not None:
+            raise ValueError('Canonical installed check command or exit failed')
+    integrity = checks[0].get('output') or {}
+    validation = checks[1].get('output') or {}
+    if integrity.get('integrity_valid') is not True or integrity.get('source_manifest_sha256') != pin:
+        raise ValueError('Installed integrity/source binding failed')
+    policy = result.get('configuration', {}).get('policy_sha256')
+    if (validation.get('status') != 'ACCEPTED' or not isinstance(policy, str) or
+            len(policy) != 64 or validation.get('policy_sha256') != policy or
+            result.get('pre_install_configuration', {}).get('policy_sha256') != policy or
+            result.get('source_manifest_sha256') != pin):
+        raise ValueError('Installed configuration/policy binding failed')
+    return {'status': 'CONFIGURED', 'source_manifest_sha256': pin, 'policy_sha256': policy,
+            'checks': [{'action': action, 'exit_code': check['exit_code'],
+                        'integrity_valid': check['output'].get('integrity_valid'),
+                        'status': check['output'].get('status'),
+                        'output_sha256': hashlib.sha256(json.dumps(check['output'], sort_keys=True).encode()).hexdigest()}
+                       for action, check in zip(('verify-installation', 'validate-config'), checks)],
+            'installed_hashes': {path: hashlib.sha256((project / path).read_bytes()).hexdigest()
+                                 for path in (CONFIG, INSTALLED, PROVENANCE)}}
+
+
+def qualify(source, work_dir, wheelhouse=None):
+    """Build only a disposable source projection, then bootstrap authentic 1.9.5.
+
+    Neither the checkout manifests nor historical release bytes are rewritten.
+    The fresh directory and synthetic repository identity exclude live adopters.
+    """
+    import build_release
+    sys.path.insert(0, str(ROOT / '.agentic/tests'))
+    from upgrade_195_fixtures import materialize_published, PUBLISHED_PIN
+    source = Path(source).resolve(strict=True)
+    work_dir = Path(work_dir).resolve()
+    if work_dir == source or source in work_dir.parents:
+        raise ValueError('Qualification work directory must be outside source')
+    work_dir.mkdir()  # Refuse reuse, including a previous failed attempt.
+    candidate = work_dir / 'candidate'
+    candidate.mkdir()
+    with Tree(source) as tree:
+        for relative in build_release.release_paths(tree):
+            path = candidate / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(build_release.release_bytes(tree, relative))
+        for relative in build_release.SOURCE_CONFIGS.values():
+            template = candidate / relative
+            template.parent.mkdir(parents=True, exist_ok=True)
+            template.write_bytes(tree.read(relative))
+    report = {'status': 'NOT_QUALIFIED', 'execution_authority': False,
+              'evidence_kind': 'SYNTHETIC_OWNER_CUSTOMIZATION', 'stages': []}
+
+    def execute(stage, command, timeout=600):
+        started = time.monotonic()
+        child = run_bounded(command, cwd=work_dir, env=child_env(), timeout=timeout,
+                            stdout_limit=4 * 1024 * 1024, stderr_limit=1024 * 1024)
+        report['stages'].append({'stage': stage, 'exit_code': child.returncode,
+            'duration_seconds': round(time.monotonic() - started, 3),
+            'stdout_sha256': hashlib.sha256(child.stdout).hexdigest(),
+            'stderr_sha256': hashlib.sha256(child.stderr).hexdigest()})
+        # Raw diagnostics remain in the external disposable cohort, never upstream.
+        (work_dir / (stage + '.stdout')).write_bytes(child.stdout)
+        (work_dir / (stage + '.stderr')).write_bytes(child.stderr)
+        return child
+
+    built = execute('candidate_manifest', [sys.executable, '-B',
+                    str(candidate / 'scripts/build_release.py'), '--manifest-only'])
+    if built.returncode != 0:
+        report['failed_stage'] = 'candidate_manifest'
+        return report
+    target_pin = hashlib.sha256((candidate / 'MANIFEST.json').read_bytes()).hexdigest()
+    report['source_manifest_sha256'] = target_pin
+    historical = materialize_published(source, work_dir / 'published')
+    project = work_dir / 'project'
+    for stage, release, pin, mode in (('baseline', historical, PUBLISHED_PIN, 'install'),
+                                     ('upgrade', candidate, target_pin, 'upgrade')):
+        wheels = work_dir / (stage + '-wheels')
+        wheels.mkdir()
+        download = [sys.executable, '-B', '-m', 'pip', 'download', '--require-hashes',
+            '--only-binary=:all:', '--timeout', '30', '--retries', '1', '--dest', str(wheels),
+            '-r', str(release / '.agentic/requirements.lock')]
+        if wheelhouse is not None:
+            download.extend(['--find-links', str(Path(wheelhouse).resolve(strict=True))])
+        downloaded = execute(stage + '_wheels', download, timeout=180)
+        if downloaded.returncode != 0:
+            report['failed_stage'] = stage + '_wheels'
+            return report
+        command = [sys.executable, '-B', str(release / 'scripts/bootstrap_project.py'),
+            '--dest', str(project), '--expected-manifest-sha256', pin, '--mode', mode,
+            '--github-repo', 'example-org/example-repo', '--repository-id', '101',
+            '--default-branch', 'main', '--test-command', 'python -m unittest',
+            '--codeowner', '@fixture-owner']
+        command.extend(['--runtime-wheelhouse', str(wheels)])
+        child = execute(stage, command)
+        if child.returncode != 0:
+            report['failed_stage'] = stage
+            return report
+        try:
+            report[stage] = checked_bootstrap(json.loads(child.stdout), project, pin)
+        except (ValueError, KeyError, TypeError) as error:
+            report['failed_stage'] = stage
+            report['diagnostic'] = str(error)
+            return report
+    report['status'] = 'QUALIFIED_DISPOSABLE_UPGRADE'
+    report['active'] = False
+    return report
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -136,7 +254,17 @@ def main(argv=None):
     diff.add_argument('--after', type=Path, required=True)
     diff.add_argument('--allowed-delta', type=Path, required=True)
     diff.add_argument('--output', type=Path, required=True)
+    runtime = sub.add_parser('installed')
+    runtime.add_argument('--source', type=Path, required=True)
+    runtime.add_argument('--work-dir', type=Path, required=True, help='new external disposable directory')
+    runtime.add_argument('--wheelhouse', type=Path, help='optional local wheel seed; pip verifies each release lock')
+    runtime.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.command == 'installed':
+        report = qualify(args.source, args.work_dir, args.wheelhouse)
+        write_report(args.output, report, project=args.work_dir)
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report['status'] == 'QUALIFIED_DISPOSABLE_UPGRADE' else 1
     if args.command == 'snapshot':
         report = inventory(args.project)
     elif args.command == 'plan':

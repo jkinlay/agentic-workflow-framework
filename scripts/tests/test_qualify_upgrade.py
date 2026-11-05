@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from qualify_upgrade import compare, inventory, write_report, plan
+from qualify_upgrade import compare, inventory, write_report, plan, checked_bootstrap
+import os
+from copy import deepcopy
 
 
 class PreservationReportTests(unittest.TestCase):
@@ -21,6 +23,37 @@ class PreservationReportTests(unittest.TestCase):
         self.config.write_text(json.dumps({'github': {'repository': 'example-org/example-repo',
             'repository_id': 101, 'base_branch': 'trunk'}}), encoding='utf-8')
         (self.root / 'PROJECT_INSTRUCTIONS.md').write_bytes(b'synthetic owner customization\n')
+
+    def test_installed_receipts_require_canonical_commands_and_bound_outputs(self):
+        # Unit validation inputs, not executed qualification evidence.
+        pin, policy = 'a' * 64, 'b' * 64
+        runtime = self.root / '.agentic/.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        script = self.root / '.agentic/scripts/workflow.py'
+        result = {'status': 'CONFIGURED', 'source_manifest_sha256': pin,
+                  'configuration': {'policy_sha256': policy},
+                  'pre_install_configuration': {'policy_sha256': policy}, 'post_install_checks': []}
+        for action, output in [('verify-installation', {'integrity_valid': True, 'source_manifest_sha256': pin}),
+                               ('validate-config', {'status': 'ACCEPTED', 'policy_sha256': policy})]:
+            result['post_install_checks'].append({'command': [str(runtime), '-B', '-I', str(script),
+                '--root', str(self.root), action], 'exit_code': 0, 'diagnostic': None, 'output': output})
+        for name in ('installed-manifest.json', 'workflow-version.yaml'):
+            (self.root / '.agentic' / name).write_bytes(b'unit validation input')
+        self.assertEqual('CONFIGURED', checked_bootstrap(result, self.root, pin)['status'])
+        mutations = [lambda r: r.update(status='ACTIVE'),
+            lambda r: r['post_install_checks'][0].update(exit_code=1),
+            lambda r: r['post_install_checks'][1].update(exit_code=None),
+            lambda r: r['post_install_checks'][0]['command'].remove('-I'),
+            lambda r: r['post_install_checks'][0]['output'].update(integrity_valid=False),
+            lambda r: r['post_install_checks'][0]['output'].update(source_manifest_sha256='c' * 64),
+            lambda r: r['post_install_checks'][1]['output'].update(status='REJECTED'),
+            lambda r: r['post_install_checks'][1]['output'].update(policy_sha256='c' * 64),
+            lambda r: r['pre_install_configuration'].update(policy_sha256='c' * 64),
+            lambda r: r['post_install_checks'].pop()]
+        for mutate in mutations:
+            damaged = deepcopy(result)
+            mutate(damaged)
+            with self.assertRaises(ValueError):
+                checked_bootstrap(damaged, self.root, pin)
 
     def test_inventory_is_nonwriting_and_contains_modes_and_history(self):
         state = self.root / '.agentic-state/operating/changes/record.json'

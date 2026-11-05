@@ -1,149 +1,101 @@
 # Release 1.9.6 qualification and preservation
 
-AWF-238, Tier 3, FULL closure. This is an execution checklist, not a release
-acceptance record. AWF-237 and AWF-239 supply consolidated requirements; they
-are not additional release tickets. Unexecuted, failed, stale and unavailable
-evidence stays outstanding. No live upgrade is authorized by this document.
+AWF-238, Tier 3, FULL. AWF-237 and AWF-239 requirements are consolidated here.
+This checklist grants no release, live-upgrade, controller or adapter authority.
+Failed, missing, stale and unexecuted evidence remains outstanding.
 
-## Reconcile before freezing
+## Baseline and scope
 
-Retain PR #271's published-1.9.5 recognition, migration, upgrade tests and
-Windows Python 3.12 CI coverage. The baseline is the authentic `v1.9.5` tag,
-peeled commit `8ad399943c8f5e4f17db72f3e321b9365ee27782`, with source manifest
-SHA-256 `1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7`.
-Local tag/blob checks establish local byte identity, not authenticated hosted
-publication or independent release provenance. Never replace published pins,
-assets, tags or receipts. The baseline helper invokes the published installer
-to generate receipts; it stores no additional historical blob corpus.
+Retain PR #271's published-baseline recognition, migration and Windows Python
+3.12 coverage. Authentic `v1.9.5` peels to commit
+`8ad399943c8f5e4f17db72f3e321b9365ee27782`; its manifest SHA-256 is
+`1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7`.
+Local Git verification establishes byte identity, not independent hosted
+provenance. Never alter published assets, pins, tags or historical receipts.
+The fixture invokes the published installer to generate genuine receipts.
 
-| Selected ticket | Evidence required on the final candidate |
-| --- | --- |
-| AWF-236 | A-L identity, reviewed routes/defaults, capacity versus concurrency |
-| AWF-238 | Authentic preservation, recovery, complete release qualification |
-| AWF-241 | Reporting, permissions and actual platform qualification |
-| AWF-242 | Owner choices/history preserved; approved default-OFF accounting migration |
-| AWF-243 | Jira defaults, scope and controller-only write boundary |
-| AWF-244 | Operating hours, batching and owner review windows |
-| AWF-247 | Actual chat ingress/response and separate platform permission |
+Qualify all seven selected tickets: AWF-236 identities/routes, AWF-238 upgrades
+and release, AWF-241 reporting, AWF-242 accounting, AWF-243 Jira defaults/scope,
+AWF-244 hours/batching and AWF-247 chat. Inventory retained implementation,
+necessary compatibility repairs, generated artifacts and deferred work.
+Preserve each historical failure, cause, disposition and affected rerun.
+A previous candidate's pass cannot qualify changed bytes. Bring deferred work
+into scope only for a demonstrated selected-scope failure and owner decision.
 
-Inventory the existing diff by required feature, necessary compatibility fix,
-generated output and deferred work. For every historical failure retain its
-candidate, failing criterion, cause, disposition, correction and affected rerun.
-A previous broad pass or focused correction never qualifies a changed candidate.
-Do not pull in the 1.9.7 backlog without a demonstrated selected-scope failure
-and bounded owner scope decision.
+## Disposable preservation
 
-## Disposable preservation cohort
+Synthetic customization is not CMC evidence. Keep the accepted CMC installation
+untouched. Cancelled personal Quant Foundry and forbidden HFT targets remain
+excluded. Actual adopter copies need accepted baselines, exclusive ownership,
+quiescence, approved external storage and separate authorization.
 
-The deterministic fixtures are **SYNTHETIC_OWNER_CUSTOMIZATION**, not CMC
-evidence. The accepted CMC installation is untouched. An actual adopter copy
-requires its accepted baseline, approved external storage and separate owner
-authorization; that evidence is unavailable to the synthetic fixture harness.
-Cancelled personal Quant Foundry and forbidden HFT targets stay excluded.
+Record repository/numeric ID/default branch, releases, permissions, owner files,
+CODEOWNERS, instructions, routes/pins, adapter opt-outs, Jira scope, budgets,
+ledgers/sidecars, reservations, operating history, archives and receipts.
+Preserve explicit owner settings and approved default-OFF accounting choices.
 
-1. Establish exclusive ownership and quiesce writers. Record source and target
-   release pins, repository/numeric ID/default branch, accepted configuration,
-   permissions and before-state. Include owner instructions/CODEOWNERS, model
-   routes/pins, explicit adapter opt-outs, Jira scope, operating history,
-   ledger rows, active reservations, archives, receipts and backups. Retain
-   raw evidence externally; upstream receives sanitized references only.
-2. Use `scripts/qualify_upgrade.py snapshot --project DISPOSABLE_PROJECT
-   --output EXTERNAL_BEFORE.json`. It hashes file bytes and permission modes,
-   includes ledger sidecars, and excludes Git/runtime/cache trees. It refuses
-   links and requires a complete repository identity. It does not acquire a
-   live writer's lease or make a database snapshot; quiescence is mandatory.
-3. Run `scripts/qualify_upgrade.py plan --source VERIFIED_RELEASE
-   --project DISPOSABLE_PROJECT --expected-manifest-sha256 APPROVED_PIN
-   --output EXTERNAL_PLAN.json`. Require an unchanged before/after inventory.
-   Test main, master and trunk without reading a live/parent repository's
-   configuration; wrong repository, numeric ID and branch overrides must refuse.
-4. Review the proposed migration and its exact allowed delta before applying
-   the supported bootstrap to this disposable copy. Preserve explicit owner
-   settings and accounting/evidence history. Never manufacture or edit receipts.
-   A managed-path or archive conflict must refuse without project mutations.
-5. Take an after snapshot, then run `scripts/qualify_upgrade.py compare
-   --project DISPOSABLE_PROJECT --before EXTERNAL_BEFORE.json
-   --after EXTERNAL_AFTER.json --allowed-delta EXTERNAL_DELTA.json
-   --output EXTERNAL_COMPARISON.json`. The delta is a mapping of relative paths
-   to exact `before`/`after` records (file SHA-256, mode and size; directory
-   paths end in `/` and carry a mode; null means absent). No prefixes/globs or
-   unused exceptions pass. Repository identity
-   changes always fail, even when file changes are otherwise allowed.
-6. Retain previous archives and recovery objects. Archive copies use the target
-   release identity and exclude every existing archive subtree. Exercise
-   interruption at staging, managed writes, receipt/provenance replacement,
-   runtime swap and committed cleanup. Recover in a fresh invocation, then
-   repeat recovery. Missing/tampered objects retain diagnostics and refuse.
-   Accept only an exact verified old endpoint or a proven committed new endpoint.
-   Failed/unknown stages never establish CONFIGURED or ACTIVE.
+Use `scripts/qualify_upgrade.py` with these subcommands:
 
-The runner only plans and reports; it performs no upgrade, release, activation,
-adapter action or owner authorization. Its comparison is preservation evidence,
-not installation verification. Report files are created exclusively outside the
-source and disposable project; existing reports are never overwritten.
+- `snapshot --project DISPOSABLE --output EXTERNAL_BEFORE`: hash bytes, modes
+  and directories; exclude Git/runtime/cache trees; refuse links and incomplete
+  identity. Quiescence is mandatory; this is no live database snapshot.
+- `plan --source VERIFIED_RELEASE --project DISPOSABLE
+  --expected-manifest-sha256 PIN --output EXTERNAL_PLAN`: require unchanged
+  inventories. Exercise main/master/trunk and wrong repository/ID/branch refusals.
+- After reviewing the exact migration delta and running supported bootstrap,
+  snapshot again. `compare --project DISPOSABLE --before BEFORE --after AFTER
+  --allowed-delta DELTA --output EXTERNAL_COMPARISON` requires exact before/after
+  records, including modes and sizes. Directory paths end in `/`. No wildcard,
+  unused exception or changed repository identity passes.
+- `installed --source SOURCE_CHECKOUT --work-dir NEW_EXTERNAL_DIRECTORY
+  --wheelhouse LOCKED_WHEELS --output EXTERNAL_REPORT` projects the current
+  source into disposable storage, generates only that projection's manifests,
+  bootstraps authentic published bytes and upgrades through supported bootstrap.
+  Provision each release lock with hash-checked pip downloads, using the optional
+  wheelhouse as a local seed. Network access or a complete seed is required.
+  Retain external stage stdout/stderr and their report hashes. Success prints
+  `QUALIFIED_DISPOSABLE_UPGRADE`, two CONFIGURED stages, canonical check exits
+  zero, integrity true, ACCEPTED configuration and source/policy/receipt hashes.
+  Failure prints NOT_QUALIFIED and the failed stage; never infer later checks ran.
 
-## Freeze and qualify
+Reports are exclusively created outside source/project. Comparison establishes
+preservation, not installed integrity or actual adopter qualification.
 
-After all six feature tickets integrate, freeze the exact commit/tree, version,
-source/configuration manifests, review inventory, canonical provider-body bytes,
-archive hashes, catalog/trust identity and approved qualification plan. Record
-the base/head/body publication-scan tuple. Only then regenerate artifacts via
-the supported release generators; never hand-edit generated manifests/examples.
-Rebind affected evidence after any candidate change.
+Interrupt object staging, managed writes, receipt/provenance replacement,
+runtime staging/swap and committed cleanup. Recover in fresh invocations and
+repeat deterministically. Missing/tampered objects retain diagnostics and refuse.
+Remove only authenticated installer-created empty directories; refuse replacements
+or external contents. Preserve unproved partial runtimes for inspection.
+Old archives remain intact without recursive archival. Failed/unknown stages
+never establish CONFIGURED or ACTIVE.
 
-Use existing `publish_release.py`, `validate_archive.py`, installed-runtime
-checks and the heavy-validation reservation mechanism. One accountable heavy
-reservation per constrained host; use only already approved exactly-once shard
-allocation. Do not increase timeouts, caps, limits or concurrency. Focused
-development tests are not release qualification.
+## Final candidate and owner gates
 
-| Cohort | Required retained evidence |
-| --- | --- |
-| Focused regressions | Authentic baseline/preservation, archive collisions, recovery and identity negatives |
-| Source | Supported Python/platform checks, security/privacy scans, generated-output consistency |
-| Closed archive | Exact artifact hash, extraction/membership/modes, declared source-only skips |
-| Configured installed | Actual canonical isolated commands, exits, raw outputs and bound hashes |
-| Windows Python 3.12 | Actual 3.12 installed-runtime result; matrix declaration alone is insufficient |
-| Review/publication | Independent current-head review, specialists, hosted checks, release/catalog trust, publication scan |
+After feature integration, freeze commit/tree, manifests, version, review
+inventory, canonical body, archive/catalog/trust hashes and base/head/body scan.
+Generate native artifacts through supported tooling. Rebind affected evidence
+after changes. Keep one accountable heavy reservation per constrained host;
+retain existing exactly-once allocation, limits, timeouts and review caps.
 
-For each cohort retain command, interpreter/platform identity, candidate/artifact
-hashes, start/end/duration, discovered/executed counts, skips with reasons,
-failures and raw receipt digests. Missing data is unknown, never zero or PASS.
-Existing CI already declares Python 3.12.10 and 3.13.3 installed Windows cohorts;
-their actual final-candidate runs remain necessary.
-
-Installed checks must execute the target `.agentic/.venv` canonical interpreter:
+Require focused, source, closed-archive and configured-installed cohorts,
+including actual Windows Python 3.12. Retain commands, interpreter/platform,
+start/end/duration, counts, skips/reasons, failures and raw receipt hashes.
+Canonical installed commands are:
 
 ```text
 ABS_CANONICAL_RUNTIME -B -I ABS_INSTALLED_SCRIPT --root ABS_PROJECT verify-installation
 ABS_CANONICAL_RUNTIME -B -I ABS_INSTALLED_SCRIPT --root ABS_PROJECT validate-config
 ```
 
-Require both exit 0, `integrity_valid: true`, `status: ACCEPTED` and matching
-source/policy/receipt hashes. Ambient test Python or a library-only verification
-cannot substitute. INSTALLED/CONFIGURED prove receipt/configuration consistency,
-not independent release provenance. Status recomputes checks, not prior child
-execution.
+Require both exit zero, integrity true, ACCEPTED configuration and bound hashes.
+Ambient Python and library checks cannot substitute. CONFIGURED proves receipt
+consistency, not release provenance. Status recomputation proves no prior child run.
 
-## Owner and rollout gates
-
-Current-head independent review, applicable specialists, the final review
-barrier and explicit owner release acceptance remain mandatory. Retain Tier 3
-review rounds/caps and findings. Green CI grants no merge/publication authority.
-Publish only through the existing supported release process after owner approval.
-
-Release acceptance and target upgrade authorization are separate. Before any
-authorized live upgrade require the matching disposable-copy preservation and
-runtime proof, target-specific owner direction and a retained recovery route.
-ACTIVE additionally requires independent release trust, an observed
-receipt-changing adoption merge and accepted raw AWF/configuration/receipt/
-provenance bytes on the fresh default branch. It enables no adapter. Jira,
-reporting, chat and controllers retain separate opt-in/qualification/permissions.
-Report configured lanes, usable runtime identities, observed host capacity and
-actual concurrency separately; twelve simultaneous workers are not required
-just to prove twelve labels.
-
-At closeout record each R2 A1-A7, R3 A1-A8 and R4 A1-A7 as MET with exact
-evidence or NOT MET. Include limitations, unresolved stages, owner decisions,
-release identity and per-target outcome. Do not infer actual rollout from this
-checklist, synthetic tests, ticket edits or earlier installation claims.
+Require current-head independent review, specialists, hosted checks, release
+trust, publication scan, final review barrier and explicit owner acceptance.
+Green CI grants no publication/merge authority. Live rollout needs separate
+target authorization and matching disposable proof. ACTIVE additionally needs
+independent release trust, observed receipt-changing adoption merge and accepted
+raw default-branch bytes. It enables no adapters. Report configured lanes,
+usable identities, observed capacity and demonstrated concurrency separately.
+Close out R2 A1-A7, R3 A1-A8 and R4 A1-A7 individually with evidence or NOT MET.

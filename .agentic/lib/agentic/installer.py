@@ -74,6 +74,7 @@ INSTALLER_WRITE_MODE = 0o600
 INSTALL_JOURNAL_HEADROOM_BYTES = 520 * 1024
 INSTALL_JOURNAL_MAX_BYTES = MAX_DOCUMENT_BYTES - INSTALL_JOURNAL_HEADROOM_BYTES
 PENDING_UPDATE_KINDS = frozenset({
+    "directory_prepare",
     "activate",
     "managed_after",
     "runtime_stage",
@@ -252,7 +253,11 @@ def _copy_journal(journal):
 
 def _validate_pending_new_journal(tree, journal, update_kind):
     runtime = _validated_runtime_journal(journal)
-    if update_kind == "activate":
+    if update_kind == "directory_prepare":
+        valid = (_compact_journal(journal) and journal["phase"] == "object_prepare" and
+                 all(row["identity"] == _directory_identity(tree, row["path"])
+                     for row in journal.get("created_directories", [])))
+    elif update_kind == "activate":
         valid = (journal["format"] == "awf-install-journal-4" and
                  journal["phase"] == "active" and
                  journal["managed_after_sha256"] is None)
@@ -310,7 +315,9 @@ def _reconstruct_pending_old_journal(tree, journal, update_kind):
     """Authenticate the exact named transition without mutating project state."""
     candidate = _copy_journal(journal)
     runtime = _validated_runtime_journal(candidate)
-    if update_kind == "activate":
+    if update_kind == "directory_prepare":
+        raise ValidationError("Interrupted directory ownership publication; journal retained")
+    elif update_kind == "activate":
         if not (_compact_journal(journal) and journal["phase"] == "object_prepare"):
             _pending_transition_mismatch()
         candidate["phase"] = "active"
@@ -545,6 +552,67 @@ def _read_recovery_object(tree, digest, size):
     return data
 
 
+def _directory_identity(tree, relative):
+    parent, handle, name = tree.parent(relative)
+    info = (os.lstat(parent / name) if os.name == "nt" else
+            os.stat(name, dir_fd=handle, follow_symlinks=False))
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+            getattr(info, "st_file_attributes", 0) & 0x400):
+        raise ValidationError("Unsafe created directory; journal retained: " + relative)
+    return [format(info.st_dev, "032x"), format(info.st_ino, "032x")]
+
+
+def _prepare_transaction_directories(tree, journal):
+    for row in journal["created_directories"]:
+        parent, handle, name = tree.parent(row["path"])
+        if os.name == "nt":
+            os.mkdir(parent / name)
+        else:
+            os.mkdir(name, dir_fd=handle)
+            os.fsync(handle)
+        row["identity"] = _directory_identity(tree, row["path"])
+    # Publish ownership before objects or project payload can change. An
+    # interrupted ownership publication refuses unproved directories.
+    _write_bound_journal_update(tree, journal, "directory_prepare")
+
+
+def _cleanup_transaction_directories(tree, journal):
+    for row in reversed(journal.get("created_directories", [])):
+        # Release cached child handles (Windows denies deletion while pinned),
+        # then pin the parent again before checking identity and empty removal.
+        tree.close()
+        try:
+            identity = _directory_identity(tree, row["path"])
+        except FileNotFoundError:
+            continue
+        if row["identity"] is None or identity != row["identity"]:
+            raise ValidationError("Created directory changed; journal retained: " + row["path"])
+        parent, handle, name = tree.parent(row["path"])
+        try:
+            if os.name == "nt":
+                # Delete through the checked handle. Omitting SHARE_DELETE
+                # prevents replacement between the identity check and disposition.
+                import ctypes
+                from .safeio import (kernel, INVALID_HANDLE, FileDispositionInformation,
+                                     _win_set_file_information, FILE_DISPOSITION_INFO)
+                owned = kernel.CreateFileW(str(parent / name), 0x10000 | 0x80,
+                                           3, None, 3, 0x00200000 | 0x02000000, None)
+                if owned == INVALID_HANDLE:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    if _directory_identity(tree, row["path"]) != row["identity"]:
+                        raise ValidationError("Created directory changed; journal retained: " + row["path"])
+                    _win_set_file_information(owned, FILE_DISPOSITION_INFO,
+                                              FileDispositionInformation(True))
+                finally:
+                    kernel.CloseHandle(owned)
+            else:
+                os.rmdir(name, dir_fd=handle)
+                os.fsync(handle)
+        except OSError as exc:
+            raise ValidationError("Created directory is not safely empty; journal retained: " + row["path"]) from exc
+
+
 def _write_recovery_objects(tree, objects):
     for digest, data in sorted(objects.items()):
         if sha256(data) != digest:
@@ -606,6 +674,7 @@ def _finalize_compact_rollback(tree, journal, *, marker_present):
     """Retire recovery objects before the artifacts that track their ownership."""
     _verify_compact_old_endpoint(tree, journal, "at compact rollback endpoint")
     _cleanup_recovery_objects(tree, journal)
+    _cleanup_transaction_directories(tree, journal)
     if marker_present:
         tree.unlink(MARKER)
     tree.unlink(JOURNAL)
@@ -1086,8 +1155,10 @@ def _validated_runtime_journal(journal):
                             "managed_before", "managed_after"}:
             raise ValidationError("Invalid recovery journal")
     elif journal["format"] == "awf-install-journal-4":
-        if set(journal) != {"format", "transaction_id", "phase", "files", "runtime",
-                            "managed_before_sha256", "managed_after_sha256"}:
+        if set(journal) not in ({"format", "transaction_id", "phase", "files", "runtime",
+                            "managed_before_sha256", "managed_after_sha256"},
+                           {"format", "transaction_id", "phase", "files", "runtime",
+                            "managed_before_sha256", "managed_after_sha256", "created_directories"}):
             raise ValidationError("Invalid recovery journal")
     else:
         raise ValidationError("Invalid recovery journal")
@@ -1147,6 +1218,25 @@ def _validate_transaction_journal(journal):
     if transaction_id != journal["transaction_id"]:
         raise ValidationError("Non-canonical recovery transaction identity")
     _validated_runtime_journal(journal)
+    directories = journal.get("created_directories", [])
+    if not isinstance(directories, list) or len(directories) > 10000:
+        raise ValidationError("Invalid created-directory inventory")
+    seen_directories = set()
+    for row in directories:
+        if not isinstance(row, dict) or set(row) != {"path", "identity"}:
+            raise ValidationError("Invalid created-directory entry")
+        relative_parts(row["path"])
+        allowed = {str(parent).replace("\\", "/") for item in journal["files"]
+                   for parent in Path(item["path"]).parents if str(parent) != "."}
+        allowed.add(RECOVERY_OBJECTS)
+        if row["path"] not in allowed or row["path"].casefold() in seen_directories:
+            raise ValidationError("Unsafe or duplicate created directory")
+        seen_directories.add(row["path"].casefold())
+        identity = row["identity"]
+        if identity is not None and (not isinstance(identity, list) or len(identity) != 2 or
+                any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{32}", value) is None
+                    for value in identity)):
+            raise ValidationError("Invalid created-directory identity")
     if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}:
         if journal["phase"] not in {"object_prepare", "active", "rollback_cleanup",
                                     "commit_cleanup", "commit_cleanup_authenticated"}:
@@ -1348,7 +1438,7 @@ def rollback(tree, journal):
             tree.write(item["path"], old)
             if mode_aware:
                 os.chmod(tree.root / item["path"], item["old_mode"])
-    if backup_root.exists():
+    if backup_root.exists() and "created_directories" not in journal:
         shutil.rmtree(backup_root)
     if mode_aware:
         _verify_journal_managed_state(tree, journal, "before", "after rollback")
@@ -2017,7 +2107,17 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             # Bind the complete object inventory before creating it. An abrupt
             # stop during side-store creation therefore leaves recoverable intent,
             # while no destination payload changes before every object validates.
+            # The marker/lock coordination roots retain their existing lifecycle;
+            # track payload/object/archive parents before any payload mkdir.
+            parents = {parent.as_posix() for path in [*planned, *backup_plan,
+                       _recovery_object_path("0" * 64)] for parent in Path(path).parents
+                       if parent.as_posix() != "."}
+            journal["created_directories"] = [
+                {"path": path, "identity": None}
+                for path in sorted(parents, key=lambda value: (value.count("/"), value))
+                if path != ".agentic" and not (destination / path).exists()]
             _publish_initial_intent(dst, journal)
+            _prepare_transaction_directories(dst, journal)
             _write_recovery_objects(dst, recovery_objects)
             journal["phase"] = "active"
             _write_bound_journal_update(dst, journal, "activate")
