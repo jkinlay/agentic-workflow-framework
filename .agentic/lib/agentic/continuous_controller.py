@@ -2158,8 +2158,10 @@ def require_jira_ticket_writes_allowed(store, config, binding, *, assignment_id=
 	_require(not stop or stop.get('assignment_id') == assignment_id,
 		'Jira assignment writes are stopped; use jira-lifecycle BLOCK with read_assignment recovery; never reissue')
 	for row, table in _jira_ticket_operations(store, binding['issue_id']):
-		_require(row['operation_id'] == operation_id or row['status'] == 'SUCCEEDED'
-			or row['status'] == 'PENDING' and not assignment_route,
+		# PENDING has not begun; HELD is a configured no-write decision.
+		# Neither is an unresolved attempt, on any mutation route. IN_FLIGHT,
+		# UNKNOWN and FAILED require recovery; unknown journal states fail closed.
+		_require(row['operation_id'] == operation_id or row['status'] in {'SUCCEEDED', 'PENDING', 'HELD'},
 			'Unresolved or failed Jira operation; use jira-lifecycle read_transition recovery; never reissue')
 
 
@@ -2202,6 +2204,24 @@ def recover_jira_assignment(store, config, issue, now, read_assignment=None, *, 
 		'controller_actor_id': comment['author_id'], 'recovery': observation})
 
 
+def _require_jira_history_binding(config, binding, incoming, old_binding, identity, *, retain_form):
+	"""Compare every retained history using the same invariant and form rules."""
+	expected = {'issue_id', 'project_id', 'repository_id'}
+	_require(all(incoming[field] == identity[field] for field in expected),
+		'Durable Jira intent belongs to a different project/repository/issue binding')
+	if set(old_binding) != {'issue_id'}:
+		old_identity = _jira_lifecycle_binding_identity(old_binding, config)
+		_require(all(old_identity[field] == identity[field] for field in expected),
+			'Durable Jira intent belongs to a different project/repository/issue binding')
+		if set(binding) != {'issue_id'}:
+			_require(old_identity == incoming,
+				'Durable Jira intent belongs to a different project/repository/issue binding')
+	# Issue-only adapter calls can observe/recover full history. Batch history
+	# is issue-only; it must not prohibit a later full candidate binding.
+	if retain_form and set(binding) != {'issue_id'}:
+		_require(set(old_binding) == set(binding), 'Jira candidate binding has missing or unrecognized fields')
+
+
 def require_jira_binding_identity(store, config, binding, observe_jira_operation_identity=None):
 	"""Admit incoming authority against configuration and both retained journals.
 
@@ -2231,23 +2251,13 @@ def require_jira_binding_identity(store, config, binding, observe_jira_operation
 				key: provider[source] for key, source in (('cloud_id', 'cloud_id'), ('site', 'site'),
 				('project_id', 'project_id'), ('project_key', 'project_key'), ('controller_actor_id', 'account_id'))},
 			'Durable Jira assignment belongs to a different project/repository/issue binding or provider')
+		_require_jira_history_binding(config, binding, incoming,
+			record.get('binding', {'issue_id': issue}), identity, retain_form=True)
 	for row, table in _jira_ticket_operations(store, issue):
 		record = loads(row['record_json'])
 		identity = _require_jira_operation_identity(store, config, row, record, observe_jira_operation_identity)
-		_require(all(incoming[field] == identity[field] for field in expected),
-			'Durable Jira intent belongs to a different project/repository/issue binding')
-		old_binding = record['binding']
-		if set(old_binding) != {'issue_id'}:
-			old_identity = _jira_lifecycle_binding_identity(old_binding, config)
-			_require(all(old_identity[field] == identity[field] for field in expected),
-				'Durable Jira intent belongs to a different project/repository/issue binding')
-			if set(binding) != {'issue_id'}:
-				_require(old_identity == incoming,
-					'Durable Jira intent belongs to a different project/repository/issue binding')
-		# Ordinary lifecycle revisions retain their closed binding form. A batch
-		# is deliberately issue-only and must not prohibit a full later candidate.
-		if table == 'controller_jira_operation' and set(binding) != {'issue_id'}:
-			_require(set(old_binding) == set(binding), 'Jira candidate binding has missing or unrecognized fields')
+		_require_jira_history_binding(config, binding, incoming, record['binding'], identity,
+			retain_form=table == 'controller_jira_operation')
 	return incoming
 
 

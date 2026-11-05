@@ -1090,6 +1090,33 @@
       "regression_id": "AWF243-AUX6-READ-BEFORE",
       "source_finding_id": null,
       "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_read_before_failure_recovers_only_locally_proven_unattempted_assignment"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Protected recovered assignment restores empty or stale intake caches without repeat writes",
+      "permanent": true,
+      "regression_id": "AWF243-AUX7-PROTECTED-CURRENT",
+      "source_finding_id": "AWF243-AUX7-1",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre7_protected_current_assignment_restores_empty_and_stale_cache"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Configured Done hold permits enabled lifecycle and assignment mappings after restart",
+      "permanent": true,
+      "regression_id": "AWF243-AUX7-HELD",
+      "source_finding_id": "AWF243-AUX7-2",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre7_done_hold_allows_enabled_lifecycle_and_assignment_after_reopen"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment and ordinary history preserve every full binding invariant and binding form",
+      "permanent": true,
+      "regression_id": "AWF243-AUX7-ASSIGNMENT-BINDING",
+      "source_finding_id": "AWF243-AUX7-3",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre7_assignment_and_ordinary_history_retain_full_binding"
     }
   ]
 }

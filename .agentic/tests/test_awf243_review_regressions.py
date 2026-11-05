@@ -1285,6 +1285,122 @@ class AssignmentSharedAdmissionRegressions(unittest.TestCase):
             jira_identity=copy.deepcopy(record['jira_identity']), labels=jira.issue['labels'],
             comment=jira.issue['comments'][0], observed_at=self.args['now'])
 
+    def test_pre7_protected_current_assignment_restores_empty_and_stale_cache(self):
+        from agentic.intake_assignment import assign_intake, _seal
+        from agentic.continuous_controller import jira_assignment_state
+        for cache in ('empty', 'stale_stop', 'stale_assignment'):
+            with self.subTest(cache=cache):
+                self.setUp()
+                jira = self.lost_assignment()
+                reads = []
+                def observe(record):
+                    reads.append(record['assignment_id'])
+                    return self.recovery_evidence(record, jira)
+                self.assertFalse(self.lifecycle(read_assignment=observe)['planned'])
+                protected = jira_assignment_state(self.fixture.store)
+                current = protected['tier_assignments']['AWF-1']
+                local = {} if cache == 'empty' else copy.deepcopy(self.local_state)
+                if cache == 'stale_stop':
+                    local['jira_assignment_write_stops']['AWF-1']['assignment_id'] = 'obsolete'
+                elif cache == 'stale_assignment':
+                    local['tier_assignments'] = {'AWF-1': _seal({**current, 'assignment_id': 'obsolete'})}
+                self.reopen()
+                before = copy.deepcopy(protected)
+                with self.assertRaisesRegex(ValidationError, 'trusted-owner audit'):
+                    assign_intake(self.args['config'], dict(key='AWF-1', summary='Routine work',
+                        write_paths=['src/a.py']), local, jira, now=self.args['now'],
+                        controller_actor_id='controller-1', store=self.fixture.store)
+                self.assertEqual(current, local['tier_assignments']['AWF-1'])
+                self.assertNotIn('AWF-1', local.get('jira_assignment_write_stops', {}))
+                self.assertEqual(before, jira_assignment_state(self.fixture.store))
+                self.assertEqual(1, len(reads))
+                self.assertEqual(['read', 'labels', 'read', 'comment'], jira.calls)
+                self.assertEqual(1, len(jira.issue['comments']))
+                self.assertEqual(1, sum(op == 'read' for op, _ in self.spy.calls))
+                self.assertEqual(0, sum(op == 'write' for op, _ in self.spy.calls))
+
+    def test_pre7_project_start_reuses_protected_assignment_without_writes(self):
+        from agentic.adoption_config import assign_project_start
+        jira = self.jira()
+        inventory = [dict(key='AWF-1', summary='Routine work', write_paths=['src/a.py'])]
+        first = assign_project_start(self.args['config'], inventory, {}, jira,
+            now=self.args['now'], controller_actor_id='controller-1', store=self.fixture.store)
+        self.assertEqual(['read', 'labels', 'read', 'comment', 'read'], jira.calls)
+        for _ in range(2):
+            self.reopen()
+            local = {}
+            recovered = assign_project_start(self.args['config'], inventory, local, jira,
+                now=self.args['now'], controller_actor_id='controller-1', store=self.fixture.store)
+            self.assertEqual(first['AWF-1']['assignment_id'], recovered['AWF-1']['assignment_id'])
+            self.assertEqual(recovered['AWF-1'], local['tier_assignments']['AWF-1'])
+            self.assertEqual(['read', 'labels', 'read', 'comment', 'read'], jira.calls)
+            self.assertEqual([], self.spy.calls)
+
+    def test_pre7_done_hold_allows_enabled_lifecycle_and_assignment_after_reopen(self):
+        self.args['config']['jira']['lifecycle_writes']['done'] = False
+        result = self.batch()
+        self.assertEqual(['AWF-1'], result['held'])
+        self.assertFalse(result['writes_stopped'])
+        self.assertEqual([], self.spy.calls)
+        for _ in range(2):
+            self.reopen()
+            self.assertFalse(self.lifecycle().get('writes_stopped', False))
+        self.reopen()
+        result = self.lifecycle(event='WORKER_STARTED', state='DISPATCHED',
+            facts={'run_registered': True, 'worktree_verified': True},
+            read_transition=lambda record, operation: {
+                **self.spy.read_transition(record, operation), 'status': record['to_status_id']})
+        self.assertEqual('SUCCEEDED', result['record']['status'])
+        self.assertEqual(3, sum(op == 'read' for op, _ in self.spy.calls))
+        self.assertEqual(1, sum(op == 'write' for op, _ in self.spy.calls))
+        self.assertEqual(1, sum(op == 'read_back' for op, _ in self.spy.calls))
+        self.assertEqual(['AWF-1'], self.batch()['held'])
+        self.reopen()
+        jira = self.jira()
+        self.assertEqual('VERIFIED', self.intake(jira, store=self.fixture.store)['jira']['read_back_status'])
+        self.assertEqual(['read', 'labels', 'read', 'comment', 'read'], jira.calls)
+        self.assertEqual(3, sum(op == 'read' for op, _ in self.spy.calls))
+        self.assertEqual(1, sum(op == 'write' for op, _ in self.spy.calls))
+
+    def test_pre7_assignment_and_ordinary_history_retain_full_binding(self):
+        from agentic.jira_lifecycle import write_tier_assignment
+        for history in ('assignment', 'ordinary'):
+            for field in ('requirements_hash', 'contract_hash', 'policy_hash', 'binding_form'):
+                with self.subTest(history=history, field=field):
+                    self.setUp()
+                    binding = IncomingIdentityRegressions.candidate(self)
+                    jira = self.jira()
+                    if history == 'assignment':
+                        assignment = dict(assignment_id='fixture', ticket_key='AWF-1', tier=3,
+                            round_cap=3, owner_review_required=True, reasons=['governance'], binding=binding)
+                        self.assertEqual('VERIFIED', write_tier_assignment(jira, assignment,
+                            config=self.args['config'], controller_actor_id='controller-1',
+                            acting_actor_id='controller-1', store=self.fixture.store)['read_back_status'])
+                        self.assertEqual(['read', 'labels', 'read', 'comment', 'read'], jira.calls)
+                        self.assertEqual([], self.spy.calls)
+                    else:
+                        result = self.lifecycle(binding=binding, event='WORKER_STARTED', state='DISPATCHED',
+                            facts={'run_registered': True, 'worktree_verified': True},
+                            read_transition=lambda record, operation: {
+                                **self.spy.read_transition(record, operation), 'status': record['to_status_id']})
+                        self.assertEqual('SUCCEEDED', result['record']['status'])
+                        self.assertEqual(1, sum(op == 'read' for op, _ in self.spy.calls))
+                        self.assertEqual(1, sum(op == 'write' for op, _ in self.spy.calls))
+                        self.assertEqual(1, sum(op == 'read_back' for op, _ in self.spy.calls))
+                    changed = {**binding, field: 'f' * 64} if field != 'binding_form' else {
+                        key: value for key, value in binding.items()
+                        if key not in {'contract_hash', 'policy_hash', 'candidate_id'}}
+                    self.reopen()
+                    self.spy.calls.clear()
+                    before = list(jira.calls)
+                    with self.assertRaises(ValidationError):
+                        self.lifecycle(binding=changed, event='JIRA_RECONCILED',
+                            facts={'merge_confirmed': True, 'closeout_valid': True})
+                    self.assertEqual(before, jira.calls)
+                    self.assertEqual(1, sum(op == 'read' for op, _ in self.spy.calls))
+                    self.assertEqual(0, sum(op == 'write' for op, _ in self.spy.calls))
+                    self.assertEqual(0, sum(op == 'read_back' for op, _ in self.spy.calls))
+
     def test_pre6_assignment_recovery_rejects_invalid_evidence_and_never_writes(self):
         from agentic.continuous_controller import jira_assignment_state
         jira = self.lost_assignment()

@@ -95,7 +95,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `29e7eb343b78305c31310b590b439a03cf3dca0a5de6c54561fed3354767fc36` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `d2e0e13cee8353c98629f7cba779bad05339daca41b3369c53af754b2800bbeb` |
+| `.agentic/lib/agentic/continuous_controller.py` | `02cc7520dfe685c6af54b5ba625bbef8a24148f0b52bccda6f94a31706261935` |
 | `.agentic/lib/agentic/contracts.py` | `c5ffd7177fde55b8ffd00cd58d62fe23ba121761c848e4f1ebf5d4fade249ce7` |
 | `.agentic/lib/agentic/controller_state.py` | `276d34922841eb46c732997933816eb42892045b5a8f0282d34415ec30f6eacf` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -110,7 +110,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/heavy_validation_controller.py` | `e89fa18a530a879f1047cfe360c2f4ec32b23970528b14f0e5a2e209b325e2de` |
 | `.agentic/lib/agentic/host_preflight.py` | `1c9e0c5da08947aba2f2bc98b8be1fa0459be5a278c932e01aa19648d3282384` |
 | `.agentic/lib/agentic/installer.py` | `3e41893b9649b595a76961c0521f4585366329cab66804c4da2ac641b16235f7` |
-| `.agentic/lib/agentic/intake_assignment.py` | `64effc97c87ed91a65edd42eeb423f441a8001e82ad27b348de1daae2d3d3cf7` |
+| `.agentic/lib/agentic/intake_assignment.py` | `d98910ec254ed03111ee918881468f36f6323210ef10639486d75d52ca2c3323` |
 | `.agentic/lib/agentic/integration_build.py` | `5ea6c01f3fe6eec8cb933a000b75cfdcbd57b1a48a14fa070ae475cfb8367268` |
 | `.agentic/lib/agentic/integration_queue.py` | `178eeadecd8b87305734da126eaa558f39c6fab2ddc00a854641df4137bd8d23` |
 | `.agentic/lib/agentic/interaction.py` | `ccdf2ac25c3e069cfc3d539f880659ab0cdb8680b81d885c460aed6080964e91` |
@@ -350,7 +350,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf134_recovery_lifecycle.py` | `5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a` |
 | `.agentic/tests/test_awf140_marker_validation.py` | `0bf5131678c191b2fc2313db23105656aac8f73e86bb57d8ee034d1f238aea61` |
 | `.agentic/tests/test_awf154_large_file_allowances.py` | `f1633d7a2a3d7ffd339cfb7c0ce60b50b9cc18ca879bfd66af2aa7573f54c546` |
-| `.agentic/tests/test_awf243_review_regressions.py` | `f92b8fccb13da759395265f1415f9d6284f2c84e4e0fbee0b732b90f8fc52624` |
+| `.agentic/tests/test_awf243_review_regressions.py` | `66f38ea91cadab9b45a94252865c5472b621712d7e8552f417fe16c96ece7149` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `04fd2dea1cb378607dd8a317210f8cb35e0ea3bd132f7239f10a643e53745fc8` |
 | `.agentic/tests/test_awf36_controller_automation.py` | `5284c37e0a30eb346bf64b1ca1978a354aef4275267382be63667be9ee109d6d` |
@@ -479,7 +479,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/upgrade/blobs/3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883` | `3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883` |
 | `.agentic/upgrade/blobs/da8c1e0121daddc22579b061661c9c08ff0745a905ee0f1381492af6b9b77900` | `da8c1e0121daddc22579b061661c9c08ff0745a905ee0f1381492af6b9b77900` |
 | `.agentic/upgrade/known-versions.json` | `c23e52241fb3517103af8fb0cc1e97c330ebf9967d52073dff89cbf0277871b8` |
-| `.agentic/validation/five-slot-adversarial-regressions.json` | `0024ee03fc6f461b69edc6a9f0db775ae4be23b63d5b3f66a3d4fdb94e72dd07` |
+| `.agentic/validation/five-slot-adversarial-regressions.json` | `d57e09c4da95f71532ee4d6431395c5c654591c9b9fdfdb9c4d9f70943aafe11` |
 | `.agentic/validation/pr26-owner-accepted-finding-provenance.json` | `b9254e379df2a3bbe408fd5cd9d8a6148b660a9c3df93d97c0f1baeaf33cb6f9` |
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
 | `.agentic/workflow-version.yaml` | `2fc7aaae4da5627bd781ec1210e968dbaa93f4a11f3550c764cbc6cac4f41255` |
