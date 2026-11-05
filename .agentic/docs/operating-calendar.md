@@ -1,6 +1,6 @@
 # Operating calendar and routine final-review batching
 
-AWF-244: Tier 3, FULL. Offline helpers activate no scheduler or adapter.
+AWF-244: Tier 3, FULL. Local wiring activates no scheduler or adapter.
 Implementation, tests, independent review and enabled hourly reporting continue
 24/7. Only routine presentation of `READY_FOR_OWNER_AUTHORIZATION` candidates
 waits. Draft readiness, safety escalation and authenticated owner overrides
@@ -26,39 +26,34 @@ The optional `operating_calendar` subtree uses version 1 `OPERATING_CONFIG.yaml`
 }
 ```
 
-Omissions resolve in memory; explicit nulls/unknown keys refuse. Times require
-local `HH:MM`, presentation before cutoff. Days require nonempty unique ISO
-integers 1-7, excluding booleans; effective lists sort. Only `continuous` work
-is supported. Disabled batching presents immediately without granting authority.
-EoD days are independent; changes neither enable reporting nor suppress hourly
-reports. Legacy files, explicit settings, hashes and history remain unchanged.
+Omissions resolve in memory; nulls/unknown keys refuse. Times require local
+`HH:MM`, presentation before cutoff. Days require nonempty unique ISO integers
+1-7, excluding booleans; lists sort. Only `continuous` work is supported.
+Disabled batching presents immediately without authority. EoD days are independent;
+changes never enable reporting or suppress hourly reports. Legacy bytes/hashes/history
+remain unchanged.
 
-`effective_calendar(root)` returns detached validated defaults; unrelated root
-fields still require existing validation. `validate_calendar(subtree)` returns
-the same complete shape or raises `ValidationError`.
-`next_review_presentation(ready_at, subtree)` accepts offset RFC3339 or aware
-`datetime`. Results contain original `ready_at` (datetimes normalize to UTC),
-UTC-Z `presentation_at` (parse with `utc_instant`), domain-separated effective
+`effective_calendar(root)` returns detached validated defaults;
+`validate_calendar(subtree)` validates the subtree or raises `ValidationError`.
+`next_review_presentation(ready_at, subtree)` accepts RFC3339 or aware `datetime`.
+Results contain original `ready_at` (datetimes normalize), UTC-Z `presentation_at`, effective
 `calendar_sha256`, `held`, and always-false `merge_authorized`.
 
-The window includes 07:00, excludes 17:00. Earlier weekdays wait until morning;
+The window includes 07:00, excludes 17:00. Early weekdays wait until morning;
 later readiness waits for the next review day. Friday evening/weekends wait
 until Monday. Late ticks recheck the current window. IANA rules resolve ambiguous
 boundaries to the later occurrence, gaps to the first valid instant; collapsed
 windows skip. Bounded search includes the next weekly recurrence.
 
-The platform-independent lock pins `tzdata==2026.6` and its reviewed SHA-256.
-Offline wheelhouses must include it; installed import/version inventories admit
-it. Windows needs no `PYTHONTZPATH` override. Missing/invalid IANA data refuses
-with `ValidationError`, including disabled batching; no offset fallback exists.
-Tests require London/New York data.
+The lock pins `tzdata==2026.6` and its reviewed SHA-256. Wheelhouses and installed
+inventories include it. Missing/invalid IANA data refuses, even with batching
+disabled; no offset fallback exists. Tests require London/New York data.
 
 ## Persistence and delivery
 
-`ReviewBatchStore(existing_continuous_controller_store)` retains protected-path
-integrity, full-synchronous SQLite and serialized `BEGIN IMMEDIATE`. Versioned
-intent/outbox/check/receipt tables remain separate from `controller_outbox`,
-dispatch, lifecycle and reporting; the existing digest reader lacks kind filtering.
+`ReviewBatchStore(controller_store)` retains protected-path integrity,
+full-synchronous SQLite and serialized `BEGIN IMMEDIATE`. Versioned review tables
+remain separate from `controller_outbox`, dispatch, lifecycle and reporting.
 
 1. `enqueue(candidate, ready_at, calendar)` preserves first readiness/schedule.
    Closed identity requires positive integer repository/PR IDs, lowercase
@@ -76,8 +71,8 @@ dispatch, lifecycle and reporting; the existing digest reader lacks kind filteri
    Withdrawn identities require fresh qualification/new pins, never replay.
 4. Immediately before initial send, `recheck(batch_id, now, calendar, observer)`
    persists fresh member/window/calendar evidence; drift refuses the whole digest.
-   Payload/identity remain immutable. Sender must serialize check/mutation and
-   retain provider authority controls; checks are never reusable send permits.
+   Payload/identity remain immutable. Serialize check/mutation; checks are never
+   reusable send permits.
 5. Only verified readback calls `acknowledge`/`reconcile`. Closed receipts require
    matching `batch_id`, `payload_sha256`, status, nonempty `provider_receipt_id`
    and `observed_at` not before preparation. Identical receipts deduplicate;
@@ -88,31 +83,46 @@ After restart, `pending_batches()` permits readback only. Unknown sends and
 refused rechecks remain unresolved until verified delivery/non-delivery; no blind
 resend, expiry retry, operator reset or timeout release exists.
 
-AWF-241 owns OFF/Teams/Slack/both, destination receipt namespaces and verified
-per-platform two-attempt ceilings. Partial/ambiguous delivery must reconcile
-before logical terminal receipts; one failed destination cannot mean NOT_DELIVERED.
-Never multiply retry allowances. Offline helpers claim no live-channel,
-reporting-OFF or unattended-host qualification.
+AWF-241 owns OFF/Teams/Slack/both and per-platform two-attempt ceilings. Partial
+delivery must reconcile before logical terminal receipts; one failed destination
+cannot mean NOT_DELIVERED. Never multiply retry allowances.
 
-## Integration still required
+## Settings and controller ports
 
-Operating validation/set/show accepts this optional subtree through the existing
-lock/journal/audit/recovery. Dotted leaf paths use JSON weekday lists. Fresh
-generated defaults/schema include the calendar; legacy files omit it unchanged.
+Operating validation/set/show uses existing lock/journal/audit/recovery. Dotted
+paths use JSON weekday lists. Generated defaults/schema include the calendar;
+legacy files omit it unchanged.
 `CalendarSettingsRegistry` reuses budgeting's protected registry and trusted-host
 `observe_owner_direction` pattern, with separate immutable replay records.
 Infrastructure injects `calendar_registry` into `set_operating`/`main`; standalone
 CLI instructions refuse calendar mutations. Host observations bind the project,
-effective prior-calendar hash and exact changes, consumed after complete mixed-root
-validation under the operating lock. Journal recovery retains that observation.
+effective prior-calendar hash and exact changes, consumed after mixed-root
+validation under the operating lock. Recovery retains that observation.
 
-Controller/AWF-241 must resolve `effective_calendar(snapshot.config)` each cycle;
-construct `ReviewBatchStore` over protected controller state; enqueue only freshly
-qualified owner-ready candidates; supply trusted time/current-gate observations
-to claim/recheck immediately before delivery; and reconcile pending batches by
-verified readback after restart. Connect effective EoD time/days to the separate
-report scheduler. Preserve per-platform receipts, OFF and the shared two-attempt
-ceiling. Held presentation must never block dispatch, reviews or hourly reports.
-Qualify bootstrap, real hourly/EoD delivery and disabled reporting.
-FULL closure still requires integration,
-current-head independent critic/specialists, final gate and owner review.
+`production_controller_cycle` resolves the validated snapshot's effective calendar
+each cycle, returning `operating_calendar` for AWF-241's separate EoD/hourly
+scheduler. After dispatch and immediate status/action delivery it calls
+`production_review_batching_cycle`, constructing protected `ReviewBatchStore`.
+Reviewed CLI adapters may inject four optional ports:
+
+- `observe_owner_ready({binding, observed_at})` returns exactly
+  `{binding, observed_at, candidates}` with matching scope/time. Candidates are
+  locators, never authority or inventory-derived readiness.
+- `observe_review_candidate(candidate, now)` independently observes repository,
+  PR/head/base/tree, open/merged state, lifecycle and current final-gate bytes.
+  Its closed observation above must pass `enqueue_observed`; only
+  `READY_FOR_OWNER_AUTHORIZATION` enqueues. Claim/pre-send recheck repeat observation;
+  post-read trusted time guards cutoff/expiry; stale pending members withdraw.
+- `deliver_review_batch(payload)` conditionally sends once using immutable
+  `batch_id` as idempotency key; returns verified terminal receipt or `None`.
+- `observe_review_delivery(payload)` reads receipts only. Unknown returns `None`.
+  Confirmed NOT_DELIVERED must fence delayed sends before allowing a retry.
+
+Lane E supplies transport and receipt authentication. The host serializes cycles
+and bounds adapter calls. Without delivery ports, collection persists without
+claiming. Restart reads unresolved receipts without resending. Refused pre-send
+checks retain unresolved claims for verified reconciliation. Held/unknown reviews
+never gate implementation, tests, independent review, amendments or hourly reports.
+Safety and action alerts stay immediate. No port grants merge authority.
+Delivery/OFF qualification, current-head independent review, specialists,
+final gate and owner review remain required for FULL closure.

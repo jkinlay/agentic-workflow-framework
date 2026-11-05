@@ -116,6 +116,20 @@ class ReviewBatchStore:
                         canonical(schedule).decode(), "PENDING"))
         return identity
 
+    def enqueue_observed(self, candidate, observation, now, calendar, *, repository_id):
+        """Controller admission from a fresh trusted lifecycle/gate observation.
+
+        Discovery supplies locators, never readiness. The reviewed collector
+        independently verifies lifecycle and current final-gate evidence. Invalid
+        readiness cannot create an intent or revive a withdrawn identity.
+        """
+        candidate = _candidate(candidate)
+        _require(str(candidate['repository_id']) == repository_id,
+                 'Review candidate repository differs from the controller binding')
+        if not _observation_valid(observation, candidate, utc_instant(now)):
+            return None
+        return self.enqueue(candidate, now, calendar)
+
     def claim(self, now, calendar, observer):
         """Recompute pending eligibility and atomically claim one due digest.
 
