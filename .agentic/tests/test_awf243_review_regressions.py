@@ -89,14 +89,24 @@ class AssignmentRegressions(unittest.TestCase):
         self.assertEqual("UNKNOWN", self.done(write_transition=unknown)["record"]["status"])
         self._assert_done_stop_survives_lifecycle_restart()
 
-    def test_r1_status_only_lifecycle_cannot_clear_unknown_progress_read(self):
+    def test_r1_progress_timeout_preserves_success_across_reopen(self):
         self.writes = []
         self.assertEqual("SUCCEEDED", self.done()["record"]["status"])
-        def unknown(binding):
-            raise TimeoutError("unknown progress observation")
-        self.assertEqual("UNOBSERVED", self.progress(read_current_status=unknown)["jira_state"])
-        self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
-        self._assert_done_stop_survives_lifecycle_restart()
+        before = self.store.jira_operations(KEY)[0]
+        for value in (TimeoutError(), OSError(), None, {}):
+            def unknown(binding):
+                if isinstance(value, Exception):
+                    raise value
+                return value
+            with self.subTest(value=value):
+                self.store = ContinuousControllerStore(self.store.path, ["A"])
+                self.assertEqual("UNOBSERVED", self.progress(read_current_status=unknown)["jira_state"])
+                self.assertEqual(before, self.store.jira_operations(KEY)[0])
+                self.assertEqual(1, len(self.writes))
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        self.assertEqual("SUCCEEDED", self.store.jira_operations(KEY)[0]["status"])
+        self.assertEqual("COUNTED", self.progress()["jira_state"])
+        self.assertEqual(1, len(self.writes))
 
     def _assert_done_stop_survives_lifecycle_restart(self):
         for event, status in (("JIRA_RECONCILED", "Done"), ("WORKER_STARTED", "In Review"),
@@ -107,7 +117,10 @@ class AssignmentRegressions(unittest.TestCase):
                        "run_registered": True, "worktree_verified": True},
                 read_current_status=lambda binding, status=status: {
                 "issue_id": KEY, "status_id": status, "observed_at": NOW,
-                "jira_provider": self.provider})
+                "jira_provider": self.provider},
+                read_transition=lambda record, operation, status=status: {
+                    "issue_id": KEY, "status_id": status, "observed_at": NOW,
+                    "jira_provider": self.provider})
             self.assertTrue(result.get("writes_stopped"), result)
             self.assertFalse(result["planned"])
             self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
@@ -115,8 +128,8 @@ class AssignmentRegressions(unittest.TestCase):
 
     def test_revised_candidate_reconciles_after_worker_started(self):
         self.writes = []
-        candidate_a = {"issue_id": KEY, "head_sha": "a" * 40}
-        candidate_b = {"issue_id": KEY, "head_sha": "b" * 40}
+        candidate_a = self.candidate_binding()
+        candidate_b = {**candidate_a, "candidate_id": "b" * 64}
         started = self.done(binding=candidate_a, event="WORKER_STARTED",
             facts={"run_registered": True, "worktree_verified": True}, state="DISPATCHED",
             read_transition=lambda record, operation: {"issue_id": KEY, "status": "In Progress",
@@ -134,6 +147,205 @@ class AssignmentRegressions(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, "different connector/site/project/actor"):
                     self.done(binding=candidate_b, producer_id=self.provider["controller_actor_id"])
         self.assertEqual(2, len(self.writes))
+
+    def candidate_binding(self):
+        return {"issue_id": KEY, "project_id": self.config["project"]["id"],
+                "repository_id": self.config["github"]["repository_id"],
+                "requirements_hash": "c" * 64, "contract_hash": "d" * 64,
+                "policy_hash": "e" * 64, "candidate_id": "a" * 64}
+
+    def unknown_readback(self):
+        self.writes = []
+        def timeout(record, operation):
+            raise TimeoutError("write succeeded; readback timed out")
+        self.assertEqual("UNKNOWN", self.done(read_transition=timeout)["record"]["status"])
+        self.assertEqual(1, len(self.writes))
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+
+    def transition_evidence(self, record, operation):
+        self.assertEqual(record["operation_id"], operation["operation_id"])
+        self.assertEqual(KEY, operation["issue_id"])
+        return {"issue_id": KEY, "status": record["to_status_id"],
+                "actor": self.provider["controller_actor_id"], "observed_at": NOW,
+                "jira_provider": copy.deepcopy(self.provider)}
+
+    def test_r2_unknown_recovers_through_original_transition_observer_without_write(self):
+        self.unknown_readback()
+        reads = []
+        def observe(record, operation):
+            reads.append((copy.deepcopy(record), copy.deepcopy(operation)))
+            return self.transition_evidence(record, operation)
+        recovered = self.done(read_transition=observe)
+        self.assertFalse(recovered["planned"])
+        self.assertEqual("SUCCEEDED", recovered["record"]["status"])
+        self.assertEqual(1, len(reads))
+        self.assertEqual(self.writes[0], reads[0][0])
+        self.assertEqual("SUCCEEDED", self.store.jira_operations(KEY)[0]["status"])
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        self.assertFalse(self.done()["planned"])
+        self.assertEqual("COUNTED", self.progress()["jira_state"])
+        self.assertEqual(1, len(self.writes))
+
+    def test_r2_absent_incomplete_failed_and_status_only_evidence_can_be_read_again(self):
+        self.unknown_readback()
+        reads = []
+        for value in (None, {}, {"status": "Done"}, TimeoutError(), OSError()):
+            def observe(record, operation):
+                reads.append(record["operation_id"])
+                if isinstance(value, Exception):
+                    raise value
+                return value
+            for event in ("JIRA_RECONCILED", "WORKER_STARTED"):
+                with self.subTest(value=value, event=event):
+                    self.store = ContinuousControllerStore(self.store.path, ["A"])
+                    result = self.done(event=event, read_transition=observe)
+                    self.assertTrue(result["writes_stopped"])
+                    self.assertFalse(result["planned"])
+                    self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
+                    self.assertEqual("UNOBSERVED", self.progress()["jira_state"])
+                    self.assertEqual(1, len(self.writes))
+        self.assertEqual(10, len(reads))
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        self.done(read_transition=self.transition_evidence)
+        self.assertEqual("SUCCEEDED", self.store.jira_operations(KEY)[0]["status"])
+        self.assertEqual("COUNTED", self.progress()["jira_state"])
+        self.assertEqual(1, len(self.writes))
+
+    def test_r2_legacy_unknown_without_receipt_reads_original_operation_after_reopen(self):
+        self.unknown_readback()
+        row = self.store.jira_operations(KEY)[0]
+        with self.store.transaction() as db:
+            db.execute("UPDATE controller_jira_operation SET operation_json=NULL WHERE operation_id=?",
+                       (row["operation_id"],))
+        reads = []
+        def observe(record, operation):
+            reads.append((record, operation))
+            self.assertEqual(row["record"], record)
+            self.assertEqual(record["created_at"], operation["observed_at"])
+            return self.transition_evidence(record, operation)
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        self.assertEqual("SUCCEEDED", self.done(read_transition=observe)["record"]["status"])
+        self.assertEqual(1, len(reads))
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        self.assertEqual("COUNTED", self.progress()["jira_state"])
+        self.assertEqual(1, len(self.writes))
+
+    def test_r2_foreign_actor_target_issue_provider_or_time_stays_unknown(self):
+        self.unknown_readback()
+        cases = [("actor", "other-actor"), ("status", "In Review"), ("issue_id", "EX-99"),
+                 ("jira_provider", {**self.provider, "project_id": "foreign"}),
+                 ("observed_at", "2026-11-03T08:29:59Z")]
+        for field, value in cases:
+            reads = []
+            def observe(record, operation):
+                reads.append(record["operation_id"])
+                return {**self.transition_evidence(record, operation), field: value}
+            with self.subTest(field=field):
+                self.store = ContinuousControllerStore(self.store.path, ["A"])
+                self.assertTrue(self.done(read_transition=observe)["writes_stopped"])
+                self.assertEqual(1, len(reads))
+                self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
+                self.assertEqual("UNOBSERVED", self.progress()["jira_state"])
+                self.assertEqual(1, len(self.writes))
+
+    def test_r2_mismatched_operation_receipt_never_recovers(self):
+        import json
+        self.unknown_readback()
+        row = self.store.jira_operations(KEY)[0]
+        operation = {"operation_id": "other-operation", "issue_id": KEY,
+                     "status": "ATTEMPTED", "observed_at": NOW, "jira_provider": self.provider}
+        with self.store.transaction() as db:
+            db.execute("UPDATE controller_jira_operation SET operation_json=? WHERE operation_id=?",
+                       (json.dumps(operation), row["operation_id"]))
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        reads = []
+        def observe(record, operation):
+            reads.append(operation)
+            return self.transition_evidence(record, operation)
+        self.assertTrue(self.done(read_transition=observe)["writes_stopped"])
+        self.assertEqual([], reads)
+        self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
+        self.assertEqual("UNOBSERVED", self.progress()["jira_state"])
+        self.assertEqual(1, len(self.writes))
+
+    def test_r2_reference_observer_refuses_foreign_target_actor_and_outside_window(self):
+        import json
+        import os
+        import runpy
+        import tempfile
+        from pathlib import Path
+        from test_reference_controller_adapter import _base_config, ProgressHttp, FakeClock, FakeRunner, NOW as ADAPTER_NOW
+        with tempfile.TemporaryDirectory(prefix="awf243-recovery-") as temporary:
+            http = ProgressHttp()
+            adapters = runpy.run_path(str(scope_fixture.ROOT / ".agentic/adapters/reference_controller_adapter.py"))["build_adapters"](
+                {**_base_config(Path(temporary)), "_http_transport": http,
+                 "_runner": FakeRunner(), "_clock": FakeClock()})
+            self.config["jira"].update(cloud_id="cloud-1", provider_project_id="project-1",
+                                       controller_actor_id="controller")
+            self.config["jira"]["scope"].update(included_epics=[], labels_any=["awf-fixture"])
+            args = {name: adapters[name] for name in ("observe_provider_identity", "observe_issue_identity",
+                    "observe_issue_policy", "read_current_status", "write_transition", "read_transition")}
+            def timeout(record, operation):
+                raise TimeoutError("readback timed out after Done write")
+            def invoke(**overrides):
+                return self.done(binding={"issue_id": "EX-100"}, now=ADAPTER_NOW,
+                                 producer_id="controller", **{**args, **overrides})
+            original_request = http.request
+            cases = [("absent", None), ("incomplete", None), ("actor", "other-actor"),
+                     ("target", "In Review"), ("time", "2020-01-01T00:00:00Z"),
+                     ("time", "2099-01-01T00:00:00Z")]
+            with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "fixture-token"}):
+                self.assertEqual("UNKNOWN", invoke(read_transition=timeout)["record"]["status"])
+                self.assertEqual(1, sum(call[0] == "POST" for call in http.calls))
+                for field, value in cases:
+                    def changed(method, url, **kwargs):
+                        status, body = original_request(method, url, **kwargs)
+                        if "expand=changelog" in url:
+                            payload = json.loads(body)
+                            history = payload["changelog"]["histories"][0]
+                            if field == "absent":
+                                payload["changelog"]["histories"] = []
+                            elif field == "incomplete":
+                                history.pop("author")
+                            elif field == "actor":
+                                history["author"]["accountId"] = value
+                            elif field == "target":
+                                history["items"][0]["to"] = value
+                            else:
+                                history["created"] = value
+                            body = json.dumps(payload)
+                        return status, body
+                    with self.subTest(field=field, value=value), patch.object(http, "request", side_effect=changed):
+                        self.store = ContinuousControllerStore(self.store.path, ["A"])
+                        self.assertTrue(invoke()["writes_stopped"])
+                        self.assertEqual("UNKNOWN", self.store.jira_operations("EX-100")[0]["status"])
+                        self.assertEqual(1, sum(call[0] == "POST" for call in http.calls))
+                self.store = ContinuousControllerStore(self.store.path, ["A"])
+                self.assertEqual("SUCCEEDED", invoke()["record"]["status"])
+                self.assertEqual(1, sum(call[0] == "POST" for call in http.calls))
+
+    def test_r2_project_and_repository_identity_changes_or_missing_fields_refuse_zero_writes(self):
+        self.writes = []
+        binding = self.candidate_binding()
+        self.assertEqual("SUCCEEDED", self.done(binding=binding, event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True}, state="DISPATCHED",
+            read_transition=lambda record, operation: {**self.transition_evidence(record, operation),
+                                                       "status": "In Progress"})["record"]["status"])
+        self.assertEqual(1, len(self.writes))
+        self.writes.clear()
+        cases = [{**binding, "project_id": "00000000-0000-0000-0000-000000000002"},
+                 {**binding, "repository_id": binding["repository_id"] + 1},
+                 {**binding, "unrecognized_identity": "foreign"}]
+        cases.extend({**binding, field: "f" * 64}
+                     for field in ("requirements_hash", "contract_hash", "policy_hash"))
+        cases.extend({key: value for key, value in binding.items() if key != field}
+                     for field in binding)
+        for revised in cases:
+            with self.subTest(binding=revised):
+                self.store = ContinuousControllerStore(self.store.path, ["A"])
+                with self.assertRaises(ValidationError):
+                    self.done(binding=revised)
+                self.assertEqual(0, len(self.writes))
 
     def test_r1_scope_hold_observers_and_journal_are_required(self):
         self.writes = []

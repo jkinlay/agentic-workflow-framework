@@ -721,6 +721,24 @@
       "regression_id": "AWF243-R4-REGRESSION",
       "source_finding_id": "AWF243-R4",
       "test_id": "AssignmentRegressions.test_r4_all_assignment_capabilities_precede_mutation"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Unknown reconciliation recovers only through its retained operation and transition observer without another write",
+      "permanent": true,
+      "regression_id": "AWF243-ROUND2-RECOVERY-REGRESSION",
+      "source_finding_id": "AWF243-ROUND2-RECOVERY",
+      "test_id": "AssignmentRegressions.test_r2_unknown_recovers_through_original_transition_observer_without_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Candidate revisions retain invariant project and repository identities and refuse missing or unknown binding fields",
+      "permanent": true,
+      "regression_id": "AWF243-ROUND2-IDENTITY-REGRESSION",
+      "source_finding_id": "AWF243-ROUND2-IDENTITY",
+      "test_id": "AssignmentRegressions.test_r2_project_and_repository_identity_changes_or_missing_fields_refuse_zero_writes"
     }
   ]
 }

@@ -2312,15 +2312,20 @@ def _post_merge_jira_receipt(store, config, issue, now, count_gate, *, observe_p
 		current = None
 		try:
 			current = read_current_status({'issue_id': issue, 'jira_provider': deepcopy(provider)})
+		except Exception as exc:
+			# Failure to observe is not evidence against a completed transition.
+			# Leave its durable receipt intact so a later progress run can retry.
+			raise ValidationError('Post-merge status is unobserved for this run') from exc
+		try:
 			_require(isinstance(current, dict) and current.get('issue_id') == issue
 				and current.get('jira_provider') == provider and current.get('status_id') == record['to_status_id'], 'Post-merge status differs from the durable reconciliation')
 			_require(timestamp(current['observed_at']) >= max(timestamp(now), timestamp(retained['observed_at'])), 'Post-merge status observation is stale')
 		except Exception:
-			# A later mismatch/unknown is also a ticket-wide durable stop. Retain
-			# the provider observation (including actor/time, if supplied).
-			status = 'FAILED' if isinstance(current, dict) and current.get('status_id') else 'UNKNOWN'
-			with store.transaction() as db:
-				db.execute("UPDATE controller_jira_operation SET status=?,readback_json=?,updated_at=? WHERE operation_id=? AND status='SUCCEEDED'", (status, canonical(current).decode(), now, record['operation_id']))
+			# Only an observed mismatch creates a durable conflict. Missing or
+			# malformed observations cannot erase the successful transition.
+			if isinstance(current, dict) and current.get('status_id'):
+				with store.transaction() as db:
+					db.execute("UPDATE controller_jira_operation SET status='FAILED',readback_json=?,updated_at=? WHERE operation_id=? AND status='SUCCEEDED'", (canonical(current).decode(), now, record['operation_id']))
 			raise ValidationError('Post-merge readback mismatch or unknown; suspected external automation conflict; never reissue')
 	return {'ticket': issue, 'issue_id': issue, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'],
 		'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': record['operation_id'],
@@ -2856,6 +2861,33 @@ def _observe_jira_write_policy(config, issue, observer, now):
 	return value
 
 
+def _jira_lifecycle_binding_identity(binding, config):
+	"""Closed candidate-field list; every other recognized field is invariant.
+
+	The issue-only adapter form obtains project/repository from reviewed config.
+	Retain the existing batch/lifecycle requirements-only binding form as well
+	as the full candidate schema. Neither form permits missing invariant fields,
+	and a revision cannot switch forms. Unknown fields never become candidates.
+	"""
+	invariants = {'project_id', 'repository_id', 'issue_id'}
+	candidate_fields = {'candidate_id'}
+	hash_fields = {'requirements_hash', 'contract_hash', 'policy_hash'} | candidate_fields
+	if set(binding) == {'issue_id'}:
+		identity = {'issue_id': binding['issue_id'], 'project_id': config.get('project', {}).get('id'),
+			'repository_id': config.get('github', {}).get('repository_id')}
+	else:
+		_require(set(binding) in (invariants | {'requirements_hash'}, invariants | hash_fields), 'Jira candidate binding has missing or unrecognized fields')
+		identity = {field: binding[field] for field in invariants}
+		_require(all(isinstance(binding[field], str) and re.fullmatch(r'[0-9a-f]{64}', binding[field]) for field in hash_fields & set(binding)), 'Jira candidate binding has malformed candidate fields')
+		identity.update({field: binding[field] for field in (hash_fields - candidate_fields) & set(binding)})
+	repository_id = identity['repository_id']
+	_require(isinstance(identity['project_id'], str) and identity['project_id'].strip()
+		and ((type(repository_id) is int and repository_id > 0)
+			or (isinstance(repository_id, str) and re.fullmatch(r'[1-9][0-9]*', repository_id))),
+		'Jira binding is missing project/repository identity')
+	return identity
+
+
 def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None, observe_issue_policy=None):
 	_require(isinstance(store, ContinuousControllerStore), 'Jira lifecycle production needs the protected controller store')
 	config = deepcopy(config)
@@ -2911,20 +2943,51 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	contract = deepcopy(contract)
 	contract['owner_closure_required'] = bool(contract.get('owner_closure_required')) or owner_closure_required(config, policy['snapshot'])
 	durable = store.jira_operations(issue)
+	binding_identity = _jira_lifecycle_binding_identity(binding, config)
 	for operation_row in durable:
 		_require(operation_row['record'].get('jira_provider') == provider, 'Durable Jira intent belongs to a different connector/site/project/actor')
+		_require(_jira_lifecycle_binding_identity(operation_row['record']['binding'], config) == binding_identity,
+			'Durable Jira intent belongs to a different project/repository/issue binding')
+		_require(set(operation_row['record']['binding']) == set(binding), 'Jira candidate binding has missing or unrecognized fields')
+	for operation_row in durable:
 		if operation_row['status'] == 'FAILED':
 			return {'planned': False, 'reason': 'A durable Jira operation failed; writes remain stopped', 'writes_stopped': True, 'operation_id': operation_row['operation_id'], 'current_observation': current, 'execution_authority': False}
 		if operation_row['status'] != 'UNKNOWN':
 			continue
 		record = operation_row['record']
 		if record['lifecycle_event'] == 'JIRA_RECONCILED':
-			# AWF-243: neither an uncertain Done write nor a later uncertain
-			# progress read can be resolved by status alone. This observation
-			# surface proves no complete, operation- and actor-bound changelog.
-			# Keep the durable stop across all subsequent lifecycle events;
-			# broader lifecycle recovery remains AWF-173/AWF-175 work.
-			return {'planned': False, 'reason': 'Unknown durable Jira reconciliation was not proven successful by complete operation- and actor-bound transition evidence; suspected external automation conflict; writes remain stopped', 'writes_stopped': True, 'operation_id': record['operation_id'], 'current_observation': current, 'execution_authority': False}
+			# Recovery reads the original operation, never the revised candidate
+			# and never status alone. Keep UNKNOWN on all observer failures so
+			# stronger evidence can be observed on a later invocation.
+			try:
+				with _batch_jira_ownership(store, issue_id=issue) as owned:
+					_require(owned, 'Jira reconciliation is owned by another operation')
+					with store.connection() as db:
+						_require(_stopped_batch_jira_operation(db, issue) is None, 'A durable batch Jira stop prevents recovery')
+					if operation_row['operation_json'] is None:
+						# Older UNKNOWN rows lost the returned write receipt. The
+						# durable intent still binds the attempted operation and its
+						# start time. This is observer input, never success evidence
+						# or a replacement provider receipt; only read_transition can
+						# prove the actor/target transition within that time window.
+						operation = {'operation_id': record['operation_id'], 'issue_id': issue,
+							'status': 'ATTEMPTED', 'observed_at': record['created_at'], 'jira_provider': provider}
+					else:
+						operation = loads(operation_row['operation_json'])
+					_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'}
+						and operation['operation_id'] == record['operation_id'] and operation['issue_id'] == issue
+						and operation['jira_provider'] == provider and operation['status'] == 'ATTEMPTED', 'Retained Jira operation receipt is missing or mismatched')
+					operation_time = timestamp(operation['observed_at'])
+					_require(timestamp(record['created_at']) <= operation_time <= current_time, 'Retained Jira operation time is outside its attempt window')
+					observation = read_transition(deepcopy(record), deepcopy(operation))
+					_require(isinstance(observation, dict) and set(observation) == {'issue_id', 'status', 'actor', 'observed_at', 'jira_provider'}
+						and observation['issue_id'] == issue and observation['jira_provider'] == provider
+						and observation['actor'] == provider['controller_actor_id'] and observation['status'] == record['to_status_id'], 'Jira recovery readback is missing or mismatched')
+					_require(timestamp(observation['observed_at']) >= max(operation_time, current_time), 'Jira recovery readback predates the operation or current observation')
+					store.finish_jira_operation(record['operation_id'], 'SUCCEEDED', observation, observation['observed_at'])
+				return {'planned': False, 'current_observation': current, **apply_read_back(record, observation['status'], observation['actor'], observation['observed_at']), 'execution_authority': False}
+			except Exception:
+				return {'planned': False, 'reason': 'Unknown durable Jira reconciliation was not proven successful by complete operation- and actor-bound transition evidence; suspected external automation conflict; writes remain stopped', 'writes_stopped': True, 'operation_id': record['operation_id'], 'current_observation': current, 'execution_authority': False}
 		if current['status_id'] == record['to_status_id']:
 			store.finish_jira_operation(record['operation_id'], 'SUCCEEDED', current, current['observed_at'])
 			continue
@@ -2983,7 +3046,11 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 			_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'} and (operation['operation_id'] == record['operation_id']) and (operation['issue_id'] == issue) and (operation['jira_provider'] == provider) and (operation['status'] == 'ATTEMPTED'), 'Jira write receipt is missing or mismatched')
 			operation_time = timestamp(operation['observed_at'])
 			_require(operation_time >= current_time, 'Jira write receipt predates the pre-write observation')
-			observation = read_transition(record, operation)
+			# Persist the actual attempt receipt before the fallible read. A
+			# timeout/restart can then recover with this same observer, no write.
+			with store.transaction() as db:
+				db.execute("UPDATE controller_jira_operation SET operation_json=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical(operation).decode(), record['operation_id']))
+			observation = read_transition(deepcopy(record), deepcopy(operation))
 			_require(isinstance(observation, dict) and set(observation) == {'issue_id', 'status', 'actor', 'observed_at', 'jira_provider'} and (observation['issue_id'] == issue) and (observation['jira_provider'] == provider) and (observation['actor'] == provider['controller_actor_id']), 'Jira readback has an invalid or mismatched shape')
 			readback_time = timestamp(observation['observed_at'])
 			_require(readback_time >= operation_time, 'Jira readback predates the write receipt')

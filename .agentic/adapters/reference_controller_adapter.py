@@ -1433,7 +1433,14 @@ def _build(config):
 
 	def read_transition(record, operation):
 		issue_id = record['binding']['issue_id']
+		_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'}
+			and operation['operation_id'] == record['operation_id'] and operation['issue_id'] == issue_id
+			and operation['jira_provider'] == record['jira_provider'] and operation['status'] == 'ATTEMPTED',
+			'Jira transition readback has a missing or mismatched operation')
+		operation_time = timestamp(operation['observed_at'])
 		value = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '?fields=status&expand=changelog')
+		observed_at = _clock_text(clock)
+		observation_time = timestamp(observed_at)
 		status = value.get('fields', {}).get('status', {}).get('id')
 		histories = value.get('changelog', {}).get('histories')
 		_require(isinstance(status, str) and status and isinstance(histories, list), 'Jira transition history is unavailable')
@@ -1441,22 +1448,19 @@ def _build(config):
 		for history in histories:
 			if not isinstance(history, dict) or not isinstance(history.get('created'), str):
 				continue
-			_require(isinstance(operation, dict) and isinstance(operation.get('observed_at'), str), 'Jira transition readback has no operation attempt time')
-			operation_time = operation['observed_at']
-			if timestamp(history['created']) < timestamp(operation_time):
+			if not operation_time <= timestamp(history['created']) <= observation_time:
 				continue
 			author = history.get('author', {})
 			actor = author.get('accountId') if isinstance(author, dict) else None
 			for item in history.get('items', []):
 				if not isinstance(item, dict) or item.get('field') != 'status':
 					continue
-				if item.get('to') == record.get('to_status_id') or item.get('toString') == status:
+				if item.get('to') == record.get('to_status_id'):
 					if isinstance(actor, str) and actor:
 						candidates.append((history['created'], actor))
 		_require(candidates, 'Jira transition history does not prove the current transition')
 		candidates.sort(key=lambda item: item[0])
 		_created, actor = candidates[-1]
-		observed_at = _clock_text(clock)
 		return {'issue_id': issue_id, 'status': status, 'actor': actor, 'observed_at': observed_at, 'jira_provider': record['jira_provider']}
 
 	def reconcile_merged_ticket(ticket):
