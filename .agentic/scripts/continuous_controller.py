@@ -58,6 +58,8 @@ def _batch_closeout_inputs(adapters, adapter_sha256, config):
 	calls = _require_adapters(adapters, {'batch_coordinator', 'observe_batch_merge',
 		'observe_issue_identity', 'observe_issue_policy', 'observe_provider_identity', 'read_current_status',
 		'write_transition', 'read_transition'})
+	if callable(adapters.get('observe_jira_operation_identity')):
+		calls['observe_jira_operation_identity'] = adapters['observe_jira_operation_identity']
 	github = config['github']
 	provider = {key: github[key] for key in ('host', 'repository', 'repository_id')}
 	provider['host'] = provider['host'].rstrip('/')
@@ -247,7 +249,10 @@ def main(argv=None, default_root=ROOT):
 			calls['read_assignment'] = adapters['read_assignment']
 		output = production_jira_lifecycle(store, config=config, contract=load(args.contract), event=args.event, facts=load(args.facts), binding=load(args.binding), issue_type=args.issue_type, state=args.lifecycle_state, producer_id=args.producer_id, run_id=args.run_id, now=args.now, evidence=args.evidence, transition_id=args.transition_id, merge_result_id=args.merge_result_id, **calls)
 	elif args.command == 'merge-observed':
-		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'fetch_scope_page'})
+		names = {'fetch_scope_page'}
+		if config.get('jira', {}).get('enabled') is True:
+			names.update({'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status'})
+		calls = _require_adapters(adapters, names)
 		progress = _jira_progress_request(args.jira_progress)
 		gate_names = {'observe_accepted_project_config', 'observe_closeout_record'}
 		if config.get('jira', {}).get('enabled') is True:

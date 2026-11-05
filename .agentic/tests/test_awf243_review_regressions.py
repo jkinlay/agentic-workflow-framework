@@ -249,7 +249,9 @@ class AssignmentRegressions(unittest.TestCase):
             db.execute("DELETE FROM controller_meta WHERE key=?", ("jira-identity:" + row["operation_id"],))
         self.store = ContinuousControllerStore(self.store.path, ["A"])
         with self.assertRaisesRegex(ValidationError, "Historical Jira identity.*observe_jira_operation_identity"):
-            self.counted_done(calls)
+            # An explicitly supplied historical observer must still fail closed;
+            # absence now selects the separately tested one-time upgrade adoption.
+            self.counted_done(calls, observe_jira_operation_identity=lambda record: None)
         self.assertEqual(row, self.store.jira_operations(KEY)[0])
         history_reads = []
         def history(record):
@@ -1539,6 +1541,377 @@ class AssignmentSharedAdmissionRegressions(unittest.TestCase):
             store=self.fixture.store)['jira']['read_back_status'])
         self.assertEqual(1, jira.calls.count('labels'))
         self.assertEqual(1, jira.calls.count('comment'))
+
+
+class SecondLookUpgradeRegressions(unittest.TestCase):
+    setUp = scope_fixture.JiraMutationScopeTests.setUp
+    policy = AssignmentRegressions.policy
+    done = AssignmentRegressions.done
+    transition_evidence = AssignmentRegressions.transition_evidence
+
+    def legacy_worker(self, status='SUCCEEDED'):
+        self.writes = []
+        self.done(event='WORKER_STARTED', state='DISPATCHED',
+            facts={'run_registered': True, 'worktree_verified': True},
+            read_transition=lambda r, o: {**self.transition_evidence(r, o), 'status': 'In Progress'})
+        row = self.store.jira_operations(KEY)[0]
+        with self.store.transaction() as db:
+            db.execute('DELETE FROM controller_meta WHERE key=?', ('jira-identity:' + row['operation_id'],))
+            db.execute('UPDATE controller_jira_operation SET status=? WHERE operation_id=?', (status, row['operation_id']))
+        return self.store.jira_operations(KEY)[0]
+
+    def ready(self, **overrides):
+        return self.done(event='PR_READY', state='PR_DRAFT', facts={'draft_cleared': True},
+            read_current_status=lambda b: dict(issue_id=KEY, status_id='In Progress',
+                observed_at=NOW, jira_provider=self.provider),
+            read_transition=lambda r, o: {**self.transition_evidence(r, o), 'status': r['to_status_id']},
+            **overrides)
+
+    def test_second_look_healthy_legacy_adopts_once_then_refuses_drift(self):
+        from agentic.canonical import loads
+        row = self.legacy_worker()
+        self.assertEqual('SUCCEEDED', self.ready()['record']['status'])
+        self.assertEqual(row, self.store.jira_operations(KEY)[0])
+        key = 'jira-identity:' + row['operation_id']
+        with self.store.connection() as db:
+            pin = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()['value']
+        adopted = loads(pin)
+        self.assertEqual('ADOPTED_LEGACY_SUCCEEDED', adopted['provenance']['kind'])
+        self.assertEqual(fingerprint('accepted-project-config', self.config), adopted['provenance']['accepted_config_sha256'])
+        self.store = ContinuousControllerStore(self.store.path, ['A'])
+        self.assertFalse(self.done(event='BLOCK', facts={})['planned'])
+        for section, field, value in [('project', 'id', 'changed-project'), ('github', 'repository_id', 999999)]:
+            with self.subTest(section=section), patch.dict(self.config[section], {field: value}):
+                with self.assertRaises(ValidationError):
+                    self.ready()
+        with self.store.connection() as db:
+            self.assertEqual(pin, db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()['value'])
+        self.assertEqual(2, len(self.writes))
+
+    def test_second_look_unhealthy_legacy_never_adopts(self):
+        for status in ('UNKNOWN', 'FAILED', 'IN_FLIGHT'):
+            with self.subTest(status=status):
+                self.setUp()
+                row = self.legacy_worker(status)
+                with self.assertRaises(ValidationError):
+                    self.ready()
+                self.assertEqual(row, self.store.jira_operations(KEY)[0])
+                with self.store.connection() as db:
+                    self.assertIsNone(db.execute('SELECT value FROM controller_meta WHERE key=?',
+                        ('jira-identity:' + row['operation_id'],)).fetchone())
+                self.assertEqual(1, len(self.writes))
+
+    def test_second_look_corrupt_success_cannot_adopt(self):
+        row = self.legacy_worker()
+        with self.store.transaction() as db:
+            db.execute('UPDATE controller_jira_operation SET readback_json=? WHERE operation_id=?',
+                ('{}', row['operation_id']))
+        with self.assertRaises(ValidationError):
+            self.ready()
+        self.assertEqual(1, len(self.writes))
+
+    def test_second_look_disabled_cli_accepts_legacy_adapter_without_jira_calls(self):
+        import importlib.util
+        from contextlib import redirect_stdout
+        import io
+        spec = importlib.util.spec_from_file_location('second_look_cli', scope_fixture.ROOT / '.agentic/scripts/continuous_controller.py')
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        self.config['jira']['enabled'] = False
+        argv = ['--state', str(self.store.path), '--stream', 'A', '--worktree-root', str(scope_fixture.ROOT), 'merge-observed',
+            '--lifecycle-state', 'MERGING', '--lifecycle-facts', 'facts.json',
+            '--jira-progress', 'progress.json', '--repository-root', str(scope_fixture.ROOT)]
+        progress = dict(jira_enabled=False, merged_ticket=KEY, scope='project = EX',
+            observed_at=NOW, jira_binding=dict(cloud_id='fixture-cloud', project_id='fixture-project',
+            actor_id='fixture-controller'), count_gate={})
+        # The 1.9.5 adapter has the progress callback but no four new Jira observers.
+        adapters = {name: lambda *a: self.fail('disabled Jira must perform no adapter operation')
+            for name in ('fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record')}
+        def load(path):
+            return {'facts.json': {'merge_confirmed': True, 'candidate_matched': True}, 'progress.json': progress}.get(str(path), self.config)
+        with patch.object(cli, 'load', side_effect=load), patch.object(cli, 'ContinuousControllerStore', return_value=self.store), \
+             patch.object(cli, '_load_reviewed_adapters', return_value=adapters), \
+             patch.object(cli, '_count_gate_inputs', return_value={}), \
+             patch('agentic.closeout.require_jira_reconciliation_before_counts',
+                   return_value={'status': 'PASS', 'count_allowed': True, 'ticket': KEY}), redirect_stdout(io.StringIO()):
+            self.assertEqual(0, cli.main(argv))
+
+
+class SecondLookAssignmentRegressions(unittest.TestCase):
+    setUp = AssignmentSharedAdmissionRegressions.setUp
+    jira = AssignmentSharedAdmissionRegressions.jira
+    lifecycle = AssignmentSharedAdmissionRegressions.lifecycle
+    reopen = AssignmentSharedAdmissionRegressions.reopen
+    batch = AssignmentSharedAdmissionRegressions.batch
+
+    def test_second_look_batch_accepts_historical_observer_and_adopts_legacy_success(self):
+        from agentic.canonical import loads
+        for historical in (False, True):
+            with self.subTest(historical=historical):
+                self.setUp()
+                self.assertEqual('SUCCEEDED', self.lifecycle(event='WORKER_STARTED', state='DISPATCHED',
+                    facts={'run_registered': True, 'worktree_verified': True},
+                    read_transition=lambda r,o: {**self.spy.read_transition(r,o), 'status': r['to_status_id']})['record']['status'])
+                row = self.fixture.store.jira_operations('AWF-1')[0]
+                key = 'jira-identity:' + row['operation_id']
+                with self.fixture.store.transaction() as db:
+                    history = loads(db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()['value'])
+                    db.execute('DELETE FROM controller_meta WHERE key=?', (key,))
+                self.reopen()
+                reads = []
+                callbacks = {'observe_jira_operation_identity': lambda r: reads.append(r['operation_id']) or history} if historical else {}
+                self.assertTrue(self.batch(**callbacks)['complete'])
+                self.assertEqual([row['operation_id']] if historical else [], reads)
+                self.assertEqual(row, self.fixture.store.jira_operations('AWF-1')[0])
+                self.assertEqual(1, len(self.spy.writes))
+
+    def test_second_look_interrupted_claim_uses_issue_scoped_production_recovery(self):
+        def crash(record):
+            self.spy.write_transition(record)
+            raise SystemExit('synthetic interruption after POST')
+        with self.assertRaises(SystemExit):
+            self.lifecycle(event='WORKER_STARTED', state='DISPATCHED',
+                facts={'run_registered': True, 'worktree_verified': True}, write_transition=crash)
+        self.assertEqual('IN_FLIGHT', self.fixture.store.jira_operations('AWF-1')[0]['status'])
+        self.reopen()
+        with patch.object(self.fixture.store, 'recover_jira_operations', wraps=self.fixture.store.recover_jira_operations) as recover:
+            self.assertTrue(self.lifecycle(read_transition=lambda r,o: {})['writes_stopped'])
+        recover.assert_called_once_with(self.args['now'], issue_id='AWF-1')
+        self.assertEqual('UNKNOWN', self.fixture.store.jira_operations('AWF-1')[0]['status'])
+        self.assertEqual(1, len(self.spy.writes))
+
+    def test_second_look_owner_change_restores_current_before_authentication(self):
+        from agentic.intake_assignment import assign_intake, change_assignment
+        from agentic.continuous_controller import jira_assignment_state
+        from test_intake_assignment import owner_source, verify_owner_source
+        config = self.args['config']
+        config['merge_gate']['trusted_owner_ids'] = [1001]
+        jira, cache = self.jira(), {}
+        first = assign_intake(config, dict(key='AWF-1', summary='Routine work', write_paths=['src/a.py']),
+            cache, jira, now=self.args['now'], controller_actor_id='controller-1', store=self.fixture.store)
+        stale = copy.deepcopy(cache)
+        second = change_assignment(config, 'AWF-1', cache, jira, requested_tier=3, requested_cap=3,
+            reason='Governance scope', owner_source=owner_source('AWF-1', first['assignment_id'], 3, 3, 'Governance scope'),
+            verify_owner_source=verify_owner_source, now=self.args['now'], controller_actor_id='controller-1', store=self.fixture.store)
+        before, calls = jira_assignment_state(self.fixture.store), list(jira.calls)
+        self.reopen()
+        for local in (stale, {}):
+            with self.subTest(empty=not local), self.assertRaises(ValidationError):
+                change_assignment(config, 'AWF-1', local, jira, requested_tier=2, requested_cap=3,
+                    reason='Obsolete command', owner_source=owner_source('AWF-1', first['assignment_id'], 2, 3, 'Obsolete command'),
+                    verify_owner_source=verify_owner_source, now=self.args['now'], controller_actor_id='controller-1', store=self.fixture.store)
+            self.assertEqual(second['assignment_id'], local['tier_assignments']['AWF-1']['assignment_id'])
+        self.assertEqual(before, jira_assignment_state(self.fixture.store))
+        self.assertEqual(calls, jira.calls)
+
+
+class SecondLookReferenceRegressions(unittest.TestCase):
+    def adapter_fixture(self):
+        import tempfile
+        import runpy
+        from pathlib import Path
+        from test_reference_controller_adapter import _base_config, FakeClock, FakeRunner, FakeHttp, NOW as ADAPTER_NOW
+        temporary = tempfile.TemporaryDirectory(prefix='awf243-second-look-')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        config = _base_config(root)
+        clock = FakeClock()
+        http = FakeHttp()
+        build = runpy.run_path(str(scope_fixture.ROOT / '.agentic/adapters/reference_controller_adapter.py'))['build_adapters']
+        def adapters():
+            return build({**config, '_clock': clock, '_runner': FakeRunner(), '_http_transport': http})
+        import json
+        policy = json.loads(Path(config['observations']['accepted_project_config']['path']).read_text())
+        return root, config, clock, http, adapters, policy, ADAPTER_NOW
+
+    def test_second_look_reference_adopts_healthy_and_reads_historical_identity(self):
+        import json
+        from pathlib import Path
+        from agentic.canonical import loads
+        root, config, clock, http, adapters, policy, now = self.adapter_fixture()
+        store = ContinuousControllerStore(root / 'controller.sqlite', ['A'])
+        calls = adapters()
+        provider = dict(cloud_id='cloud-1', site='https://jira.example.invalid', project_id='project-1', project_key='EX', controller_actor_id='controller')
+        def invoke(**overrides):
+            args = {key: calls[key] for key in ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy')}
+            args.update(config=policy, contract={}, event='BLOCK', facts={},
+                binding={'issue_id': KEY}, issue_type='LEAF', state='IN_PROGRESS', producer_id='controller',
+                run_id='fixture', now=now, evidence=[], transition_id='3',
+                read_current_status=lambda b: dict(issue_id=KEY, status_id='In Progress', observed_at=now, jira_provider=provider),
+                write_transition=lambda r: dict(operation_id=r['operation_id'], issue_id=KEY, status='ATTEMPTED', observed_at=now, jira_provider=provider),
+                read_transition=lambda r,o: dict(issue_id=KEY, status=r['to_status_id'], actor='controller', observed_at=now, jira_provider=provider))
+            return production_jira_lifecycle(store, **{**args, **overrides})
+        import os
+        with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
+            self.assertEqual('SUCCEEDED', invoke(event='WORKER_STARTED', state='DISPATCHED',
+                facts={'run_registered': True, 'worktree_verified': True},
+                read_current_status=lambda b: dict(issue_id=KEY, status_id='Ready', observed_at=now, jira_provider=provider))['record']['status'])
+            record = store.jira_operations(KEY)[0]['record']
+            with store.transaction() as db:
+                db.execute('DELETE FROM controller_meta WHERE key=?', ('jira-identity:' + record['operation_id'],))
+            self.assertIn('observe_jira_operation_identity', calls)
+            self.assertFalse(invoke(observe_jira_operation_identity=calls['observe_jira_operation_identity'])['planned'])
+            with store.connection() as db:
+                pin = loads(db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-identity:' + record['operation_id'],)).fetchone()['value'])
+            self.assertEqual('ADOPTED_LEGACY_SUCCEEDED', pin['provenance']['kind'])
+            # Independent historical envelopes restore unresolved rows; current configuration never does.
+            pin.pop('provenance')
+            Path(config['observations']['jira_transition_directory'], record['operation_id'] + '.json').write_text(json.dumps(pin))
+            with store.transaction() as db:
+                db.execute('DELETE FROM controller_meta WHERE key=?', ('jira-identity:' + record['operation_id'],))
+                db.execute("UPDATE controller_jira_operation SET status='UNKNOWN' WHERE operation_id=?", (record['operation_id'],))
+            self.assertFalse(invoke(observe_jira_operation_identity=adapters()['observe_jira_operation_identity'])['planned'])
+            self.assertEqual('SUCCEEDED', store.jira_operations(KEY)[0]['status'])
+
+    def test_second_look_reference_assignment_recovery(self):
+        import json
+        import os
+        from agentic.intake_assignment import assign_intake
+        from agentic.continuous_controller import jira_assignment_state
+        root, config, clock, http, adapters, policy, now = self.adapter_fixture()
+        store = ContinuousControllerStore(root / 'controller.sqlite', ['A'])
+        jira = Jira({**snapshot(), 'labels': ['awf-fixture'], 'comments': []})
+        write = jira.add_comment
+        def lost(*args, **kwargs):
+            write(*args, **kwargs)
+            raise TimeoutError('response lost after assignment comment')
+        jira.add_comment = lost
+        with self.assertRaises(TierAssignmentOutcomeError):
+            assign_intake(policy, dict(key=KEY, summary='Routine work', write_paths=['src/a.py']), {},
+                jira, now=now, controller_actor_id='controller', store=store)
+        original = http.request
+        def request(method, url, **kwargs):
+            status, body = original(method, url, **kwargs)
+            if method == 'GET' and '/issue/' in url and 'fields=labels' in url:
+                body = json.dumps({'key': KEY, 'fields': {'labels': jira.issue['labels'],
+                    'comment': {'comments': [dict(id=c['id'], body=c['body'], author={'accountId': c['author_id']})
+                        for c in jira.issue['comments']], 'total': len(jira.issue['comments'])}}})
+            return status, body
+        http.request = request
+        calls = adapters()
+        self.assertIn('read_assignment', calls)
+        args = dict(config=policy, contract={}, event='BLOCK', facts={}, binding={'issue_id': KEY},
+            issue_type='LEAF', state='IN_PROGRESS', producer_id='controller', run_id='fixture',
+            now=now, evidence=[], transition_id='3', **{key: calls[key] for key in
+                ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy',
+                 'read_current_status', 'write_transition', 'read_transition', 'read_assignment')})
+        with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
+            self.assertFalse(production_jira_lifecycle(store, **args)['planned'])
+        self.assertNotIn(KEY, jira_assignment_state(store)['jira_assignment_write_stops'])
+        self.assertFalse([call for call in http.calls if call[0] == 'POST'])
+        self.assertEqual(1, jira.calls.count('comment'))
+
+    def test_second_look_closeout_observer_uses_the_original_provider_boundary(self):
+        import json
+        import os
+        from pathlib import Path
+        root, config, clock, http, adapters, policy, now = self.adapter_fixture()
+        clock.value = '2026-10-09T08:05:00Z'
+        original, posts = http.request, []
+        def request(method, url, **kwargs):
+            status, body = original(method, url, **kwargs)
+            if method == 'POST':
+                posts.append(url)
+            if method == 'GET' and '/issue/' in url and 'fields=status' in url:
+                value = json.loads(body)
+                value['key'] = KEY
+                value['fields']['status']['id'] = 'Done' if posts else 'In Review'
+                value['fields']['updated'] = now if posts else '2026-10-09T07:59:59Z'
+                if 'expand=changelog' in url:
+                    history = value['changelog']['histories'][0]
+                    history['items'][0].update({'from': 'In Review', 'to': 'Done'})
+                body = json.dumps(value)
+            return status, body
+        http.request = request
+        calls = adapters()
+        store = ContinuousControllerStore(root / 'controller.sqlite', ['A'])
+        with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
+            result = production_jira_lifecycle(store, config=policy, contract={}, event='JIRA_RECONCILED',
+                facts={'merge_confirmed': True, 'closeout_valid': True}, binding={'issue_id': KEY},
+                issue_type='LEAF', state='MERGED', producer_id='controller', run_id='fixture',
+                now=clock.value, evidence=[], transition_id='3', merge_result_id='merge-1',
+                **{key: calls[key] for key in ('observe_provider_identity', 'observe_issue_identity',
+                    'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition')})
+            self.assertEqual('SUCCEEDED', result['record']['status'])
+            record = result['record']
+            Path(config['observations']['jira_transition_directory'], record['record_id'] + '.json').write_text(json.dumps({'record': record}))
+            observed = adapters()['observe_jira_reconciliation'](dict(operation='JIRA_RECONCILIATION',
+                provider_identity=record['jira_provider'], source_identity='jira_issue_transition_and_readback',
+                binding=record['binding'], issue_id=KEY, transition_record_id=record['record_id'], expected_status_id='Done'))
+            self.assertEqual(record, observed['result']['record'])
+            self.assertEqual(1, len(posts))
+            def older(method, url, **kwargs):
+                status, body = request(method, url, **kwargs)
+                if 'expand=changelog' in url:
+                    value = json.loads(body)
+                    value['changelog']['histories'][0]['created'] = '2026-10-09T07:59:59Z'
+                    body = json.dumps(value)
+                return status, body
+            http.request = older
+            with self.assertRaises(ValidationError):
+                adapters()['observe_jira_reconciliation'](dict(operation='JIRA_RECONCILIATION',
+                    provider_identity=record['jira_provider'], source_identity='jira_issue_transition_and_readback',
+                    binding=record['binding'], issue_id=KEY, transition_record_id=record['record_id'], expected_status_id='Done'))
+            self.assertEqual(1, len(posts))
+
+    def test_second_look_clock_skew_and_earlier_transition(self):
+        import json
+        import os
+        from datetime import timedelta
+        from agentic.canonical import timestamp
+        for skew in (-300, -2, 2, 300):
+            for scenario in ('success', 'earlier', 'lost'):
+                earlier, lost = scenario == 'earlier', scenario == 'lost'
+                with self.subTest(skew=skew, scenario=scenario):
+                    root, config, clock, http, adapters, policy, jira_now = self.adapter_fixture()
+                    clock.value = (timestamp(jira_now) + timedelta(seconds=skew)).isoformat().replace('+00:00', 'Z')
+                    original, posted = http.request, []
+                    before_time = (timestamp(jira_now) - timedelta(seconds=1)).isoformat().replace('+00:00', 'Z')
+                    def request(method, url, **kwargs):
+                        status, body = original(method, url, **kwargs)
+                        if method == 'POST':
+                            posted.append(url)
+                        if method == 'GET' and '/issue/' in url and 'fields=status' in url:
+                            value = json.loads(body)
+                            value['key'] = KEY
+                            value['fields']['status']['id'] = 'In Progress' if posted else 'Ready'
+                            value['fields']['updated'] = jira_now if posted else before_time
+                            if 'expand=changelog' in url:
+                                history = value['changelog']['histories'][0]
+                                history['created'] = before_time if earlier else jira_now
+                                history['items'][0]['from'] = 'Ready'
+                            body = json.dumps(value)
+                        return status, body
+                    http.request = request
+                    store = ContinuousControllerStore(root / 'controller.sqlite', ['A'])
+                    calls = adapters()
+                    args = dict(config=policy, contract={}, event='WORKER_STARTED',
+                        facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': KEY},
+                        issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='fixture',
+                        now=clock.value, evidence=[], transition_id='3', **{key: calls[key] for key in
+                        ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy',
+                         'read_current_status', 'write_transition', 'read_transition')})
+                    with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
+                        if lost:
+                            def timeout(record, operation):
+                                raise TimeoutError('response lost after successful POST')
+                            args['read_transition'] = timeout
+                        result = production_jira_lifecycle(store, **args)
+                        self.assertEqual('UNKNOWN' if earlier or lost else 'SUCCEEDED', result['record']['status'])
+                        # Reload the adapter and journal: BLOCK and PR_READY must not reissue.
+                        store = ContinuousControllerStore(store.path, ['A'])
+                        calls = adapters()
+                        args.update(event='BLOCK', facts={}, **{key: calls[key] for key in
+                            ('read_current_status', 'write_transition', 'read_transition')})
+                        blocked = production_jira_lifecycle(store, **args)
+                        self.assertEqual(earlier, blocked.get('writes_stopped', False))
+                        self.assertEqual(1, len(posted))
+                        if not earlier:
+                            # Preserve a read-only no-op when already at the requested target.
+                            policy['jira']['status_map']['in_review'] = 'In Progress'
+                            args.update(event='PR_READY', facts={'draft_cleared': True}, state='PR_DRAFT')
+                            self.assertFalse(production_jira_lifecycle(store, **args)['planned'])
+                            self.assertEqual(1, len(posted))
 
 
 if __name__ == "__main__":
