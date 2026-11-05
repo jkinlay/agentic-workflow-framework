@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 from copy import deepcopy
+from datetime import timedelta
 from email.utils import parsedate_to_datetime
 import hashlib
 import json
@@ -660,25 +661,8 @@ def _build(config):
 		_require(current_status == request['expected_status_id'], 'Jira issue is not currently at the configured terminal status')
 		read_back = record.get('read_back')
 		_require(isinstance(read_back, dict) and read_back.get('observed_status') == current_status and (read_back.get('observed_actor') == provider['controller_actor_id']) and isinstance(read_back.get('observed_at'), str), 'Jira transition record lacks the matching terminal readback')
-		attempt = jira_attempt_boundary(record)
-		jira_floor = timestamp(attempt['jira_updated']) if attempt is not None and attempt['jira_updated'] is not None else None
-		jira_ceiling = timestamp(issue.get('fields', {}).get('updated')) if jira_floor is not None else None
-		matched_history = 0
-		for history in issue.get('changelog', {}).get('histories', []):
-			if not isinstance(history, dict) or not isinstance(history.get('created'), str):
-				continue
-			actor = history.get('author', {}).get('accountId')
-			if actor != provider['controller_actor_id']:
-				continue
-			created = timestamp(history['created'])
-			in_window = (jira_floor < created <= jira_ceiling) if jira_floor is not None else (
-				timestamp(record['created_at']) <= created <= timestamp(read_back['observed_at']))
-			for item in history.get('items', []):
-				if isinstance(item, dict) and item.get('field') == 'status' and (item.get('to') == current_status or item.get('toString') == current_status) and in_window:
-					if jira_floor is None or item.get('from') == record.get('from_status_id'):
-						matched_history += 1
-		_require(matched_history, 'Jira provider history does not prove the protected reconciliation')
-		_require(jira_floor is None or matched_history == 1, 'Jira protected reconciliation history is ambiguous')
+		jira_transition_actor(record, issue, timestamp(record['created_at']), timestamp(read_back['observed_at']))
+
 		observed_at = _clock_text(clock)
 		_require(timestamp(observed_at) >= timestamp(read_back['observed_at']), 'Jira reconciliation observation predates its protected readback')
 		return {'observed_at': observed_at, 'result': value}
@@ -1371,6 +1355,26 @@ def _build(config):
 			'source_identity': {'kind': 'installed_project_configuration', 'path': '.agentic/PROJECT_CONFIG.yaml'}})
 		return load_yaml(base64.b64decode(value['result']['raw_bytes_base64'], validate=True))
 
+	# Freeze only bytes already durable when the upgraded adapter first opens.
+	# Absence of a modern boundary never makes a new attempt historical.
+	record_dir.mkdir(parents=True, exist_ok=True)
+	upgrade_path = record_dir / 'jira-history-upgrade.json'
+	if not upgrade_path.exists():
+		legacy = {}
+		for path in record_dir.glob('jira-attempt-*.json'):
+			value = _read_record(path)
+			if isinstance(value, dict) and set(value) == {'record', 'jira_updated'}:
+				legacy[path.name] = sha256(path.read_bytes())
+		try:
+			with upgrade_path.open('xb') as stream:
+				stream.write(canonical({'legacy_attempts': legacy}) + b'\n')
+				stream.flush()
+				os.fsync(stream.fileno())
+		except FileExistsError:
+			# A concurrent opener owns initialization; partial bytes fail closed.
+			pass
+	legacy_attempts = _read_record(upgrade_path)['legacy_attempts']
+
 	def jira_attempt_binding(record):
 		return {key: value for key, value in record.items() if key not in {'status', 'read_back'}}
 
@@ -1381,13 +1385,19 @@ def _build(config):
 		path = jira_attempt_path(record)
 		attempt = _read_record(path) if path.exists() else None
 		if attempt is not None:
-			_require(set(attempt) == {'record', 'jira_updated'} and isinstance(attempt['record'], dict)
+			_require(set(attempt) in ({'record', 'jira_updated'}, {'record', 'jira_updated', 'jira_history', 'version'})
+				and isinstance(attempt['record'], dict)
 				and jira_attempt_binding(attempt['record']) == jira_attempt_binding(record),
 				'Jira transition baseline differs from its original intent')
+			if 'version' in attempt:
+				_require(attempt['version'] == 2 and attempt['jira_updated'] is not None,
+					'New Jira attempt is missing its provider boundary')
+			else:
+				_require(legacy_attempts.get(path.name) == sha256(path.read_bytes()),
+					'Historical fallback requires an attempt durably recorded before the upgrade')
 		return attempt
 
 	def observe_jira_operation_identity(record):
-		from agentic.continuous_controller import _jira_adoption_identity
 		_accepted, _path, _closeout, directory = observation_evidence()
 		operation_id = record.get('operation_id')
 		_require(isinstance(operation_id, str) and re.fullmatch('[0-9a-f-]{36}', operation_id), 'Jira operation identity is invalid')
@@ -1396,9 +1406,7 @@ def _build(config):
 			# Independently retained historical envelope; the controller validates
 			# its exact operation, intent and invariant identity before pinning.
 			return evidence_record(directory, operation_id, 'Jira operation identity')
-		# Only the controller can admit this explicit upgrade baseline, and only
-		# for a healthy SUCCEEDED row. Unresolved rows never adopt it.
-		return _jira_adoption_identity(jira_scope_config(), record, _clock_text(clock))
+		raise ValidationError('Legacy Jira identity is unavailable; use continuous_controller.py jira-identity-adopt with --expected-project-id and --expected-repository-id')
 
 	def read_assignment(record):
 		from agentic.intake_assignment import verify_assignment_record
@@ -1509,6 +1517,54 @@ def _build(config):
 		_require(isinstance(status_id, str) and status_id, 'Jira issue status is missing')
 		return {'issue_id': binding['issue_id'], 'status_id': status_id, 'observed_at': observed_at, 'jira_provider': provider}
 
+	def jira_status_history(value):
+		histories = value.get('changelog', {}).get('histories')
+		_require(isinstance(histories, list), 'Jira transition history is unavailable')
+		result = []
+		for history in histories:
+			_require(isinstance(history, dict) and isinstance(history.get('items'), list), 'Jira history entry is malformed')
+			for item in history['items']:
+				if not isinstance(item, dict) or item.get('field') != 'status':
+					continue
+				timestamp(history.get('created'))
+				actor = history.get('author', {}).get('accountId')
+				_require(isinstance(actor, str) and actor and isinstance(item.get('to'), str), 'Jira status history is incomplete')
+				result.append({'id': history.get('id'), 'created': history['created'],
+					'actor': actor, 'from': item.get('from'), 'to': item['to']})
+		# Retain provider changelog order. Never sort or filter by timestamps,
+		# actor or from-status: a later external transition must remain visible.
+		return result
+
+	def jira_transition_actor(record, value, operation_time, observation_time):
+		issue_id = record['binding']['issue_id']
+		_require(value.get('key') == issue_id, 'Jira transition readback returned a different issue')
+		status = value.get('fields', {}).get('status', {}).get('id')
+		_require(status == record['to_status_id'], 'Jira transition status differs from the target')
+		attempt = jira_attempt_boundary(record)
+		_require(attempt is not None, 'Jira attempt has no durable pre-upgrade evidence or provider boundary')
+		history = jira_status_history(value)
+		_require(history, 'Jira transition history does not prove the current transition')
+		latest = history[-1]
+		created = timestamp(latest['created'])
+		if attempt.get('version') == 2:
+			before = attempt['jira_history']
+			_require(isinstance(before, list) and history[:len(before)] == before and len(history) == len(before) + 1,
+				'Jira history changed or has ambiguous/later transitions after the original state')
+			_require(timestamp(attempt['jira_updated']) < created <= timestamp(value.get('fields', {}).get('updated')),
+				'Jira transition is outside its provider window')
+			# Explicit host tolerance bounds the window only; Jira order proves
+			# which transition is latest and the retained prefix proves novelty.
+			tolerance = timedelta(seconds=300)
+			_require(operation_time - tolerance <= created <= observation_time + tolerance,
+				'Jira transition exceeds the 300-second clock tolerance')
+			_require(latest['from'] == record['from_status_id'], 'Jira transition starts from a different status')
+		else:
+			_require(operation_time <= created <= observation_time, 'Historical Jira transition is outside its strict window')
+		_require(latest['to'] == record['to_status_id'], 'A later Jira transition superseded the target transition')
+		_require(latest['actor'] == record['jira_provider']['controller_actor_id'],
+			'Latest Jira transition belongs to another actor; suspected external automation conflict')
+		return latest['actor']
+
 	def write_transition(record):
 		_require(isinstance(record, dict) and isinstance(record.get('binding'), dict), 'Jira transition record is missing its binding')
 		issue_id = record['binding']['issue_id']
@@ -1519,16 +1575,18 @@ def _build(config):
 		_require(policy['issue_type'] == 'LEAF', 'Epics are never transitioned')
 		# Jira's updated timestamp is a provider-side lower bound. Retain it
 		# before POST so response loss/restart cannot substitute a later baseline.
-		before = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '?fields=status,updated')
+		before = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '?fields=status,updated&expand=changelog')
+		_require(before.get('key') == issue_id and before.get('fields', {}).get('status', {}).get('id') == record.get('from_status_id'),
+			'Jira identity or status moved before the transition')
 		updated = before.get('fields', {}).get('updated')
-		if updated is not None:
-			timestamp(updated)
-			_require(before.get('key') == issue_id and before.get('fields', {}).get('status', {}).get('id') == record.get('from_status_id'),
-				'Jira status moved before the transition')
+		_require(isinstance(updated, str) and updated, 'New Jira pre-write observation is missing updated; stop without POST')
+		timestamp(updated)
+		history = jira_status_history(before)
+
 		record_dir.mkdir(parents=True, exist_ok=True)
 		attempt_path = jira_attempt_path(record)
 		_require(not attempt_path.exists(), 'Jira transition attempt already exists; reconcile without reissuing')
-		_write_record(attempt_path, {'record': record, 'jira_updated': updated})
+		_write_record(attempt_path, {'record': record, 'jira_updated': updated, 'jira_history': history, 'version': 2})
 		attempted_at = _clock_text(clock)
 		jira_json('POST', '/rest/api/3/issue/' + quote(issue_id, safe='') + '/transitions', {'transition': {'id': record['transition_id']}})
 		return {'operation_id': record['operation_id'], 'issue_id': issue_id, 'status': 'ATTEMPTED', 'observed_at': attempted_at, 'jira_provider': record['jira_provider']}
@@ -1545,45 +1603,11 @@ def _build(config):
 			and operation['jira_provider'] == record['jira_provider'] and operation['status'] == 'ATTEMPTED',
 			'Jira transition readback has a missing or mismatched operation')
 		operation_time = timestamp(operation['observed_at'])
-		attempt = jira_attempt_boundary(record)
-		if attempt is not None:
-			_require(set(attempt) == {'record', 'jira_updated'} and attempt['record'] == record, 'Jira transition baseline differs from its original intent')
-		jira_floor = timestamp(attempt['jira_updated']) if attempt is not None and attempt['jira_updated'] is not None else None
 		value = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '?fields=status,updated&expand=changelog')
 		observed_at = _clock_text(clock)
-		observation_time = timestamp(observed_at)
+		actor = jira_transition_actor(record, value, operation_time, timestamp(observed_at))
 		status = value.get('fields', {}).get('status', {}).get('id')
-		histories = value.get('changelog', {}).get('histories')
-		_require(isinstance(status, str) and status and isinstance(histories, list), 'Jira transition history is unavailable')
-		if jira_floor is not None:
-			_require(value.get('key') == issue_id, 'Jira transition readback returned a different issue')
-			jira_ceiling = timestamp(value.get('fields', {}).get('updated'))
-		candidates = []
-		for history in histories:
-			if not isinstance(history, dict) or not isinstance(history.get('created'), str):
-				continue
-			created = timestamp(history['created'])
-			if jira_floor is not None:
-				if not jira_floor < created <= jira_ceiling:
-					continue
-			elif not operation_time <= created <= observation_time:
-				# Pre-upgrade attempts lack a provider boundary. Preserve their
-				# strict window; a tolerance could accept unrelated older writes.
-				continue
-			author = history.get('author', {})
-			actor = author.get('accountId') if isinstance(author, dict) else None
-			for item in history.get('items', []):
-				if not isinstance(item, dict) or item.get('field') != 'status':
-					continue
-				if item.get('to') == record.get('to_status_id'):
-					if jira_floor is not None and item.get('from') != record.get('from_status_id'):
-						continue
-					if isinstance(actor, str) and actor:
-						candidates.append((history['created'], actor))
-		_require(candidates, 'Jira transition history does not prove the current transition')
-		_require(jira_floor is None or len(candidates) == 1, 'Jira transition history is ambiguous after the original state')
-		candidates.sort(key=lambda item: item[0])
-		_created, actor = candidates[-1]
+
 		return {'issue_id': issue_id, 'status': status, 'actor': actor, 'observed_at': observed_at, 'jira_provider': record['jira_provider']}
 
 	def reconcile_merged_ticket(ticket):

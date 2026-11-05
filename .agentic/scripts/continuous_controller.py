@@ -144,6 +144,11 @@ def main(argv=None, default_root=ROOT):
 	parser.add_argument('--adapter-sha256')
 	parser.add_argument('--adapter-config', type=Path)
 	sub = parser.add_subparsers(dest='command', required=True)
+	adopt = sub.add_parser('jira-identity-adopt', help='Explicitly acknowledge legacy Jira history identity; stop all controller writers first')
+	adopt.add_argument('--expected-project-id', required=True)
+	adopt.add_argument('--expected-repository-id', required=True, type=int)
+	adopt.add_argument('--operator', required=True)
+	adopt.add_argument('--now', required=True)
 	planning_state = sub.add_parser('planning-state', help='Repair primary planning state; stop all cycles using this database first')
 	prune = planning_state.add_subparsers(dest='planning_command', required=True).add_parser('prune')
 	prune.add_argument('--forget-source', action='append', default=[], help='explicitly forget a retained non-pending source after provider-owner confirmation')
@@ -207,7 +212,11 @@ def main(argv=None, default_root=ROOT):
 	adapters = None
 	if args.command in {'cycle', 'jira-lifecycle', 'merge-observed', 'owner-publication-prepare', 'owner-publication-resume', 'batch-operation', 'batch-closeout'}:
 		adapters = _load_reviewed_adapters(args.adapter_module, args.adapter_sha256, args.adapter_config)
-	if args.command == 'batch-operation':
+	if args.command == 'jira-identity-adopt':
+		from agentic.continuous_controller import adopt_legacy_jira_identity
+		output = adopt_legacy_jira_identity(store, config, expected_project_id=args.expected_project_id,
+			expected_repository_id=args.expected_repository_id, operator=args.operator, now=args.now)
+	elif args.command == 'batch-operation':
 		request = _batch_operation_request(load(args.request))
 		calls = _require_adapters(adapters, {'batch_coordinator'})
 		output = production_batch_operation(config=config, request=request, coordinator=calls['batch_coordinator'])

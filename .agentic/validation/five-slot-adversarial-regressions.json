@@ -1216,6 +1216,78 @@
       "regression_id": "AWF243-SECOND-LOOK-CLOCK-CLOSEOUT",
       "source_finding_id": null,
       "test_id": "SecondLookReferenceRegressions.test_second_look_closeout_observer_uses_the_original_provider_boundary"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Invalidated own claim never invokes the Jira write callback",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-CLAIM-VALIDITY",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_invalidated_own_claim_never_writes"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Recovery cannot take over a live waiting writer",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-LIVE-CLAIM",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_live_waiting_writer_blocks_recovery_without_claim_change"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Legacy history requires separate adoption even after foreign configuration changes",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-EXPLICIT-IDENTITY",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_legacy_requires_explicit_adoption_even_after_foreign_config_change"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Explicit adoption is idempotent, durable and never rewrites history",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-ADOPTION-COMMAND",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_explicit_cli_adoption_is_durable_idempotent_and_never_rewrites_history"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Later external transitions cannot be hidden by from-status filters",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-LATEST-HISTORY",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_later_external_transition_refuses"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Jira clock rollback cannot replay an older transition",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-CLOCK-ROLLBACK",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_clock_rollback_refuses"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Missing updated and mismatched status or identity never POST",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-PREWRITE-BOUNDARY",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_missing_updated_or_foreign_prewrite_identity_never_posts"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Historical fallback excludes attempts created after the upgrade",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-HISTORICAL-FALLBACK",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_fallback_only_for_attempts_durable_before_upgrade"
     }
   ]
 }

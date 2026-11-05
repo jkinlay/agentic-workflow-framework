@@ -12,6 +12,13 @@ from agentic.jira_lifecycle import TierAssignmentOutcomeError
 from agentic.continuous_controller import ContinuousControllerStore, production_jira_lifecycle, post_merge_jira_progress
 
 
+def adopt_history(store, config):
+    from agentic.continuous_controller import adopt_legacy_jira_identity
+    return adopt_legacy_jira_identity(store, config,
+        expected_project_id=config['project']['id'], expected_repository_id=config['github']['repository_id'],
+        operator='fixture-owner', now=NOW)
+
+
 class AssignmentRegressions(unittest.TestCase):
     setUp = scope_fixture.JiraMutationScopeTests.setUp
     policy = scope_fixture.JiraMutationScopeTests.policy
@@ -651,7 +658,21 @@ class AssignmentRegressions(unittest.TestCase):
             def invoke(**overrides):
                 return self.done(binding={"issue_id": "EX-100"}, now=ADAPTER_NOW,
                                  producer_id="controller", **{**args, **overrides})
-            original_request = http.request
+            raw_request = http.request
+            def original_request(method, url, **kwargs):
+                status, body = raw_request(method, url, **kwargs)
+                if method == 'GET' and '/issue/' in url and 'fields=status' in url:
+                    value = json.loads(body)
+                    posted = bool(getattr(http, 'transition_bodies', []))
+                    value['key'] = 'EX-100'
+                    value['fields'].update(status={'id': 'Done' if posted else 'In Review'},
+                        updated=ADAPTER_NOW if posted else '2026-10-09T07:59:59Z')
+                    value['changelog'] = {'histories': [dict(id='1', created=ADAPTER_NOW,
+                        author={'accountId': 'controller'}, items=[{'field': 'status',
+                        'from': 'In Review', 'to': 'Done'}])] if posted else []}
+                    body = json.dumps(value)
+                return status, body
+            http.request = original_request
             cases = [("absent", None), ("incomplete", None), ("actor", "other-actor"),
                      ("target", "In Review"), ("time", "2020-01-01T00:00:00Z"),
                      ("time", "2099-01-01T00:00:00Z")]
@@ -1570,6 +1591,9 @@ class SecondLookUpgradeRegressions(unittest.TestCase):
     def test_second_look_healthy_legacy_adopts_once_then_refuses_drift(self):
         from agentic.canonical import loads
         row = self.legacy_worker()
+        with self.assertRaisesRegex(ValidationError, 'jira-identity-adopt'):
+            self.ready()
+        adopt_history(self.store, self.config)
         self.assertEqual('SUCCEEDED', self.ready()['record']['status'])
         self.assertEqual(row, self.store.jira_operations(KEY)[0])
         key = 'jira-identity:' + row['operation_id']
@@ -1660,6 +1684,8 @@ class SecondLookAssignmentRegressions(unittest.TestCase):
                 self.reopen()
                 reads = []
                 callbacks = {'observe_jira_operation_identity': lambda r: reads.append(r['operation_id']) or history} if historical else {}
+                if not historical:
+                    adopt_history(self.fixture.store, self.fixture.config)
                 self.assertTrue(self.batch(**callbacks)['complete'])
                 self.assertEqual([row['operation_id']] if historical else [], reads)
                 self.assertEqual(row, self.fixture.store.jira_operations('AWF-1')[0])
@@ -1750,6 +1776,9 @@ class SecondLookReferenceRegressions(unittest.TestCase):
             with store.transaction() as db:
                 db.execute('DELETE FROM controller_meta WHERE key=?', ('jira-identity:' + record['operation_id'],))
             self.assertIn('observe_jira_operation_identity', calls)
+            with self.assertRaisesRegex(ValidationError, 'jira-identity-adopt'):
+                invoke(observe_jira_operation_identity=calls['observe_jira_operation_identity'])
+            adopt_history(store, policy)
             self.assertFalse(invoke(observe_jira_operation_identity=calls['observe_jira_operation_identity'])['planned'])
             with store.connection() as db:
                 pin = loads(db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-identity:' + record['operation_id'],)).fetchone()['value'])
@@ -1820,6 +1849,8 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                 if 'expand=changelog' in url:
                     history = value['changelog']['histories'][0]
                     history['items'][0].update({'from': 'In Review', 'to': 'Done'})
+                    if not posts:
+                        value['changelog']['histories'] = []
                 body = json.dumps(value)
             return status, body
         http.request = request
@@ -1880,6 +1911,8 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                                 history = value['changelog']['histories'][0]
                                 history['created'] = before_time if earlier else jira_now
                                 history['items'][0]['from'] = 'Ready'
+                                if not posted:
+                                    value['changelog']['histories'] = []
                             body = json.dumps(value)
                         return status, body
                     http.request = request
@@ -1912,6 +1945,208 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                             args.update(event='PR_READY', facts={'draft_cleared': True}, state='PR_DRAFT')
                             self.assertFalse(production_jira_lifecycle(store, **args)['planned'])
                             self.assertEqual(1, len(posted))
+
+
+class PreEightClaimRegressions(unittest.TestCase):
+    setUp = SecondLookUpgradeRegressions.setUp
+    policy = SecondLookUpgradeRegressions.policy
+    done = SecondLookUpgradeRegressions.done
+    transition_evidence = SecondLookUpgradeRegressions.transition_evidence
+    legacy_worker = SecondLookUpgradeRegressions.legacy_worker
+    ready = SecondLookUpgradeRegressions.ready
+
+    def test_pre8_explicit_cli_adoption_is_durable_idempotent_and_never_rewrites_history(self):
+        import json
+        import subprocess
+        import sys
+        from pathlib import Path
+        row = self.legacy_worker()
+        config_path = Path(self.temp.name) / 'accepted-config.json'
+        config_path.write_text(json.dumps(self.config), encoding='utf-8')
+        command = [sys.executable, '-B', str(scope_fixture.ROOT / '.agentic/scripts/continuous_controller.py'),
+            '--state', str(self.store.path), '--stream', 'A', '--worktree-root', str(scope_fixture.ROOT),
+            '--project-config', str(config_path), 'jira-identity-adopt',
+            '--expected-project-id', self.config['project']['id'],
+            '--expected-repository-id', str(self.config['github']['repository_id']),
+            '--operator', 'fixture-owner', '--now', NOW]
+        def run(args):
+            return subprocess.run(args, capture_output=True, text=True, timeout=30)
+        wrong = command.copy()
+        wrong[wrong.index('--expected-repository-id') + 1] = '999999'
+        self.assertNotEqual(0, run(wrong).returncode)
+        self.assertEqual(row, self.store.jira_operations(KEY)[0])
+        first = run(command)
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual([row['operation_id']], json.loads(first.stdout)['adopted_operations'])
+        self.store = ContinuousControllerStore(self.store.path, ['A'])
+        with self.store.connection() as db:
+            pin = db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-identity:' + row['operation_id'],)).fetchone()['value']
+        self.assertEqual('OPERATOR_SUPPLIED_NOT_OBSERVED', json.loads(pin)['provenance']['source'])
+        second = run(command)
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertEqual([], json.loads(second.stdout)['adopted_operations'])
+        self.assertEqual(row, self.store.jira_operations(KEY)[0])
+        changed = copy.deepcopy(self.config)
+        changed['github']['repository_id'] = 999999
+        config_path.write_text(json.dumps(changed), encoding='utf-8')
+        self.assertNotEqual(0, run(wrong).returncode)
+        with self.store.connection() as db:
+            self.assertEqual(pin, db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-identity:' + row['operation_id'],)).fetchone()['value'])
+        self.assertEqual(row, self.store.jira_operations(KEY)[0])
+        self.assertEqual(1, len(self.writes))
+    def test_pre8_invalidated_own_claim_never_writes(self):
+        from contextlib import contextmanager
+        import agentic.continuous_controller as controller
+        original = controller._batch_jira_ownership
+        self.writes = []
+        @contextmanager
+        def ownership(store, **kwargs):
+            if kwargs.get('issue_id') == KEY and not kwargs.get('operation_id'):
+                rows = store.jira_operations(KEY)
+                if rows and rows[-1]['status'] == 'IN_FLIGHT':
+                    store.mark_jira_unknown(rows[-1]['operation_id'], NOW)
+            with original(store, **kwargs) as owned:
+                yield owned
+        with patch.object(controller, '_batch_jira_ownership', ownership):
+            result = self.done()
+        self.assertTrue(result['writes_stopped'])
+        self.assertEqual([], self.writes)
+        self.assertEqual('UNKNOWN', self.store.jira_operations(KEY)[0]['status'])
+
+    def test_pre8_live_waiting_writer_blocks_recovery_without_claim_change(self):
+        from contextlib import contextmanager
+        import agentic.continuous_controller as controller
+        original = controller._batch_jira_ownership
+        self.writes, attempted = [], []
+        @contextmanager
+        def ownership(store, **kwargs):
+            if kwargs.get('issue_id') == KEY and not kwargs.get('operation_id') and not attempted:
+                rows = store.jira_operations(KEY)
+                if rows and rows[-1]['status'] == 'IN_FLIGHT':
+                    attempted.append(True)
+                    before = rows[-1]
+                    result = self.done(event='BLOCK', facts={}, read_transition=lambda r,o: {})
+                    self.assertTrue(result['writes_stopped'])
+                    self.assertEqual(before, store.jira_operations(KEY)[-1])
+            with original(store, **kwargs) as owned:
+                yield owned
+        with patch.object(controller, '_batch_jira_ownership', ownership):
+            result = self.done()
+        self.assertEqual([True], attempted)
+        self.assertEqual('SUCCEEDED', result['record']['status'])
+        self.assertEqual(1, len(self.writes))
+
+    def test_pre8_legacy_requires_explicit_adoption_even_after_foreign_config_change(self):
+        row = self.legacy_worker()
+        for foreign in (False, True):
+            config = copy.deepcopy(self.config)
+            if foreign:
+                config['project']['id'] = 'foreign-project'
+                config['github']['repository_id'] = 999999
+            with self.subTest(foreign=foreign), patch.object(self, 'config', config):
+                with self.assertRaisesRegex(ValidationError, 'jira-identity-adopt'):
+                    self.ready()
+        self.assertEqual(row, self.store.jira_operations(KEY)[0])
+        self.assertEqual(1, len(self.writes))
+
+
+class PreEightHistoryRegressions(unittest.TestCase):
+    adapter_fixture = SecondLookReferenceRegressions.adapter_fixture
+
+    def test_pre8_fallback_only_for_attempts_durable_before_upgrade(self):
+        import json
+        import os
+        from pathlib import Path
+        from agentic.canonical import canonical, sha256
+        for historical in (False, True):
+            with self.subTest(historical=historical):
+                root, config, clock, http, adapters, policy, now = self.adapter_fixture()
+                provider = dict(cloud_id='cloud-1', site='https://jira.example.invalid',
+                    project_id='project-1', project_key='EX', controller_actor_id='controller')
+                record = dict(operation_id='00000000-0000-0000-0000-000000000001',
+                    binding={'issue_id': KEY}, jira_provider=provider, from_status_id='Ready',
+                    to_status_id='In Progress', created_at=now)
+                directory = Path(config['codex']['run_record_directory'])
+                directory.mkdir(exist_ok=True)
+                path = directory / ('jira-attempt-' + fingerprint('jira-attempt-record', record) + '.json')
+                raw = canonical({'record': record, 'jira_updated': None}) + b'\n'
+                if historical:
+                    path.write_bytes(raw)
+                calls = adapters()
+                if not historical:
+                    path.write_bytes(raw)
+                operation = dict(operation_id=record['operation_id'], issue_id=KEY,
+                    status='ATTEMPTED', observed_at=now, jira_provider=provider)
+                with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
+                    if historical:
+                        self.assertEqual('controller', calls['read_transition'](record, operation)['actor'])
+                    else:
+                        for observer in (calls, adapters()):
+                            with self.assertRaisesRegex(ValidationError, 'durably recorded before the upgrade'):
+                                observer['read_transition'](record, operation)
+                self.assertEqual(raw, path.read_bytes())
+                self.assertFalse([call for call in http.calls if call[0] == 'POST'])
+
+    def test_pre8_later_external_transition_refuses(self):
+        self.history_probe('external')
+
+    def test_pre8_clock_rollback_refuses(self):
+        self.history_probe('rollback')
+
+    def test_pre8_missing_updated_or_foreign_prewrite_identity_never_posts(self):
+        for scenario in ('missing', 'mismatch', 'foreign'):
+            with self.subTest(scenario=scenario):
+                self.history_probe(scenario)
+
+    def history_probe(self, scenario):
+        import json
+        import os
+        root, config, clock, http, adapters, policy, now = self.adapter_fixture()
+        original, posts = http.request, []
+        def history(identity, created, actor, old, new):
+            return dict(id=str(identity), created=created, author={'accountId': actor},
+                items=[{'field': 'status', 'from': old, 'to': new}])
+        old = history(10, now, 'controller', 'Ready', 'In Progress')
+        boundary = history(11, '2026-10-09T07:59:59Z', 'other', 'In Progress', 'Ready')
+        def request(method, url, **kwargs):
+            status, body = original(method, url, **kwargs)
+            if method == 'POST':
+                posts.append(url)
+            if method == 'GET' and '/issue/' in url and 'fields=status' in url:
+                value = json.loads(body)
+                value['key'] = KEY
+                value['fields'].update(status={'id': 'In Progress' if posts else 'Ready'},
+                    updated=now if posts else '2026-10-09T07:59:59Z')
+                if 'updated' in url and not posts:
+                    if scenario in ('missing', 'mismatch'):
+                        value['fields'].pop('updated')
+                    if scenario == 'mismatch':
+                        value['fields']['status']['id'] = 'Done'
+                    if scenario == 'foreign':
+                        value['key'] = 'EX-99'
+                histories = [old, boundary] if scenario == 'rollback' else []
+                if posts and scenario == 'external':
+                    histories = [old, history(11, '2026-10-09T08:00:01Z', 'other', 'In Progress', 'Done'),
+                        history(12, '2026-10-09T08:00:02Z', 'other', 'Done', 'In Progress')]
+                    value['fields']['updated'] = '2026-10-09T08:00:02Z'
+                elif posts and scenario != 'rollback':
+                    histories = [old]
+                value['changelog'] = {'histories': histories}
+                body = json.dumps(value)
+            return status, body
+        http.request = request
+        calls = adapters()
+        store = ContinuousControllerStore(root / 'controller.sqlite', ['A'])
+        with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
+            result = production_jira_lifecycle(store, config=policy, contract={}, event='WORKER_STARTED',
+                facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': KEY},
+                issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='fixture',
+                now=now, evidence=[], transition_id='3', **{key: calls[key] for key in
+                ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy',
+                 'read_current_status', 'write_transition', 'read_transition')})
+        self.assertNotEqual('SUCCEEDED', result.get('record', {}).get('status'))
+        self.assertTrue(result.get('writes_stopped', False))
+        self.assertEqual(1 if scenario in ('external', 'rollback') else 0, len(posts))
 
 
 if __name__ == "__main__":
