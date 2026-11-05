@@ -2272,7 +2272,62 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 def _zero_counts():
 	return {'required': 0, 'completed': 0, 'acceptable': 0, 'failed': 0, 'stale': 0, 'outstanding': 0}
 
-def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at, jira_binding, reconcile_merged_ticket, fetch_scope_page, count_gate, include_epics=False, max_pages=20, max_items=10000, max_bytes=16 * 1024 * 1024, max_seconds=60, clock=None):
+def _post_merge_jira_receipt(store, config, issue, now, count_gate, *, observe_provider_identity, observe_issue_identity, observe_issue_policy, read_current_status):
+	"""Observe a journaled Done write; progress reporting never issues a mutation.
+
+	The controller's jira-lifecycle command owns reconciliation. A count request
+	already references that completed transition through its validated closeout.
+	Legacy adapter callbacks must not create a second, unjournaled write route.
+	"""
+	from .provider_identity import require_jira_write_identity
+	from .jira_lifecycle import owner_closure_required
+	_require(isinstance(store, ContinuousControllerStore), 'Post-merge reconciliation needs the protected controller journal; run jira-lifecycle first')
+	_require(all(callable(adapter) for adapter in (observe_provider_identity, observe_issue_identity, observe_issue_policy, read_current_status)), 'Post-merge reconciliation requires canonical, scope, provider and status observers')
+	provider = require_jira_write_identity(config, observe_provider_identity())
+	_require_canonical_issue(issue, observe_issue_identity=observe_issue_identity, now=now)
+	with _batch_jira_ownership(store, issue_id=issue) as owned:
+		_require(owned, 'Post-merge Jira issue is owned by another operation')
+		policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
+		_require(policy['issue_type'] == 'LEAF', 'Epics are never reconciled')
+		_require(not owner_closure_required(config, policy['snapshot']), 'owner_closure_required: ticket stays In Review until an owner-closure record arrives')
+		with store.connection() as db:
+			_require(_stopped_batch_jira_operation(db, issue) is None, 'A durable batch Jira stop prevents reconciliation')
+		rows = store.jira_operations(issue)
+		_require(not any(row['status'] in {'IN_FLIGHT', 'UNKNOWN', 'FAILED'} for row in rows), 'A durable Jira operation is unresolved or failed; never reissue')
+		closeout = count_gate.get('closeout_record', {})
+		matches = [row for row in rows if row['status'] == 'SUCCEEDED'
+			and row['record']['record_id'] == closeout.get('jira_transition_record_id')
+			and row['record']['binding'] == closeout.get('binding')
+			and row['record']['lifecycle_event'] == 'JIRA_RECONCILED'
+			and row['record']['jira_provider'] == provider
+			and row['record']['to_status_id'] == config['jira']['status_map']['done']]
+		_require(len(matches) == 1, 'No matching durable reconciliation; run controller jira-lifecycle before post-merge counting')
+		row = matches[0]
+		record = row['record']
+		retained = _retained_jira_observation(row['readback_json'])
+		_require(isinstance(retained, dict) and retained.get('issue_id') == issue
+			and retained.get('jira_provider') == provider
+			and retained.get('status') == record['to_status_id']
+			and retained.get('actor') == provider['controller_actor_id'], 'Durable reconciliation readback is missing or mismatched')
+		current = None
+		try:
+			current = read_current_status({'issue_id': issue, 'jira_provider': deepcopy(provider)})
+			_require(isinstance(current, dict) and current.get('issue_id') == issue
+				and current.get('jira_provider') == provider and current.get('status_id') == record['to_status_id'], 'Post-merge status differs from the durable reconciliation')
+			_require(timestamp(current['observed_at']) >= max(timestamp(now), timestamp(retained['observed_at'])), 'Post-merge status observation is stale')
+		except Exception:
+			# A later mismatch/unknown is also a ticket-wide durable stop. Retain
+			# the provider observation (including actor/time, if supplied).
+			status = 'FAILED' if isinstance(current, dict) and current.get('status_id') else 'UNKNOWN'
+			with store.transaction() as db:
+				db.execute("UPDATE controller_jira_operation SET status=?,readback_json=?,updated_at=? WHERE operation_id=? AND status='SUCCEEDED'", (status, canonical(current).decode(), now, record['operation_id']))
+			raise ValidationError('Post-merge readback mismatch or unknown; suspected external automation conflict; never reissue')
+	return {'ticket': issue, 'issue_id': issue, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'],
+		'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': record['operation_id'],
+		'before_status_id': record['from_status_id'], 'after_status_id': record['to_status_id'], 'observed_at': current['observed_at']}
+
+
+def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at, jira_binding, fetch_scope_page, count_gate, reconcile_merged_ticket=None, store=None, config=None, observe_provider_identity=None, observe_issue_identity=None, observe_issue_policy=None, read_current_status=None, include_epics=False, max_pages=20, max_items=10000, max_bytes=16 * 1024 * 1024, max_seconds=60, clock=None):
 	timestamp(observed_at)
 	_require(isinstance(merged_ticket, str) and merged_ticket.strip() and isinstance(scope, str) and scope.strip(), 'Jira ticket and scoped query are required')
 	_require(type(include_epics) is bool, 'Jira Epic inclusion must be an observed boolean')
@@ -2296,9 +2351,13 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
 			return {**base, 'jira_state': 'UNOBSERVED', 'reason': f'validated closeout count gate failed: {type(exc).__name__}'}
 		return {**base, 'jira_state': 'JIRA_DISABLED', 'reason': 'accepted Jira is disabled; no Jira reads or writes attempted'}
 	try:
-		reconciled = reconcile_merged_ticket(merged_ticket)
+		_require(isinstance(config, dict) and config.get('jira', {}).get('enabled') is True, 'Post-merge Jira needs enabled reviewed configuration')
+		validate_count_gate()
+		reconciled = _post_merge_jira_receipt(store, config, merged_ticket, observed_at, count_gate,
+			observe_provider_identity=observe_provider_identity, observe_issue_identity=observe_issue_identity,
+			observe_issue_policy=observe_issue_policy, read_current_status=read_current_status)
 	except Exception as exc:
-		return {**base, 'jira_state': 'UNOBSERVED', 'reason': f'merge reconciliation failed: {type(exc).__name__}'}
+		return {**base, 'jira_state': 'UNOBSERVED', 'reason': f'merge reconciliation failed: {exc}'}
 	required_receipt = {'ticket', 'issue_id', 'cloud_id', 'project_id', 'actor_id', 'status', 'operation_id', 'before_status_id', 'after_status_id', 'observed_at'}
 	if not isinstance(reconciled, dict) or set(reconciled) != required_receipt or reconciled.get('ticket') != merged_ticket or (reconciled.get('status') != 'RECONCILED') or any((reconciled.get(key) != jira_binding[key] for key in jira_binding)):
 		return {**base, 'jira_state': 'UNOBSERVED', 'reason': 'merge reconciliation is incomplete, unknown, or mismatched'}
@@ -2793,6 +2852,7 @@ def _observe_jira_write_policy(config, issue, observer, now):
 		'Jira scope observation differs from the canonical issue')
 	fresh(value['observed_at'], now, 1800)
 	require_jira_issue_scope(config, issue, value['snapshot'])
+	_require(isinstance(value['snapshot'].get('summary'), str), 'Jira owner-closure observation is missing its summary')
 	return value
 
 
@@ -2847,7 +2907,9 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 		_require(current_time >= start_time, 'Jira pre-write observation predates the lifecycle operation')
 	except Exception as exc:
 		return {'planned': False, 'reason': f'Jira pre-write observation failed: {type(exc).__name__}', 'writes_stopped': True, 'execution_authority': False}
-	from .jira_lifecycle import planned_write, transition_record, apply_read_back
+	from .jira_lifecycle import planned_write, transition_record, apply_read_back, owner_closure_required
+	contract = deepcopy(contract)
+	contract['owner_closure_required'] = bool(contract.get('owner_closure_required')) or owner_closure_required(config, policy['snapshot'])
 	durable = store.jira_operations(issue)
 	for operation_row in durable:
 		_require(operation_row['record'].get('binding') == binding and operation_row['record'].get('jira_provider') == provider, 'Durable Jira intent belongs to a different connector/site/project/actor')
@@ -2904,6 +2966,8 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 		try:
 			policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
 			_require(policy['issue_type'] == issue_type, 'Jira issue type changed before the write')
+			_require(event != 'JIRA_RECONCILED' or not owner_closure_required(config, policy['snapshot']),
+				'owner_closure_required: ticket stays In Review until an owner-closure record arrives')
 		except Exception as exc:
 			store.finish_jira_operation(record['operation_id'], 'FAILED', None, now)
 			return {'planned': False, 'status': 'SCOPE_REFUSED', 'reason': str(exc), 'writes_stopped': True, 'execution_authority': False}

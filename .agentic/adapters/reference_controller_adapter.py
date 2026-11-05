@@ -1460,20 +1460,10 @@ def _build(config):
 		return {'issue_id': issue_id, 'status': status, 'actor': actor, 'observed_at': observed_at, 'jira_provider': record['jira_provider']}
 
 	def reconcile_merged_ticket(ticket):
-		_text(ticket, 'Merged Jira ticket')
-		provider = provider_identity()
-		before = read_current_status({'issue_id': ticket, 'jira_provider': provider})
-		target = jira['merged_status_id']
-		operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'awf:jira-merge:' + jira['cloud_id'] + ':' + ticket))
-		if before['status_id'] != target:
-			record = {'operation_id': operation_id, 'binding': {'issue_id': ticket}, 'transition_id': jira['merged_transition_id'], 'to_status_id': target, 'jira_provider': provider}
-			operation = write_transition({**record, 'producer_id': provider['controller_actor_id']})
-			after = read_transition({**record, 'producer_id': provider['controller_actor_id']}, operation)
-		else:
-			after = {'issue_id': ticket, 'status': target, 'actor': provider['controller_actor_id'], 'observed_at': before['observed_at'], 'jira_provider': provider}
-		_require(after.get('actor') == provider['controller_actor_id'], 'Jira merge transition actor was not independently observed')
-		_require(after['status'] == target, 'Jira merge readback did not reach the configured terminal status')
-		return {'ticket': ticket, 'issue_id': ticket, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'], 'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': operation_id, 'before_status_id': before['status_id'], 'after_status_id': after['status'], 'observed_at': after['observed_at']}
+		# A ticket string cannot carry the protected controller journal, observed
+		# merge guards or owner-closure policy. Retain a fail-closed diagnostic for
+		# old consumers; all transitions go through production_jira_lifecycle.
+		raise ValidationError('Use controller jira-lifecycle for durable post-merge reconciliation; legacy reconciliation cannot write')
 	scope_snapshots = {}
 
 	def fetch_scope_page(scope, cursor):

@@ -187,6 +187,9 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
     key = assignment.get("ticket_key")
     if not isinstance(key, str) or not key:
         raise ValidationError("Jira tier assignment requires a ticket key")
+    if not all(callable(getattr(client, name, None)) for name in
+               ("read_issue", "set_labels", "add_comment")):
+        raise ValidationError("Jira tier assignment requires read_issue, set_labels and add_comment capabilities")
     config = copy.deepcopy(config)
     try:
         before = client.read_issue(key)
@@ -206,11 +209,23 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
     stage = "labels"
     try:
         client.set_labels(key, updated, actor_id=acting_actor_id)
+        stage = "labels_read_back"
+        intermediate = require_jira_issue_scope(config, key, client.read_issue(key))
+        if sorted(intermediate["labels"]) != sorted(updated):
+            outcome = {"status": "FAILED", "write_stage": stage, "writes_stopped": True,
+                       "ticket_key": key, "assignment_id": assignment.get("assignment_id"),
+                       "observed_actor": intermediate.get("observed_actor"),
+                       "observed_at": intermediate.get("observed_at"),
+                       "before": {"labels": copy.deepcopy(labels)},
+                       "after": {"labels": copy.deepcopy(intermediate["labels"])},
+                       "reason": "Jira tier assignment label read-back mismatch; suspected external automation conflict; never reissue"}
+            raise TierAssignmentOutcomeError(outcome["reason"], outcome)
         stage = "comment"
-        require_jira_issue_scope(config, key, client.read_issue(key))
         client.add_comment(key, comment, actor_id=acting_actor_id)
         stage = "read_back"
         after = client.read_issue(key)
+    except TierAssignmentOutcomeError:
+        raise
     except Exception as exc:
         outcome = {"status": "UNKNOWN", "write_stage": stage, "writes_stopped": True,
                    "ticket_key": key, "assignment_id": assignment.get("assignment_id"),
