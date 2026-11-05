@@ -10,24 +10,22 @@ Retain PR #271's published-baseline recognition, migration and Windows Python
 3.12 coverage. Authentic `v1.9.5` peels to commit
 `8ad399943c8f5e4f17db72f3e321b9365ee27782`; its manifest SHA-256 is
 `1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7`.
-Local Git verification establishes byte identity, not independent hosted
-provenance. Never alter published assets, pins, tags or historical receipts.
-The fixture invokes the published installer to generate genuine receipts.
+Git proves byte identity, not hosted provenance. Never alter published assets,
+pins, tags or receipts. The fixture uses the published installer for receipts.
 
 Qualify all seven selected tickets: AWF-236 identities/routes, AWF-238 upgrades
 and release, AWF-241 reporting, AWF-242 accounting, AWF-243 Jira defaults/scope,
-AWF-244 hours/batching and AWF-247 chat. Inventory retained implementation,
-necessary compatibility repairs, generated artifacts and deferred work.
-Preserve each historical failure, cause, disposition and affected rerun.
-A previous candidate's pass cannot qualify changed bytes. Bring deferred work
-into scope only for a demonstrated selected-scope failure and owner decision.
+AWF-244 hours/batching and AWF-247 chat. Inventory implementation, repairs,
+generated artifacts and deferrals. Retain historical failures, causes,
+dispositions and affected reruns. Changed bytes invalidate prior passes.
+Deferred work needs a demonstrated scope failure and owner decision.
 
 ## Disposable preservation
 
-Synthetic customization is not CMC evidence. Keep the accepted CMC installation
-untouched. Cancelled personal Quant Foundry and forbidden HFT targets remain
-excluded. Actual adopter copies need accepted baselines, exclusive ownership,
-quiescence, approved external storage and separate authorization.
+Synthetic customization is not CMC evidence. Keep CMC untouched; cancelled
+personal Quant Foundry and forbidden HFT targets stay excluded. Adopter copies
+need accepted baselines, exclusive ownership, quiescence, approved external
+storage and separate authorization.
 
 Record repository/numeric ID/default branch, releases, permissions, owner files,
 CODEOWNERS, instructions, routes/pins, adapter opt-outs, Jira scope, budgets,
@@ -36,26 +34,35 @@ Preserve explicit owner settings and approved default-OFF accounting choices.
 
 Use `scripts/qualify_upgrade.py` with these subcommands:
 
-- `snapshot --project DISPOSABLE --output EXTERNAL_BEFORE`: hash bytes, modes
-  and directories; exclude Git/runtime/cache trees; refuse links and incomplete
-  identity. Quiescence is mandatory; this is no live database snapshot.
+- `snapshot --project DISPOSABLE --output EXTERNAL_BEFORE`: hash bytes, modes,
+  ownership/access control and directories (including the project root); exclude
+  only root `.git` and `.agentic/.venv`. Nested archive `.git`, `.venv` and
+  `__pycache__` names remain evidence. Refuse links and incomplete
+  identity and unreadable directories. Require quiescence.
 - `plan --source VERIFIED_RELEASE --project DISPOSABLE
   --expected-manifest-sha256 PIN --output EXTERNAL_PLAN`: require unchanged
   inventories. Exercise main/master/trunk and wrong repository/ID/branch refusals.
 - After reviewing the exact migration delta and running supported bootstrap,
   snapshot again. `compare --project DISPOSABLE --before BEFORE --after AFTER
   --allowed-delta DELTA --output EXTERNAL_COMPARISON` requires exact before/after
-  records, including modes and sizes. Directory paths end in `/`. No wildcard,
-  unused exception or changed repository identity passes.
+  records including modes/sizes. Directory paths end in `/`. Reject wildcards,
+  unused exceptions and identity changes. Hash Windows owner/group/DACL SDDL
+  or POSIX owner/group/mode; never report raw SIDs/descriptors. Missing/unverified
+  permissions block preservation regardless of accepted deltas.
 - `installed --source SOURCE_CHECKOUT --work-dir NEW_EXTERNAL_DIRECTORY
   --wheelhouse LOCKED_WHEELS --output EXTERNAL_REPORT` projects the current
   source into disposable storage, generates only that projection's manifests,
   bootstraps authentic published bytes and upgrades through supported bootstrap.
-  Provision each release lock with hash-checked pip downloads, using the optional
-  wheelhouse as a local seed. Network access or a complete seed is required.
-  Retain external stage stdout/stderr and their report hashes. Success prints
+  Hash-check pip downloads against each lock; network or complete wheel seeds
+  are required. Retain external stdout/stderr and report hashes. Seed synthetic
+  owner instructions, snapshot before upgrade and compare after installed checks.
+  Supply reviewed exact `--allowed-delta DELTA`; default accepts no changes.
+  Never auto-approve observed changes. Receipt identities/times are cohort-specific;
+  prior deltas cannot approve fresh runs. Unaccepted changes retain before/after
+  and comparison evidence as NOT_QUALIFIED. Success prints
   `QUALIFIED_DISPOSABLE_UPGRADE`, two CONFIGURED stages, canonical check exits
-  zero, integrity true, ACCEPTED configuration and source/policy/receipt hashes.
+  zero, integrity true, ACCEPTED configuration, source/policy/receipt hashes and
+  an accepted preservation comparison with verified permissions for every entry.
   Failure prints NOT_QUALIFIED and the failed stage; never infer later checks ran.
 
 Reports are exclusively created outside source/project. Comparison establishes
@@ -66,6 +73,11 @@ runtime staging/swap and committed cleanup. Recover in fresh invocations and
 repeat deterministically. Missing/tampered objects retain diagnostics and refuse.
 Remove only authenticated installer-created empty directories; refuse replacements
 or external contents. Preserve unproved partial runtimes for inspection.
+Windows captures identity through atomic create-only handles denying replacement;
+cleanup verifies its deleting handle. POSIX mkdir/rmdir cannot bind creation or
+deletion to an inode atomically: record no authority, refuse cleanup and retain
+directories/journal. Exact-restoration assertions remain unresolved on POSIX;
+never relax them to claim qualification.
 Old archives remain intact without recursive archival. Failed/unknown stages
 never establish CONFIGURED or ACTIVE.
 

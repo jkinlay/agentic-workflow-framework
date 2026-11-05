@@ -562,15 +562,95 @@ def _directory_identity(tree, relative):
     return [format(info.st_dev, "032x"), format(info.st_ino, "032x")]
 
 
+def _windows_directory_identity(handle):
+    """Inspect the actual creating/deleting handle, never a later path lookup."""
+    import ctypes
+    from .safeio import kernel, FileInformation
+    info = FileInformation()
+    if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not info.attributes & 0x10 or info.attributes & 0x400:
+        raise ValidationError("Unsafe created directory handle; journal retained")
+    # Python 3.12+ reports the full volume serial and 128-bit file ID on
+    # Windows. BY_HANDLE_FILE_INFORMATION truncates the volume serial.
+    from ctypes import wintypes
+
+    class FileIdInfo(ctypes.Structure):
+        _fields_ = [("volume", ctypes.c_ulonglong), ("file_id", ctypes.c_ubyte * 16)]
+
+    get_id = kernel.GetFileInformationByHandleEx
+    get_id.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    get_id.restype = wintypes.BOOL
+    identity = FileIdInfo()
+    if not get_id(handle, 18, ctypes.byref(identity), ctypes.sizeof(identity)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return [format(identity.volume, "032x"),
+            format(int.from_bytes(bytes(identity.file_id), "little"), "032x")]
+
+
+def _windows_create_directory(parent_handle, name):
+    """FILE_CREATE atomically creates a directory and returns its owning handle.
+
+    RootDirectory is the pinned parent. FILE_CREATE refuses existing objects;
+    denying delete sharing pins the created object through identity capture.
+    """
+    import ctypes
+    from ctypes import wintypes
+    from .safeio import kernel
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT),
+                    ("Buffer", wintypes.LPWSTR)]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [("Length", wintypes.ULONG), ("RootDirectory", wintypes.HANDLE),
+                    ("ObjectName", ctypes.POINTER(UnicodeString)),
+                    ("Attributes", wintypes.ULONG), ("SecurityDescriptor", ctypes.c_void_p),
+                    ("SecurityQualityOfService", ctypes.c_void_p)]
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [("StatusOrPointer", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+    ntdll = ctypes.WinDLL("ntdll")
+    create = ntdll.NtCreateFile
+    create.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG,
+        ctypes.POINTER(ObjectAttributes), ctypes.POINTER(IoStatusBlock), ctypes.c_void_p,
+        wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG,
+        ctypes.c_void_p, wintypes.ULONG]
+    create.restype = wintypes.LONG
+    buffer = ctypes.create_unicode_buffer(name)
+    length = len(name.encode("utf-16-le"))
+    unicode_name = UnicodeString(length, length + 2, ctypes.cast(buffer, wintypes.LPWSTR))
+    attributes = ObjectAttributes(ctypes.sizeof(ObjectAttributes), parent_handle,
+                                 ctypes.pointer(unicode_name), 0x40, None, None)
+    owned, result = wintypes.HANDLE(), IoStatusBlock()
+    # DELETE access is deliberate: a metadata-only handle does not enforce
+    # delete-sharing against rename on Windows.
+    status = create(ctypes.byref(owned), 0x100000 | 0x10000 | 0x80, ctypes.byref(attributes),
+                    ctypes.byref(result), None, 0x10, 3, 2,
+                    0x1 | 0x20 | 0x00200000, None, 0)
+    if status < 0:
+        # Keep diagnostics path-free; no failed create grants deletion authority.
+        raise ValidationError("Atomic directory creation failed; journal retained")
+    try:
+        if result.Information != 2:  # FILE_CREATED, never FILE_OPENED.
+            raise ValidationError("Directory creation was not proven; journal retained")
+        return _windows_directory_identity(owned)
+    finally:
+        kernel.CloseHandle(owned)
+
+
 def _prepare_transaction_directories(tree, journal):
     for row in journal["created_directories"]:
         parent, handle, name = tree.parent(row["path"])
         if os.name == "nt":
-            os.mkdir(parent / name)
+            row["identity"] = _windows_create_directory(handle, name)
         else:
             os.mkdir(name, dir_fd=handle)
             os.fsync(handle)
-        row["identity"] = _directory_identity(tree, row["path"])
+            # mkdir has no creating handle. A subsequent open/stat could refer
+            # to a replacement: leave ownership unproved and retain on rollback.
+            row["identity"] = None
     # Publish ownership before objects or project payload can change. An
     # interrupted ownership publication refuses unproved directories.
     _write_bound_journal_update(tree, journal, "directory_prepare")
@@ -600,15 +680,17 @@ def _cleanup_transaction_directories(tree, journal):
                 if owned == INVALID_HANDLE:
                     raise ctypes.WinError(ctypes.get_last_error())
                 try:
-                    if _directory_identity(tree, row["path"]) != row["identity"]:
+                    if _windows_directory_identity(owned) != row["identity"]:
                         raise ValidationError("Created directory changed; journal retained: " + row["path"])
                     _win_set_file_information(owned, FILE_DISPOSITION_INFO,
                                               FileDispositionInformation(True))
                 finally:
                     kernel.CloseHandle(owned)
             else:
-                os.rmdir(name, dir_fd=handle)
-                os.fsync(handle)
+                # POSIX rmdir has no expected-inode argument, including dir_fd.
+                # Another actor can replace the leaf after any stat/open check.
+                raise ValidationError("Created directory is not safely empty: cannot prove "
+                                      "identity-bound deletion on POSIX; journal retained: " + row["path"])
         except OSError as exc:
             raise ValidationError("Created directory is not safely empty; journal retained: " + row["path"]) from exc
 

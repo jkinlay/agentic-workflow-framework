@@ -22,7 +22,50 @@ from agentic.safeio import Tree, run_bounded
 from agentic.child_process import child_env
 
 FORMAT = 'awf-upgrade-preservation-1'
-EXCLUDED = {'.git', '.venv', '__pycache__'}
+EXCLUDED = {'.git', '.agentic/.venv'}
+
+
+def _permissions(path):
+    """Retain only a digest of ownership and access control, never raw SIDs."""
+    if os.name != 'nt':
+        info = path.stat()
+        raw = json.dumps([info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)]).encode()
+        return {'verified': True, 'method': 'posix-owner-group-mode',
+                'sha256': hashlib.sha256(raw).hexdigest()}
+    method = 'windows-owner-group-dacl-sddl'
+    try:
+        import ctypes
+        from ctypes import wintypes
+        advapi = ctypes.WinDLL('advapi32', use_last_error=True)
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        get = advapi.GetFileSecurityW
+        get.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                        wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        get.restype = wintypes.BOOL
+        convert = advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW
+        convert.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                           ctypes.POINTER(wintypes.LPWSTR), ctypes.POINTER(wintypes.ULONG)]
+        convert.restype = wintypes.BOOL
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel.LocalFree.restype = ctypes.c_void_p
+        needed = wintypes.DWORD()
+        flags = 0x1 | 0x2 | 0x4  # OWNER, GROUP, DACL; no SACL privilege required.
+        get(str(path), flags, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            raise OSError('Security descriptor unavailable')
+        descriptor = ctypes.create_string_buffer(needed.value)
+        if not get(str(path), flags, descriptor, needed.value, ctypes.byref(needed)):
+            raise OSError('Security descriptor unavailable')
+        sddl = wintypes.LPWSTR()
+        if not convert(descriptor, 1, flags, ctypes.byref(sddl), None):
+            raise OSError('Security descriptor conversion unavailable')
+        try:
+            digest = hashlib.sha256(sddl.value.encode('utf-8')).hexdigest()
+        finally:
+            kernel.LocalFree(ctypes.cast(sddl, ctypes.c_void_p))
+        return {'verified': True, 'method': method, 'sha256': digest}
+    except (OSError, AttributeError):
+        return {'verified': False, 'method': method, 'diagnostic': 'permission capture unavailable'}
 
 
 def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
@@ -34,8 +77,13 @@ def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
     """
     project = Path(project).resolve(strict=True)
     files = {}
-    directories = {}
-    for directory, dirs, names in os.walk(project, followlinks=False):
+    directories = {'/': {'mode': stat.S_IMODE(project.stat().st_mode),
+                         'permissions': _permissions(project)}}
+
+    def incomplete(error):
+        raise ValueError('Preservation inventory incomplete: directory enumeration failed') from error
+
+    for directory, dirs, names in os.walk(project, followlinks=False, onerror=incomplete):
         parent = Path(directory)
         for name in [*dirs, *names]:
             path = parent / name
@@ -46,19 +94,21 @@ def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
                 raise ValueError('Hard-linked inventory member refused')
             if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
                 raise ValueError('Non-regular inventory member refused')
-        dirs[:] = sorted(name for name in dirs if name not in EXCLUDED)
+        dirs[:] = sorted(name for name in dirs
+                         if (parent / name).relative_to(project).as_posix() not in EXCLUDED)
         for name in dirs:
             path = parent / name
             directories[path.relative_to(project).as_posix() + '/'] = {
-                'mode': stat.S_IMODE(path.stat().st_mode)}
+                'mode': stat.S_IMODE(path.stat().st_mode), 'permissions': _permissions(path)}
         for name in sorted(names):
             path = parent / name
             relative = path.relative_to(project).as_posix()
-            if name == '.git':  # Linked worktree pointer, never project evidence.
+            if relative == '.git':  # Only the actual root worktree pointer.
                 continue
             raw = path.read_bytes()
             files[relative] = {'sha256': hashlib.sha256(raw).hexdigest(),
-                               'mode': stat.S_IMODE(path.stat().st_mode), 'size': len(raw)}
+                               'mode': stat.S_IMODE(path.stat().st_mode), 'size': len(raw),
+                               'permissions': _permissions(path)}
     config = load_yaml((project / '.agentic/PROJECT_CONFIG.yaml').read_bytes())
     github = config['github']
     identity = {key: github.get(key) for key in ('repository', 'repository_id', 'base_branch')}
@@ -66,7 +116,7 @@ def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
         raise ValueError('Complete repository identity is required')
     return {'format': FORMAT, 'evidence_kind': evidence_kind,
             'identity': identity, 'files': files, 'directories': directories,
-            'excluded_directory_names': sorted(EXCLUDED),
+            'excluded_paths': sorted(EXCLUDED),
             'execution_authority': False}
 
 
@@ -75,6 +125,8 @@ def compare(before, after, allowed_delta):
     if before.get('format') != FORMAT or after.get('format') != FORMAT:
         raise ValueError('Unsupported preservation inventory')
     violations = []
+    if before.get('excluded_paths') != sorted(EXCLUDED) or after.get('excluded_paths') != sorted(EXCLUDED):
+        violations.append('inventory exclusions missing or unsupported')
     if before['identity'] != after['identity']:
         violations.append('repository identity changed')
     if before['evidence_kind'] != after['evidence_kind']:
@@ -82,6 +134,17 @@ def compare(before, after, allowed_delta):
     changes = {}
     before_entries = {**before['files'], **before['directories']}
     after_entries = {**after['files'], **after['directories']}
+    for label, entries in (('before', before_entries), ('after', after_entries)):
+        if '/' not in entries:
+            violations.append(label + ' root permissions missing')
+        for path, entry in sorted(entries.items()):
+            permission = entry.get('permissions') or {}
+            digest = permission.get('sha256')
+            if (permission.get('verified') is not True or permission.get('method') not in
+                    ('posix-owner-group-mode', 'windows-owner-group-dacl-sddl') or
+                    not isinstance(digest, str) or len(digest) != 64 or
+                    any(c not in '0123456789abcdef' for c in digest)):
+                violations.append(label + ' permissions unverified: ' + path)
     for path in sorted(before_entries.keys() | after_entries.keys()):
         old, new = before_entries.get(path), after_entries.get(path)
         if old != new:
@@ -153,7 +216,7 @@ def checked_bootstrap(result, project, pin):
                                  for path in (CONFIG, INSTALLED, PROVENANCE)}}
 
 
-def qualify(source, work_dir, wheelhouse=None):
+def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
     """Build only a disposable source projection, then bootstrap authentic 1.9.5.
 
     Neither the checkout manifests nor historical release bytes are rewritten.
@@ -203,6 +266,7 @@ def qualify(source, work_dir, wheelhouse=None):
     report['source_manifest_sha256'] = target_pin
     historical = materialize_published(source, work_dir / 'published')
     project = work_dir / 'project'
+    allowed_delta = {} if allowed_delta is None else allowed_delta
     for stage, release, pin, mode in (('baseline', historical, PUBLISHED_PIN, 'install'),
                                      ('upgrade', candidate, target_pin, 'upgrade')):
         wheels = work_dir / (stage + '-wheels')
@@ -232,6 +296,18 @@ def qualify(source, work_dir, wheelhouse=None):
             report['failed_stage'] = stage
             report['diagnostic'] = str(error)
             return report
+        if stage == 'baseline':
+            owner = project / 'PROJECT_INSTRUCTIONS.md'
+            if not owner.exists():
+                with owner.open('xb') as stream:
+                    stream.write(b'Synthetic owner customization; not adopter evidence.\n')
+            report['before'] = inventory(project)
+        else:
+            report['after'] = inventory(project)
+            report['preservation'] = compare(report['before'], report['after'], allowed_delta)
+            if report['preservation']['preserved'] is not True:
+                report['failed_stage'] = 'preservation'
+                return report
     report['status'] = 'QUALIFIED_DISPOSABLE_UPGRADE'
     report['active'] = False
     return report
@@ -259,9 +335,11 @@ def main(argv=None):
     runtime.add_argument('--work-dir', type=Path, required=True, help='new external disposable directory')
     runtime.add_argument('--wheelhouse', type=Path, help='optional local wheel seed; pip verifies each release lock')
     runtime.add_argument('--output', type=Path, required=True)
+    runtime.add_argument('--allowed-delta', type=Path, help='externally reviewed exact migration delta; default accepts no changes')
     args = parser.parse_args(argv)
     if args.command == 'installed':
-        report = qualify(args.source, args.work_dir, args.wheelhouse)
+        delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
+        report = qualify(args.source, args.work_dir, args.wheelhouse, allowed_delta=delta)
         write_report(args.output, report, project=args.work_dir)
         print(json.dumps(report, sort_keys=True))
         return 0 if report['status'] == 'QUALIFIED_DISPOSABLE_UPGRADE' else 1
