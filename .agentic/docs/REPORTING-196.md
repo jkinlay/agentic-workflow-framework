@@ -1,207 +1,299 @@
-# Reporting 1.9.6 implementation ports
+# Reporting 1.9.6: offline implementation and integration contract
 
-AWF-241, Tier 3, FULL. This slice is PARTIAL. It supplies offline record,
-metric, delivery and platform ports. It is not an enabled service or qualified
-Teams/Slack implementation. No real-platform access or channel qualification
-has occurred. Existing AWF-55 supplied-record reporting remains supported.
+AWF-241, Tier 3, FULL. Stage two supplies report bodies, pure event/period
+projections, metrics/scenarios and standard-library HTTP transports. Reporting
+remains default OFF. Full ticket closure is PARTIAL: no real platform,
+authenticated UI, integrated controller or installed runtime was qualified here.
 
-## Records and source authority
+## Records and delivery
 
-`reporting.records.prepare_snapshot(request, accepted_binding, verify_sources=...)`
-creates `awf-status-report-record-2`. The closed request includes project,
-repository, scope revision, exact PR/head/base, included/excluded keys, report
-class, UTC-bounded period and catch-up flag, baseline/forecast revisions, source
-field/time/staleness and ticket observations. Report classes are on-demand,
-owner-action, backlog-review, implementation-ready, hourly, eod and correction.
-Class names describe the requested report, not proof of readiness.
+Version-1 status reports and version-2 supplied snapshots retain their prior
+replay behavior. `reporting.records.prepare_snapshot` and the existing
+`status_report_store.ReportStore.append` remain the independently verified source
+admission and immutable journal boundaries. Hashes prove consistency, not trust.
+Use stage-two projections for expanded reports; do not reinterpret historical
+version-2 metric bytes. Report bodies below are rendering artifacts, not a new
+source admission, lifecycle event, usage ledger or scheduler.
 
-The executable source verifier belongs to the trusted controller host. It must
-independently observe and return the entire supplied request under the accepted
-binding. Missing verification, missing ticket provenance or stale ticket sources
-produce UNKNOWN metrics. Supplied `stale: false` alone establishes no trust.
-The host must compute staleness using its accepted freshness policy. Hashes
-prove replay consistency only; they do not authenticate observations.
+`DeliveryOutbox(existing_controller_store)` uses its existing serialized
+BEGIN IMMEDIATE transaction port. Call `install_delivery_schema(db)` only in the
+accepted controller migration. Construction performs no DDL. Retain the existing
+protected database, integrity, ownership and backup controls.
 
-`status_report_store.replay_report` dispatches version 2 to deterministic replay;
-version 1 replay and the existing CLI/input/schema remain unchanged. Append
-version 2 through the existing `ReportStore.append` event journal. Repeated
-identical records are idempotent; identity reuse with different bytes refuses.
-The store remains outside worktrees, must exist already, and retains immutable
-event triggers. No report initializes or repairs that database.
+`delivery_intent(report_id, approved_binding, payload)` freezes project,
+repository, scope, platform, destination, binding revision, secret reference and
+payload. Its report/platform identity excludes destination/configuration so
+changes cannot reset the attempt ceiling. Changed bytes under one identity
+refuse. Never create fresh IDs for retries or mode changes.
 
-`readiness_current` checks tuple freshness only. The sole controller must still
-observe final gates, owner approval, merge and Jira reconciliation separately.
-Head/base/scope changes require a new report and a correction of the prior
-notification. Never promote a status message, green CI or draft flag into
-readiness or merge authority.
+`advance` commits a reservation before one possible network send and reconciles
+channel visibility. Reservations mean attempted-or-possibly-attempted, not proof
+of actual calls. At most two reservations per report/platform survive restarts.
+UNKNOWN/IN_FLIGHT reconcile before any new send; there is no timeout takeover.
+Only proven terminal absence of every reserved request permits the second send.
+Two terminal absences become FAILED; ambiguity remains UNKNOWN. Slack and Teams
+have independent delivery states. HTTP/API acceptance, including 202, echoed
+responses and local JSONL read-back are not channel delivery.
 
-## Metrics and known gaps
+## Bodies and layouts
 
-The implemented counting rule is implementation leaves: a parent with observed
-children is not counted again. Each leaf has one Epic owner or Unassigned;
-distinct keys prevent shared dependencies from entering scope totals twice.
-Conditional leaves are separate from the required denominator. Cancellation is
-not delivery. Priority and size are supplied business categories, independent
-of AWF risk tier. Nulls appear as Unknown/Unestimated. Per-Epic totals reconcile
-with required leaves; no shirt-size arithmetic or unit conversion is inferred.
+`compose.compose_report(kind, supplied, accepted_binding, verify_sources=...,
+verify_link=...)` is the pure composition entry point. It accepts a superset of
+the version-2 snapshot input, computes scope/elapsed/usage/scenario projections,
+builds the per-type sections and attaches full detail_metrics and a source hash.
+Its independent verifier must return the exact supplied bytes under the accepted
+binding. Missing verification or missing/stale sources produce explicit unknown
+content, never a live-progress claim. Optional supplied forecast, accounting,
+review/owner queues and current/next keys are documented in its docstring.
+The controller supplies observations and persists the result; it does not have
+to implement metric calculations or report-content construction again.
 
-Reconciled delivery requires Done and all declared required PR merges plus a
-reconciliation timestamp. Comparable cohorts are explicitly named by the source.
-Elapsed samples use first WORKER_STARTED through final required PR merge, with
-mean, median, IQR, n and timestamp coverage. Reconciliation delay is separate.
-Missing start time reduces elapsed coverage without erasing known delivery.
-Seconds use exact integer ratios, including fractional seconds. Elapsed time
-includes nights and waits; no claim about engineering effort follows.
+`bodies.prepare_body(kind, data, verify_link=...)` creates a detached, hashed
+`awf-report-body-1`. Required data: project, observed_at, timezone, scope,
+candidate, summary and sections. Retain its bytes beside the admitted source
+snapshot/event. Kinds: hourly, eod, owner-action, final-human-review, jira-review.
+`LAYOUTS` exports exact section order; templates/reporting/layouts.md lists fields.
 
-Accounting and forecasts are explicitly UNAVAILABLE. This slice does not yet
-consume the enrolled-agent accounting snapshot or accepted graph/capacity
-scenario model. It cannot enable accounting. Caps are never consumption or ETA.
-Review/wait component coverage, original estimate comparisons, all-ticket/Epic
-date dependency/rollup validation, full detailed reports and milestone scenario
-forecasts remain required work. Basic missing/inverted leaf planned dates are
-currently planning defects in the snapshot; no Jira field is written.
+`render_body(body, platform)` produces Slack mrkdwn or the Teams Markdown
+fallback, with actual newlines, bold labels and spaced entries. Graph transport
+converts the constrained Teams formatting to escaped HTML. No Adaptive Card,
+Block Kit or live rendering qualification is claimed. Unknown sections remain
+explicit; None requires an explicit observed empty list. Raw supplied markup and
+mentions are suppressed. PR entries retain every verified Jira association or
+say Jira association unverified. URLs need a trusted existence/access verifier.
 
-## Durable delivery port
+Typed lists are prs (number/url/tickets/status/head/merged_at/merge_commit),
+current/next (key/title/url/planned_start/planned_end/stage/actor/elapsed/next_gate/
+activity/conditional) and epics (key/title/url/planned_start/planned_end/owner/
+remaining/eta/tokens/assumptions). `sections` holds admitted metric narratives;
+include cohort n/coverage, baseline/forecast revision, source times/staleness,
+blocker owner/age/resume and finding dispositions. `overhead` explains common
+usage and scope reconciliation. Missing displayed dates are planning defects.
 
-`reporting.delivery.DeliveryOutbox(controller_store)` consumes the existing
-controller store's `transaction()` context manager, yielding a SQLite connection
-inside BEGIN IMMEDIATE with commit/rollback. It owns no connection, scheduler,
-Jira client or usage ledger. The controller migration must explicitly call
-`install_delivery_schema(db)` inside that same database's accepted migration.
-Construction itself performs no DDL. Do not put this state in a worker database.
+Immediate alerts begin Decision / readiness, Owner action, Impact and independent
+work, Evidence. Populate decision, decision_owner, requested_response, options,
+recommendation, delay_consequence, independent_work, resume, stage and next_gate.
+The final-human-review body also contains the full Jira implementation-review
+sections in one combined notification. Backlog approval remains separate.
+Readiness, owner approval, observed merge and reconciled Done stay distinct.
 
-`delivery_intent(report_id, approved_binding, payload)` freezes report/platform,
-payload hash and exact approved project/repository/scope/destination/binding
-revision/secret reference. The delivery identity excludes destination and binding
-revision so changing them cannot reset the report/platform attempt ceiling.
-Enqueueing changed bytes under that identity refuses; destination corrections
-need operator reconciliation, not a new identity to evade the ceiling.
-The controller must derive stable report IDs from accepted event/candidate/period
-identities; callers must not assign fresh IDs to retries or duplicate final-review
-events. Combining implementation-ready and final-review alerts is pending there.
+Hourly/EoD include period/freshness and catch_up. EoD also includes today,
+since_previous and delivered; overlapping reconciliation views are never added.
+Include complete matrices, date tables, cohorts, forecast schedule and source
+records as additional body data; `render_detail` preserves all fields in a
+versioned canonical JSON artifact for approved hosting. The host must verify
+upload and reader access before supplying detail_url. No hosted link is invented.
 
-Each `advance` makes at most one send. It commits an attempt reservation before
-calling the provider, then reconciles visibility. Crash reservations consume
-attempts conservatively: the durable record cannot tell whether a crashed send
-actually began. The reservation means attempted-or-possibly-attempted, never
-proof of an actual platform call. There is no lease expiry or blind takeover.
-Unknown and IN_FLIGHT deliveries are reconciled before any new send. A fencing
-token rejects stale observer results; parallel callers cannot reserve the same
-attempt. History retains reservations and safe observations. Intent update,
-delete and replacement are blocked to preserve identity/attempt history.
+No silent shortening/split occurs. Rendering refuses above conservative UTF-8
+application limits (Slack 12000, Teams 20000). Transport independently measures
+the complete wire body, including correlation marker and Teams HTML expansion.
+Surface oversize refusal; prepare an explicitly reviewed compact summary and
+verified full artifact rather than retrying identical oversize bytes.
 
-Channel evidence is a closed envelope from a trusted executable provider:
+## Pure events and calendar
 
-- `delivery_id`, `platform`, `destination`, `payload_sha256`, and the complete
-  ordered `attempt_ids` must match the intent and all current reservations.
-- `evidence_kind` must be CHANNEL_READBACK. Supply an immutable `observation_id`
-  and RFC3339 `observed_at` for independently retained readback evidence.
-- VISIBLE additionally needs a stable platform `message_id` and observation of
-  the intended payload in the exact channel. HTTP 200/202, workflow acceptance,
-  local JSONL/file receipts and response bodies establish no channel delivery.
-- ABSENT additionally requires `terminal: true`: every reserved request has
-  definitively finished or been fenced at the provider, and no delayed effect
-  can appear. A missing post in an eventually consistent listing is insufficient.
-  If the selected transport cannot prove terminal absence, return UNKNOWN.
+`owner_events(scope, actions, previous)` takes a complete observed open-action
+set, returns events and versioned state with scope and monotonic sequence.
+Unchanged actions deduplicate; changes/resolutions notify once; reopening receives
+a fresh identity. An unavailable source must never be supplied as an empty set.
+Persist returned state and event intents atomically in the sole controller.
 
-Only terminal absence permits the second send. Two reservations is the permanent
-ceiling per report/platform, across restart and binding changes. Terminal absence
-after attempt two becomes FAILED; unresolved ambiguity stays UNKNOWN. The host
-must surface either state and must not create a replacement intent to repost.
-Teams/Slack are independent rows. No failed destination should suppress report
-generation or delivery to the other destination.
+`readiness_events(candidates, previous)` takes a complete current candidate set
+with project/repository/PR/head/base/scope_revision/gate. Exact owner-ready stage
+and literal current critic/specialist/final_gate success produce one combined
+final-human-review event, includes_jira_review=true, merge_authorized=false.
+The trusted host must independently collect these facts; supplied booleans are
+not authentication. Green CI/draft flags do not qualify. Head/base/scope/gate
+changes, gate failures or missing observations correct earlier readiness.
+`approval_event` requires supplied verified approval evidence for the exact
+revision. Preserve original baselines and correlate corrections with originals.
 
-The provider's evidence collector and its terminal-absence guarantee still need
-independent review and real-platform qualification. Evidence-kind strings are
-not attestations. Protect this database with the existing controller's filesystem,
-integrity, backup and host-ownership controls.
+`due_periods(after, now, operating_root, effective_calendar=...)` consumes the
+injected AWF-244 `effective_calendar(root)` callable. The contract is
+`.agentic/docs/operating-calendar.md` on the AWF-244 branch. Its default EoD is
+EVERY day, 17:00 Europe/London. This lane copies neither calendar configuration
+validation nor review-batching code. No scheduler starts here.
 
-## Adapters, presentation and operations
+Boundaries in (after, now] have stable UTC identities, named timezone and offset
+labels. Repeated DST hours are distinct; nonexistent hours are not invented.
+Late ticks label catch-up and current observation honestly. Hourly cadence is
+independent of weekends, paused/idle/blocked states, EoD and review batching.
+EoD uses the effective time/day list; folds choose later, gaps advance to the
+first valid minute. Missing IANA data refuses explicitly. Calls are bounded to
+366 days; longer downtime needs contiguous windows, not a discarded cursor.
+Namespace period/event IDs by admitted project/repository/scope for report IDs.
 
-`teams_reporting_adapter.ReportingAdapter` and the Slack counterpart accept only
-an injected transport; neither contains an SDK/network client. Default mode is
-off; other modes are teams/slack/both. The host supplies authenticated effective
-settings, approved binding and a sender-side secret resolver. Binding equality,
-mode and payload size checks precede secret resolution. There is no cross-project
-or channel-name fallback. Real bindings stay in project-owned protected state.
+`daily_views` returns Today from local midnight and Since previous daily report
+as explicitly nonadditive overlapping views. `daily_metrics` deduplicates actual
+merged PR records and separately counts reconciled tickets, merged/pending work,
+and daily/project elapsed cohorts. Periods use (start, end] consistently. A
+merged PR is not a delivered ticket and post-17:00 work is not discarded.
+Routine ready presentation belongs to AWF-244 ReviewBatchStore and its live
+observer/immediate pre-send recheck, never a second reporting scheduler.
 
-Transport methods are `verify_destination(binding, secret)`,
-`send(intent, attempt_id, secret)` and `reconcile(intent, attempts, secret)`.
-Verify the stable destination, workspace/tenant context, sender identity and
-membership before any send/readback. The resolver runs per operation, allowing
-credential rotation. Use a least-permission sender with only approved channel
-send/readback capabilities. Secret values never enter outgoing report payloads,
-returned receipts or retained provider errors; errors use fixed diagnostic codes
-and suppress provider exception chains. Do not log transport arguments or locals.
+## Metrics and forecasts
 
-`reporting.render.render_channel` provides compact Markdown/plain text fallbacks,
-not a qualified Adaptive Card or platform formatting claim. Required provenance,
-candidate, owner action and explicit unknowns survive rendering. Oversize output
-refuses without truncation; limits are conservative application UTF-8 byte limits
-(Slack 12000, Teams 20000), not asserted API limits. Detail URLs require HTTPS and
-a trusted existence/access callback bound to the report scope. Supplied markup
-and mentions are suppressed. Full specified per-type layouts and detailed report
-hosting remain unfinished; never silently advertise unsupported sections.
+`analysis.scope_metrics` counts distinct required implementation leaves and
+Epics, ticket priority/size, separate Epic priority/size, per-Epic states and
+Unknown/Unestimated/Unassigned categories. Shared keys have one primary Epic;
+parents/subtasks are not double counted. Cancellation, deferral/out-of-scope and
+conditional work are visible dispositions, never delivered. Every ticket/Epic
+planned Start/End is retained in planned_dates. `planning_defects` checks missing/
+inverted dates, due/baseline mismatches, predecessor scheduling, unknown same-day
+offsets and mandatory-child Epic windows. Conditional children do not extend
+mandatory windows. Defects require planning correction, not reporting Jira writes.
 
-Before live onboarding the owner/admin must approve the transport, exact project
-and destination, sender/readback permissions, secret references, report location,
-human service owner, credential administrator and recovery contact. Record actual
-supervised visibility/readback on both platforms for the exact candidate.
-No webhook/configuration file or fake-provider success substitutes for that.
+Existing project_metrics retains comparable-cohort mean/median/IQR, n/coverage.
+`elapsed_cohorts` keeps declared comparable groups separate in composed reports;
+an undeclared cohort is unavailable, never pooled with measured cohorts.
+`elapsed_comparison` adds measured execution/review/external/owner-wait components
+and matched original-estimate variance only in compatible calendar-second units.
+Elapsed means first WORKER_STARTED to final required PR merge; reconciliation
+delay stays separate. Missing timestamps lower coverage, never become zero.
+Engineer-days are not converted by guesswork; original/revised estimates remain
+in the supplied history. Daily and project-to-date cohorts remain separate.
 
-To disable, stop new reporting admission through the host's authenticated mode
-setting; do not enable inbound chat, budgeting, dispatch or Jira writes. Reconcile
-existing UNKNOWN/in-flight attempts before credential revocation or recovery.
-Rotation changes secret values behind references, never retained intent bytes.
-Liveness monitoring belongs to the sole controller: expose last report period,
-last actual readback, pending age and UNKNOWN/FAILED counts independently for
-each platform. After downtime reconcile uncertainty first; report original missed
-periods as catch-up with current freshness, without replaying stale owner alerts.
-Use only an independently approved fallback for persistent failure.
+`milestone_forecast(nodes, milestones, capacity, as_of, reservations=...,
+previous=...)` schedules unique remaining dependency ancestors once using a
+deterministic resource-constrained list schedule. Nodes have key, dependencies,
+resource and remaining_seconds optimistic/base/conservative. Optional conflicts
+are exclusive files/resources; external_wait names an unpriced gate, owner and
+next_gate explain responsibility. Include explicit reviewer/rework nodes and
+separate code/API/fixture, UAT and production milestones. Only retained WIP remains.
 
-## Requests to other lanes
+Capacity is safe OBSERVED slots, never configured stream ceilings. Reservations
+are unavailable seconds per resource slot. Missing durations/dependencies,
+cycles or invalid capacity refuse unsupported dates. Retain the input hash,
+previous forecast and node start/finish/resource/slot schedule. Dependency paths
+alone do not represent resource queues: show the retained schedule too. External
+waits make affected ETA null/CONDITIONAL, with separately labelled conditional
+date excluding that wait and named missing decisions. Continuous calendar-second
+capacity is an assumption; holidays/unavailable time need reservations or waits.
+These scenarios are not statistical percentiles; caps never enter forecasts.
 
-- `.agentic/lib/agentic/continuous_controller.py` (lane B/integration writer):
-  register the delivery schema in the existing controller database migration;
-  instantiate DeliveryOutbox using the existing transaction port; persist stable
-  event/period report IDs and source snapshots; consume enabled settings; call
-  advance only for admitted enabled destinations; surface UNKNOWN/FAILED and
-  retry readiness without resetting identities. Generate reports independently
-  of one blocked delivery. Deduplicate final-review alerts and emit corrections
-  after candidate/scope changes. Keep the existing sole scheduler and authority.
-- `.agentic/adapters/reference_controller_adapter.py` (lane B): retain its local
-  JSONL handoff as LOCAL_RECEIPT only. Route channel reporting through the above
-  reporting provider port. Never map local readback to channel DELIVERED.
-- `.agentic/lib/agentic/operating.py` and `.agentic/lib/agentic/cli.py` (assigned
-  settings writer): authenticate owner UI settings; persist/show off/teams/slack/
-  both and exact project-owned destination bindings using existing audit/recovery;
-  preserve explicit prior settings; reporting changes must not enable any other
-  subsystem. No authentication is inferred from free-text instructions.
-- AWF-244 controller integration: consume `operating_calendar` from existing
-  operating settings and lane C's effective/validated calendar helpers. Use its
-  timezone, eod.time and explicit eod.weekdays; preserve continuous work and hourly
-  reports 24/7 regardless of review_batching. Derive UTC period identities through
-  DST folds/gaps and label missed periods honestly. Do not add another scheduler.
-  The EoD weekday choice remains an owner decision; do not silently choose it.
-- AWF-242: provide the existing ledger's verified, explicitly enrolled AWF-agent
-  accounting projection with completeness/unknown charges and overhead allocation.
-  Exclude the main controller/chat and independent agents. Reporting consumes it
-  read-only; it cannot enable accounting or create another ledger.
-- `scripts/generate_contracts.py`: add explicit version-2 record/input and delivery
-  envelopes and reporting settings to the appropriate generator-owned contracts,
-  preserving version 1. Central writer must regenerate the corresponding
-  `.agentic/schemas/` outputs. None was regenerated in this slice.
-- `scripts/generate_examples.py`, project/source-config defaults and operating
-  schema writers: generate default-OFF reporting examples/settings after settings
-  integration, preserving adopter-owned bindings/choices. Release lane must
-  regenerate `MANIFEST.json` and `MANIFEST.md` for new files only after integration.
+`token_metrics(mode, observations, enrolled, ...)` consumes only trusted supplied
+enrollment/attributed usage. OFF/unknown is UNAVAILABLE; enabled with no records
+has no consumed total. Exclude controller/main chat and independent/ULTRA agents.
+Deduplicate observation IDs exactly; actual review/retry/failure runs have unique
+IDs. Sum provider input/output totals, never cached/reasoning subsets twice.
+Retain unknown charges, model mix, known subtotal and coverage. Completed-ticket
+means use only complete observed accounting; WIP/shared overhead remain separate.
+Reporting cannot enable accounting or construct a second ledger.
 
-## Closure still required
+`observed_token_forecast(work, history)` uses completely attributed comparable
+history min/mean/max, n and remaining WIP fractions. Retained work, review, rework
+and shared overhead have unique component IDs; absent history is unavailable.
+`token_rollup` reconciles primary Epic rows plus shared/unallocated once to the
+scope consumed/remaining/expected scenarios. Unknown usage propagates to unknown
+expected totals. Do not include review/overhead both in a work cohort and in a
+separate component. The optional token_metrics forecast input requires measured
+basis observation IDs. Preserve original forecast/baseline bytes in the journal.
 
-Finish metrics/forecasts and all specified report bodies; wire events/settings/
-calendar/controller migration; qualify candidate corrections, dedup, off/mode
-persistence, DST/weekend/EoD continuity, rate limits and provider terminality;
-perform real Slack and Teams channel qualification and separately authorized
-project pilot acceptance. Run centrally authorized preservation/release checks,
-current-head independent critic and triggered security/operations/data/public
-interface reviews. FULL closure and release readiness are not established here.
+## Standard-library real transports, default OFF
+
+Each adapter exports Transport alongside the unchanged injected ReportingAdapter.
+Transport(context=..., sender=...) pins approved workspace/tenant and service
+sender IDs. ReportingAdapter requires the exact project-owned binding, reference
+resolver and explicit effective mode; omission remains OFF. Protect transport
+registration/context/sender/resolver configuration. Binding/mode/size admission
+precedes secret resolution, which runs anew each operation for rotation. Secret
+values never enter settings, payloads, receipts, diagnostics or logs. Provider
+errors use fixed codes and suppressed exception chains; do not log HTTP locals.
+
+The HTTP client uses TLS, fixed provider origins, 15-second timeout, bounded
+2 MiB responses, no redirects and no automatic retries. Reconciliation inspects
+at most ten pages; absence/exhaustion remains UNKNOWN. Read-back checks sender,
+channel, full intended content/correlation and Teams link destinations, returning
+a stable message ID and observation fingerprint. These APIs cannot prove
+terminal absence of delayed POSTs: the transports deliberately NEVER return
+ABSENT. A separately qualified terminal collector is needed to permit retry.
+
+Slack uses auth.test, conversations.info, chat.postMessage and
+conversations.history. It verifies workspace, sender and exact member channel.
+Approve chat:write plus the selected public/private channel read/history scopes;
+no cross-project fallback or chat:write.public is needed. Teams uses delegated
+Graph /me, /organization, team/channel/membership reads, channel POST and message
+listing. Ordinary application-only migration sends are not used. The trusted
+resolver owns tenant issuer validation and delegated-token acquisition/refresh.
+Selected capabilities require administrator approval: User.Read,
+Organization.Read.All, Team.ReadBasic.All, Channel.ReadBasic.All,
+ChannelMember.Read.All, ChannelMessage.Send and ChannelMessage.Read.All, subject
+to current provider consent. Use a dedicated approved service sender, not the
+human merge-owner credential. No token acquisition or live activation occurs here.
+
+Official contracts checked: [Slack send](https://docs.slack.dev/reference/methods/chat.postmessage),
+[Slack history](https://docs.slack.dev/reference/methods/conversations.history/),
+[Graph send](https://learn.microsoft.com/en-us/graph/api/channel-post-messages?view=graph-rest-1.0),
+[Graph history](https://learn.microsoft.com/en-us/graph/api/channel-list-messages?view=graph-rest-1.0).
+Fake HTTP is implementation evidence only, not real-platform qualification.
+
+Before onboarding name the service owner, credential administrator, recovery
+contact and approved report host. Rotate values behind references, never replace
+retained intents to reset attempts. Disable with authenticated mode settings,
+reconcile unresolved sends, then revoke credentials as appropriate. Controller
+liveness exposes last period/read-back, pending age and UNKNOWN/FAILED separately
+per platform. Recovery reconciles effects first and labels missed-period catch-up;
+use only an independently approved fallback.
+
+## Requests to other lanes: apply in order
+
+- [ ] **Operating/config writer:** admit default-OFF mode off/teams/slack/both and
+  exact project/repository/scope/platform/destination/revision/secret-reference
+  bindings through existing validation/lock/journal/audit/recovery. Authenticate
+  actual owner UI instructions and show persisted effective settings after restart.
+  Preserve adopter settings; enable no chat/accounting/Jira/dispatch implicitly.
+- [ ] **Calendar/runtime writer:** merge AWF-244 and inject effective_calendar(root).
+  Preserve EoD all-seven-days default and continuous hourly cadence. Provision
+  reviewed IANA tzdata in the installed Windows runtime; no fixed-offset fallback.
+- [ ] **Controller database writer:** migrate delivery schema in the existing
+  protected database; atomically persist event state, cursor and report intents.
+  Retain immutable admitted source/body/baseline/forecast bytes in its journal.
+  Namespace stable event/period report IDs by accepted scope, preserving per-platform
+  attempt identity through restart/mode/binding changes. No second scheduler.
+- [ ] **Controller observation writer:** collect current source scope/times, exact
+  PR/head/base/gate and independent critic/specialist/final-gate observations.
+  Feed complete action/readiness snapshots, accepted date fields/baselines,
+  graph/capacity/reservations, real merge/closeout/reconciliation and AWF-242
+  enrolled attributed usage. Missing sources stay unknown, never empty by guess.
+- [ ] **Controller report writer:** call compose_report for every report type
+  with admitted source observations and retain its body/detail metrics. Supply
+  narrative business context and observations, not invented metrics. Verify
+  detail upload/access before links. Correlate corrections and
+  resolutions with originals. Send one combined final/Jira implementation report;
+  keep backlog acceptance, owner approval, merge and reconciled Done distinct.
+- [ ] **Review-batching integration:** enqueue owner-ready tuples in AWF-244's
+  ReviewBatchStore, use trusted fresh observation and immediate pre-send recheck,
+  withdraw drift. Connect one logical batch to independent per-platform intents
+  without multiplying retries; reconcile both before logical terminal receipt.
+  Held reviews must not hold urgent actions/hourly/EoD/work.
+- [ ] **Sender/reference-adapter writer:** label JSONL handoff LOCAL_RECEIPT. Register
+  qualified transports and protected project context/sender/binding/resolvers.
+  Call advance only for enabled modes; surface size refusal and UNKNOWN/FAILED,
+  reconcile after restart, never turn HTTP 200/201/202 into delivered or repost
+  ambiguous attempts. Correlate platform message IDs for correction threads.
+- [ ] **CLI/UI writer:** add authenticated reporting setting admission/effective
+  show through existing operating/CLI commands; expose pending delivery/coverage.
+  Add off/Teams/Slack/both persistence, mixed-update/refusal/restart integration
+  tests; do not create another daemon or permit free-text authority.
+- [ ] **Generator/release writer:** extend generator-owned settings/report contracts
+  preserving historical replay/adopter settings; centrally regenerate examples,
+  schemas and inventories. No generated files changed in this lane.
+- [ ] **Qualification owner:** integrated controller/settings/calendar checks,
+  supervised real Slack/Teams visibility/format/link/identity/rotation/failure
+  acceptance and separately authorized pilot. Retain current-head independent
+  critic, security, operations, data/accounting/migration and public-interface
+  review, final gate and human owner review. Offline tests establish no FULL
+  closure, release readiness or live activation.
+
+## Stage-two validation evidence
+
+Focused offline runs: `test_reporting_*.py` (48 tests), `test_status_report.py`
+(42 tests), `test_status_report_contract_boundaries.py` (21 tests), all passed,
+zero skips. Commands used unittest discovery with `-B`, test root and top level
+both `.agentic/tests`. Initial stage-two red run had eight missing-module errors;
+subsequent red regressions exposed reopened-action deduplication, missing schedule
+retention, altered-link read-back, incomplete rollups, scope cycles and missing
+composition. Each was fixed without weakening existing assertions. The immediate
+header-order test was tightened to match bold section labels, excluding the report
+title. Real HTTP effects were faked; no Slack/Graph API or pilot was contacted.
+`git diff --check` passed. No commits or generated outputs were made.

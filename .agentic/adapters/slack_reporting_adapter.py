@@ -1,5 +1,6 @@
-"""Slack reporting port. Requires a separately qualified injected transport."""
+"""Slack reporting adapter, OFF by default; transport qualification is separate."""
 from agentic.reporting.platform import PlatformReportingAdapter
+from agentic.reporting.http_transport import SlackTransport as Transport
 
 
 class ReportingAdapter(PlatformReportingAdapter):

@@ -1,5 +1,6 @@
-"""Teams reporting port. Requires a separately qualified injected transport."""
+"""Teams reporting adapter, OFF by default; transport qualification is separate."""
 from agentic.reporting.platform import PlatformReportingAdapter
+from agentic.reporting.http_transport import TeamsTransport as Transport
 
 
 class ReportingAdapter(PlatformReportingAdapter):
