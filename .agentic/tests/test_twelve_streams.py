@@ -117,9 +117,13 @@ class TwelveStreamTests(unittest.TestCase):
                     self.route(self.request(stream=stream, role="critic", worker_context_id="independent"), snapshot)
 
     def test_upper_lanes_are_draining_after_capacity_reduction(self):
+        from test_model_routing import outcome
+
         reduced = deepcopy(self.value)
         reduced["streams"]["count"] = 3
         snapshot = validate_operating(reduced, self.gov)
+        reduced["streams"]["count"] = 6
+        six_streams = validate_operating(reduced, self.gov)
         with tempfile.TemporaryDirectory() as temporary:
             ledger = RoutingLedger(Path(temporary) / "routing.sqlite")
             for stream in "GHIJKL":
@@ -129,6 +133,25 @@ class TwelveStreamTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValidationError, "draining"):
                         ledger.reserve("project", self.policy, request, self.capabilities,
                                        operating=snapshot, governance=self.gov)
+                    owned = self.request(stream=stream, ticket_id="FIX-" + stream, agent_id="agent-X")
+                    first = ledger.reserve("project", self.policy, owned, self.capabilities,
+                                           operating=self.operating, governance=self.gov)
+                    self.assertEqual("reserved", first["status"])
+                    settled = ledger.settle(first["run_id"], outcome(first, actual_context_id=owned["context_id"]))
+                    self.assertTrue(settled["accepted"])
+                    for role in ("worker", "fix"):
+                        with self.subTest(role=role):
+                            for changed in ({"ticket_id": "NEW-" + stream}, {"agent_id": "agent-Y"}):
+                                with self.assertRaisesRegex(ValidationError, "[Dd]raining"):
+                                    ledger.reserve("project", self.policy, {**owned, **changed, "role": role},
+                                                   self.capabilities, operating=six_streams, governance=self.gov)
+                            continued = ledger.reserve("project", self.policy, {**owned, "role": role},
+                                                       self.capabilities, operating=six_streams, governance=self.gov)
+                            self.assertEqual("reserved", continued["status"])
+                            self.assertTrue(continued["draining"])
+                            self.assertEqual(six_streams.operating_hash, continued["operating_hash"])
+                            settled = ledger.settle(continued["run_id"], outcome(continued, actual_context_id=owned["context_id"]))
+                            self.assertTrue(settled["accepted"])
 
     def test_fresh_operating_template_and_legacy_missing_file_are_distinct(self):
         with tempfile.TemporaryDirectory() as temporary:
