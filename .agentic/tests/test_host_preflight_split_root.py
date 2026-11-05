@@ -19,12 +19,12 @@ NOW = "2026-10-09T12:00:00Z"
 
 
 class SplitRootPreflightTests(unittest.TestCase):
-    def registry(self, access="read_only"):
+    def registry(self, access="read_only", timeout_seconds=5):
         return {"format": "awf-external-resource-registry-1", "resources": {
             "raw_estate": {"access": access, "required_by": ["AWF-8"],
                            "host_mapping": "operator_local", "sensitivity": "restricted",
                            "probe": {"sample_relative_path": "sample.bin", "listing_limit": 4,
-                                     "timeout_seconds": 5}}}}
+                                     "timeout_seconds": timeout_seconds}}}}
 
     def mapping(self, local_path):
         return {"format": "awf-external-resource-mapping-1", "resources": {
@@ -74,7 +74,8 @@ class SplitRootPreflightTests(unittest.TestCase):
         self.assertEqual(rows["process_launch"]["status"], "PASS")
         self.assertEqual(rows["repository_writable"]["status"], "PASS")
         self.assertEqual(rows["external_workspace_roots"]["status"], "PASS")
-        self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS")
+        self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS",
+                         rows["external_resource:{raw_estate}"])
         self.assertEqual(len(resource_commands), 1)
         if os.name == "nt":
             self.assertTrue(Path(resource_commands[0][0]).is_absolute())
@@ -109,13 +110,13 @@ class SplitRootPreflightTests(unittest.TestCase):
             created = subprocess.run(["subst", drive, str(estate)], capture_output=True,
                                      text=True, encoding="utf-8", timeout=10)
             self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
-            registry = self.registry()
-            # Cold PowerShell startup can exceed five seconds on hosted Windows.
-            # Keep the real probe bounded by the supported thirty-second ceiling.
-            registry["resources"]["raw_estate"]["probe"]["timeout_seconds"] = 30
             try:
+                # This real process integration checks read-only mapping, not
+                # PowerShell startup latency on a contended Windows runner.
+                # Keep the declared probe bound within the supported 30s cap.
                 report = preflight(
-                    project, platform="nt", external_registry=registry,
+                    project, platform="nt",
+                    external_registry=self.registry(timeout_seconds=30),
                     external_mappings={
                         "format": "awf-external-resource-mapping-1", "resources": {
                             "raw_estate": {"local_path": mapped_root,
@@ -129,8 +130,8 @@ class SplitRootPreflightTests(unittest.TestCase):
             self.assertEqual(rows["process_launch"]["status"], "PASS")
             self.assertEqual(rows["repository_writable"]["status"], "PASS")
             self.assertEqual(rows["external_workspace_roots"]["status"], "PASS")
-            resource_row = rows["external_resource:{raw_estate}"]
-            self.assertEqual(resource_row["status"], "PASS", resource_row)
+            self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS",
+                         rows["external_resource:{raw_estate}"])
             after = (sample.read_bytes(), sample.stat().st_mtime_ns,
                      sorted(p.name for p in estate.iterdir()))
             self.assertEqual(after, before)

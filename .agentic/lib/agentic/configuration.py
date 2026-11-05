@@ -274,7 +274,12 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
             require(config['merge_gate']['high_risk_owner_quorum'] <= len(owners),
                     '$.merge_gate.high_risk_owner_quorum', 'owner quorum exceeds trusted owners')
         origins = [('$.github.host', config['github']['host'])]
-        if enabled:
+        # A fresh requested-on integration has no service to validate yet. Only
+        # the entirely unbound form is inert; partial or malformed sites retain
+        # the existing HTTPS-origin validation and all live identity guards.
+        jira_fully_unbound = all(jira.get(key) is None for key in
+            ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id'))
+        if enabled and not jira_fully_unbound:
             origins.append(('$.jira.site', jira['site']))
         for path, value in origins:
             try:

@@ -128,7 +128,7 @@ def config(example=True, routing_policy=None, *, fresh_defaults=False):
     }
     result = {"version": 3, "template": {"expected_workflow_version": VERSION},
         "project": {"id": uid("project") if example else str(uuid.UUID(int=0)), "name": "Offline Fixture" if example else "CHANGE_ME_PROJECT", "short_name": "EX" if example else "CHANGE_ME"},
-        "jira": {"enabled": example, "cloud_id": "fixture-cloud" if example else None,
+        "jira": {"enabled": True, "cloud_id": "fixture-cloud" if example else None,
             "site": "https://jira.example.invalid" if example else None,
             "provider_project_id": "fixture-project" if example else None,
             "project_key": "EX" if example else None,

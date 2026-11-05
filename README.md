@@ -8,7 +8,7 @@ Install the portable `awf` skill with its verified distribution launcher. It bac
 
 Adoption installs files, maps configuration and prepares a draft PR even when default-branch rules are missing or unobserved. Report that warning and offer the shipped ruleset. Live automation retains observed-rule and qualification requirements; [adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md) explains publication restrictions for repositories holding secrets. The first adoption message explains that changing governance files is why the draft PR is being prepared.
 
-Bootstrap preserves configuration, derives supported values and reports exact residue. New projects use token-only budgets; upgrades preserve reviewed bytes. Disabled Jira and absent CI/owners warn. Preflight warns when Ruff/flake8 includes managed `.agentic`. Installed `verify-installation`/`validate-config` need successful exits, accepted outputs and bound digests for CONFIGURED. `workflow.py status` recomputes INSTALLED, CONFIGURED or independently trusted/observed ACTIVE. ACTIVE verifies adoption and raw AWF bytes on the accepted default branch while allowing unrelated product edits; record state/next action in the [PR checklist](.agentic/templates/adoption-pr.md). It enables no automation.
+Bootstrap preserves reviewed configuration and explicit Jira opt-outs. Fresh Jira defaults on but remains unbound and unscoped; adoption warnings grant no live authority. New projects use token-only budgets. Absent CI/owners warn. Preflight warns when Ruff/flake8 includes managed `.agentic`. Installed `verify-installation`/`validate-config` need successful exits, accepted outputs and bound digests for CONFIGURED. `workflow.py status` recomputes INSTALLED, CONFIGURED or independently trusted/observed ACTIVE. ACTIVE verifies adoption and raw AWF bytes on the accepted default branch while allowing unrelated product edits; record state/next action in the [PR checklist](.agentic/templates/adoption-pr.md). It enables no automation.
 
 On a verified extraction with Python 3.11+ and locked dependencies, run ordinary component checks without review credentials:
 
@@ -27,7 +27,7 @@ Read the [specification](.agentic/SPECIFICATION.md), then one guide:
 - [Operate the scheduled PR adapter](.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md).
 - [Run independent Codex reviews](.agentic/docs/28-EXTERNAL-REVIEW.md).
 
-Fresh native defaults: twelve worker streams and one shared independent critic within ceiling twelve (fourteen slots including the controller); actual host capacity binds. Older omitted lane caps remain six. [Operating configuration](.agentic/docs/29-OPERATING-CONFIGURATION.md) supports chat changes within governance. After CONFIGURED, show routes and offer keep, recommend from Epics, or custom. Recommendations require acceptance; caps require a PR. Running work retains reserved routes/hashes.
+Fresh defaults: twelve workers, one shared independent critic within ceiling twelve (fourteen slots with controller); host capacity binds. Older omitted caps remain six. [Operating configuration](.agentic/docs/29-OPERATING-CONFIGURATION.md) supports chat changes within governance. After CONFIGURED, show routes and offer keep, recommend from Epics, or custom. Recommendations require acceptance; caps require a PR. Running work retains reserved routes/hashes.
 
 The offline evaluator never grants execution authority. The reference adapter supports Codex/GitHub.com/Jira; Windows scheduling is optional. Other providers and live qualification are not implied.
 

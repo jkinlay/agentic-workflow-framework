@@ -109,6 +109,15 @@ class FreshBootstrapIntegrationTests(unittest.TestCase):
                 self.assertEqual({"model":"gpt-6.1-sol", "effort":"high"}, routing["role_defaults"][role])
             self.assertEqual({"model":"gpt-6-luna", "effort":"high"}, routing["simple_worker"])
 
+            configured = json.loads((destination / ".agentic/PROJECT_CONFIG.yaml").read_bytes())
+            jira = configured["jira"]
+            self.assertTrue(jira["enabled"])
+            self.assertTrue(all(jira[key] is None for key in
+                ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")))
+            self.assertFalse(jira["scope"]["allow_entire_project"])
+            self.assertEqual(jira["scope"]["included_epics"], [])
+            warnings = {item["code"] for item in checks[1]["output"]["warnings"]}
+            self.assertTrue({"JIRA_IDENTITY_UNBOUND", "JIRA_SCOPE_NOT_CONFIGURED"} <= warnings)
 
 
 if __name__ == "__main__":

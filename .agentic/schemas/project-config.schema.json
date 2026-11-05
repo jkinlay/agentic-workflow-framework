@@ -290,49 +290,70 @@
             }
           },
           "else": {
-            "properties": {
-              "cloud_id": {
-                "oneOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "site": {
-                "type": "string",
-                "minLength": 1,
-                "format": "uri"
-              },
-              "provider_project_id": {
-                "oneOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "project_key": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^[A-Z][A-Z0-9]*$"
-              },
-              "controller_actor_id": {
-                "oneOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+            "if": {
+              "properties": {
+                "cloud_id": {
+                  "type": "null"
+                },
+                "site": {
+                  "type": "null"
+                },
+                "provider_project_id": {
+                  "type": "null"
+                },
+                "project_key": {
+                  "type": "null"
+                },
+                "controller_actor_id": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "cloud_id": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "site": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "uri"
+                },
+                "provider_project_id": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "project_key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z][A-Z0-9]*$"
+                },
+                "controller_actor_id": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
               }
             }
           }
