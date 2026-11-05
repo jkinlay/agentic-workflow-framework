@@ -112,6 +112,35 @@ class PlanStreamsScriptTests(unittest.TestCase):
             self.assertIn("## Stream C", markdown)
             self.assertIn("DEMO-31", markdown)
 
+    def test_cli_twelve_stream_json_and_markdown_match(self):
+        from agentic.lane_labels import STREAM_LABELS
+        from test_operating_integration import inventory, configuration
+        with tempfile.TemporaryDirectory(prefix="awf-twelve-plan-") as temporary:
+            project = Path(temporary)
+            (project / ".agentic").mkdir()
+            config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+            config["jira"]["enabled"] = False
+            config["execution"].update(max_lanes=12, max_parallel_tickets=12, model_routing=fixture_policy())
+            (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+            (project / "OPERATING_CONFIG.yaml").write_bytes(canonical(configuration(12)))
+            raw = canonical(inventory(12))
+            fixture = project / "inventory.json"
+            fixture.write_bytes(raw)
+            output = []
+            with patch.object(self.cli, "verify_installed", return_value="a" * 64), \
+                    patch("builtins.print", side_effect=lambda value, **kwargs: output.append(value)):
+                code = self.cli.main(["--input", str(fixture), "--expected-input-sha256", sha256(raw),
+                                      "--project-root", str(project), "--allow-synthetic",
+                                      "--host-writer-capacity", "14", "--now", "2026-09-11T10:00:00Z"])
+            self.assertEqual(0, code, output)
+            report = loads(output[-1])
+            self.assertEqual(list(STREAM_LABELS), report["stream_labels"])
+            self.assertEqual(12, len(report["dispatch_packets"]))
+            markdown = (project / "STREAMS.md").read_text(encoding="utf-8")
+            for label in STREAM_LABELS:
+                self.assertIn("## Stream " + label + "\n", markdown)
+            self.assertIn("streams A\u2013L", markdown)
+
     def test_cli_applies_verifier_bound_owner_reassignment_on_intake_chain(self):
         fixture = ROOT / ".agentic/examples/stream-input.json"
         with tempfile.TemporaryDirectory(prefix="awf-plan-streams-") as temporary:
