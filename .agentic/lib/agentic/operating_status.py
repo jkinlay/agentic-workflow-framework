@@ -8,6 +8,7 @@ from .canonical import load_yaml
 from .operating import (inspect_operating, is_awf_source_repository,
                         operating_ceiling, tree_reader, validate_operating)
 from .safeio import Tree
+from .budgeting import resolve_settings
 
 
 def with_operating(root, governance, report):
@@ -22,6 +23,7 @@ def with_operating(root, governance, report):
             try:
                 value = validate_operating(load_yaml(tree.read('OPERATING_CONFIG.yaml')), governance)
                 operating = {'status': 'ACCEPTED', 'hash': value.operating_hash, 'source': value.source,
+                             'budgeting': resolve_settings(value.config),
                              'streams': value.count, 'last_change_id': None, 'refusals': [],
                              'provenance': 'source_template', **operating_ceiling(governance)}
             except (ValidationError, OSError, ValueError) as exc:

@@ -290,17 +290,18 @@ class Store:
             self._event(db, "CONTROL_CHANGED", {"mode": mode, "generation": generation, "reason": reason})
             return generation
 
-    def advance(self, issue_id, event, expected_revision, facts, resume_state=None):
+    def advance(self, issue_id, event, expected_revision, facts, resume_state=None, *, budgeting=None):
         with self.transaction() as db:
             row = db.execute("SELECT state,revision FROM tickets WHERE issue_id=?", (issue_id,)).fetchone()
             state, revision = (row["state"], row["revision"]) if row else ("BACKLOG", 0)
             if expected_revision != revision:
                 raise ValidationError("Concurrent ticket revision changed")
-            new_state = transition(state, event, facts, resume_state)
+            new_state = transition(state, event, facts, resume_state, budgeting=budgeting)
             db.execute("INSERT INTO tickets VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET state=excluded.state,revision=excluded.revision",
                        (issue_id, new_state, revision + 1))
             self._event(db, event, {"issue_id": issue_id, "previous_state": state, "state": new_state,
-                                   "revision": revision + 1, "facts": facts, "resume_state": resume_state})
+                                   "revision": revision + 1, "facts": facts, "resume_state": resume_state,
+                                   **({'budgeting': budgeting} if budgeting is not None else {})})
             return new_state, revision + 1
 
     def claim_issue(self, issue_id, owner_id, now, ttl_seconds):
@@ -469,7 +470,22 @@ class Store:
                 db.execute("UPDATE leases SET status='RELEASED' WHERE lease_id=?", (lease_id,))
                 self._event(db, "LEASE_RELEASED", {"lease_id": lease_id})
 
-    def reserve_budget(self, run_id, ticket, now, tokens, cost, limits, *, operating_hash=None):
+    def reserve_budget(self, run_id, ticket, now, tokens, cost, limits, *, operating_hash=None,
+                       budgeting=None, budget_ledger=None, budget_binding=None):
+        if budgeting is not None:
+            from .budgeting import validate_settings
+            settings = validate_settings(budgeting)
+            if not settings['accounting_enabled']:
+                return 'OFF'
+            if budget_ledger is None:
+                raise ValidationError('Enabled accounting requires the canonical routing budget ledger')
+            if budget_binding is not None and (budget_binding.get('run_id') != run_id or
+                    budget_binding.get('ticket_id') != ticket or budget_binding.get('project_id') != self.project_id):
+                raise ValidationError('Budget enrollment differs from state-store reservation')
+            with self.connection() as db:
+                if settings['enforcement_enabled'] and db.execute('SELECT 1 FROM reservations LIMIT 1').fetchone():
+                    raise ValidationError('Preserve/import legacy state-store reservations into the canonical routing ledger before enabling enforcement')
+            return budget_ledger.reserve(budget_binding, settings, tokens)['status']
         uuid.UUID(run_id)
         if operating_hash is not None and (not isinstance(operating_hash, str) or not re.fullmatch('[0-9a-f]{64}', operating_hash)):
             raise ValidationError("operating_hash must be a validated snapshot SHA256 or null for legacy callers")
@@ -495,7 +511,22 @@ class Store:
             self._event(db, "BUDGET_RESERVED", {"run_id": run_id, "ticket": ticket, "tokens": tokens, "cost": cost, "operating_hash": operating_hash}, now=now)
             return "RESERVED"
 
-    def settle_budget(self, run_id, tokens, cost):
+    def settle_budget(self, run_id, tokens, cost, *, budget_ledger=None, budget_binding=None,
+                      observation_id=None, budgeting=None):
+        if budget_ledger is not None:
+            if budget_binding is None or budget_binding.get('run_id') != run_id or budget_binding.get('project_id') != self.project_id:
+                raise ValidationError('Budget settlement differs from enrolled state-store identity')
+            return budget_ledger.settle(budget_binding, tokens, observation_id)
+        if budgeting is not None:
+            from .budgeting import validate_settings
+            settings = validate_settings(budgeting)
+            if settings['accounting_enabled']:
+                raise ValidationError('Enabled settlement requires the canonical routing budget ledger')
+            # OFF applies to new work only. Existing legacy identities still
+            # require their original settlement and cannot be silently refunded.
+            with self.connection() as db:
+                if db.execute('SELECT 1 FROM reservations WHERE run_id=?', (run_id,)).fetchone() is None:
+                    return 'OFF'
         if not all(type(v) is int and v >= 0 for v in [tokens, cost]):
             raise ValidationError("Invalid usage telemetry")
         with self.transaction() as db:
