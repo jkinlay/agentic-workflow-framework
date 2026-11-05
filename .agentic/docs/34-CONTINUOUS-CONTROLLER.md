@@ -17,106 +17,106 @@ mutations.
 
 ## Planning retention and recovery
 
-The primary controller database holds `controller_meta['production_planning']`;
-the separate `.planning.sqlite3` database holds immutable plan history. Both
-restrict database/WAL/SHM permissions after initialization closes.
-POSIX uses owner read/write permissions; Windows ACLs remain unchanged.
+Primary controller database holds `controller_meta['production_planning']`;
+`.planning.sqlite3` holds immutable plan history. After initialization closes,
+both restrict database/WAL/SHM permissions. POSIX uses owner read/write;
+Windows ACLs remain unchanged.
 
 Format 2 retains `cycle_sequence` and `seen` digest/last-cycle pairs. Legacy
-digests migrate to age zero; identical observations refresh age. Above 4096,
-evict oldest `(last_cycle, source_id)`, pinning pending sources beyond target.
-Evicted sources may recompute; identical plans never duplicate history.
-Each save checks canonical UTF-8 against 4 MiB; ordinary reads cap at 8 MiB.
-Excess pinned/preserved fields refuse before writing, preserving previous bytes;
-earlier saves/history may persist. Cycles accept at most 4,000 provider events,
-including repeats; excess refuses before state/history writes or dispatch.
+digests age from zero; identical observations refresh age. Above 4096, evict
+oldest `(last_cycle, source_id)`, pinning pending sources beyond target.
+Evicted sources may recompute; identical plans never duplicate. Saves
+check canonical UTF-8 against 4 MiB; reads cap at 8 MiB. Excess
+pinned/preserved fields refuse before writing, preserving previous bytes;
+prior saves/history may persist. Cycles accept at most 4,000 provider events
+(including repeats); excess refuses before state/history writes or dispatch.
 Staged-state 4 MiB guard takes precedence.
 
-Stop **all cycles using the state** before recovery:
+Stop **all cycles using state** before recovery:
 
 ```text
 python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB --worktree-root ABSOLUTE_WORKTREE planning-state prune
 ```
 
-Recovery needs existing protected primary state, bounds parsing input to 16 MiB,
-trims only `seen`, reports bytes/counts. Pending work, overrides, observation,
+Recovery needs protected primary state, bounds input to 16 MiB, trims only
+`seen`, and reports bytes/counts. Pending work, overrides, observation,
 candidate metadata, other rows/history remain. Unshrinkable state refuses;
-reduce event windows before they accumulate. After provider-owner confirmation, `--forget-source SOURCE_ID`
-reconsiders changed bytes for retained identities; pending identities cannot
-be forgotten. Never delete
-planning key. Restart only after successful repair.
+reduce event windows first. After provider-owner confirmation,
+`--forget-source SOURCE_ID` reconsiders changed bytes for retained identities;
+pending identities cannot be forgotten. Never delete the planning key. Restart
+only after successful repair.
 
 ## Dispatch state and round boundaries
 
 Dispatch payloads/receipts use closed schema v2. Opening protected state
-atomically creates schema and migrates unambiguous 1.9.4 `PENDING`, `IN_FLIGHT`,
-`UNKNOWN` rows only with their durable prior-inventory digest already in protected state.
-Legacy non-terminal sets without that boundary binding are refused before any schema or row change.
-Unsupported states/receipts/fields, ambiguous payloads or later initialization
-refusal roll back schema/data, preserving complete before-image.
-The reference adapter refuses legacy calls/records before runner preparation/launch.
+atomically creates schema, migrating unambiguous 1.9.4 `PENDING`, `IN_FLIGHT`,
+`UNKNOWN` rows only with durable prior-inventory digest already stored. Legacy
+non-terminal sets without binding refuse before schema/row change. Unsupported
+states/receipts/fields, ambiguous payloads, or later initialization refusal roll
+back schema/data, preserving the complete before-image.
+Reference adapter refuses legacy calls/records before runner preparation/launch.
 
 `PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.
-A successor inventory cannot refill a round while any of those operations
-crosses the boundary. Refill requires one fresh authenticated host trigger
-bound to prior/next inventory digests and complete durable
-dispatch/stream/ticket/tuple/state set. Persist the seal before refill;
-consume it atomically with successor dispatch intent creation.
-Restart resumes only persisted successor intents without losing refill
-or recreating seals from replay.
+A successor inventory cannot refill a round while any crosses the boundary.
+Refill requires one fresh authenticated host trigger bound to prior/next
+inventory digests and complete durable dispatch/stream/ticket/tuple/state set.
+Persist the seal before refill; consume it atomically with successor
+dispatch intent creation.
+Restart resumes only persisted successor intents; it neither loses refill nor
+recreates seals from replay.
 `--replan-request REQUEST.json` contains only a positive GitHub `comment_id`.
-Adapter fetches the immutable comment with provider Date/ETag. Require a fresh,
+Adapter fetches immutable comment with provider Date/ETag. Require fresh,
 unedited configured trusted-owner comment: exactly `AWF-ROUND-REPLAN 1`, newline,
 then canonical JSON binding repository, round, inventories and the complete
-non-terminal dispatch set. Caller-authored trigger/round identities are refused.
+non-terminal dispatch set. Caller-authored identities are refused.
 
-Provider reads never occur inside a controller write transaction. For an overlap
-allowance, validate `LANE_START` first; persist a dispatch-bound waiver before
-`begun_at` and the adapter call. Its digest binds the dispatch, ticket, stream,
-exact tuple, allowance, shared path, observation and persistence time. Restart
-observation must carry the same digest and never relaunch the session.
+Provider reads never occur inside controller write transaction. For overlap,
+validate `LANE_START` first; persist a dispatch-bound waiver before `begun_at`
+and the adapter call. Its digest binds dispatch, ticket, stream, exact tuple,
+allowance, shared path, observation and persistence time. Restart observation
+must carry that digest and never relaunch the session.
 
-Authenticated parked/worktree-diff sources independently reserve paths. Every cycle
-observes complete provider-bound paused inventory and Git diff at pinned head/tree;
-repeat the complete observation immediately after every inventory replacement before scheduling. Failed refresh
-invalidates reservations and blocks scheduling. Reject foreign/stale/partial,
-non-NFC, case/separator/traversal, symlink and non-canonical Git paths.
-Reservations block overlapping starts even with owner allowances; unrelated paths
-continue within capacity.
+Authenticated parked/worktree-diff sources independently reserve paths. Each cycle
+observes complete provider-bound paused inventory/Git diff at pinned head/tree;
+repeat immediately after each inventory replacement before scheduling. Failed
+refresh invalidates reservations and blocks scheduling. Reject foreign/stale/partial,
+non-NFC, case/separator/traversal, symlink/non-canonical Git paths. Reservations
+block overlapping starts despite owner allowances; unrelated paths continue within
+capacity.
 
 ## Exact overlap allowances
 
-Only a trusted owner's canonical `AWF-OVERLAP-ALLOWANCE 1` permits an exact
+Only a trusted-owner's canonical `AWF-OVERLAP-ALLOWANCE 1` permits an exact
 pair for 24 hours. Plan/lane Date/ETag binds repository, PRs, heads, files,
-branches and case-sensitive NFC paths. Re-observe ownership per lane and
-sample UTC after each provider read.
+branches and case-sensitive NFC paths. Re-observe ownership per lane; sample
+UTC after each provider read.
 
 Wait for terminal dispatch proof. Use head-bound three-way merge, not blob
-inequality. Mergeable blobs need no sync writer. Resolve true conflict onto the
+inequality; mergeable blobs need no sync writer. Resolve true conflict onto the
 second branch by bounded union/expected-head mutation; carry its sorted,
 hash-matched, at-most-512-KiB diff to the critic.
 `EXECUTED` binds fresh post-read UTC, provider Date/ETag heads and matching
-inventory. `UNKNOWN` reads only its retained `COMPLETED` receipt.
+inventory; `UNKNOWN` reads only its retained `COMPLETED` receipt.
 
 Disabled Jira performs no access. Otherwise bind reads/writes/readbacks and
-reconcile after merge through `jira-lifecycle` with `JIRA_RECONCILED`.
-Before `merge-observed`, retain its successful transition and readback in the
-same protected controller journal. The validated closeout must name that exact
-transition record and binding. `merge-observed` only observes reconciliation
-and counts; it never calls the legacy `reconcile_merged_ticket` mutation hook.
+reconcile after merge through `jira-lifecycle` with `JIRA_RECONCILED`. Before
+`merge-observed`, retain the successful transition/readback in the protected
+controller journal. Validated closeout names that exact transition record and
+binding. `merge-observed` only observes reconciliation/counts; it never calls
+legacy `reconcile_merged_ticket`.
 
 Progress requires provider identity, canonical issue identity, scope/owner-hold
-policy and current-status observers. Missing observers or a missing/mismatched
-journal entry refuse counting. Observed owner-closure keywords hold the ticket
-In Review. Unknown outcomes and later status/readback mismatches durably stop
-that ticket; report suspected external automation and never reissue the write.
-Complete, stable, bounded pagination must follow the reconciliation observation
-before closed/open counts become authoritative. Final submission requires the
+policy and current-status observers. Missing/mismatched observers or journal
+entries refuse counting. Owner-closure keywords hold tickets In Review. Unknown
+outcomes or later status/readback mismatches durably stop the ticket; report
+suspected external automation and never reissue the write. Complete, stable,
+bounded pagination must follow reconciliation observation before counts become
+authoritative. Final submission requires the
 [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
 ## Reference adapter (AWF-32)
 
-**Non-executable fragment:** ellipses omit steps and variables; separate reference:
+**Non-executable fragment:** ellipses omit steps/variables; see reference:
 [provider-identity guide](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md).
 
 ```powershell
@@ -138,14 +138,14 @@ function Invoke-ControllerCycle;if (Test-Path $STOP_FILE)
 & $PYTHON @COMMON cycle;& $PYTHON @COMMON jira-lifecycle;observed_at=$NOW;jira_binding=;& $PYTHON @COMMON merge-observed;Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
 ```
 
-Adapter: 1 MiB stderr cap, credentials stripped, fail-closed, and
+Adapter: 1 MiB stderr cap, stripped credentials, fail-closed,
 `execution_authority: false`.
 
 ### Required adapter operations
 
-Load a reviewed, SHA-pinned module exposing
-`build_adapters(config)`, returning callable operations. None means no reviewed
-adapter operations, regardless of state/configuration requirements or effects.
+Load a reviewed SHA-pinned module exposing
+`build_adapters(config)` and callable operations. None means no reviewed
+operations, regardless of state/configuration/effects.
 Source: `.agentic/scripts/continuous_controller.py`.
 
 | Controller subcommand | Required adapter operations | CLI source lines |
@@ -162,11 +162,10 @@ Source: `.agentic/scripts/continuous_controller.py`.
 | `planning-state prune` | None | 145–147, 190–194 |
 
 `cycle --overlap-allowances` additionally requires `observe_overlap_allowance`:
-the CLI checks whether the flag was supplied, even an empty loaded list.
+the CLI checks the supplied flag, even for an empty loaded list.
 `cycle --replan-request` additionally requires `observe_replan_trigger`.
 
-CLI forwards these additional callbacks when callable, outside its
-unconditional load-time set:
+CLI forwards callable callbacks outside its unconditional load-time set:
 
 - `observe_overlap_conflict`: expired allowance conflict observation.
 - `observe_overlap_sync_inventory`: post-sync provider PR-head observation.
@@ -176,26 +175,27 @@ unconditional load-time set:
 
 See [Jira scope](JIRA-WRITE-SCOPE.md).
 
-Runtime overlap paths require the corresponding callback. This controller contract applies; the reference adapter lacks
-owner-publication and batch operations.
+Runtime overlap paths require the corresponding callback. This contract applies;
+the reference adapter lacks owner-publication and batch operations.
 
 ## Controller automation switches
 
-The `controller` mapping supplies four boolean
-switches. Shipped configuration and examples set all four to `false`.
+The `controller` mapping supplies four boolean switches, all `false` in shipped
+configuration/examples.
 `dispatch_enabled` is the master gate; `auto_dispatch` permits implementation
 writers, `auto_request_critic` permits independent critic requests, and
-`auto_resume_amendments` permits amendment writers. Each path requires both the
-master and its own switch. Disabled paths record
+`auto_resume_amendments` permits amendment writers. Each path requires master
+and own switch. Disabled paths record
 `CONTROLLER_AUTOMATION_DISABLED` before publication observation or dispatch.
-Missing or non-boolean values refuse the cycle before recovery or provider
-calls. The CLI passes the exact reviewed `controller` mapping to the cycle.
-Disabling automation cancels never-started pending work; uncertain launches
-reconcile by observation without relaunching.
+Missing/non-boolean values refuse the cycle before recovery/provider calls; the
+CLI passes exact reviewed `controller` mapping.
+Disabling cancels never-started pending work; uncertain launches reconcile by
+observation, never relaunching.
 
-Install and upgrade require all five automation switches, including
-`auto_transition_jira`, to be false. Enable dispatch switches afterwards under project governance. Upgrades preserve existing values;
-no controller-switch migration is needed. `auto_transition_jira` is unchanged.
-The switches grant no publication, review, merge or adapter qualification.
+Install/upgrade require all five automation switches, including
+`auto_transition_jira`, false. Enable dispatch switches under project
+governance. Upgrades preserve values; no migration is needed;
+`auto_transition_jira` is unchanged.
+Switches grant no publication, review, merge or adapter qualification.
 Until AWF-36 and AWF-32 ship, no project runs the continuous controller with
 its own adapter (Jonathan, 8 October).
