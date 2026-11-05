@@ -79,6 +79,61 @@ class AssignmentRegressions(unittest.TestCase):
             self.assertEqual("UNOBSERVED", self.progress()["jira_state"])
         self.assertEqual(1, len(self.writes))
         self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
+        self._assert_done_stop_survives_lifecycle_restart()
+
+    def test_r1_status_only_lifecycle_cannot_clear_unknown_done_write(self):
+        self.writes = []
+        def unknown(record):
+            self.writes.append(record)
+            raise TimeoutError("unknown Done outcome")
+        self.assertEqual("UNKNOWN", self.done(write_transition=unknown)["record"]["status"])
+        self._assert_done_stop_survives_lifecycle_restart()
+
+    def test_r1_status_only_lifecycle_cannot_clear_unknown_progress_read(self):
+        self.writes = []
+        self.assertEqual("SUCCEEDED", self.done()["record"]["status"])
+        def unknown(binding):
+            raise TimeoutError("unknown progress observation")
+        self.assertEqual("UNOBSERVED", self.progress(read_current_status=unknown)["jira_state"])
+        self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
+        self._assert_done_stop_survives_lifecycle_restart()
+
+    def _assert_done_stop_survives_lifecycle_restart(self):
+        for event, status in (("JIRA_RECONCILED", "Done"), ("WORKER_STARTED", "In Review"),
+                              ("JIRA_RECONCILED", "In Review"), ("JIRA_RECONCILED", "Done")):
+            self.store = ContinuousControllerStore(self.store.path, ["A"])
+            result = self.done(event=event,
+                facts={"merge_confirmed": True, "closeout_valid": True,
+                       "run_registered": True, "worktree_verified": True},
+                read_current_status=lambda binding, status=status: {
+                "issue_id": KEY, "status_id": status, "observed_at": NOW,
+                "jira_provider": self.provider})
+            self.assertTrue(result.get("writes_stopped"), result)
+            self.assertFalse(result["planned"])
+            self.assertEqual("UNKNOWN", self.store.jira_operations(KEY)[0]["status"])
+            self.assertEqual(1, len(self.writes))
+
+    def test_revised_candidate_reconciles_after_worker_started(self):
+        self.writes = []
+        candidate_a = {"issue_id": KEY, "head_sha": "a" * 40}
+        candidate_b = {"issue_id": KEY, "head_sha": "b" * 40}
+        started = self.done(binding=candidate_a, event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True}, state="DISPATCHED",
+            read_transition=lambda record, operation: {"issue_id": KEY, "status": "In Progress",
+                "actor": "fixture-controller", "observed_at": NOW, "jira_provider": self.provider})
+        self.assertEqual("SUCCEEDED", started["record"]["status"])
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        reconciled = self.done(binding=candidate_b)
+        self.assertEqual("SUCCEEDED", reconciled["record"]["status"])
+        self.assertEqual([candidate_a, candidate_b], [row["binding"] for row in self.writes])
+        for provider_field, config_field in (("cloud_id", "cloud_id"), ("site", "site"),
+                ("project_id", "provider_project_id"), ("controller_actor_id", "controller_actor_id")):
+            value = "https://other.example.invalid" if provider_field == "site" else "other-identity"
+            with self.subTest(identity=provider_field), patch.dict(self.provider, {provider_field: value}), \
+                 patch.dict(self.config["jira"], {config_field: value}):
+                with self.assertRaisesRegex(ValidationError, "different connector/site/project/actor"):
+                    self.done(binding=candidate_b, producer_id=self.provider["controller_actor_id"])
+        self.assertEqual(2, len(self.writes))
 
     def test_r1_scope_hold_observers_and_journal_are_required(self):
         self.writes = []

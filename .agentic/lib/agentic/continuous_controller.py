@@ -2912,12 +2912,19 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	contract['owner_closure_required'] = bool(contract.get('owner_closure_required')) or owner_closure_required(config, policy['snapshot'])
 	durable = store.jira_operations(issue)
 	for operation_row in durable:
-		_require(operation_row['record'].get('binding') == binding and operation_row['record'].get('jira_provider') == provider, 'Durable Jira intent belongs to a different connector/site/project/actor')
+		_require(operation_row['record'].get('jira_provider') == provider, 'Durable Jira intent belongs to a different connector/site/project/actor')
 		if operation_row['status'] == 'FAILED':
 			return {'planned': False, 'reason': 'A durable Jira operation failed; writes remain stopped', 'writes_stopped': True, 'operation_id': operation_row['operation_id'], 'current_observation': current, 'execution_authority': False}
 		if operation_row['status'] != 'UNKNOWN':
 			continue
 		record = operation_row['record']
+		if record['lifecycle_event'] == 'JIRA_RECONCILED':
+			# AWF-243: neither an uncertain Done write nor a later uncertain
+			# progress read can be resolved by status alone. This observation
+			# surface proves no complete, operation- and actor-bound changelog.
+			# Keep the durable stop across all subsequent lifecycle events;
+			# broader lifecycle recovery remains AWF-173/AWF-175 work.
+			return {'planned': False, 'reason': 'Unknown durable Jira reconciliation was not proven successful by complete operation- and actor-bound transition evidence; suspected external automation conflict; writes remain stopped', 'writes_stopped': True, 'operation_id': record['operation_id'], 'current_observation': current, 'execution_authority': False}
 		if current['status_id'] == record['to_status_id']:
 			store.finish_jira_operation(record['operation_id'], 'SUCCEEDED', current, current['observed_at'])
 			continue

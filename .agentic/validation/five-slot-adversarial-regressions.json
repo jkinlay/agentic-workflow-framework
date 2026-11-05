@@ -689,7 +689,7 @@
     {
       "category": "receipt-replay",
       "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
-      "name": "Post-merge progress requires journaled reconciliation and never repeats an unknown write",
+      "name": "Post-merge progress and later lifecycle calls retain the durable unknown reconciliation stop",
       "permanent": true,
       "regression_id": "AWF243-R1-REGRESSION",
       "source_finding_id": "AWF243-R1",
