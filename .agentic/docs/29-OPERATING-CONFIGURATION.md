@@ -1,18 +1,16 @@
-# Operating configuration by conversation
+# Operating configuration
 
-Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste table in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
+Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
-## Two configuration layers
+Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings, budgets, allowlists, floors, escalation and shared critic route; legacy per-stream routes accepted. Review changes; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
-Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings, budgets, model allowlists, floors, escalation and one shared critic route; legacy per-stream reviewer routes remain accepted. Changes require review; [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
+Show/status/`operating.state` share `effective_ceiling`: minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. Disabled brokers do not bind; heavy/GPU limits are not stream counts; configuration cannot prove host/reviewer availability.
 
-Show/status/`operating.state` share `effective_ceiling`: runtime minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. Disabled brokers do not bind; heavy/GPU limits are not stream counts. Configuration cannot prove host/reviewer availability.
+`effective_ceiling_governance_path`: binding path, project wins ties; null means only omitted six-lane default binds. `effective_ceiling_sources`: ties. Planning checks slots/ownership/spawn.
 
-`effective_ceiling_governance_path`: binding governance path, project preferred on ties; null: only omitted six-lane default binds. `effective_ceiling_sources`: all ties. Planning checks observed slots/ownership/spawn depth.
+Bound cycles accept trusted host callback capacities via `produce_planning_resource_observation`. Planning reauthenticates closed evidence/capacities; missing authentication, self-digests and operator values fail closed. Observed capacity: 0–1000; zero selects none (`safe_lane_count == 0`).
 
-For bound cycle, `produce_planning_resource_observation` accepts trusted host callback capacities only. Planning independently reauthenticates closed evidence and matching capacities; missing authentication, self-digests and operator values fail closed. Observed capacity: 0–1000; zero selects none (`safe_lane_count == 0`).
-
-Generated schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
+Schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
@@ -24,78 +22,70 @@ Generated schemas accept `streams.count` 1–12 with A–L routes and optional p
 | `host-lease` | `heavy_slots`, `gpu_slots` | 0–1000 |
 | `host-lease`, `run-attestation` | `resources_held[].slots` | 1–1000 |
 
-`OPERATING_CONFIG.yaml`: unprotected project choices. Fresh defaults: twelve `gpt-6.1-sol`/high workers; shared critic, controller and specialists on `gpt-6.1-sol`/high; `gpt-6-luna`/high simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
+`OPERATING_CONFIG.yaml`: unprotected choices. Defaults: twelve `gpt-6.1-sol`/high workers; shared critic, controller, specialists `gpt-6.1-sol`/high; `gpt-6-luna`/high simple work. Preserve routes; invalid choices block CONFIGURED.
 
-`independent_reviewers.allocation: shared_critic` uses one reviewer slot. Legacy `one_per_stream` and fixed counts remain binding. `--propose-operating-capacity` only proposes ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
+`independent_reviewers.allocation: shared_critic` uses slot. Legacy `one_per_stream` and fixed counts bind. `--propose-operating-capacity` proposes ceiling change.
 
-Owner overrides require authenticated `fixed`/`max` decisions and audited history. After sealed safe capacity, `fixed` selects its count or refuses if unsafe; `max` limits recommendations. Neither raises governance/observed capacity. Replans await round boundaries; running assignments retain reservations. Authenticated triggers persist; durable plans constrain admission with lane-start rechecks.
+Owner overrides require authenticated `fixed`/`max` decisions and audited history. sealed safe capacity: `fixed` selects count or refuses unsafe; `max` limits recommendations. Neither raises governance/observed capacity. Replans await round boundaries; assignments retain reservations. Triggers persist; durable plans constrain admission at start.
 
-Authenticated provider readers trim/casefold statuses and collapse whitespace/ASCII-hyphen runs: `To Do`/`To-Do` → `ready`, `In Progress`/`In-Progress` → `in_progress`, `Done` → `closed`. Vocabulary: ready `open`/`ready`/`backlog`; active `in_flight`/`working`/`dispatched`/`in_progress`; closed `closed`/`done`/`merged`/`cancelled`/`canceled`. Unknown custom names grant neither admission nor closed dependencies; they require reviewed adapter mappings. Direct graph callers supply canonical vocabulary.
+Authenticated readers trim/casefold and collapse whitespace/ASCII-hyphen runs: `To Do`/`To-Do` → `ready`, `In Progress`/`In-Progress` → `in_progress`, `Done` → `closed`. Vocabulary: ready `open`/`ready`/`backlog`; active `in_flight`/`working`/`dispatched`/`in_progress`; closed `closed`/`done`/`merged`/`cancelled`/`canceled`. Unknown names grant neither admission nor closed dependencies; reviewed mappings required. Graph callers supply canonical vocabulary.
 
-## Apply the user's choices
-
-Translate, echo and execute instructions without reconfirmation:
+Translate, echo and execute without reconfirmation:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
 ```
 
-Show results. Routes pin optional escalation; mandatory floors prevail.
+Show results; escalation pins; floors prevail.
 
-Refusals exit 2 with path, binding governance value and remedy; never clamp/partially apply mixed valid/invalid changes.
+Refusals exit 2 with path, value, remedy; never clamp or partially apply mixed changes.
 
-Above-cap upgrades refuse; use `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Use three streams" --set streams.count=3` to repair four streams under broker cap three; surplus streams drain.
+Above-cap upgrades refuse; use `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Use three streams" --set streams.count=3` to repair four under cap three; surplus drains.
 
-For Epic instructions, echo observed ID:
+Epic: echo ID:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Stream B's worker on Sol/high for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-5.6-sol/high
 ```
 
-Pins `epic_overrides.PROJ-123.streams.B.worker`. Observed matching `epic_id` selects scoped routes after global and before agent/ticket overrides, within allowlists/floors. Never broaden Epic identity. `--epic` supports no scoped counts/simple switches/recommendations. Unpinning requires complete route.
+Pins `epic_overrides.PROJ-123.streams.B.worker`. Matching `epic_id` selects scoped routes after global and before agent/ticket overrides, within allowlists/floors. Never broaden Epic identity. `--epic` supports no scoped counts/simple switches/recommendations. Unpinning requires a route.
 
-`--set epic_overrides.PROJ-123.streams.B.worker=...` works without `--epic`; global/scoped repairs are atomic.
+`--set epic_overrides.PROJ-123.streams.B.worker=...` works without `--epic`; repairs atomic.
 
-Changes affect subsequent dispatch; running work retains route/hash. Surplus streams finish without new packets or cancellation. A–F proves no availability.
+Changes affect dispatch; running work retains route/hash. Surplus streams finish without packets or cancellation. A–F proves no availability.
 
-## Recommend from observed Epics
-
-Read Jira without transitions; save observed IDs/paths using `operating-epics.schema.json`:
+Read Jira; save IDs/paths in `operating-epics.schema.json`:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating recommend --epics EPICS.json --inventory INVENTORY.json
 ```
 
-Optional inventory: `data/`, `data/**`, `data/*` are equivalent prefixes; other globs refuse by Epic/value. Unknown/overlapping scopes group work; refusals name Epic/value. Risk/specialist triggers raise routes. No Epics offers keep/custom.
+Inventory: `data/`, `data/**`, `data/*` are equivalent prefixes; other globs refuse by Epic/value. Unknown/overlapping scopes group work; refusals name Epic/value. Risk/specialist triggers raise routes; no Epics: keep/custom.
 
-Present table; wait for adoption or keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Stale hashes require recomputation.
+Table; wait for adoption/keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Recompute stale hashes.
 
-Defaults stay unpinned; unchanged pins share footnote. Stored/named rows and replay checks remain. Adoption preserves pins/floors; custom instructions change pins.
+Defaults unpinned; unchanged pins share footnote. Stored/named rows and replay checks remain. Adoption preserves pins/floors; custom instructions change them.
 
-## Audit and recovery
+Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`; audits retain instructions, hashes, changes and source. Bootstrap creates/appends/replaces AWF `.gitignore` block, preserving outside bytes; `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries and `added_lines`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
 
-Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`; audits retain instructions, hashes, changes and source. Bootstrap creates, appends, or replaces one AWF `.gitignore` block, preserving outside bytes; release guide `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries, and `added_lines`. Ignore operating locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`. Inspect recovery artifacts; incomplete transactions block dispatch.
+Publish flushed journal/audit writes without replacement. Preserve conflicts/interrupted staging files outside audit chain within bounds. Recovery requires independently inspected journal SHA-256; unsupported primitives fail closed.
 
-Publish complete flushed journal/audit writes without replacement. Preserve conflicts and interrupted staging files outside audit chain within inventory bounds. Recovery requires independently inspected journal SHA-256. Unsupported atomic primitives fail closed.
-
-Dispatch/reservation/settlement retain separate `operating_hash` and `policy_hash`; settlement uses its reservation's hash. Historical absent/null hashes remain unobserved. Host authenticates instructions/routes; records establish local consistency.
+Dispatch/reservation/settlement retain separate `operating_hash`/`policy_hash`; settlement uses its reservation hash. Absent/null historical hashes remain unobserved. Host authenticates instructions/routes; records establish consistency.
 
 
-## Budget choices
+Generated `OPERATING_CONFIG.yaml` includes `budgeting`:
+accounting/enforcement `false`; dormant ticket limit `4000000`; lifetime-project
+limit `1000000000`. Older missing fields retain legacy budgeting. Limits enable
+neither switch; accounting OFF disables enforcement. Epic overrides cannot alter
+budget settings.
 
-Fresh generated `OPERATING_CONFIG.yaml` includes project-wide `budgeting`:
-accounting/enforcement both `false`, dormant ticket limit `4000000` and
-lifetime-project limit `1000000000`. Missing fields in older installations
-retain legacy budgeting. Limits alone enable neither switch; accounting OFF
-also disables enforcement. Epic overrides cannot change budget settings.
-
-Supported set paths are `budgeting.accounting_enabled`,
+Supported paths: `budgeting.accounting_enabled`,
 `budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` and
-`budgeting.max_tokens_per_project`. Budget mutations require the trusted host
-registry injected into `set_operating` or `operating.main`; the standalone CLI
-has no authenticated owner observer and refuses them. The observer is consumed
-under the operating lock after complete validation. Settings and owner
-observation use the same journal and append-only change audit, including pinned
-recovery after interruption. Show/status display persisted effective settings.
+`budgeting.max_tokens_per_project`. Mutations require trusted host registry
+injected into `set_operating` or `operating.main`; the standalone CLI lacks an
+authenticated owner observer and refuses them. Consume it under the operating
+lock after validation. Settings and owner observation share a journal and
+append-only audit, including pinned recovery after interruption. Show/status
+display persisted effective settings.
 See [budgeting](39-BUDGETING.md) for host integration, UNKNOWN attribution,
-canonical totals, preserved reservations and the versioned upgrade decision.
+canonical totals, preserved reservations and versioned upgrade decision.
