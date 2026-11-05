@@ -122,6 +122,8 @@ class ReviewBatchStore:
         The trusted observer runs inside the serialized transaction. An exception
         rolls back the tick; invalid/stale/closed members withdraw. A missed run
         catches up during a current presentation window, never after cutoff.
+        A pending intent whose schedule cannot resolve stays pending without
+        blocking other intents; later settings may make it resolvable again.
         No lease timeout can retry an ambiguous provider send.
         """
         _require(callable(observer), "Fresh review candidate observer is required")
@@ -137,7 +139,13 @@ class ReviewBatchStore:
             for row in rows:
                 candidate = _candidate(loads(row["candidate_json"]))
                 _require(_identity(candidate) == row["intent_id"], "Stored review intent identity mismatch")
-                schedule = next_review_presentation(row["ready_at"], calendar)
+                try:
+                    schedule = next_review_presentation(row["ready_at"], calendar)
+                except ValidationError:
+                    # Keep the intent and its attempt count for later settings
+                    # recovery. Identity and observer failures still refuse the
+                    # transaction; only per-intent scheduling is isolated.
+                    continue
                 if utc_instant(schedule["presentation_at"]) > current:
                     continue
                 observation = observer(deepcopy(candidate))

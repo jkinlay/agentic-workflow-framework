@@ -6,7 +6,7 @@ Omitted settings resolve in memory so historical configuration bytes stay intact
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -211,12 +211,19 @@ def next_review_presentation(ready_at, calendar):
     presentation = ready
     if review["enabled"]:
         zone = _zone(effective["timezone"])
-        day = ready.astimezone(zone).date()
         try:
-            for offset in range(9):
+            day = ready.astimezone(zone).date()
+            # Visit selected weekdays in order, including the next weekly
+            # recurrence after any collapsed gap window. The only horizon is
+            # Python's last representable date; no arbitrary day cap can prove
+            # that a valid recurring calendar is impossible.
+            remaining = (date.max - day).days
+            weekdays = sorted((weekday - day.isoweekday()) % 7
+                              for weekday in review["weekdays"])
+            offsets = (week + delta for week in range(0, remaining + 1, 7)
+                       for delta in weekdays if week + delta <= remaining)
+            for offset in offsets:
                 current = day + timedelta(days=offset)
-                if current.isoweekday() not in review["weekdays"]:
-                    continue
                 opening = _local_boundary(current, review["presentation_time"], zone)
                 closing = _local_boundary(current, review["cutoff_time"], zone)
                 if opening >= closing:
@@ -226,7 +233,10 @@ def next_review_presentation(ready_at, calendar):
                     presentation = max(ready, opening)
                     break
             else:
-                raise ValidationError("No valid review presentation window in calendar horizon")
+                raise ValidationError(
+                    "No valid review presentation window remains in supported datetime range")
+        except ValidationError:
+            raise
         except (OverflowError, ValueError) as exc:
             raise ValidationError("Review calendar exceeds supported datetime range") from exc
     return {"ready_at": ready_at if isinstance(ready_at, str) else utc_text(ready),
