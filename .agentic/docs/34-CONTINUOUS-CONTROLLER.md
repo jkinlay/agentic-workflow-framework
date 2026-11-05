@@ -99,7 +99,19 @@ hash-matched, at-most-512-KiB diff to the critic.
 inventory. `UNKNOWN` reads only its retained `COMPLETED` receipt.
 
 Disabled Jira performs no access. Otherwise bind reads/writes/readbacks and
-reconcile after merge. Final submission requires the
+reconcile after merge through `jira-lifecycle` with `JIRA_RECONCILED`.
+Before `merge-observed`, retain its successful transition and readback in the
+same protected controller journal. The validated closeout must name that exact
+transition record and binding. `merge-observed` only observes reconciliation
+and counts; it never calls the legacy `reconcile_merged_ticket` mutation hook.
+
+Progress requires provider identity, canonical issue identity, scope/owner-hold
+policy and current-status observers. Missing observers or a missing/mismatched
+journal entry refuse counting. Observed owner-closure keywords hold the ticket
+In Review. Unknown outcomes and later status/readback mismatches durably stop
+that ticket; report suspected external automation and never reissue the write.
+Complete, stable, bounded pagination must follow the reconciliation observation
+before closed/open counts become authoritative. Final submission requires the
 [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
 ## Reference adapter (AWF-32)
@@ -140,7 +152,7 @@ Source: `.agentic/scripts/continuous_controller.py`.
 |---|---|---|
 | `cycle` | `observe_inventory`, `observe_reservations`, `dispatch_ticket`, `observe_dispatch`, `deliver_status`, `observe_publication`, `observe_host_resources`, `verify_host_observation`, `observe_planning_backlog`, `verify_planning_backlog`, `observe_planning_events`, `verify_planning_events`, `verify_planning_owner` | 225–232 |
 | `jira-lifecycle` | `observe_provider_identity`, `observe_issue_identity`, `observe_issue_policy`, `read_current_status`, `write_transition`, `read_transition` | 243–244 |
-| `merge-observed` | `reconcile_merged_ticket`, `fetch_scope_page`, `observe_accepted_project_config`, `observe_closeout_record`; additionally `observe_jira_reconciliation` when the supplied project configuration (--project-config) has `jira.enabled is True`, not additionally `observe_jira_reconciliation` when accepted project configuration has `jira.enabled is True` | 246–252 |
+| `merge-observed` | `observe_provider_identity`, `observe_issue_identity`, `observe_issue_policy`, `read_current_status`, `fetch_scope_page`, `observe_accepted_project_config`, `observe_closeout_record`; additionally `observe_jira_reconciliation` when the supplied project configuration (--project-config) has `jira.enabled is True` | 246–252 |
 | `owner-publication-prepare` | `authorize_owner_publication` | 217–218 |
 | `owner-publication-resume` | `observe_identity`, `observe_remote_heads`, `create_draft_pr`, `observe_draft_pr` | 220–221 |
 | `owner-publication-status` | None | 206–207, 222–223 |

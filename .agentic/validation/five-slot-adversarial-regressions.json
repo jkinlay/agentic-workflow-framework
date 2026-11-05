@@ -685,6 +685,42 @@
       "regression_id": "C-TRX-003-REGRESSION",
       "source_finding_id": "C-TRX-003",
       "test_id": "FiveSlotAccelerationTests.test_canonical_retained_findings_have_exactly_one_permanent_mapping"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Post-merge progress requires journaled reconciliation and never repeats an unknown write",
+      "permanent": true,
+      "regression_id": "AWF243-R1-REGRESSION",
+      "source_finding_id": "AWF243-R1",
+      "test_id": "AssignmentRegressions.test_r1_unknown_survives_restart_without_second_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Observed owner-closure summary or labels hold ordinary lifecycle Done",
+      "permanent": true,
+      "regression_id": "AWF243-R2-REGRESSION",
+      "source_finding_id": "AWF243-R2",
+      "test_id": "AssignmentRegressions.test_r2_observed_summary_or_labels_hold_done"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment label readback mismatch stops before the comment",
+      "permanent": true,
+      "regression_id": "AWF243-R3-REGRESSION",
+      "source_finding_id": "AWF243-R3",
+      "test_id": "AssignmentRegressions.test_r3_ineffective_label_write_stops_before_comment"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment requires every capability before its first mutation",
+      "permanent": true,
+      "regression_id": "AWF243-R4-REGRESSION",
+      "source_finding_id": "AWF243-R4",
+      "test_id": "AssignmentRegressions.test_r4_all_assignment_capabilities_precede_mutation"
     }
   ]
 }
