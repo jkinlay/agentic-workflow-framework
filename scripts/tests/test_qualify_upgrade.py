@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from qualify_upgrade import compare, inventory, write_report, plan, checked_bootstrap, qualify
+from qualify_upgrade import (compare, inventory, write_report, plan, checked_bootstrap, qualify,
+                             _creation_state, _json_identity)
 import os
 from copy import deepcopy
 
@@ -67,6 +68,31 @@ class PreservationReportTests(unittest.TestCase):
         self.assertEqual(before, {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mode)
                                  for p in self.root.rglob('*') if p.is_file()})
         self.assertEqual([], compare(report, report, {})['violations'])
+
+    def test_creation_permission_probes_match_installer_and_leave_no_delta(self):
+        from agentic.safeio import Tree
+        import stat
+        before = inventory(self.root)
+        file_path = '.agentic/new/nested/managed.txt'
+        directory_path = '.agentic/new/nested/'
+        file_state = _creation_state(self.root, file_path)
+        directory_state = _creation_state(self.root, directory_path, directory=True)
+        readonly_state = _creation_state(self.root, file_path, readonly=True)
+        self.assertEqual(before, inventory(self.root))
+        with Tree(self.root) as tree:
+            tree.write(file_path, b'permission creation test\n')
+        after = inventory(self.root)
+        self.assertEqual(file_state, {key: after['files'][file_path][key]
+                                     for key in ('mode', 'permissions')})
+        self.assertEqual(directory_state, after['directories'][directory_path])
+        (self.root / file_path).chmod(stat.S_IREAD)
+        readonly = inventory(self.root)['files'][file_path]
+        self.assertEqual(readonly_state, {key: readonly[key] for key in ('mode', 'permissions')})
+
+    def test_config_value_identity_preserves_types(self):
+        self.assertNotEqual(_json_identity({'enabled': True}), _json_identity({'enabled': 1}))
+        self.assertNotEqual(_json_identity({'count': 12}), _json_identity({'count': 12.0}))
+        self.assertEqual(_json_identity({'b': 2, 'a': 1}), _json_identity({'a': 1, 'b': 2}))
 
     def test_exact_delta_and_identity_cannot_be_waived(self):
         before = inventory(self.root)
@@ -182,8 +208,15 @@ class PreservationReportTests(unittest.TestCase):
                 patch('build_release.SOURCE_CONFIGS', {}), \
                 patch.object(upgrade_195_fixtures, 'materialize_published', return_value=ROOT), \
                 patch('qualify_upgrade.run_bounded', side_effect=child), \
+                patch('qualify_upgrade.prepare_upgrade', return_value='unit policy') as prepare, \
+                patch('qualify_upgrade.compare_upgrade', side_effect=lambda before, after, policy, project,
+                      **kwargs: compare(before, after, {})) as preservation, \
                 patch('qualify_upgrade.checked_bootstrap', return_value={'status': 'CONFIGURED'}):
-            return qualify(ROOT, work)
+            result = qualify(ROOT, work)
+            prepare.assert_called_once()
+            preservation.assert_called_once()
+            self.assertEqual('unit policy', preservation.call_args.args[2])
+            return result
 
     def test_qualification_rejects_deleted_owner_instructions_after_valid_bootstrap(self):
         result = self.qualification_with_unit_children(

@@ -107,3 +107,17 @@ result = install(source, project, pin, configure=True, discover=False,
 verify_installed(project)
 print(json.dumps(result))
 """, project, branch)
+
+
+def customize_preservation_project(project):
+    """Explicit synthetic owner data, never a replacement published receipt."""
+    files = {
+        'PROJECT_INSTRUCTIONS.md': b'Synthetic owner instructions; not adopter evidence.\n',
+        'owner.txt': b'Synthetic project data.\n',
+        '.agentic-state/owner-note.txt': b'Synthetic retained unknown state.\n',
+        '.agentic-state/archive/prior/receipt.json': b'Synthetic prior archive.\n',
+    }
+    for relative, raw in files.items():
+        path = Path(project) / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)

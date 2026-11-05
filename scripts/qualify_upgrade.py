@@ -13,11 +13,15 @@ from pathlib import Path
 import stat
 import sys
 import time
+import tempfile
+import uuid
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
-from agentic.canonical import load_yaml
-from agentic.installer import install, CONFIG, INSTALLED, PROVENANCE
+from agentic.canonical import load_yaml, loads
+from agentic.installer import (install, CONFIG, INSTALLED, PROVENANCE, CODEOWNERS,
+                               managed, verify_release)
 from agentic.safeio import Tree, run_bounded
 from agentic.child_process import child_env
 
@@ -158,6 +162,289 @@ def compare(before, after, allowed_delta):
             'qualification_status': 'NOT_QUALIFIED'}
 
 
+def _json_identity(value):
+    # Python equality conflates True/1 and 1/1.0; preservation must not.
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+
+
+def _creation_state(project, relative, *, directory=False, readonly=False):
+    """Measure Tree.write/mkdir inheritance in the disposable parent, then remove it.
+
+    Names grant no permission exception. In particular, Windows DACL inheritance
+    depends on the actual nearest existing parent and the number of new levels.
+    These short-lived probes precede the upgrade, never run against live adopters,
+    and must leave the preservation inventory unchanged.
+    """
+    parent = (project / relative.rstrip('/')).parent
+    missing = 0
+    while not parent.exists():
+        missing += 1
+        parent = parent.parent
+    # For a directory, the leaf adds one more inherited directory level.
+    depth = missing + int(directory)
+    temporary_root = None
+    probe = None
+    try:
+        current = parent
+        if depth:
+            temporary_root = parent / ('.awf-permission-probe-' + uuid.uuid4().hex)
+            temporary_root.mkdir()  # Installer mkdir mode/umask, not mkdtemp's 0700.
+            current = temporary_root
+            for index in range(depth - 1):
+                current = current / str(index)
+                current.mkdir()
+        if directory:
+            probe = current
+        else:
+            fd, name = tempfile.mkstemp(prefix='.awf-permission-probe-', dir=current)
+            os.close(fd)  # Same 0600 create mode as Tree.write.
+            probe = Path(name)
+            if readonly:
+                probe.chmod(stat.S_IREAD)
+        return {'mode': stat.S_IMODE(probe.stat().st_mode), 'permissions': _permissions(probe)}
+    finally:
+        if probe is not None and not directory:
+            probe.chmod(0o600)
+            probe.unlink()
+        if temporary_root is not None:
+            # Only our known empty probe chain; never recursively remove data.
+            current = probe if directory else probe.parent
+            while current != temporary_root:
+                previous = current.parent
+                current.rmdir()
+                current = previous
+            temporary_root.rmdir()
+
+
+def prepare_upgrade(source, project, pin, before):
+    """Derive a closed migration policy from verified release and baseline bytes.
+
+    This is deliberately the 1.9.5 -> 1.9.6 policy. A future state/configuration
+    migration needs its own reviewed rule; observed deltas cannot register one.
+    Private policy inputs include parsed owner configuration, never report them.
+    """
+    from agentic.upgrade import (identify_installation, load_known_versions,
+                                 state_archive_plan, apply_chain)
+    project = Path(project).resolve(strict=True)
+    if inventory(project, evidence_kind=before['evidence_kind']) != before:
+        raise ValueError('Baseline changed before migration policy derivation')
+    with Tree(source) as tree:
+        verified_pin, content = verify_release(tree, pin, allow_source_checkout=True)
+        manifest_raw = tree.read('MANIFEST.json')
+    manifest = json.loads(manifest_raw)
+    config_raw = (project / CONFIG).read_bytes()
+    receipt_raw = (project / INSTALLED).read_bytes()
+    receipt = loads(receipt_raw.decode('utf-8'))
+    versions = load_known_versions(content['.agentic/upgrade/known-versions.json'])
+    with Tree(project) as tree:
+        identity = identify_installation(tree, versions, config_raw, receipt_raw)
+    target = manifest['template_version']
+    if (identity['version'], target) != ('1.9.5', '1.9.6'):
+        raise ValueError('No approved preservation migration for this release pair')
+    immutable = {path: digest for path, digest in manifest['files'].items()
+                 if managed(path) and path not in {CONFIG, PROVENANCE, CODEOWNERS}}
+    state = {path: (project / path).read_bytes() for path in before['files']
+             if path.startswith('.agentic-state/')}
+    operating = project / 'OPERATING_CONFIG.yaml'
+    bundle, steps = apply_chain(versions, identity['version'], config_raw,
+        operating.read_bytes() if operating.exists() else None, receipt_raw,
+        (project / PROVENANCE).read_bytes(), state,
+        {'source_manifest_sha256': verified_pin, '_source_manifest_json': manifest_raw.decode('utf-8'),
+         '_immutable_files': immutable})
+    migrations = [action for step in steps for action in step['state_migrations']
+                  if action['action'] == 'migrated_schema']
+    archives, archive_actions = state_archive_plan(bundle.state, target_version=target)
+    files = {path: {'sha256': digest, 'size': len(content[path]), 'rule': 'target-manifest',
+                    'manifest_sha256': verified_pin}
+             for path, digest in immutable.items()}
+    for path, raw in bundle.state.items():
+        if raw == state[path]:
+            continue
+        action = next((item for item in migrations if item['path'] == path), None)
+        if action is None or path.startswith('.agentic-state/archive/'):
+            raise ValueError('No recorded state migration for changed baseline path')
+        files[path] = {'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw),
+                       'rule': 'recorded-state-migration', 'migration': action,
+                       'source_sha256': before['files'][path]['sha256']}
+    for path, raw in archives.items():
+        files[path] = {'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw),
+                       'rule': 'upgrade-archive', 'target_version': target,
+                       'archive_manifest_sha256': hashlib.sha256(
+                           archives[f'.agentic-state/archive/upgrade-to-{target}/manifest.json']).hexdigest()}
+        action = next((item for item in archive_actions if item['archive'] == path), None)
+        if action:
+            files[path]['source'] = action['path']
+            files[path]['source_sha256'] = before['files'][action['path']]['sha256']
+    # Receipts/provenance have cohort-specific fields, validated structurally below.
+    outputs = set(files) | {CONFIG, INSTALLED, PROVENANCE}
+    directories = {'.agentic-install/', '.agentic-install/objects/'}
+    for path in outputs:
+        directories.update(parent.as_posix() + '/' for parent in Path(path).parents
+                           if parent.as_posix() != '.')
+    creation = {}
+    cache = {}
+    for path in sorted(outputs | directories):
+        old = before['directories' if path.endswith('/') else 'files'].get(path)
+        if old is not None:
+            continue
+        parent = (project / path.rstrip('/')).parent
+        depth = 0
+        while not parent.exists():
+            depth += 1
+            parent = parent.parent
+        readonly = path in archives
+        key = (parent, depth, path.endswith('/'), readonly)
+        if key not in cache:
+            cache[key] = _creation_state(project, path, directory=path.endswith('/'), readonly=readonly)
+        creation[path] = cache[key]
+    if inventory(project, evidence_kind=before['evidence_kind']) != before:
+        raise ValueError('Permission probes changed the disposable baseline')
+    return {'manifest_sha256': verified_pin, 'manifest_raw': manifest_raw.decode('utf-8'),
+            'baseline_sha256': hashlib.sha256(_json_identity(before).encode('utf-8')).hexdigest(),
+            'target_version': target, 'source_version': identity['version'],
+            'files': files, 'immutable': immutable, 'directories': directories,
+            'removed': set(identity['immutable_files']) - set(immutable),
+            'old_immutable': identity['immutable_files'], 'config': load_yaml(config_raw),
+            'receipt': receipt, 'creation': creation, 'started_at': time.time(),
+            'archive_actions': archive_actions, 'state_migrations': migrations}
+
+
+def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
+    """Audit every change against the pre-upgrade policy, never a prefix waiver."""
+    project = Path(project)
+    approved = {}
+    delta = {}
+    failures = []
+    if hashlib.sha256(_json_identity(before).encode('utf-8')).hexdigest() != policy['baseline_sha256']:
+        failures.append('migration policy baseline binding mismatch')
+    old_entries = {**before['files'], **before['directories']}
+    new_entries = {**after['files'], **after['directories']}
+
+    def approve(path, evidence):
+        old, new = old_entries.get(path), new_entries.get(path)
+        if old != new:
+            delta[path] = {'before': old, 'after': new}
+            approved[path] = evidence
+
+    def bound_bytes(path):
+        raw = (project / path).read_bytes()
+        entry = after['files'].get(path, {})
+        if entry.get('sha256') != hashlib.sha256(raw).hexdigest() or entry.get('size') != len(raw):
+            raise ValueError('Post-upgrade bytes differ from inventory')
+        return raw
+
+    def expected_state(path, *, preserve=False):
+        old = old_entries.get(path)
+        expected = ({key: old[key] for key in ('mode', 'permissions')} if old is not None
+                    else policy['creation'].get(path))
+        if not preserve and path in policy['files'] and policy['files'][path]['rule'] == 'upgrade-archive':
+            # Prior archives (including already-existing target archives) never change.
+            if old is not None:
+                return new_entries.get(path) == old
+        new = new_entries.get(path)
+        return bool(expected and new and all(new.get(key) == value for key, value in expected.items()))
+
+    for path, expected in sorted(policy['files'].items()):
+        new = after['files'].get(path)
+        if (not new or any(new.get(key) != expected[key] for key in ('sha256', 'size'))
+                or not expected_state(path)):
+            failures.append('expected migration content or permissions mismatch: ' + path)
+            continue
+        # No prior archive is eligible for a change, even to otherwise valid bytes.
+        if path.startswith('.agentic-state/archive/') and path in before['files']:
+            continue
+        approve(path, {**expected, 'permissions_rule': 'baseline-identical' if path in before['files']
+                      else 'installer-create-inheritance',
+                      'expected_permissions': new['permissions'], 'expected_mode': new['mode']})
+    for path in sorted(policy['removed']):
+        if path not in new_entries and before['files'].get(path, {}).get('sha256') == policy['old_immutable'][path]:
+            approve(path, {'rule': 'managed-removal', 'previous_sha256': policy['old_immutable'][path],
+                           'absent_from_target_manifest_sha256': policy['manifest_sha256']})
+        else:
+            failures.append('managed removal mismatch: ' + path)
+    config_valid = False
+    try:
+        config = load_yaml(bound_bytes(CONFIG))
+        expected_config = json.loads(_json_identity(policy['config']))
+        expected_config['template']['expected_workflow_version'] = policy['target_version']
+        config_valid = (_json_identity(config) == _json_identity(expected_config)
+                        and expected_state(CONFIG, preserve=True))
+    except (ValueError, KeyError, TypeError, OSError):
+        pass
+    if config_valid:
+        approve(CONFIG, {'rule': 'project-config-version-only',
+                        'field': 'template.expected_workflow_version',
+                        'from': policy['source_version'], 'to': policy['target_version'],
+                        'other_values_identical': True, 'permissions_identical': True})
+    else:
+        failures.append('project configuration changed beyond approved version migration: ' + CONFIG)
+    try:
+        expected_receipt = {
+            'template_version': policy['target_version'],
+            'source_manifest_sha256': policy['manifest_sha256'],
+            'immutable_files': policy['immutable'], 'source_manifest_json': policy['manifest_raw'],
+            'initial_config_sha256': after['files'][CONFIG]['sha256'],
+            'mutable_paths': [CONFIG, CODEOWNERS], 'install_id': policy['receipt']['install_id']}
+        if '.gitignore' in before['files']:
+            expected_receipt['mutable_paths'].append('.gitignore')
+        if 'project_id' in policy['receipt']:
+            expected_receipt['project_id'] = policy['receipt']['project_id']
+        actual = loads(bound_bytes(INSTALLED).decode('utf-8'))
+        if (not config_valid or _json_identity(actual) != _json_identity(expected_receipt)
+                or not expected_state(INSTALLED)):
+            raise ValueError('Invalid receipt')
+        approve(INSTALLED, {'rule': 'installed-receipt', 'manifest_sha256': policy['manifest_sha256'],
+                            'install_id_preserved': True, 'project_id_preserved': True,
+                            'config_sha256': expected_receipt['initial_config_sha256'],
+                            'immutable_membership_and_hashes_exact': True})
+    except (ValueError, KeyError, TypeError, OSError):
+        failures.append('installed receipt content or permissions mismatch: ' + INSTALLED)
+    try:
+        actual = load_yaml(bound_bytes(PROVENANCE))
+        operation_at = actual['installation']['operation_at']
+        moment = datetime.strptime(operation_at, '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=timezone.utc)
+        if moment.strftime('%Y-%m-%dT%H:%M:%S.%fZ') != operation_at:
+            raise ValueError('Noncanonical operation time')
+        timestamp = moment.timestamp()
+        if not policy['started_at'] - 1 <= timestamp <= time.time():
+            raise ValueError('Operation time outside this upgrade')
+        expected = {'template': {'name': 'generic-agentic-development-workflow',
+                                'version': policy['target_version'], 'schema_revision': 3},
+                    'installation': {'install_id': policy['receipt']['install_id'], 'last_operation': 'upgrade',
+                                     'operation_at': operation_at, 'source_manifest_sha256': policy['manifest_sha256'],
+                                     'profile': 'manual_reference'}}
+        if _json_identity(actual) != _json_identity(expected) or not expected_state(PROVENANCE):
+            raise ValueError('Invalid provenance')
+        approve(PROVENANCE, {'rule': 'upgrade-provenance', 'manifest_sha256': policy['manifest_sha256'],
+                             'install_id_preserved': True, 'operation': 'upgrade',
+                             'operation_at_within_cohort': True})
+    except (ValueError, KeyError, TypeError, OSError):
+        failures.append('upgrade provenance content or permissions mismatch: ' + PROVENANCE)
+    for path in sorted(policy['directories'] - before['directories'].keys()):
+        if expected_state(path):
+            approve(path, {'rule': 'required-output-parent' if path != '.agentic-install/objects/'
+                          else 'empty-recovery-object-store',
+                          'permissions_rule': 'installer-mkdir-inheritance',
+                          'expected_permissions': policy['creation'][path]['permissions'],
+                          'expected_mode': policy['creation'][path]['mode']})
+    result = compare(before, after, delta)
+    # External exact deltas may constrain this policy; they cannot widen it.
+    for path, record in (allowed_delta or {}).items():
+        if delta.get(path) != record:
+            failures.append('external delta is not an approved migration: ' + path)
+    result['violations'].extend(failures)
+    result['preserved'] = not result['violations']
+    result['approved_changes'] = approved
+    result['migration'] = {'source_version': policy['source_version'], 'target_version': policy['target_version'],
+                           'manifest_sha256': policy['manifest_sha256'],
+                           'baseline_sha256': policy['baseline_sha256'],
+                           'agents_ownership': 'managed: exact target manifest bytes',
+                           'state_migrations': policy['state_migrations'],
+                           'archive_actions': policy['archive_actions'],
+                           'recovery_objects': 'must be absent after successful commit'}
+    return result
+
+
 def write_report(output, report, *, project):
     output = Path(output).resolve()
     for excluded in (ROOT.resolve(), Path(project).resolve()):
@@ -266,7 +553,7 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
     report['source_manifest_sha256'] = target_pin
     historical = materialize_published(source, work_dir / 'published')
     project = work_dir / 'project'
-    allowed_delta = {} if allowed_delta is None else allowed_delta
+    migration_policy = None
     for stage, release, pin, mode in (('baseline', historical, PUBLISHED_PIN, 'install'),
                                      ('upgrade', candidate, target_pin, 'upgrade')):
         wheels = work_dir / (stage + '-wheels')
@@ -302,9 +589,11 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
                 with owner.open('xb') as stream:
                     stream.write(b'Synthetic owner customization; not adopter evidence.\n')
             report['before'] = inventory(project)
+            migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
         else:
             report['after'] = inventory(project)
-            report['preservation'] = compare(report['before'], report['after'], allowed_delta)
+            report['preservation'] = compare_upgrade(report['before'], report['after'],
+                migration_policy, project, allowed_delta=allowed_delta)
             if report['preservation']['preserved'] is not True:
                 report['failed_stage'] = 'preservation'
                 return report
@@ -335,7 +624,8 @@ def main(argv=None):
     runtime.add_argument('--work-dir', type=Path, required=True, help='new external disposable directory')
     runtime.add_argument('--wheelhouse', type=Path, help='optional local wheel seed; pip verifies each release lock')
     runtime.add_argument('--output', type=Path, required=True)
-    runtime.add_argument('--allowed-delta', type=Path, help='externally reviewed exact migration delta; default accepts no changes')
+    runtime.add_argument('--allowed-delta', type=Path,
+                         help='optional exact constraints; cannot widen the derived migration policy')
     args = parser.parse_args(argv)
     if args.command == 'installed':
         delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
