@@ -68,6 +68,111 @@ def settings_hash(value):
     return hashlib.sha256(encoded(validate_settings(value)).encode('utf-8')).hexdigest()
 
 
+class ControllerBudgeting:
+    """Lazy trusted-host bridge shared by dispatch and review adapters.
+
+    ``session_id`` is the host execution identity allocated before launch, not
+    a predicted Codex thread. The host must observe the actual context/usage at
+    completion. Neither ticket content nor process ancestry enrolls a run.
+    Constructing an OFF context opens no enrollment or accounting database.
+    """
+    def __init__(self, path, governance, operating, host, *, worktree_roots=()):
+        from .budget_enrollment import EnrollmentRegistry
+        from .operating import validate_snapshot
+        validate_snapshot(operating, governance)
+        self.governance = deepcopy(governance)
+        self.operating = operating
+        self.settings = resolve_settings(operating.config)
+        self.host = host
+        self.database = ProtectedDatabase(path, worktree_roots)
+        self.registry = EnrollmentRegistry(self.database.path.with_suffix('.enrollment.sqlite'), host, worktree_roots)
+
+    def advance(self, store, *args, **kwargs):
+        """Advance local lifecycle with the validated, effective mode."""
+        require('budgeting' not in kwargs, 'Caller cannot replace the validated budget mode')
+        settings = None if 'legacy_behavior' in self.settings else self.settings
+        return store.advance(*args, budgeting=settings, **kwargs)
+
+    def transition(self, *args, **kwargs):
+        from .lifecycle import transition
+        require('budgeting' not in kwargs, 'Caller cannot replace the validated budget mode')
+        settings = None if 'legacy_behavior' in self.settings else self.settings
+        return transition(*args, budgeting=settings, **kwargs)
+
+    def _ledger(self):
+        from .model_routing import RoutingLedger
+        # Apply the same containment/link checks before RoutingLedger opens it.
+        with self.database.transaction(''):
+            pass
+        return RoutingLedger(self.database.path)
+
+    def admit(self, binding, selected):
+        from .budget_enrollment import validate_binding
+        from .model_routing import policy_from_config
+        if binding.get('role') not in ('worker', 'fix', 'critic', 'specialist'):
+            return None
+        if not self.settings['accounting_enabled'] or 'legacy_behavior' in self.settings:
+            return None  # Existing legacy host controls remain the host's responsibility.
+        binding = validate_binding(binding)
+        require(binding['project_id'] == self.governance['project']['id'], 'Budget project identity differs')
+        observer = getattr(self.host, 'observe_budget_admission', None)
+        require(callable(observer), 'Trusted-host budget admission observer unavailable')
+        observed = observer(deepcopy(binding), deepcopy(selected))
+        require(isinstance(observed, dict) and set(observed) == {'request', 'capabilities', 'limits_enforced'},
+                'Budget admission observation is malformed')
+        require(type(observed['limits_enforced']) is bool, 'Host limit capability must be observed')
+        require(not self.settings['enforcement_enabled'] or observed['limits_enforced'],
+                'Budget enforcement requires observed host token limits')
+        request = deepcopy(observed['request'])
+        require(request.get('ticket_id') == binding['ticket_id'] and request.get('role') == binding['role'],
+                'Budget request differs from admission identity')
+        # Verify the launch pair before creating a reservation, including floors.
+        from .model_routing import select_route
+        policy = policy_from_config(self.governance)
+        route = select_route(policy, request, observed['capabilities'],
+                             operating=self.operating, governance=self.governance)
+        require(route['status'] == 'ready' and all(route[key] == selected.get(key)
+                for key in ('model', 'reasoning_effort')), 'Budget route differs from the host launch route')
+        self.registry.enroll(binding)
+        reservation = self._ledger().reserve(binding['project_id'], policy, request, observed['capabilities'],
+            operating=self.operating, governance=self.governance, budget_registry=self.registry, budget_binding=binding)
+        require(reservation['status'] == 'reserved', 'Budget routing admission refused: ' + str(reservation))
+        require(all(reservation[key] == selected.get(key) for key in ('model', 'reasoning_effort')),
+                'Budget recovery route differs from the host launch route')
+        return {'binding': binding, 'reservation': reservation}
+
+    def complete(self, admission, observation):
+        if admission is None:
+            return None
+        observer = getattr(self.host, 'observe_budget_outcome', None)
+        require(callable(observer), 'Trusted-host budget outcome observer unavailable')
+        outcome = observer(deepcopy(admission), deepcopy(observation))
+        require(isinstance(outcome, dict), 'Budget outcome observation is malformed')
+        outcome = deepcopy(outcome)
+        outcome.setdefault('actual_tokens', None)  # RoutingLedger's UNKNOWN normalization.
+        require(text_id(outcome.get('observation_id')), 'Budget outcome needs an immutable usage observation')
+        binding = admission['binding']
+        ledger = self._ledger()
+        # A crash between settlement and the adapter's receipt must not charge
+        # twice. Only the exact saved observation can recover a closed run.
+        with ledger._transaction() as db:
+            row = db.execute('SELECT * FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(row is not None and json.loads(row['request']).get('_budget_binding') == binding,
+                    'Budget completion differs from admission identity')
+            if row['status'] != 'reserved':
+                saved = json.loads(row['outcome'] or '{}')
+                derived = {'operating_hash', 'operating_state', 'violations', 'settled_at'}
+                require({k: v for k, v in saved.items() if k not in derived} ==
+                        {k: v for k, v in outcome.items() if k not in derived}
+                        and ('operating_hash' not in outcome or outcome['operating_hash'] == row['operating_hash']),
+                        'Budget completion replay differs from retained observation')
+                return {'status': row['status'], 'run_id': binding['run_id'],
+                        'accepted': not saved['violations'], 'violations': saved['violations'],
+                        'operating_hash': row['operating_hash'], 'policy_sha256': row['policy_hash'],
+                        'actual_model': saved['actual_model'], 'actual_reasoning_effort': saved['actual_reasoning_effort']}
+        return ledger.settle(binding['run_id'], outcome)
+
+
 def require_unused_usage_observation(db, observation_id):
     """Consume through the caller's model_runs update under BEGIN IMMEDIATE.
 
