@@ -1078,7 +1078,7 @@ class RoutingLedger:
                         and json.loads(row["request"]).get("stream") == request["stream"]]
             _require(retained, "Operating stream is draining: no previously admitted ticket exists in this stream; no new ticket admission")
             workers = [row for row in retained if row["role"] == "worker"]
-            _require(request["role"] != "worker" or workers and workers[-1]["agent_id"] == request["agent_id"],
+            _require(request["role"] not in ("worker", "fix") or workers and workers[-1]["agent_id"] == request["agent_id"],
                      "Draining work must retain its previously admitted worker identity; reconcile ownership before replacement")
         # This allowance gates admission, never safe incident closure.
         # Keep the count ticket-wide and independent of policy hash, role or
