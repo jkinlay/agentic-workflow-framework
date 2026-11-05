@@ -1,6 +1,6 @@
-# Continuous controller contract
+# Continuous controller
 
-Version 1.9.6. Continue until complete/blocked/owner-stopped.
+1.9.6; continue until complete/blocked/owner-stopped.
 
 ## Cycle
 
@@ -12,21 +12,18 @@ Do not use `python -B -I .agentic/scripts/workflow.py controller …` today: it
 fails under isolated mode (AWF-207). Invoke without `-I`; `-B` may be
 retained. No fix release is promised.
 
-State outside worktrees; pin intent; never reissue unresolved mutations.
+State outside worktrees; pin intent; never reissue mutations.
 
 ## Planning recovery
 
-`controller_meta['production_planning']` retains production state;
-`.planning.sqlite3` retains immutable plans. Initialization restricts database/WAL/SHM
-permissions: POSIX owner read/write; Windows ACLs unchanged.
-
-Format 2: `cycle_sequence`; `seen` digest/last-cycle pairs. Legacy ages
-start at zero; identical observations refresh. Above 4096, evict oldest
-`(last_cycle, source_id)`, preserving pending sources. Evicted
-observations may recompute; identical plans never duplicate. Canonical UTF-8
-saves cap at 4 MiB; ordinary reads cap at 8 MiB; cycles at 4,000 events including repeats.
-Staged-state 4 MiB refusal precedes event processing. Overflow refuses before
-state/history writes or dispatch, retaining prior saves/history.
+`controller_meta['production_planning']`: production state; `.planning.sqlite3`: immutable plans.
+Database/WAL/SHM: POSIX owner read/write; Windows ACLs unchanged.
+Format 2: `cycle_sequence`; `seen` digest/last-cycle pairs;
+legacy ages zero; identical observations refresh. Above 4096 evict oldest
+`(last_cycle, source_id)`, preserving pending sources; never duplicate plans.
+Canonical UTF-8 saves cap at 4 MiB; ordinary reads cap at 8 MiB;
+cycles at 4,000 events including repeats. Oversize staged state refuses before
+events, state/history writes or dispatch, preserving prior saves/history.
 
 Stop **all cycles using state** before recovery:
 
@@ -34,10 +31,10 @@ Stop **all cycles using state** before recovery:
 python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB --worktree-root ABSOLUTE_WORKTREE planning-state prune
 ```
 
-Recovery caps input at 16 MiB, trims only `seen`, reports
-bytes/counts, and preserves all other state/history. Unshrinkable state refuses: reduce event windows before they accumulate.
-After provider-owner confirmation, `--forget-source SOURCE_ID` reconsiders changed bytes; pending identities cannot be forgotten. Never delete the planning key.
-Restart only after repair.
+Recovery: 16 MiB input; trim only `seen`; report bytes/counts;
+preserves other state/history. Unshrinkable state refuses: reduce event windows before they accumulate.
+Provider-owner confirmation permits `--forget-source SOURCE_ID` for changed bytes;
+pending identities cannot be forgotten. Never delete the planning key; restart only after repair.
 
 ## Dispatch state and round boundaries
 
@@ -71,28 +68,34 @@ capacity.
 
 ## Exact overlap allowances
 
-Canonical trusted-owner `AWF-OVERLAP-ALLOWANCE 1` permits exact pairs for 24 hours. Plan/lane Date/ETag binds repository, PRs, heads, files,
+Canonical trusted-owner `AWF-OVERLAP-ALLOWANCE 1`: exact pairs, 24 hours. Plan/lane Date/ETag binds repository, PRs, heads, files,
 branches and case-sensitive NFC paths. Re-observe ownership per lane; sample
 UTC after each provider read.
 
-Require terminal dispatch proof and head-bound three-way merge; blob inequality is insufficient. Mergeable blobs need no sync writer. True conflicts require bounded union/expected-head mutation onto branch two and
-sorted, hash-matched, at-most-512-KiB critic diffs.
+Require terminal dispatch proof/head-bound three-way merge, never blob inequality.
+True conflicts need bounded union/expected-head mutation onto branch two
+and sorted, hash-matched, at-most-512-KiB critic diffs.
 `EXECUTED` binds fresh post-read UTC, provider Date/ETag heads and matching
 inventory; `UNKNOWN` reads only its retained `COMPLETED` receipt.
 
 Disabled Jira performs no access. Reconcile merges through `jira-lifecycle`
 `JIRA_RECONCILED`; protected transition/readback records precede `merge-observed`.
-Closeout names exact record/binding. Progress never calls legacy
+Closeout binds record/binding. Progress never calls legacy
 `reconcile_merged_ticket`; provider/canonical-issue/scope/owner-hold/status observers
 are mandatory. Missing/mismatched evidence refuses counts. Owner-closure keywords
 hold In Review. Complete, stable, bounded pagination precedes authoritative counts;
 final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
 Unknown/failed ordinary/batch operations stop ticket writes.
+Assignment shares admission/locking; intake/project-start/adoption/reassignment require protected `store`
+outside worktrees. `controller_meta['intake_assignment_state']` retains receipts/stops/identity.
+Recover via `jira-lifecycle BLOCK` and reviewed `read_assignment(record)`, binding original
+ID/digest, issue/provider, labels, controller comment and fresh time. Never rewrite;
+preserve rejected receipts; synchronize intake recovery.
 Recover via `jira-lifecycle`: `read_transition` validates original
 operation/actor/provider/target/time; status alone never resolves uncertainty.
 Never repeat writes. Batch closeout accepts actor-bound recovery without write
-receipts. Original resolutions survive ambiguous legacy stops.
+receipts. Resolutions survive legacy stops.
 Failed reads preserve evidence; conflicts retain success,
 report suspected external automation and require transition evidence.
 
@@ -135,8 +138,7 @@ function Invoke-ControllerCycle;if (Test-Path $STOP_FILE)
 & $PYTHON @COMMON cycle;& $PYTHON @COMMON jira-lifecycle;observed_at=$NOW;jira_binding=;& $PYTHON @COMMON merge-observed;Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
 ```
 
-Adapter: 1 MiB stderr cap, stripped credentials, fail-closed,
-`execution_authority: false`.
+Adapter: 1 MiB stderr cap; credentials stripped; fail-closed; `execution_authority: false`.
 
 ### Required adapter operations
 

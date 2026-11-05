@@ -34,6 +34,7 @@ NOW = "2026-10-10T08:00:00Z"
 
 def config():
     return {
+        "project": {"id": "local-project"}, "github": {"repository_id": "101"},
         "execution": {"risk_tiers": {
             "tier1_eligible_paths": ["docs/**", "tests/**", "*.md"],
             "tier1_excluded_paths": [],
@@ -42,7 +43,8 @@ def config():
             "tier3_review": {"roles": ["critic", "specialist"], "findings": "blocking", "max_rounds": 3},
         }},
         "scope": {"protected_paths": [".agentic/**", ".github/workflows/**", "AGENTS.md"]},
-        "jira": {"enabled": True, "controller_actor_id": "controller-1", "project_key": "AWF",
+        "jira": {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                 "provider_project_id": "project-1", "enabled": True, "controller_actor_id": "controller-1", "project_key": "AWF",
                  "scope": {"allow_entire_project": False, "selector_mode": "all",
                            "included_epics": ["AWF-1"], "labels_any": [], "components_any": [],
                                                      "ownership_required": True, "additional_jql": ""}},
@@ -147,10 +149,16 @@ class RuleDefaults(unittest.TestCase):
 
 
 class IntakeRecordsAssignment(unittest.TestCase):
+    def setUp(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = ContinuousControllerStore(Path(temporary.name) / 'controller.sqlite', ['B'])
+
     def test_intake_writes_state_and_jira_then_reads_back(self):
         state, jira = {}, FakeJira()
         record = assign_intake(config(), ticket(), state, jira, now=NOW,
-                               controller_actor_id="controller-1")
+                               controller_actor_id="controller-1", store=self.store)
         self.assertEqual(record, state["tier_assignments"]["AWF-100"])
         self.assertIn("tier-2", jira.issues["AWF-100"]["labels"])
         self.assertIn("Round cap: 2", jira.issues["AWF-100"]["comments"][0]["body"])
@@ -162,22 +170,22 @@ class IntakeRecordsAssignment(unittest.TestCase):
         jira.mismatch = True
         with self.assertRaisesRegex(ValidationError, "read-back"):
             assign_intake(config(), ticket(), state, jira, now=NOW,
-                          controller_actor_id="controller-1")
+                          controller_actor_id="controller-1", store=self.store)
         self.assertNotIn("tier_assignments", state)
 
     def test_repeat_intake_cannot_bypass_owner_change_audit(self):
         state, jira = {}, FakeJira()
-        assign_intake(config(), ticket(), state, jira, now=NOW, controller_actor_id="controller-1")
+        assign_intake(config(), ticket(), state, jira, now=NOW, controller_actor_id="controller-1", store=self.store)
         calls = len(jira.calls)
         with self.assertRaisesRegex(ValidationError, "trusted-owner audit"):
-            assign_intake(config(), ticket(), state, jira, now=NOW, controller_actor_id="controller-1")
+            assign_intake(config(), ticket(), state, jira, now=NOW, controller_actor_id="controller-1", store=self.store)
         self.assertEqual(calls, len(jira.calls))
 
     def test_disabled_jira_creates_only_a_local_provisional_record(self):
         cfg, state = config(), {}
         cfg["jira"]["enabled"] = False
         record = assign_intake(cfg, ticket(), state, None, now=NOW,
-                               controller_actor_id="controller-1")
+                               controller_actor_id="controller-1", store=self.store)
         self.assertEqual("DISABLED", record["jira"]["read_back_status"])
         self.assertEqual(record, state["tier_assignments"]["AWF-100"])
 
@@ -185,7 +193,7 @@ class IntakeRecordsAssignment(unittest.TestCase):
         state, jira = {}, FailingCommentJira()
         with self.assertRaisesRegex(ValidationError, "outcome is unknown"):
             assign_intake(config(), ticket(), state, jira, now=NOW,
-                          controller_actor_id="controller-1")
+                          controller_actor_id="controller-1", store=self.store)
         stop = state["jira_assignment_write_stops"]["AWF-100"]
         self.assertEqual("UNKNOWN", stop["status"])
         self.assertTrue(stop["writes_stopped"])
@@ -193,7 +201,7 @@ class IntakeRecordsAssignment(unittest.TestCase):
         jira.fail_comment = False
         with self.assertRaisesRegex(ValidationError, "writes are stopped"):
             assign_intake(config(), ticket(), state, jira, now=NOW,
-                          controller_actor_id="controller-1")
+                          controller_actor_id="controller-1", store=self.store)
         self.assertEqual(calls, jira.calls)
 
     def test_enabled_jira_requires_bound_matching_controller_identity(self):
@@ -202,20 +210,20 @@ class IntakeRecordsAssignment(unittest.TestCase):
         unbound_state, unbound_jira = {}, FakeJira()
         with self.assertRaisesRegex(ValidationError, "configured controller identity"):
             assign_intake(unbound, ticket(), unbound_state, unbound_jira, now=NOW,
-                          controller_actor_id="self-asserted-worker")
+                          controller_actor_id="self-asserted-worker", store=self.store)
         self.assertEqual({}, unbound_state)
         self.assertEqual([], unbound_jira.calls)
 
         mismatched_state, mismatched_jira = {}, FakeJira()
         with self.assertRaisesRegex(ValidationError, "configured controller identity"):
             assign_intake(config(), ticket(), mismatched_state, mismatched_jira, now=NOW,
-                          controller_actor_id="other-controller")
+                          controller_actor_id="other-controller", store=self.store)
         self.assertEqual({}, mismatched_state)
         self.assertEqual([], mismatched_jira.calls)
 
         matching_state, matching_jira = {}, FakeJira()
         record = assign_intake(config(), ticket(), matching_state, matching_jira, now=NOW,
-                               controller_actor_id="controller-1")
+                               controller_actor_id="controller-1", store=self.store)
         self.assertEqual("VERIFIED", record["jira"]["read_back_status"])
         self.assertEqual(["read", "labels", "read", "comment", "read"],
                          [call[0] for call in matching_jira.calls])
@@ -226,11 +234,17 @@ class IntakeRecordsAssignment(unittest.TestCase):
     "scripts/bootstrap_project.py",
 )
 class ProjectStartAssignsAll(unittest.TestCase):
+    def setUp(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = ContinuousControllerStore(Path(temporary.name) / 'controller.sqlite', ['B'])
+
     def test_adoption_and_bootstrap_hook_assign_every_inventory_ticket(self):
         inventory = [ticket("AWF-100"), ticket("AWF-101", summary="Docs", write_paths=["docs/a.md"])]
         state, jira = {}, FakeJira(("AWF-100", "AWF-101"))
         records = assign_project_start(config(), inventory, state, jira, now=NOW,
-                                       controller_actor_id="controller-1")
+                                       controller_actor_id="controller-1", store=self.store)
         self.assertEqual({"AWF-100", "AWF-101"}, set(records))
 
         spec = importlib.util.spec_from_file_location("bootstrap_project", ROOT / "scripts/bootstrap_project.py")
@@ -238,7 +252,7 @@ class ProjectStartAssignsAll(unittest.TestCase):
         spec.loader.exec_module(module)
         second_state, second_jira = {}, FakeJira(("AWF-100", "AWF-101"))
         hooked = module.assign_startup_inventory(config(), inventory, second_state, second_jira,
-                                                 now=NOW, controller_actor_id="controller-1")
+                                                 now=NOW, controller_actor_id="controller-1", store=self.store)
         self.assertEqual({"AWF-100", "AWF-101"}, set(hooked))
 
     def test_bootstrap_main_and_ticket_intake_main_persist_assignment_state(self):
@@ -351,10 +365,16 @@ class ProjectStartAssignsAll(unittest.TestCase):
 
 
 class PrInheritsAssignment(unittest.TestCase):
+    def setUp(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = ContinuousControllerStore(Path(temporary.name) / 'controller.sqlite', ['B'])
+
     def test_pr_body_and_state_bind_the_ticket_assignment(self):
         state, jira = {}, FakeJira()
         assignment = assign_intake(config(), ticket(), state, jira, now=NOW,
-                                   controller_actor_id="controller-1")
+                                   controller_actor_id="controller-1", store=self.store)
         body = inherit_pr_assignment(state, "AWF-100", 48, "## Summary\nChange widget.\n")
         self.assertIn("## AWF review assignment", body)
         self.assertIn("Tier: 2", body)
@@ -365,10 +385,16 @@ class PrInheritsAssignment(unittest.TestCase):
 
 
 class OwnerChangeAudited(unittest.TestCase):
+    def setUp(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = ContinuousControllerStore(Path(temporary.name) / 'controller.sqlite', ['B'])
+
     def test_owner_change_is_visible_in_ticket_pr_and_state(self):
         state, jira = {}, FakeJira()
         old = assign_intake(config(), ticket(), state, jira, now=NOW,
-                            controller_actor_id="controller-1")
+                            controller_actor_id="controller-1", store=self.store)
         inherit_pr_assignment(state, "AWF-100", 48, "## Summary\nChange widget.\n")
         cfg = config()
         source = owner_source("AWF-100", old["assignment_id"], 3, 3,
@@ -377,7 +403,7 @@ class OwnerChangeAudited(unittest.TestCase):
                                     requested_cap=3, owner_source=source,
                                     verify_owner_source=verify_owner_source,
                                     reason="Scope now changes governance",
-                                    now="2026-10-10T09:00:00Z", controller_actor_id="controller-1")
+                                    now="2026-10-10T09:00:00Z", controller_actor_id="controller-1", store=self.store)
         audit = changed["change_audit"]
         self.assertEqual({"tier": 2, "round_cap": 2}, audit["old"])
         self.assertEqual({"tier": 3, "round_cap": 3}, audit["new"])
@@ -392,9 +418,15 @@ class OwnerChangeAudited(unittest.TestCase):
 
 
 class NonOwnerChangeRejected(unittest.TestCase):
+    def setUp(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = ContinuousControllerStore(Path(temporary.name) / 'controller.sqlite', ['B'])
+
     def test_non_owner_change_is_rejected_without_any_write(self):
         state, jira = {}, FakeJira()
-        assign_intake(config(), ticket(), state, jira, now=NOW, controller_actor_id="controller-1")
+        assign_intake(config(), ticket(), state, jira, now=NOW, controller_actor_id="controller-1", store=self.store)
         before_state, before_issues, calls = copy.deepcopy(state), copy.deepcopy(jira.issues), len(jira.calls)
         with self.assertRaisesRegex(ValidationError, "trusted owner"):
             change_assignment(config(), "AWF-100", state, jira, requested_tier=3,
@@ -403,7 +435,7 @@ class NonOwnerChangeRejected(unittest.TestCase):
                                   state["tier_assignments"]["AWF-100"]["assignment_id"],
                                   3, 3, "not authorized", actor_id=9999),
                               verify_owner_source=verify_owner_source, reason="not authorized",
-                              now=NOW, controller_actor_id="controller-1")
+                              now=NOW, controller_actor_id="controller-1", store=self.store)
         self.assertEqual(before_state, state)
         self.assertEqual(before_issues, jira.issues)
         self.assertEqual(calls, len(jira.calls))
@@ -411,34 +443,40 @@ class NonOwnerChangeRejected(unittest.TestCase):
     def test_bare_owner_id_and_mismatched_source_binding_are_rejected(self):
         state, jira = {}, FakeJira()
         current = assign_intake(config(), ticket(), state, jira, now=NOW,
-                                controller_actor_id="controller-1")
+                                controller_actor_id="controller-1", store=self.store)
         with self.assertRaisesRegex(TypeError, "requested_by"):
             change_assignment(config(), "AWF-100", state, jira, requested_tier=3,
                               requested_cap=3, requested_by=1001, reason="claimed id",
-                              now=NOW, controller_actor_id="controller-1")
+                              now=NOW, controller_actor_id="controller-1", store=self.store)
         source = owner_source("AWF-999", current["assignment_id"], 3, 3, "wrong binding")
         with self.assertRaisesRegex(ValidationError, "binding"):
             change_assignment(config(), "AWF-100", state, jira, requested_tier=3,
                               requested_cap=3, owner_source=source,
                               verify_owner_source=verify_owner_source, reason="wrong binding",
-                              now=NOW, controller_actor_id="controller-1")
+                              now=NOW, controller_actor_id="controller-1", store=self.store)
 
 
 class ProtectedPathFloor(unittest.TestCase):
+    def setUp(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = ContinuousControllerStore(Path(temporary.name) / 'controller.sqlite', ['B'])
+
     def test_protected_path_is_at_least_tier_two_and_cannot_be_overridden_below_floor(self):
         item = ticket(summary="Small config label", write_paths=[".agentic/labels.json"],
                       change_kind="small_config")
         result = classify_ticket(config(), item)
         self.assertEqual((2, 2), (result["tier"], result["protected_path_floor"]))
         state, jira = {}, FakeJira()
-        assign_intake(config(), item, state, jira, now=NOW, controller_actor_id="controller-1")
+        assign_intake(config(), item, state, jira, now=NOW, controller_actor_id="controller-1", store=self.store)
         source = owner_source("AWF-100", state["tier_assignments"]["AWF-100"]["assignment_id"],
                               1, 1, "small")
         with self.assertRaisesRegex(ValidationError, "protected-path floor"):
             change_assignment(config(), "AWF-100", state, jira, requested_tier=1,
                               requested_cap=1, owner_source=source,
                               verify_owner_source=verify_owner_source, reason="small",
-                              now=NOW, controller_actor_id="controller-1")
+                              now=NOW, controller_actor_id="controller-1", store=self.store)
         rejection = state["assignment_rejections"][-1]
         self.assertEqual("PROTECTED_PATH_FLOOR", rejection["reason_code"])
         self.assertIn(".agentic/labels.json", rejection["reason"])
@@ -453,14 +491,14 @@ class ProtectedPathFloor(unittest.TestCase):
         cfg, state, jira = config(), {}, FakeJira()
         current = assign_intake(cfg, ticket(summary="Small config", write_paths=["config/labels.json"],
                                              change_kind="small_config"), state, jira, now=NOW,
-                                controller_actor_id="controller-1")
+                                controller_actor_id="controller-1", store=self.store)
         cfg["scope"]["protected_paths"].append("config/**")
         source = owner_source("AWF-100", current["assignment_id"], 1, 1, "lower after policy change")
         with self.assertRaisesRegex(ValidationError, "protected-path floor"):
             change_assignment(cfg, "AWF-100", state, jira, requested_tier=1, requested_cap=1,
                               owner_source=source, verify_owner_source=verify_owner_source,
                               reason="lower after policy change", now=NOW,
-                              controller_actor_id="controller-1")
+                              controller_actor_id="controller-1", store=self.store)
 
 
 class TierThreePathSignals(unittest.TestCase):

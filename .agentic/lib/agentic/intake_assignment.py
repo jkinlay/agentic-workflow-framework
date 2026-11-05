@@ -214,7 +214,7 @@ def verify_assignment_record(record):
     return record
 
 
-def _jira_receipt(config, jira_client, record, controller_actor_id, state):
+def _jira_receipt(config, jira_client, record, controller_actor_id, state, store):
     jira = config.get("jira", {})
     configured_actor = jira.get("controller_actor_id")
     if jira.get("enabled", True) is False:
@@ -226,7 +226,7 @@ def _jira_receipt(config, jira_client, record, controller_actor_id, state):
         raise ValidationError("Enabled Jira tier assignment requires the controller Jira adapter")
     try:
         return write_tier_assignment(jira_client, record, controller_actor_id=controller_actor_id,
-                                     acting_actor_id=controller_actor_id, config=config)
+                                     acting_actor_id=controller_actor_id, config=config, store=store)
     except TierAssignmentOutcomeError as exc:
         state.setdefault("jira_assignment_write_stops", {})[record["ticket_key"]] = copy.deepcopy(exc.outcome)
         raise
@@ -237,9 +237,27 @@ def _store(state, record):
     state.setdefault("tier_assignment_history", {}).setdefault(record["ticket_key"], []).append(copy.deepcopy(record))
 
 
-def _ensure_jira_writes_allowed(state, ticket_key):
+def _ensure_jira_writes_allowed(state, ticket_key, store=None):
     stop = state.get("jira_assignment_write_stops", {}).get(ticket_key)
     if isinstance(stop, dict) and stop.get("writes_stopped") is True:
+        if store is not None:
+            from .continuous_controller import jira_assignment_state
+            protected = jira_assignment_state(store)
+            abandoned = next((item for item in protected.get("tier_assignment_history", {}).get(ticket_key, [])
+                if item.get("assignment_id") == stop.get("assignment_id") and
+                item.get("jira", {}).get("read_back_status") == "NOT_ATTEMPTED"), None)
+            if abandoned is not None and ticket_key not in protected.get("jira_assignment_write_stops", {}):
+                verify_assignment_record(abandoned)
+                state["jira_assignment_write_stops"].pop(ticket_key)
+                return
+            recovered = protected.get("tier_assignments", {}).get(ticket_key)
+            if (isinstance(recovered, dict) and recovered.get("assignment_id") == stop.get("assignment_id")
+                    and recovered.get("jira", {}).get("read_back_status") == "VERIFIED"
+                    and ticket_key not in protected.get("jira_assignment_write_stops", {})):
+                verify_assignment_record(recovered)
+                _store(state, recovered)
+                state["jira_assignment_write_stops"].pop(ticket_key)
+                return
         raise ValidationError(
             f"Jira tier-assignment writes are stopped for {ticket_key} after an unknown or mismatched outcome; never reissue")
 
@@ -292,19 +310,20 @@ def load_runtime_assignments(config, state, *, ticket_key=None):
     return copy.deepcopy(loaded)
 
 
-def assign_intake(config, ticket, state, jira_client, *, now, controller_actor_id, source="intake"):
+def assign_intake(config, ticket, state, jira_client, *, now, controller_actor_id, source="intake", store=None):
     """Assign once, verify the Jira receipt, then make the record current in state."""
     if not isinstance(state, dict):
         raise ValidationError("AWF state must be an object")
     if not isinstance(controller_actor_id, (str, int)) or controller_actor_id == "":
         raise ValidationError("Review assignment requires the controller actor identity")
-    _ensure_jira_writes_allowed(state, ticket.get("key"))
+    store = store if store is not None else getattr(jira_client, 'controller_store', None)
+    _ensure_jira_writes_allowed(state, ticket.get("key"), store)
     if ticket.get("key") in state.get("tier_assignments", {}):
         raise ValidationError("Existing review assignments change only through the trusted-owner audit path")
     classification = classify_ticket(config, ticket)
     record = _record(ticket["key"], classification, source=source,
                      assigned_by=controller_actor_id, now=now)
-    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id, state)
+    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id, state, store)
     sealed = _seal(record)
     _store(state, sealed)
     _bind_runtime_assignment(config, sealed)
@@ -415,12 +434,13 @@ def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, r
 
 def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
                       requested_cap, owner_source, verify_owner_source, reason, now,
-                      controller_actor_id):
+                      controller_actor_id, store=None):
     """Apply a trusted-owner change and retain its old/new audit everywhere."""
+    store = store if store is not None else getattr(jira_client, 'controller_store', None)
+    _ensure_jira_writes_allowed(state, ticket_key, store)
     current = state.get("tier_assignments", {}).get(ticket_key)
     if not isinstance(current, dict):
         raise ValidationError(f"No current review assignment for {ticket_key}")
-    _ensure_jira_writes_allowed(state, ticket_key)
     if not isinstance(reason, str) or not reason.strip():
         raise ValidationError("Review assignment changes require a non-empty reason")
     if requested_tier not in DEFAULT_CAPS or type(requested_cap) is not int:
@@ -460,7 +480,7 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
     record = _record(ticket_key, classification, source="owner_change",
                      assigned_by=controller_actor_id, now=now,
                      previous_assignment_id=current["assignment_id"], change_audit=audit)
-    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id, state)
+    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id, state, store)
     sealed = _seal(record)
     _store(state, sealed)
     _bind_runtime_assignment(config, sealed)
@@ -469,12 +489,12 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
 
 
 def assign_inventory(config, inventory, state, jira_client, *, now, controller_actor_id,
-                     source="project_start"):
+                     source="project_start", store=None):
     if not isinstance(inventory, list):
         raise ValidationError("Project-start ticket inventory must be a list")
     keys = [item.get("key") for item in inventory if isinstance(item, dict)]
     if len(keys) != len(inventory) or len(set(keys)) != len(keys):
         raise ValidationError("Project-start ticket inventory needs unique ticket keys")
     return {item["key"]: assign_intake(config, item, state, jira_client, now=now,
-                                        controller_actor_id=controller_actor_id, source=source)
+                                        controller_actor_id=controller_actor_id, source=source, store=store)
             for item in inventory}

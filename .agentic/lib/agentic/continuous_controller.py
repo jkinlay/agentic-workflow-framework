@@ -2100,6 +2100,108 @@ def _jira_ticket_operations(store, issue):
 	return rows
 
 
+def jira_assignment_state(store):
+	_require(isinstance(store, ContinuousControllerStore), 'Jira identity needs protected controller storage')
+	# Recheck containment and aliases at use, including stores reopened by callers.
+	protected_state_path(store.path, (*store.worktree_roots, Path(__file__).resolve().parents[3]))
+	with store.connection() as db:
+		row = db.execute("SELECT value FROM controller_meta WHERE key='intake_assignment_state'").fetchone()
+	return loads(row['value']) if row else {}
+
+
+def save_jira_assignment(store, config, assignment, receipt, expected=None):
+	"""Retain existing intake records/receipts in controller storage, not a second journal."""
+	from .intake_assignment import _seal
+	from .provider_identity import expected_jira_identity
+	provider = expected_jira_identity(config)
+	identity = {'connector': 'jira', 'jira_provider': {
+		key: provider[source] for key, source in (('cloud_id', 'cloud_id'), ('site', 'site'),
+		('project_id', 'project_id'), ('project_key', 'project_key'), ('controller_actor_id', 'account_id'))},
+		'project_id': config.get('project', {}).get('id'),
+		'repository_id': config.get('github', {}).get('repository_id'), 'issue_id': assignment['ticket_key']}
+	with store.transaction() as db:
+		row = db.execute("SELECT value FROM controller_meta WHERE key='intake_assignment_state'").fetchone()
+		state = loads(row['value']) if row else {}
+		history = state.setdefault('tier_assignment_history', {}).setdefault(assignment['ticket_key'], [])
+		prior = next((item for item in history if item['assignment_id'] == assignment['assignment_id']), None)
+		record = deepcopy(prior or assignment)
+		if prior is not None:
+			_require(prior['jira_identity'] == identity, 'Assignment identity changed during mutation')
+		if record.get('jira') is not None and record['jira'] != receipt:
+			record.setdefault('jira_receipts', []).append(deepcopy(record['jira']))
+		record.update(jira_identity=identity, jira=deepcopy(receipt))
+		if expected is not None:
+			record['jira_expected'] = deepcopy(expected)
+		record = _seal(record)
+		if prior is None:
+			history.append(record)
+		else:
+			history[history.index(prior)] = record
+		stops = state.setdefault('jira_assignment_write_stops', {})
+		if receipt.get('writes_stopped') is True:
+			stops[assignment['ticket_key']] = deepcopy(receipt)
+		else:
+			stops.pop(assignment['ticket_key'], None)
+			if receipt.get('read_back_status') == 'VERIFIED':
+				state.setdefault('tier_assignments', {})[assignment['ticket_key']] = record
+		db.execute('INSERT OR REPLACE INTO controller_meta VALUES(?,?)',
+			('intake_assignment_state', canonical(state).decode()))
+	return record
+
+
+def require_jira_ticket_writes_allowed(store, config, binding, *, assignment_id=None, operation_id=None, assignment_route=False,
+		observe_jira_operation_identity=None):
+	"""The shared ticket admission rule, used before every mutation route."""
+	require_jira_binding_identity(store, config, binding, observe_jira_operation_identity)
+	state = jira_assignment_state(store)
+	stop = state.get('jira_assignment_write_stops', {}).get(binding['issue_id'])
+	_require(not stop or stop.get('assignment_id') == assignment_id,
+		'Jira assignment writes are stopped; use jira-lifecycle BLOCK with read_assignment recovery; never reissue')
+	for row, table in _jira_ticket_operations(store, binding['issue_id']):
+		_require(row['operation_id'] == operation_id or row['status'] == 'SUCCEEDED'
+			or row['status'] == 'PENDING' and not assignment_route,
+			'Unresolved or failed Jira operation; use jira-lifecycle read_transition recovery; never reissue')
+
+
+def recover_jira_assignment(store, config, issue, now, read_assignment=None, *, resume_unattempted=False):
+	state = jira_assignment_state(store)
+	stop = state.get('jira_assignment_write_stops', {}).get(issue)
+	if not stop:
+		return
+	from .intake_assignment import verify_assignment_record
+	record = next(item for item in state['tier_assignment_history'][issue]
+		if item['assignment_id'] == stop['assignment_id'])
+	verify_assignment_record(record)
+	if resume_unattempted and record['jira'].get('mutation_attempted') is False and record['jira'].get('write_stage') == 'read_before':
+		# Durable local proof: the first read failed before either mutation was called.
+		save_jira_assignment(store, config, record, {'read_back_status': 'NOT_ATTEMPTED',
+			'assignment_id': record['assignment_id'], 'observed_at': now})
+		return
+	_require(callable(read_assignment),
+		'Jira assignment writes are stopped; use jira-lifecycle BLOCK with read_assignment recovery; never reissue')
+	observation = read_assignment(deepcopy(record))
+	expected = record.get('jira_expected')
+	_require(isinstance(expected, dict) and isinstance(observation, dict) and set(observation) == {
+		'assignment_id', 'assignment_sha256', 'issue_id', 'jira_identity', 'labels', 'comment', 'observed_at'}
+		and observation['assignment_id'] == record['assignment_id']
+		and observation['assignment_sha256'] == record['assignment_sha256']
+		and observation['issue_id'] == issue and observation['jira_identity'] == record['jira_identity'],
+		'Assignment recovery needs evidence bound to the original assignment and identity')
+	_require(timestamp(observation['observed_at']) >= max(timestamp(now), timestamp(record['created_at'])),
+		'Assignment recovery evidence is stale')
+	comment = observation['comment']
+	_require(observation['labels'] == expected['labels'] and isinstance(comment, dict)
+		and set(comment) == {'id', 'body', 'author_id'} and type(comment['id']) in (str, int)
+		and str(comment['id']).strip() and comment['body'] == expected['comment']
+		and comment['author_id'] == record['jira_identity']['jira_provider']['controller_actor_id'],
+		'Assignment recovery needs exact labels and controller-authored original comment evidence')
+	# Re-read under ownership; rejected observations never replace retained receipts.
+	_require(jira_assignment_state(store) == state, 'Assignment changed during recovery')
+	save_jira_assignment(store, config, record, {'read_back_status': 'VERIFIED',
+		'label': f"tier-{record['tier']}", 'comment_id': str(comment['id']),
+		'controller_actor_id': comment['author_id'], 'recovery': observation})
+
+
 def require_jira_binding_identity(store, config, binding, observe_jira_operation_identity=None):
 	"""Admit incoming authority against configuration and both retained journals.
 
@@ -2114,10 +2216,21 @@ def require_jira_binding_identity(store, config, binding, observe_jira_operation
 	expected = {field: value for field, value in (
 		('issue_id', issue), ('project_id', config.get('project', {}).get('id')),
 		('repository_id', config.get('github', {}).get('repository_id')))}
-	incoming = expected if set(binding) == {'issue_id'} else _jira_lifecycle_binding_identity(binding, config)
+	incoming = _jira_lifecycle_binding_identity(binding, config)
 	_require({field: incoming[field] for field in expected} == expected,
 		'Durable Jira intent belongs to a different project/repository/issue binding')
 	_require(isinstance(store, ContinuousControllerStore), 'Jira identity needs protected controller storage')
+	from .intake_assignment import verify_assignment_record
+	from .provider_identity import expected_jira_identity
+	provider = expected_jira_identity(config)
+	for record in jira_assignment_state(store).get('tier_assignment_history', {}).get(issue, []):
+		verify_assignment_record(record)
+		identity = record.get('jira_identity')
+		_require(isinstance(identity, dict) and all(identity.get(field) == value for field, value in expected.items())
+			and identity.get('connector') == 'jira' and identity.get('jira_provider') == {
+				key: provider[source] for key, source in (('cloud_id', 'cloud_id'), ('site', 'site'),
+				('project_id', 'project_id'), ('project_key', 'project_key'), ('controller_actor_id', 'account_id'))},
+			'Durable Jira assignment belongs to a different project/repository/issue binding or provider')
 	for row, table in _jira_ticket_operations(store, issue):
 		record = loads(row['record_json'])
 		identity = _require_jira_operation_identity(store, config, row, record, observe_jira_operation_identity)
@@ -2147,7 +2260,7 @@ def _jira_status_observation(value, issue, provider, floor):
 
 
 def _recover_jira_ticket(store, *, config, issue, provider, now, read_transition=None,
-		current_time=None, observe_jira_operation_identity=None, resume_unattempted=False):
+		current_time=None, observe_jira_operation_identity=None, resume_unattempted=False, read_assignment=None):
 	"""One resolution rule for every event and journal: read original transition, never write.
 
 	Call under the issue ownership lock. A reporting/batch caller without a
@@ -2158,6 +2271,7 @@ def _recover_jira_ticket(store, *, config, issue, provider, now, read_transition
 	recovered, deferred, unattempted = [], [], []
 	legacy_unproven = False
 	require_jira_binding_identity(store, config, {'issue_id': issue}, observe_jira_operation_identity)
+	recover_jira_assignment(store, config, issue, now, read_assignment, resume_unattempted=resume_unattempted)
 	rows = _jira_ticket_operations(store, issue)
 	for row, table in rows:
 		record = loads(row['record_json'])
@@ -2494,7 +2608,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 				if current == record['to_status_id']:
 					store.finish_batch_jira_operation(operation_id, 'SUCCEEDED', observation, now)
 					continue
-				require_jira_binding_identity(store, config, record['binding'])
+				require_jira_ticket_writes_allowed(store, config, record['binding'], operation_id=operation_id)
 				write_attempted = True
 				operation = write_transition(deepcopy(record))
 				_, operation_time = receipt(operation, issue, current_time, 'write', operation_id)
@@ -2542,6 +2656,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 				observation = retained_observation(row)
 				result['conflict'] = conflict(issue, observation)
 	result['complete'] = len(result['reconciled']) == len(records)
+	result['writes_stopped'] = result['conflict'] is not None
 	return result
 
 
@@ -3165,7 +3280,7 @@ def _jira_lifecycle_binding_identity(binding, config):
 	return identity
 
 
-def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None, observe_issue_policy=None, observe_jira_operation_identity=None):
+def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None, observe_issue_policy=None, observe_jira_operation_identity=None, read_assignment=None):
 	_require(isinstance(store, ContinuousControllerStore), 'Jira lifecycle production needs the protected controller store')
 	config = deepcopy(config)
 	_require(all((callable(adapter) for adapter in (read_current_status, write_transition, read_transition))), 'Jira lifecycle read/write/readback adapters must be callable')
@@ -3221,12 +3336,12 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 		_require(set(old_binding) == set(binding), 'Jira candidate binding has missing or unrecognized fields')
 	recovered = []
 	try:
-		if any(row['status'] in {'IN_FLIGHT', 'UNKNOWN', 'FAILED'} for row, table in _jira_ticket_operations(store, issue)):
+		if jira_assignment_state(store).get('jira_assignment_write_stops', {}).get(issue) or any(row['status'] in {'IN_FLIGHT', 'UNKNOWN', 'FAILED'} for row, table in _jira_ticket_operations(store, issue)):
 			with _batch_jira_ownership(store, issue_id=issue) as owned:
 				_require(owned, 'Jira issue is owned by another operation')
 				recovered = _recover_jira_ticket(store, config=config, issue=issue, provider=provider,
 					now=now, current_time=current_time, read_transition=read_transition,
-					observe_jira_operation_identity=observe_jira_operation_identity, resume_unattempted=event == 'BLOCK')
+					observe_jira_operation_identity=observe_jira_operation_identity, resume_unattempted=event == 'BLOCK', read_assignment=read_assignment if event == 'BLOCK' else None)
 		else:
 			# Completed batch history also binds the next ordinary write's identity.
 			_recover_jira_ticket(store, config=config, issue=issue, provider=provider, now=now,
@@ -3285,7 +3400,8 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 			_require(policy['issue_type'] == issue_type, 'Jira issue type changed before the write')
 			_require(event != 'JIRA_RECONCILED' or not owner_closure_required(config, policy['snapshot']),
 				'owner_closure_required: ticket stays In Review until an owner-closure record arrives')
-			require_jira_binding_identity(store, config, binding, observe_jira_operation_identity)
+			require_jira_ticket_writes_allowed(store, config, binding, operation_id=record['operation_id'],
+				observe_jira_operation_identity=observe_jira_operation_identity)
 		except Exception as exc:
 			_stop_unattempted_jira(store, record['operation_id'], now)
 			return {'planned': False, 'status': 'SCOPE_REFUSED', 'reason': str(exc), 'writes_stopped': True, 'execution_authority': False}

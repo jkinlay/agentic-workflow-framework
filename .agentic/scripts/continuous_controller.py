@@ -243,6 +243,8 @@ def main(argv=None, default_root=ROOT):
 		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'})
 		if callable(adapters.get('observe_jira_operation_identity')):
 			calls['observe_jira_operation_identity'] = adapters['observe_jira_operation_identity']
+		if callable(adapters.get('read_assignment')):
+			calls['read_assignment'] = adapters['read_assignment']
 		output = production_jira_lifecycle(store, config=config, contract=load(args.contract), event=args.event, facts=load(args.facts), binding=load(args.binding), issue_type=args.issue_type, state=args.lifecycle_state, producer_id=args.producer_id, run_id=args.run_id, now=args.now, evidence=args.evidence, transition_id=args.transition_id, merge_result_id=args.merge_result_id, **calls)
 	elif args.command == 'merge-observed':
 		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'fetch_scope_page'})

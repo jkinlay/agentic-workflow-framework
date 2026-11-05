@@ -854,7 +854,7 @@
       "name": "Batch pre-write read failure retries directly after reopening",
       "permanent": true,
       "regression_id": "AWF243-PRE4-PREWRITE-RETRY",
-      "source_finding_id": "AWF243-PRE4-2",
+      "source_finding_id": null,
       "test_id": "BatchRecoveryRegressions.test_pre4_batch_prewrite_failure_retries_directly_after_reopen"
     },
     {
@@ -863,7 +863,7 @@
       "name": "Status alone cannot resolve or repeat an attempted batch write",
       "permanent": true,
       "regression_id": "AWF243-PRE4-STATUS-ONLY",
-      "source_finding_id": "AWF243-PRE4-1",
+      "source_finding_id": null,
       "test_id": "BatchRecoveryRegressions.test_pre4_lost_batch_response_status_alone_never_resolves_or_repeats"
     },
     {
@@ -881,7 +881,7 @@
       "name": "Ambiguous legacy stop preserves valid original recovery and stops further writes",
       "permanent": true,
       "regression_id": "AWF243-PRE4-AMBIGUOUS",
-      "source_finding_id": "AWF243-PRE4-3",
+      "source_finding_id": null,
       "test_id": "BatchRecoveryRegressions.test_pre4_ambiguous_legacy_stop_preserves_original_resolution"
     },
     {
@@ -899,7 +899,7 @@
       "name": "Recovery rejects foreign incoming identity before observing or resolving an uncertain write",
       "permanent": true,
       "regression_id": "AWF243-AUX5-RECOVERY",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_recovery_incoming_identity"
     },
     {
@@ -908,7 +908,7 @@
       "name": "Assignment rejects foreign project and repository identities without label or comment writes",
       "permanent": true,
       "regression_id": "AWF243-AUX5-ASSIGNMENT",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_assignment_incoming_identity"
     },
     {
@@ -917,7 +917,7 @@
       "name": "Retained batch closeout rejects project and repository substitution after either journal",
       "permanent": true,
       "regression_id": "AWF243-AUX5-CLOSEOUT",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_batch_closeout_incoming_identity"
     },
     {
@@ -926,7 +926,7 @@
       "name": "Batch reconciliation rejects changed authority before preparing or writing any constituent",
       "permanent": true,
       "regression_id": "AWF243-AUX5-RECONCILIATION",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_batch_reconciliation_incoming_identity"
     },
     {
@@ -935,7 +935,7 @@
       "name": "Progress rejects foreign closeout identity and never invokes the legacy mutation callback",
       "permanent": true,
       "regression_id": "AWF243-AUX5-PROGRESS",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_progress_incoming_identity"
     },
     {
@@ -944,7 +944,7 @@
       "name": "Production progress shares the cross-journal incoming identity admission",
       "permanent": true,
       "regression_id": "AWF243-AUX5-PRODUCTION-PROGRESS",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_production_progress_incoming_identity"
     },
     {
@@ -953,7 +953,7 @@
       "name": "Merge observation cannot count or mutate through foreign Jira closeout authority",
       "permanent": true,
       "regression_id": "AWF243-AUX5-MERGE-OBSERVED",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_merge_observed_incoming_identity"
     },
     {
@@ -962,7 +962,7 @@
       "name": "Matching incoming and current identities cannot replace either journal's persisted authority",
       "permanent": true,
       "regression_id": "AWF243-AUX5-PERSISTED-IDENTITY",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_configuration_matching_input_cannot_replace_either_journals_identity"
     },
     {
@@ -971,7 +971,7 @@
       "name": "Every writable lifecycle event refuses full foreign bindings after completed batch history",
       "permanent": true,
       "regression_id": "AWF243-AUX5-EVENTS",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_every_lifecycle_event_refuses_batch_only_identity_escape"
     },
     {
@@ -980,7 +980,7 @@
       "name": "Assignment uses its adapter's controller journal and accepts a candidate-only revision",
       "permanent": true,
       "regression_id": "AWF243-AUX5-ASSIGNMENT-CANDIDATE",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_assignment_with_adapter_journal_accepts_candidate_revision"
     },
     {
@@ -989,7 +989,7 @@
       "name": "Assignment cannot bypass persisted identity checks by omitting its protected journal",
       "permanent": true,
       "regression_id": "AWF243-AUX5-ASSIGNMENT-JOURNAL",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_assignment_without_journal_never_assumes_history_is_absent"
     },
     {
@@ -998,8 +998,98 @@
       "name": "Candidate-only lifecycle revisions succeed after ordinary or completed batch history",
       "permanent": true,
       "regression_id": "AWF243-AUX5-CANDIDATE",
-      "source_finding_id": "AWF243-AUX5-1",
+      "source_finding_id": null,
       "test_id": "IncomingIdentityRegressions.test_pre5_candidate_only_revision_after_each_journal_succeeds"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment refuses unresolved ordinary and batch operations after reopen",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-TICKET-STOPS",
+      "source_finding_id": "AWF243-AUX6-1",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_refuses_unresolved_lifecycle_and_batch"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment uncertainty durably stops ordinary and batch mutations",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-ASSIGNMENT-STOP",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_unknown_stops_lifecycle_and_batch_after_reopen"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Successful intake pins invariant project and repository identity",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-IDENTITY",
+      "source_finding_id": "AWF243-AUX6-2",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_successful_intake_pins_project_and_repository_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Intake and adoption receive the protected store explicitly",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-CALLERS",
+      "source_finding_id": "AWF243-AUX6-3",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_real_intake_and_project_start_accept_explicit_protected_store"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Malformed or foreign assignment recovery evidence preserves durable receipts",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-RECOVERY-REJECTION",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_recovery_rejects_invalid_evidence_and_never_writes"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment read-only recovery unblocks ordinary and batch writes without replay",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-RECOVERY",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_recovery_uses_observer_once_and_unblocks_both_routes"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Recovery synchronizes the existing intake receipt without another assignment write",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-INTAKE-RECEIPT",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_recovery_synchronizes_existing_intake_receipt_without_reissuing"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment refuses controller storage inside worktrees before mutation",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-STORAGE",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_store_inside_worktree_refuses_before_mutation"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Real bootstrap forwards protected storage through intake, project-start and owner change",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-BOOTSTRAP",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_bootstrap_intake_project_start_and_owner_change_forward_store"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Only locally proven unattempted assignment reads resume through BLOCK without a mutation",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-READ-BEFORE",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_read_before_failure_recovers_only_locally_proven_unattempted_assignment"
     }
   ]
 }
