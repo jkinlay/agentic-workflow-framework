@@ -13,8 +13,12 @@ from agentic.continuous_controller import ContinuousControllerStore, production_
 
 class AssignmentRegressions(unittest.TestCase):
     setUp = scope_fixture.JiraMutationScopeTests.setUp
-    assign = scope_fixture.JiraMutationScopeTests.assign
     policy = scope_fixture.JiraMutationScopeTests.policy
+
+    def assign(self, jira, config=None):
+        from agentic.jira_lifecycle import write_tier_assignment
+        return write_tier_assignment(jira, self.assignment, config=self.config if config is None else config,
+            controller_actor_id='fixture-controller', acting_actor_id='fixture-controller', store=self.store)
 
     def done(self, **overrides):
         def write(record):
@@ -972,6 +976,208 @@ class BatchRecoveryRegressions(unittest.TestCase):
         self.assertFalse(self.batch()['complete'])
         self.assertEqual(stopped, self.row())
         self.counts(1, 2, 1)
+
+
+class IncomingIdentityRegressions(unittest.TestCase):
+    """AWF243-AUX5-1: all admission routes share invariant identity checks."""
+
+    setUp = BatchRecoveryRegressions.setUp
+    reopen = BatchRecoveryRegressions.reopen
+    batch = BatchRecoveryRegressions.batch
+    lifecycle = BatchRecoveryRegressions.lifecycle
+
+    def candidate(self):
+        return dict(issue_id='AWF-1', project_id=self.args['config']['project']['id'],
+            repository_id=self.args['config']['github']['repository_id'],
+            requirements_hash='a' * 64, contract_hash='b' * 64,
+            policy_hash='c' * 64, candidate_id='d' * 64)
+
+    def seed(self, history, *, unknown=False):
+        def after(record, operation):
+            if unknown:
+                raise TimeoutError('lost readback')
+            return {**self.spy.read_transition(record, operation), 'status': record['to_status_id']}
+        if history == 'ordinary':
+            result = self.lifecycle(event='WORKER_STARTED', state='DISPATCHED',
+                facts={'run_registered': True, 'worktree_verified': True},
+                binding=self.candidate(), read_transition=after)
+            self.assertEqual('UNKNOWN' if unknown else 'SUCCEEDED', result['record']['status'])
+        elif history == 'batch':
+            self.assertEqual(not unknown, self.batch(read_transition=after)['complete'])
+        self.reopen()
+        self.spy.calls.clear()
+
+    def identities(self, route, *, configuration_drift=False):
+        from pathlib import Path
+        histories = ('ordinary', 'batch') if configuration_drift or route in ('closeout', 'reconciliation') else ('none', 'ordinary', 'batch')
+        for history in histories:
+            for field in ('project_id', 'repository_id'):
+                with self.subTest(route=route, history=history, field=field):
+                    self.fixture.store = ContinuousControllerStore(
+                        Path(self.fixture.temporary.name) / f'{route}-{history}-{field}.sqlite', ['B'])
+                    self.seed(history, unknown=route == 'recovery' and history != 'none')
+                    binding = self.candidate()
+                    binding[field] = '00000000-0000-0000-0000-000000000002' if field == 'project_id' else 999999
+                    if configuration_drift:
+                        section, key = ('project', 'id') if field == 'project_id' else ('github', 'repository_id')
+                        with patch.dict(self.args['config'][section], {key: binding[field]}):
+                            self.invoke(route, binding, history, changed_field=field)
+                    else:
+                        self.invoke(route, binding, history, changed_field=field)
+                    self.assertFalse([call for call in self.spy.calls if call[0] == 'write'])
+
+    def invoke(self, route, binding, history, *, changed_field):
+        from agentic.continuous_controller import production_batch_jira_reconciliation, production_merge_observed
+        from agentic.jira_lifecycle import write_tier_assignment
+        field = changed_field
+        if route in ('lifecycle', 'recovery'):
+            # Full incoming bindings must be checked even with batch-only history.
+            with self.assertRaises(ValidationError):
+                self.lifecycle(binding=binding, event='BLOCK' if route == 'recovery' else 'WORKER_STARTED',
+                    state='DISPATCHED', facts={'run_registered': True, 'worktree_verified': True})
+            self.assertFalse([call for call in self.spy.calls if call[0] == 'read_back'])
+        elif route == 'assignment':
+            jira = Jira({**snapshot(key='AWF-1', epic='AWF-9'), 'project_key': 'AWF',
+                         'labels': [], 'comments': []})
+            assignment = dict(assignment_id='fixture', ticket_key='AWF-1', tier=3,
+                round_cap=3, owner_review_required=True, reasons=['governance'], binding=binding)
+            with self.assertRaises(ValidationError):
+                write_tier_assignment(jira, assignment, config=self.args['config'],
+                    controller_actor_id='controller-1', acting_actor_id='controller-1',
+                    store=self.fixture.store)
+            self.assertFalse(set(jira.calls) & {'labels', 'comment'})
+        elif route in ('closeout', 'reconciliation'):
+            # These routes accept issue-only bindings: configuration supplies the
+            # incoming identity, which must still agree with either journal.
+            config = copy.deepcopy(self.args['config'])
+            config['project' if field == 'project_id' else 'github']['id' if field == 'project_id' else field] = binding[field]
+            if route == 'closeout':
+                with self.assertRaises(ValidationError):
+                    self.batch(config=config)
+            else:
+                with self.assertRaises(ValidationError):
+                    production_batch_jira_reconciliation(self.fixture.store, config=config,
+                        role='controller', batch=self.fixture.batch, observed_merge=self.fixture.merge,
+                        now=self.args['now'], policy_context={'AWF-1': {'snapshot': self.args['observe_issue_policy']('AWF-1')['snapshot']}},
+                        **{key: self.args[key] for key in ('observe_issue_identity', 'read_current_status',
+                            'write_transition', 'read_transition')})
+        else:
+            provider = self.args['observe_provider_identity']()
+            count_binding = dict(cloud_id=provider['cloud_id'], project_id=provider['project_id'],
+                actor_id=provider['controller_actor_id'])
+            rows = self.fixture.store.jira_operations('AWF-1')
+            gate = {'closeout_record': {'binding': binding,
+                'jira_transition_record_id': rows[0]['record']['record_id'] if rows else 'missing'}}
+            args = dict(jira_enabled=True, merged_ticket='AWF-1', scope='project = AWF',
+                observed_at=self.args['now'], jira_binding=count_binding, store=self.fixture.store,
+                config=self.args['config'], count_gate=gate,
+                reconcile_merged_ticket=lambda key: self.fail('legacy write route must never run'),
+                fetch_scope_page=lambda *args: self.fail('foreign binding must refuse counts'),
+                **{key: self.args[key] for key in ('observe_provider_identity', 'observe_issue_identity',
+                    'observe_issue_policy', 'read_current_status')})
+            with patch('agentic.closeout.require_jira_reconciliation_before_counts',
+                    return_value={'status': 'PASS', 'count_allowed': True, 'ticket': 'AWF-1'}):
+                if route == 'merge_observed':
+                    result = production_merge_observed(lifecycle_state='MERGING',
+                        lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress=args)['jira_progress']
+                elif route == 'production_progress':
+                    result = self.fixture.controller.production_post_merge_progress(**args)
+                else:
+                    result = post_merge_jira_progress(**args)
+            self.assertEqual('UNOBSERVED', result['jira_state'])
+
+    def test_pre5_lifecycle_incoming_identity(self):
+        self.identities('lifecycle')
+
+    def test_pre5_recovery_incoming_identity(self):
+        self.identities('recovery')
+
+    def test_pre5_assignment_incoming_identity(self):
+        self.identities('assignment')
+
+    def test_pre5_batch_closeout_incoming_identity(self):
+        self.identities('closeout')
+
+    def test_pre5_batch_reconciliation_incoming_identity(self):
+        self.identities('reconciliation')
+
+    def test_pre5_progress_incoming_identity(self):
+        self.identities('progress')
+
+    def test_pre5_production_progress_incoming_identity(self):
+        self.identities('production_progress')
+
+    def test_pre5_merge_observed_incoming_identity(self):
+        self.identities('merge_observed')
+
+    def test_pre5_configuration_matching_input_cannot_replace_either_journals_identity(self):
+        for route in ('lifecycle', 'recovery', 'assignment', 'closeout', 'reconciliation',
+                      'progress', 'production_progress', 'merge_observed'):
+            self.identities(route, configuration_drift=True)
+
+    def test_pre5_every_lifecycle_event_refuses_batch_only_identity_escape(self):
+        from pathlib import Path
+        events = [('WORKER_STARTED', 'DISPATCHED', {'run_registered': True, 'worktree_verified': True}),
+                  ('PR_READY', 'PR_DRAFT', {'draft_cleared': True}),
+                  ('OWNER_CHANGES_REQUESTED', 'READY_FOR_CRITIC', {'external_event_recorded': True, 'prior_evidence_invalidated': True}),
+                  ('HEAD_CHANGED', 'READY_FOR_CRITIC', {'external_event_recorded': True, 'prior_evidence_invalidated': True}),
+                  ('JIRA_RECONCILED', 'MERGED', {'merge_confirmed': True, 'closeout_valid': True})]
+        for event, state, facts in events:
+            for field in ('project_id', 'repository_id'):
+                with self.subTest(event=event, field=field):
+                    self.fixture.store = ContinuousControllerStore(
+                        Path(self.fixture.temporary.name) / f'{event}-{field}.sqlite', ['B'])
+                    self.seed('batch')
+                    binding = self.candidate()
+                    binding[field] = 'foreign-project' if field == 'project_id' else 999999
+                    with self.assertRaises(ValidationError):
+                        self.lifecycle(binding=binding, event=event, state=state, facts=facts)
+                    self.assertFalse([call for call in self.spy.calls if call[0] == 'write'])
+
+    def test_pre5_assignment_with_adapter_journal_accepts_candidate_revision(self):
+        from pathlib import Path
+        from agentic.jira_lifecycle import write_tier_assignment
+        for history in ('ordinary', 'batch'):
+            with self.subTest(history=history):
+                self.fixture.store = ContinuousControllerStore(
+                    Path(self.fixture.temporary.name) / f'assignment-candidate-{history}.sqlite', ['B'])
+                self.seed(history)
+                jira = Jira({**snapshot(key='AWF-1', epic='AWF-9'), 'project_key': 'AWF',
+                             'labels': [], 'comments': []})
+                jira.controller_store = self.fixture.store
+                result = write_tier_assignment(jira,
+                    dict(assignment_id='fixture', ticket_key='AWF-1', tier=3,
+                        round_cap=3, owner_review_required=True, reasons=['governance'],
+                        binding={**self.candidate(), 'candidate_id': 'e' * 64}),
+                    config=self.args['config'], controller_actor_id='controller-1', acting_actor_id='controller-1')
+                self.assertEqual('VERIFIED', result['read_back_status'])
+                self.assertEqual(['read', 'labels', 'read', 'comment', 'read'], jira.calls)
+
+    def test_pre5_assignment_without_journal_never_assumes_history_is_absent(self):
+        from agentic.jira_lifecycle import write_tier_assignment
+        jira = Jira({**snapshot(key='AWF-1', epic='AWF-9'), 'project_key': 'AWF',
+                     'labels': [], 'comments': []})
+        assignment = dict(assignment_id='fixture', ticket_key='AWF-1', tier=3,
+            round_cap=3, owner_review_required=True, reasons=['governance'])
+        with self.assertRaisesRegex(ValidationError, 'protected controller storage'):
+            write_tier_assignment(jira, assignment, config=self.args['config'],
+                controller_actor_id='controller-1', acting_actor_id='controller-1')
+        self.assertFalse(set(jira.calls) & {'labels', 'comment'})
+
+    def test_pre5_candidate_only_revision_after_each_journal_succeeds(self):
+        from pathlib import Path
+        for history in ('ordinary', 'batch'):
+            with self.subTest(history=history):
+                self.fixture.store = ContinuousControllerStore(
+                    Path(self.fixture.temporary.name) / f'candidate-{history}.sqlite', ['B'])
+                self.seed(history)
+                revised = {**self.candidate(), 'candidate_id': 'e' * 64}
+                result = self.lifecycle(binding=revised, event='PR_READY', state='PR_DRAFT',
+                    facts={'draft_cleared': True},
+                    read_current_status=lambda binding: {**self.spy.read_current_status(binding), 'status_id': 'In Progress'},
+                    read_transition=lambda record, operation: {**self.spy.read_transition(record, operation), 'status': record['to_status_id']})
+                self.assertEqual('SUCCEEDED', result['record']['status'])
+                self.assertEqual(1, sum(op == 'write' for op, _ in self.spy.calls))
 
 
 if __name__ == "__main__":

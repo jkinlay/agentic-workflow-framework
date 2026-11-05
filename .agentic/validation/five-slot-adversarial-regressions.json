@@ -883,6 +883,123 @@
       "regression_id": "AWF243-PRE4-AMBIGUOUS",
       "source_finding_id": "AWF243-PRE4-3",
       "test_id": "BatchRecoveryRegressions.test_pre4_ambiguous_legacy_stop_preserves_original_resolution"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Lifecycle rejects foreign incoming project and repository identities across both journals",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-LIFECYCLE",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_lifecycle_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Recovery rejects foreign incoming identity before observing or resolving an uncertain write",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-RECOVERY",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_recovery_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment rejects foreign project and repository identities without label or comment writes",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-ASSIGNMENT",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_assignment_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Retained batch closeout rejects project and repository substitution after either journal",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-CLOSEOUT",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_batch_closeout_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch reconciliation rejects changed authority before preparing or writing any constituent",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-RECONCILIATION",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_batch_reconciliation_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Progress rejects foreign closeout identity and never invokes the legacy mutation callback",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-PROGRESS",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_progress_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Production progress shares the cross-journal incoming identity admission",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-PRODUCTION-PROGRESS",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_production_progress_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Merge observation cannot count or mutate through foreign Jira closeout authority",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-MERGE-OBSERVED",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_merge_observed_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Matching incoming and current identities cannot replace either journal's persisted authority",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-PERSISTED-IDENTITY",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_configuration_matching_input_cannot_replace_either_journals_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Every writable lifecycle event refuses full foreign bindings after completed batch history",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-EVENTS",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_every_lifecycle_event_refuses_batch_only_identity_escape"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment uses its adapter's controller journal and accepts a candidate-only revision",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-ASSIGNMENT-CANDIDATE",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_assignment_with_adapter_journal_accepts_candidate_revision"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment cannot bypass persisted identity checks by omitting its protected journal",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-ASSIGNMENT-JOURNAL",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_assignment_without_journal_never_assumes_history_is_absent"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Candidate-only lifecycle revisions succeed after ordinary or completed batch history",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-CANDIDATE",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_candidate_only_revision_after_each_journal_succeeds"
     }
   ]
 }

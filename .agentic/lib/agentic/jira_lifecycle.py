@@ -174,11 +174,13 @@ def require_jira_issue_scope(config, issue_key, snapshot):
     return copy.deepcopy(snapshot)
 
 
-def write_tier_assignment(client, assignment, *, controller_actor_id, acting_actor_id, config=None):
+def write_tier_assignment(client, assignment, *, controller_actor_id, acting_actor_id, config=None, store=None):
     """Write one tier label/comment and require an exact controller read-back.
 
     The adapter surface is deliberately tiny and testable: ``read_issue``,
-    ``set_labels`` and ``add_comment``.  This function never transitions Jira.
+    ``set_labels`` and ``add_comment``. The protected journal must be supplied
+    explicitly or through the reviewed adapter's ``controller_store``; absence
+    refuses before either write. This function never transitions Jira.
     """
     if not controller_actor_id or acting_actor_id != controller_actor_id:
         raise ValidationError("Tier assignment label/comment writes are controller-only")
@@ -200,6 +202,14 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
                    "reason": "Jira tier assignment read-before-write failed"}
         raise TierAssignmentOutcomeError(outcome["reason"], outcome) from exc
     require_jira_issue_scope(config, key, before)
+    from .continuous_controller import require_jira_binding_identity
+    binding = copy.deepcopy(assignment.get("binding", {"issue_id": key}))
+    if not isinstance(binding, dict) or binding.get("issue_id") != key:
+        raise ValidationError("Jira assignment binding names a different ticket")
+    # Reviewed intake adapters may carry the same protected controller journal;
+    # explicit callers can supply it without exposing storage through config.
+    store = store if store is not None else getattr(client, "controller_store", None)
+    require_jira_binding_identity(store, config, binding)
     labels = before.get("labels") if isinstance(before, dict) else None
     if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
         raise ValidationError("Jira tier assignment read did not return labels")
@@ -221,6 +231,7 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
                        "reason": "Jira tier assignment label read-back mismatch; suspected external automation conflict; never reissue"}
             raise TierAssignmentOutcomeError(outcome["reason"], outcome)
         stage = "comment"
+        require_jira_binding_identity(store, config, binding)
         client.add_comment(key, comment, actor_id=acting_actor_id)
         stage = "read_back"
         after = client.read_issue(key)

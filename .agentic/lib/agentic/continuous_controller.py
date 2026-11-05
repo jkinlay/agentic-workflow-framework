@@ -1924,6 +1924,7 @@ def production_batch_closeout(store, *, config, request, coordinator,
 		_require(policy['issue_type'] == 'LEAF', 'Epics are never transitioned')
 		from .jira_lifecycle import owner_closure_required
 		_require(not owner_closure_required(config, policy['snapshot']), 'Owner closure is required before the Done write')
+		require_jira_binding_identity(store, config, record['binding'])
 		return write_transition(record)
 	result = production_batch_jira_reconciliation(store, config=config, role='controller',
 		batch=batch, observed_merge=observed_merge, now=now, read_current_status=read_current_status,
@@ -2099,6 +2100,44 @@ def _jira_ticket_operations(store, issue):
 	return rows
 
 
+def require_jira_binding_identity(store, config, binding, observe_jira_operation_identity=None):
+	"""Admit incoming authority against configuration and both retained journals.
+
+	Candidate revisions cannot change project/repository/issue identity. Issue-only
+	adapter bindings obtain that identity from configuration; historical authority
+	always comes from the retained pin, including for completed batch operations.
+	An absent journal cannot prove that no history exists, so it refuses admission.
+	"""
+	_require(isinstance(binding, dict) and isinstance(binding.get('issue_id'), str),
+		'Jira input must bind a canonical issue key')
+	issue = binding['issue_id']
+	expected = {field: value for field, value in (
+		('issue_id', issue), ('project_id', config.get('project', {}).get('id')),
+		('repository_id', config.get('github', {}).get('repository_id')))}
+	incoming = expected if set(binding) == {'issue_id'} else _jira_lifecycle_binding_identity(binding, config)
+	_require({field: incoming[field] for field in expected} == expected,
+		'Durable Jira intent belongs to a different project/repository/issue binding')
+	_require(isinstance(store, ContinuousControllerStore), 'Jira identity needs protected controller storage')
+	for row, table in _jira_ticket_operations(store, issue):
+		record = loads(row['record_json'])
+		identity = _require_jira_operation_identity(store, config, row, record, observe_jira_operation_identity)
+		_require(all(incoming[field] == identity[field] for field in expected),
+			'Durable Jira intent belongs to a different project/repository/issue binding')
+		old_binding = record['binding']
+		if set(old_binding) != {'issue_id'}:
+			old_identity = _jira_lifecycle_binding_identity(old_binding, config)
+			_require(all(old_identity[field] == identity[field] for field in expected),
+				'Durable Jira intent belongs to a different project/repository/issue binding')
+			if set(binding) != {'issue_id'}:
+				_require(old_identity == incoming,
+					'Durable Jira intent belongs to a different project/repository/issue binding')
+		# Ordinary lifecycle revisions retain their closed binding form. A batch
+		# is deliberately issue-only and must not prohibit a full later candidate.
+		if table == 'controller_jira_operation' and set(binding) != {'issue_id'}:
+			_require(set(old_binding) == set(binding), 'Jira candidate binding has missing or unrecognized fields')
+	return incoming
+
+
 def _jira_status_observation(value, issue, provider, floor):
 	_require(isinstance(value, dict) and set(value) == {'issue_id', 'status_id', 'observed_at', 'jira_provider'}
 		and value['issue_id'] == issue and value['jira_provider'] == provider
@@ -2118,6 +2157,7 @@ def _recover_jira_ticket(store, *, config, issue, provider, now, read_transition
 	"""
 	recovered, deferred, unattempted = [], [], []
 	legacy_unproven = False
+	require_jira_binding_identity(store, config, {'issue_id': issue}, observe_jira_operation_identity)
 	rows = _jira_ticket_operations(store, issue)
 	for row, table in rows:
 		record = loads(row['record_json'])
@@ -2248,6 +2288,9 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 	inputs = _batch_jira_inputs(deepcopy(config), deepcopy(batch), deepcopy(observed_merge),
 		deepcopy(policy_context) if policy_context is not None else {}, now)
 	config, batch, policy_context = inputs['config'], inputs['batch'], inputs['policy_context']
+	# Admit the complete batch before preparing any intent or writing any issue.
+	for member in batch['constituents']:
+		require_jira_binding_identity(store, config, member['binding'])
 	from .canonical import fingerprint
 	from .jira_lifecycle import owner_closure_required, planned_write
 	# Freshness is validated above on every invocation. Only immutable merge
@@ -2451,6 +2494,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 				if current == record['to_status_id']:
 					store.finish_batch_jira_operation(operation_id, 'SUCCEEDED', observation, now)
 					continue
+				require_jira_binding_identity(store, config, record['binding'])
 				write_attempted = True
 				operation = write_transition(deepcopy(record))
 				_, operation_time = receipt(operation, issue, current_time, 'write', operation_id)
@@ -2517,6 +2561,10 @@ def _post_merge_jira_receipt(store, config, issue, now, count_gate, *, observe_p
 	_require(all(callable(adapter) for adapter in (observe_provider_identity, observe_issue_identity, observe_issue_policy, read_current_status)), 'Post-merge reconciliation requires canonical, scope, provider and status observers')
 	provider = require_jira_write_identity(config, observe_provider_identity())
 	_require_canonical_issue(issue, observe_issue_identity=observe_issue_identity, now=now)
+	closeout_binding = count_gate.get('closeout_record', {}).get('binding')
+	_require(isinstance(closeout_binding, dict) and closeout_binding.get('issue_id') == issue,
+		'Post-merge closeout names a different Jira issue')
+	require_jira_binding_identity(store, config, closeout_binding)
 	with _batch_jira_ownership(store, issue_id=issue) as owned:
 		_require(owned, 'Post-merge Jira issue is owned by another operation')
 		policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
@@ -3165,16 +3213,11 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	contract = deepcopy(contract)
 	contract['owner_closure_required'] = bool(contract.get('owner_closure_required')) or owner_closure_required(config, policy['snapshot'])
 	durable = store.jira_operations(issue)
-	binding_identity = _jira_lifecycle_binding_identity(binding, config)
+	_jira_lifecycle_binding_identity(binding, config)
+	require_jira_binding_identity(store, config, binding, observe_jira_operation_identity)
 	for operation_row in durable:
 		_require(operation_row['record'].get('jira_provider') == provider, 'Durable Jira intent belongs to a different connector/site/project/actor')
-		_require_jira_operation_identity(store, config, operation_row, operation_row['record'], observe_jira_operation_identity)
 		old_binding = operation_row['record']['binding']
-		# Issue-only history is compared to its persisted identity above, never
-		# reconstructed with today's project/repository configuration.
-		if set(old_binding) != {'issue_id'}:
-			_require(_jira_lifecycle_binding_identity(old_binding, config) == binding_identity,
-				'Durable Jira intent belongs to a different project/repository/issue binding')
 		_require(set(old_binding) == set(binding), 'Jira candidate binding has missing or unrecognized fields')
 	recovered = []
 	try:
@@ -3242,6 +3285,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 			_require(policy['issue_type'] == issue_type, 'Jira issue type changed before the write')
 			_require(event != 'JIRA_RECONCILED' or not owner_closure_required(config, policy['snapshot']),
 				'owner_closure_required: ticket stays In Review until an owner-closure record arrives')
+			require_jira_binding_identity(store, config, binding, observe_jira_operation_identity)
 		except Exception as exc:
 			_stop_unattempted_jira(store, record['operation_id'], now)
 			return {'planned': False, 'status': 'SCOPE_REFUSED', 'reason': str(exc), 'writes_stopped': True, 'execution_authority': False}
