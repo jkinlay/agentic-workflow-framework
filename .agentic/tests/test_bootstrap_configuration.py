@@ -732,7 +732,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         wheelhouse.mkdir()
         entries = []
         for name in ("PyYAML", "jsonschema", "attrs", "jsonschema-specifications",
-                     "referencing", "rpds-py", "typing-extensions"):
+                     "referencing", "rpds-py", "typing-extensions", "tzdata"):
             version, raw = installed_wheel(name)
             filename = name.replace("-", "_") + "-" + version + "-py3-none-any.whl"
             (wheelhouse / filename).write_bytes(raw)
@@ -1089,7 +1089,12 @@ class ConfiguredInstallerTests(unittest.TestCase):
         pyvenv = (self.dest / ".agentic/.venv/pyvenv.cfg").read_text(encoding="utf-8").lower()
         self.assertIn("include-system-site-packages = false", pyvenv)
         self.assertEqual(sha256((self.dest / ".agentic/requirements.lock").read_bytes()), runtime["requirements_lock_sha256"])
-        self.assertEqual(7, len(runtime["artifact_sha256"]))
+        self.assertEqual(8, len(runtime["artifact_sha256"]))
+        self.assertEqual(
+            {"attrs", "jsonschema", "jsonschema-specifications", "PyYAML",
+             "referencing", "rpds-py", "typing-extensions", "tzdata"},
+            set(runtime["artifact_sha256"]),
+        )
         self.assertIn("complete wheel SHA-256", runtime["dependency_source"])
         sentinel = self.base / "unlisted" / "awf_unlisted_sentinel.py"
         sentinel.parent.mkdir()

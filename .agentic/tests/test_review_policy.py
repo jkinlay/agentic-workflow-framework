@@ -72,7 +72,7 @@ def sealed_runtime(folder):
     # vary with packages installed in the invoking interpreter's environment.
     runtime_lib = runtime / ".agentic/lib"
     for module_name in ("attr", "attrs", "jsonschema", "jsonschema_specifications",
-                        "referencing", "rpds", "typing_extensions", "yaml"):
+                        "referencing", "rpds", "typing_extensions", "yaml", "tzdata"):
         spec = importlib.util.find_spec(module_name)
         if spec is None:
             raise AssertionError(f"locked runtime dependency is unavailable: {module_name}")
