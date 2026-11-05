@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan A–F within accepted operating limits; write STREAMS.md and STREAMS.json."""
+"""Plan A–L within accepted operating limits; write STREAMS.md and STREAMS.json."""
 import argparse
 from contextlib import nullcontext
 import json
