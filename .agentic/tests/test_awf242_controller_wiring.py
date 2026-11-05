@@ -2,6 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 import json
+import os
 import runpy
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ from unittest.mock import patch
 import source_only
 from agentic import ValidationError, budgeting
 from agentic import operating as op
-from agentic.budgeting import BudgetLedger, fresh_settings
+from agentic.budgeting import BudgetLedger, fresh_settings, project_ledger_path
 from agentic.model_routing import RoutingLedger, policy_from_config, select_route
 from test_operating import governance
 from test_model_routing import request, capabilities, outcome
@@ -43,6 +44,9 @@ class BudgetWiringTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        environment = patch.dict(os.environ, {'AWF_STATE_HOME': str(self.root / 'host-state')})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.gov = governance()
         self.value = op.default_operating(self.gov['execution']['model_routing'])
         self.path = self.root / 'routing.sqlite'
@@ -251,7 +255,7 @@ class BudgetWiringTests(unittest.TestCase):
                                      max_tokens_per_ticket=1, max_tokens_per_project=1)
             snapshot = op.validate_operating(value, kwargs['planning_config'])
             kwargs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
-            captured['path'] = store.path.with_suffix('.routing.sqlite3')
+            captured['path'] = project_ledger_path(kwargs['planning_config']['project']['id'], accounting_enabled=True)
             return real_cycle(store, **kwargs)
         with patch.object(reference_tests, 'production_controller_cycle', cycle), \
              patch.object(FakeRunner, 'observe_enrollment', lambda runner, *args: self.host.observe_enrollment(*args), create=True), \

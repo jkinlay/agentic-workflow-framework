@@ -2,12 +2,14 @@
 from copy import deepcopy
 from pathlib import Path
 import json
+import os
 import runpy
 import shutil
 import sys
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 import source_only
 from agentic import ValidationError, operating as op
@@ -52,6 +54,9 @@ class ProductionBoundaryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        environment = patch.dict(os.environ, {'AWF_STATE_HOME': str(self.root / 'host-state')})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.gov = governance()
         self.value = op.default_operating(self.gov['execution']['model_routing'])
 

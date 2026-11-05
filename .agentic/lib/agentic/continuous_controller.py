@@ -2900,12 +2900,15 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(all(callable(callback) for callback in (observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events)), 'Production requires authenticated planning backlog and event callbacks')
 	validate_snapshot(planning_operating_snapshot, planning_config)
 	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
-	from .budgeting import resolve_settings
+	from .budgeting import project_ledger_path, resolve_settings
 	budget_settings = resolve_settings(planning_operating_snapshot.config)
 	if configure_budgeting is None:
 		configure_budgeting = getattr(dispatch_ticket, 'configure_budgeting', None)
 	if callable(configure_budgeting):
-		configure_budgeting(path=budget_ledger_path or store.path.with_suffix('.routing.sqlite3'),
+		configure_budgeting(path=project_ledger_path(planning_config['project']['id'], path=budget_ledger_path,
+			accounting_enabled=budget_settings['accounting_enabled'],
+			worktree_roots=(*store.worktree_roots, repository_root),
+			previous_paths=(store.path.with_suffix('.routing.sqlite3'),)),
 			governance=planning_config, operating=planning_operating_snapshot, worktree_roots=store.worktree_roots)
 	else:
 		_require(not budget_settings['accounting_enabled'] or 'legacy_behavior' in budget_settings,

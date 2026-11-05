@@ -50,6 +50,12 @@ class _Clock:
 	def monotonic(self):
 		return time.monotonic()
 
+class _TerminalRunFailure(ValidationError):
+	"""A failed command with independently observed, nonce-bound terminal proof."""
+	def __init__(self, message, observation):
+		super().__init__(message)
+		self.observation = deepcopy(observation)
+
 class _SubprocessRunner:
 
 	def __init__(self, *, record_dir=None):
@@ -102,20 +108,32 @@ class _SubprocessRunner:
 		binding = admission['binding']
 		record = self._budget_record(binding)
 		proof = _read_record(Path(record['terminal_proof_path']))
+		success = proof.get('status') == 'COMPLETED' and proof.get('returncode') == 0
+		session = proof.get('session_id')
+		context_known = isinstance(session, str) and bool(session.strip())
 		_require(proof == observation and proof.get('terminal') is True
-			and proof.get('status') == 'COMPLETED' and proof.get('returncode') == 0
+			and (success or proof.get('status') in {'COMPLETED', 'FAILED', 'TIMED_OUT'})
 			and proof.get('pid') == record.get('pid') and proof.get('launch_nonce') == binding['run_id']
-			and isinstance(proof.get('session_id'), str) and proof['session_id'].strip()
-			and record.get('session_id', proof['session_id']) == proof['session_id'],
+			and (context_known or not success and session is None)
+			and record.get('session_id', session) == session,
 			'Budget usage differs from observed process/session completion')
 		argv = record['argv']
 		model = argv[argv.index('--model') + 1]
 		efforts = [item.split('=', 1)[1] for item in argv if item.startswith('model_reasoning_effort=')]
 		_require(len(efforts) == 1, 'Budget outcome has no unique observed launch effort')
-		return dict(actual_model=model, actual_reasoning_effort=efforts[0], actual_context_id=proof['session_id'],
+		# A failed launch before thread initialization still has a verified host
+		# execution identity. Do not invent a Codex thread or zero usage.
+		result = dict(actual_model=model, actual_reasoning_effort=efforts[0],
+			actual_context_id=session if context_known else binding['session_id'],
 			actual_tokens=proof.get('actual_tokens'), actual_cost_microusd=None,
-			success=True, validation_passed=False, independent_review_passed=False, escaped_defect=False,
-			observation_id='codex-session-usage:' + hashlib.sha256(canonical(proof['session_id'])).hexdigest())
+			success=success, validation_passed=False, independent_review_passed=False, escaped_defect=False,
+			observation_id=('codex-session-usage:' if context_known else 'codex-launch-usage:') +
+				hashlib.sha256(canonical(session if context_known else binding['session_id'])).hexdigest())
+		if not success:
+			result['failure_kind'] = 'infrastructure' if proof.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR' or proof.get('status') == 'TIMED_OUT' else 'unknown'
+		if not context_known:
+			result['actual_context_observed'] = False
+		return result
 
 	def bind_overlap_operations(self, **operations):
 		_require(all((callable(value) for value in operations.values())), 'Production overlap operations are incomplete')
@@ -234,6 +252,15 @@ class _SubprocessRunner:
 				pass
 		value = _read_record(proof)
 		_require(value.get('pid') == pid and value.get('launch_nonce') == record.get('launch_nonce'), 'Detached terminal proof is bound to a different process')
+		failed = value.get('terminal') is True and (
+			value.get('status') in {'FAILED', 'TIMED_OUT'} or
+			value.get('status') == 'COMPLETED' and type(value.get('returncode')) is int and value['returncode'] != 0)
+		if failed:
+			message = (_CODEX_SANDBOX_ERROR if value.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR' else
+				'Detached Codex run timed out' if value.get('status') == 'TIMED_OUT' else
+				'Detached Codex run returned a non-zero exit' if value.get('returncode') is not None else
+				'Detached Codex launch failed')
+			raise _TerminalRunFailure(message, value)
 		if value.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR':
 			raise ValidationError(_CODEX_SANDBOX_ERROR)
 		if value.get('status') == 'TIMED_OUT':
@@ -262,6 +289,8 @@ class _SubprocessRunner:
 			raise ValidationError('Detached Codex startup outcome was not proven')
 		value = _read_record(proof)
 		_require(value.get('pid') == pid and value.get('launch_nonce') == record.get('launch_nonce'), 'Detached startup proof is bound to a different process')
+		if value.get('terminal') is True:
+			return self.observe(record, timeout=0)
 		if value.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR':
 			if process is not None and hasattr(process, 'wait'):
 				try:
@@ -273,8 +302,6 @@ class _SubprocessRunner:
 			raise ValidationError(_CODEX_SANDBOX_ERROR)
 		if value.get('status') == 'STARTED' and value.get('terminal') is False:
 			return {'status': 'RUNNING', 'terminal': False, 'pid': value['pid'], 'launch_nonce': value['launch_nonce'], 'session_id': value.get('session_id')}
-		if value.get('terminal') is True:
-			return self.observe(record, timeout=0)
 		raise ValidationError('Detached Codex startup outcome was not proven')
 
 	def observe_quiescence(self, record):
@@ -653,6 +680,21 @@ def _build(config):
 			_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
 			settlement = budgeting.complete(admission, result)
 			_require(settlement['accepted'], 'Budget routing settlement quarantined this dispatch')
+
+	def observe_run(method, record, **kwargs):
+		try:
+			return _invoke(runner, method, record, **kwargs)
+		except _TerminalRunFailure as exc:
+			if record.get('budget_admission') is None:
+				raise
+			# Failure remains an error to dispatch/recovery, but terminal usage is
+			# settled exactly once and the failed outcome survives a host restart.
+			try:
+				complete_budget(record, exc.observation)
+			finally:
+				record.update(status='FAILED', terminal_failure=exc.observation, observed_at=_clock_text(clock))
+				_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
+			raise
 
 	def observation_evidence():
 		value = config.get('observations')
@@ -1273,7 +1315,7 @@ def _build(config):
 		record.update({'status': 'LAUNCHED', 'pid': launched['pid'], 'launched_at': _clock_text(clock)})
 		_write_record(record_path, record)
 		try:
-			result = _invoke(runner, 'observe_startup', record, timeout=timeout)
+			result = observe_run('observe_startup', record, timeout=timeout)
 		except ValidationError as exc:
 			if _sandbox_setup_failure(exc):
 				record['diagnostic'] = 'SANDBOX_SETUP_CONFIG_ERROR'
@@ -1321,6 +1363,9 @@ def _build(config):
 		_require(record.get('ticket') == payload.get('ticket') and record.get('stream') == payload.get('stream'), 'Dispatch observation identity differs from durable record')
 		_require(record.get('role') == payload.get('role') and record.get('lifecycle_stage') == payload.get('lifecycle_stage'), 'Dispatch observation role or lifecycle stage differs from durable record')
 		_require(record.get('exact_tuple') == payload.get('exact_tuple') and record.get('lane_start_waivers') == payload.get('lane_start_waivers'), 'Dispatch observation tuple or waiver evidence differs from durable record')
+		if record.get('status') == 'FAILED':
+			observe_run('observe', record, timeout=timeout)
+			raise ValidationError('Failed dispatch cannot produce a successful receipt')
 		reconcile = 'reconcile_nonce' in payload
 		if reconcile:
 			_require(record.get('status') in {'PREPARED', 'LAUNCHED', 'COMPLETED'}, 'Interrupted dispatch has no observable durable launch intent')
@@ -1330,7 +1375,7 @@ def _build(config):
 				record.update({'pid': handoff['pid'], 'status': 'LAUNCHED'})
 				_write_record(path, record)
 			try:
-				result = _invoke(runner, 'observe', record, timeout=timeout)
+				result = observe_run('observe', record, timeout=timeout)
 			except ValidationError as exc:
 				if _sandbox_setup_failure(exc):
 					raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
@@ -1348,7 +1393,7 @@ def _build(config):
 		else:
 			_require(record.get('status') in {'LAUNCHED', 'COMPLETED'}, 'Dispatch has no accepted durable launch')
 			if record.get('budget_admission') is not None and record['status'] == 'LAUNCHED':
-				result = _invoke(runner, 'observe', record, timeout=timeout)
+				result = observe_run('observe', record, timeout=timeout)
 				if result.get('terminal') is True:
 					_require(result.get('status') == 'COMPLETED' and result.get('returncode') == 0
 						and result.get('pid') == record['pid'] and result.get('launch_nonce') == record['launch_nonce']
@@ -1367,7 +1412,7 @@ def _build(config):
 		_require(record.get('dispatch_id') == payload['dispatch_id'] and record.get('dispatch_nonce') == payload.get('dispatch_nonce') and (record.get('ticket') == payload.get('ticket')) and (record.get('session_id') is not None), 'Dispatch quiescence observation differs from the accepted run')
 		observer = 'observe_quiescence' if callable(getattr(runner, 'observe_quiescence', None)) else 'observe'
 		kwargs = {} if observer == 'observe_quiescence' else {'timeout': 0}
-		result = _invoke(runner, observer, record, **kwargs)
+		result = observe_run(observer, record, **kwargs)
 		_require(isinstance(result, dict) and result.get('status') == 'COMPLETED' and (result.get('returncode') == 0) and (result.get('terminal') is True) and (result.get('pid') == record.get('pid')) and (result.get('launch_nonce') == record.get('launch_nonce')) and (result.get('session_id') == record.get('session_id')), 'Accepted dispatch is not proved terminal and quiescent')
 		observed_at = _clock_text(clock)
 		record['status'] = 'COMPLETED'

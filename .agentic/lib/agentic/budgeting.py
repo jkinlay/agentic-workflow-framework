@@ -7,6 +7,8 @@ Budget accounting never confers dispatch, security, recovery or merge authority.
 from copy import deepcopy
 import hashlib
 import json
+import os
+from pathlib import Path
 
 from .budget_enrollment import ProtectedDatabase, encoded, require, text_id
 
@@ -89,6 +91,48 @@ def codex_usage(events):
     return total if seen else None
 
 
+def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_roots=(), previous_paths=()):
+    """One host-owned lifetime ledger per project, independent of checkouts.
+
+    AWF_STATE_HOME selects the host state directory; otherwise use the platform
+    state home. A reviewed explicit path supports existing ledger migrations.
+    Resolution is read-only, and unavailable state never blocks OFF work.
+    """
+    from . import ValidationError
+    from .path_containment import is_within
+    explicit = path is not None
+    try:
+        require(text_id(project_id), 'Budget project identity is unavailable')
+        if path is None:
+            home = os.environ.get('AWF_STATE_HOME')
+            if home is None:
+                home = (os.environ.get('LOCALAPPDATA') if os.name == 'nt' else
+                        os.environ.get('XDG_STATE_HOME'))
+                if home is None and os.name != 'nt':
+                    home = str(Path.home() / '.local/state')
+            require(isinstance(home, str) and bool(home.strip()) and Path(home).is_absolute(),
+                    'Host state home is unavailable or not absolute')
+            path = Path(home) / 'awf/projects' / hashlib.sha256(project_id.encode('utf-8')).hexdigest() / 'routing.sqlite3'
+        candidate = Path(path)
+        require(candidate.is_absolute(), 'Project ledger path must be absolute')
+        for parent in (candidate, *candidate.parents):
+            require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
+                    'Project ledger path traverses a link/reparse point')
+        candidate = candidate.resolve()
+        require(not any(is_within(candidate, Path(root).resolve()) for root in worktree_roots),
+                'Project ledger must be outside worker and reviewer worktrees')
+        require(explicit or not any(Path(prior).exists() and Path(prior).resolve() != candidate
+                                    for prior in previous_paths),
+                'Preserve/migrate existing per-host budget history before selecting the canonical ledger')
+        return candidate
+    except (OSError, RuntimeError, ValueError, TypeError, ValidationError) as exc:
+        if accounting_enabled:
+            detail = str(exc) + '; ' if isinstance(exc, ValidationError) else ''
+            raise ValidationError('Enabled budgeting cannot resolve the canonical project ledger; ' + detail +
+                'configure an absolute host-owned AWF_STATE_HOME or budget_ledger_path outside worktrees') from exc
+        return None
+
+
 def subprocess_budget_request(binding, *, worker_context_id=None, stream=None):
     """Conservative routing facts for an explicitly dispatched CLI run."""
     value = dict(ticket_id=binding['ticket_id'], role=binding['role'],
@@ -97,8 +141,11 @@ def subprocess_budget_request(binding, *, worker_context_id=None, stream=None):
         uncertainty='high', verification='none', risk_flags=[],
         reservation_tokens=None, reservation_cost_microusd=None)
     if binding['role'] in ('critic', 'specialist'):
-        require(text_id(worker_context_id), 'Review budgeting requires an observed worker context')
-        value['worker_context_id'] = worker_context_id
+        require(worker_context_id is None or text_id(worker_context_id), 'Review worker context is invalid')
+        # A standalone review has no enrolled worker to compare. UNKNOWN is
+        # diagnostic, never an observed execution or an independence attestation.
+        value['worker_context_id'] = worker_context_id if worker_context_id is not None else 'UNKNOWN'
+        value['worker_context_observed'] = worker_context_id is not None
     if stream is not None:
         value['stream'] = stream
     return value
@@ -120,8 +167,10 @@ class ControllerBudgeting:
         self.operating = operating
         self.settings = resolve_settings(operating.config)
         self.host = host
-        self.database = ProtectedDatabase(path, worktree_roots)
-        self.registry = EnrollmentRegistry(self.database.path.with_suffix('.enrollment.sqlite'), host, worktree_roots)
+        require(path is not None or not self.settings['accounting_enabled'],
+                'Enabled budgeting requires the canonical project ledger')
+        self.database = None if path is None else ProtectedDatabase(path, worktree_roots)
+        self.registry = None if path is None else EnrollmentRegistry(self.database.path.with_suffix('.enrollment.sqlite'), host, worktree_roots)
 
     def advance(self, store, *args, **kwargs):
         """Advance local lifecycle with the validated, effective mode."""
@@ -137,6 +186,7 @@ class ControllerBudgeting:
 
     def _ledger(self):
         from .model_routing import RoutingLedger
+        require(self.database is not None, 'Retained budget completion requires the canonical project ledger')
         # Apply the same containment/link checks before RoutingLedger opens it.
         with self.database.transaction(''):
             pass

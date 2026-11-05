@@ -335,10 +335,10 @@ class HostDriver:
     def from_project(cls, config, runtime_root):
         """Load installed settings; candidate checkout bytes cannot select policy.
 
-        Deployments sharing a controller pin its canonical budget_ledger_path.
+        Deployments share the canonical host-owned project budget ledger.
         This CLI reports usage but has no verified per-run token ceiling.
         """
-        from ..budgeting import ControllerBudgeting
+        from ..budgeting import ControllerBudgeting, project_ledger_path, resolve_settings
         from ..canonical import load_yaml
         from ..operating import read_operating
         driver = cls(config, runtime_root)
@@ -357,7 +357,10 @@ class HostDriver:
         pattern = pattern.replace(r'\{slug\}', r'[A-Za-z0-9_.-]+')
         matched = re.fullmatch(pattern, config['head_branch'])
         ticket = matched.groupdict().get('ticket') if matched else None
-        context = ControllerBudgeting(config.get('budget_ledger_path') or driver.state / 'routing.sqlite3',
+        path = project_ledger_path(governance['project']['id'], path=config.get('budget_ledger_path'),
+            accounting_enabled=resolve_settings(snapshot.config)['accounting_enabled'],
+            worktree_roots=(driver.worker, driver.critic), previous_paths=(driver.state / 'routing.sqlite3',))
+        context = ControllerBudgeting(path,
             governance, snapshot, driver, worktree_roots=(driver.worker, driver.critic))
         driver.configure_budgeting(context, ticket_id=ticket)
         return driver
@@ -374,13 +377,37 @@ class HostDriver:
     def observe_budget_admission(self, binding, selected):
         from ..budgeting import subprocess_budget_request
         self.observe_enrollment(binding)
-        contexts = set()
-        for identity in (self.state / 'runs').glob('*/codex-identity.json'):
-            contexts.add(self.codex_run_id(identity.parent.name))
-        require(len(contexts) == 1 or binding['role'] == 'worker',
-                'Review budgeting needs one observed worker context; host-dependent identity unavailable')
+        worker_context = None
+        worker_run = None
+        if binding['role'] in ('critic', 'specialist'):
+            # The latest worker for this project/ticket is the execution under
+            # review, not the set of all historical contexts on this host.
+            with self.budgeting._ledger()._transaction() as db:
+                rows = db.execute("SELECT run_id,outcome FROM model_runs WHERE project_id=? AND ticket_id=? "
+                    "AND role IN ('worker','fix') ORDER BY rowid DESC",
+                    (binding['project_id'], binding['ticket_id'])).fetchall()
+            for row in rows:
+                outcome = loads(row['outcome'] or '{}')
+                if outcome.get('actual_context_id') and outcome.get('actual_context_observed') is not False:
+                    worker_context, worker_run = outcome['actual_context_id'], row['run_id']
+                    break
+            if worker_context is None:
+                # Retained worker identities may predate accounting enrollment.
+                identities = sorted((self.state / 'runs').glob('*/codex-identity.json'),
+                    key=lambda identity: (identity.stat().st_mtime_ns, identity.parent.name), reverse=True)
+                for identity in identities:
+                    intent = identity.parent / 'budget-intent.json'
+                    if intent.exists():
+                        with Tree(identity.parent) as tree:
+                            prior = loads(tree.read('budget-intent.json', maximum=16384).decode('utf-8'))
+                        if any(prior.get(key) != binding[key] for key in ('project_id', 'ticket_id')):
+                            continue
+                    worker_context, worker_run = self.codex_run_id(identity.parent.name), identity.parent.name
+                    break
         request = subprocess_budget_request(binding,
-            worker_context_id=next(iter(contexts)) if contexts else None, stream=self.c.get('budget_stream'))
+            worker_context_id=worker_context, stream=self.c.get('budget_stream'))
+        if worker_run is not None:
+            request['worker_run_id'] = worker_run
         return {'request': request, 'capabilities': {'models': {
             selected['model']: [selected['reasoning_effort']]}}, 'limits_enforced': False}
 
