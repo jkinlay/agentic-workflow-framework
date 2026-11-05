@@ -10,12 +10,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import sys
 import time
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from collections import Counter
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
@@ -27,6 +29,7 @@ from agentic.child_process import child_env
 
 FORMAT = 'awf-upgrade-preservation-1'
 EXCLUDED = {'.git', '.agentic/.venv'}
+REQUIRED_CHECKS = ('source_managed_membership', 'historical_state_continuity', 'named_streams')
 
 
 def _permissions(path):
@@ -72,6 +75,69 @@ def _permissions(path):
         return {'verified': False, 'method': method, 'diagnostic': 'permission capture unavailable'}
 
 
+def _named_streams(path):
+    """Digest every named Windows stream, including directory streams; fail closed."""
+    if os.name != 'nt':
+        return {'verified': True, 'method': 'posix-no-windows-streams', 'streams': {}}
+    method = 'windows-find-streams'
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class StreamData(ctypes.Structure):
+            _fields_ = [('size', ctypes.c_longlong), ('name', wintypes.WCHAR * 296)]
+
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        first = kernel.FindFirstStreamW
+        first.argtypes = [wintypes.LPCWSTR, wintypes.INT, ctypes.POINTER(StreamData), wintypes.DWORD]
+        first.restype = wintypes.HANDLE
+        next_stream = kernel.FindNextStreamW
+        next_stream.argtypes = [wintypes.HANDLE, ctypes.POINTER(StreamData)]
+        next_stream.restype = wintypes.BOOL
+        close = kernel.FindClose
+        close.argtypes = [wintypes.HANDLE]
+        close.restype = wintypes.BOOL
+        data = StreamData()
+        handle = first(str(path), 0, ctypes.byref(data), 0)
+        streams = {}
+        if handle == ctypes.c_void_p(-1).value:
+            if ctypes.get_last_error() != 38:  # ERROR_HANDLE_EOF: no streams.
+                raise OSError('Stream enumeration unavailable')
+        else:
+            try:
+                while True:
+                    if data.name != '::$DATA':
+                        raw = Path(str(path) + data.name).read_bytes()
+                        if len(raw) != data.size:
+                            raise OSError('Stream changed during capture')
+                        name_hash = hashlib.sha256(data.name.encode('utf-8')).hexdigest()
+                        streams[name_hash] = {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+                    if not next_stream(handle, ctypes.byref(data)):
+                        if ctypes.get_last_error() != 38:
+                            raise OSError('Stream enumeration incomplete')
+                        break
+            finally:
+                close(handle)
+        return {'verified': True, 'method': method, 'streams': streams}
+    except (OSError, AttributeError, ValueError):
+        return {'verified': False, 'method': method, 'diagnostic': 'named stream capture unavailable'}
+
+
+def _streams_verified(entry):
+    evidence = entry.get('named_streams') or {}
+    expected_method = 'windows-find-streams' if os.name == 'nt' else 'posix-no-windows-streams'
+    streams = evidence.get('streams')
+
+    def digest(value):
+        return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
+
+    return (evidence.get('verified') is True and evidence.get('method') == expected_method
+            and isinstance(streams, dict) and (os.name == 'nt' or not streams)
+            and all(digest(name) and isinstance(record, dict) and digest(record.get('sha256'))
+                    and type(record.get('size')) is int and record['size'] >= 0
+                    for name, record in streams.items()))
+
+
 def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
     """Hash a quiescent disposable project without opening any database for write.
 
@@ -82,7 +148,7 @@ def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
     project = Path(project).resolve(strict=True)
     files = {}
     directories = {'/': {'mode': stat.S_IMODE(project.stat().st_mode),
-                         'permissions': _permissions(project)}}
+                         'permissions': _permissions(project), 'named_streams': _named_streams(project)}}
 
     def incomplete(error):
         raise ValueError('Preservation inventory incomplete: directory enumeration failed') from error
@@ -103,7 +169,8 @@ def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
         for name in dirs:
             path = parent / name
             directories[path.relative_to(project).as_posix() + '/'] = {
-                'mode': stat.S_IMODE(path.stat().st_mode), 'permissions': _permissions(path)}
+                'mode': stat.S_IMODE(path.stat().st_mode), 'permissions': _permissions(path),
+                'named_streams': _named_streams(path)}
         for name in sorted(names):
             path = parent / name
             relative = path.relative_to(project).as_posix()
@@ -112,7 +179,7 @@ def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
             raw = path.read_bytes()
             files[relative] = {'sha256': hashlib.sha256(raw).hexdigest(),
                                'mode': stat.S_IMODE(path.stat().st_mode), 'size': len(raw),
-                               'permissions': _permissions(path)}
+                               'permissions': _permissions(path), 'named_streams': _named_streams(path)}
     config = load_yaml((project / '.agentic/PROJECT_CONFIG.yaml').read_bytes())
     github = config['github']
     identity = {key: github.get(key) for key in ('repository', 'repository_id', 'base_branch')}
@@ -142,6 +209,8 @@ def compare(before, after, allowed_delta):
         if '/' not in entries:
             violations.append(label + ' root permissions missing')
         for path, entry in sorted(entries.items()):
+            if not _streams_verified(entry):
+                violations.append(label + ' named streams unverified: ' + path)
             permission = entry.get('permissions') or {}
             digest = permission.get('sha256')
             if (permission.get('verified') is not True or permission.get('method') not in
@@ -159,7 +228,7 @@ def compare(before, after, allowed_delta):
         violations.append('unused delta: ' + path)
     return {'format': 'awf-upgrade-comparison-1', 'preserved': not violations,
             'changes': changes, 'violations': violations, 'execution_authority': False,
-            'qualification_status': 'NOT_QUALIFIED'}
+            'evidence_scope': 'PRESERVATION_COMPARISON_ONLY'}
 
 
 def _json_identity(value):
@@ -201,7 +270,8 @@ def _creation_state(project, relative, *, directory=False, readonly=False):
             probe = Path(name)
             if readonly:
                 probe.chmod(stat.S_IREAD)
-        return {'mode': stat.S_IMODE(probe.stat().st_mode), 'permissions': _permissions(probe)}
+        return {'mode': stat.S_IMODE(probe.stat().st_mode), 'permissions': _permissions(probe),
+                'named_streams': _named_streams(probe)}
     finally:
         if probe is not None and not directory:
             probe.chmod(0o600)
@@ -214,6 +284,83 @@ def _creation_state(project, relative, *, directory=False, readonly=False):
                 current.rmdir()
                 current = previous
             temporary_root.rmdir()
+
+
+def _ledger_projection(raw, columns=None):
+    """Independent read-only SQL oracle. No initializer, validator or migration calls.
+
+    No historical field may change. New columns/tables are outside the historical
+    projection; every old column, rowid, value, type and duplicate count survives.
+    Only digests leave this function, never accounting contents.
+    """
+    def quote(name):
+        return '"' + name.replace('"', '""') + '"'
+
+    def cell(value):
+        if isinstance(value, bytes):
+            value = value.hex()
+            kind = 'blob'
+        elif isinstance(value, float):
+            value = value.hex()
+            kind = 'float'
+        else:
+            kind = type(value).__name__
+        return [kind, value]
+
+    connection = sqlite3.connect(':memory:')
+    try:
+        connection.deserialize(raw)
+        connection.execute('PRAGMA query_only=ON')
+        if columns is None:
+            columns = {}
+            for name, sql in connection.execute("SELECT name,sql FROM sqlite_master WHERE type='table'"):
+                names = [row[1] for row in connection.execute('PRAGMA table_info(' + quote(name) + ')')]
+                if 'WITHOUT ROWID' not in (sql or '').upper():
+                    names.insert(0, 'rowid')
+                columns[name] = names
+        result = {}
+        for table, names in sorted(columns.items()):
+            available = {row[1] for row in connection.execute('PRAGMA table_info(' + quote(table) + ')')}
+            if not set(names) - {'rowid'} <= available:
+                raise ValueError('Historical ledger columns missing')
+            rows = connection.execute('SELECT ' + ','.join(map(quote, names)) + ' FROM ' + quote(table))
+            counts = Counter(hashlib.sha256(_json_identity([cell(v) for v in row]).encode()).hexdigest()
+                             for row in rows)
+            result[table] = {'columns': names, 'rows': dict(counts)}
+        return result
+    except sqlite3.DatabaseError as error:
+        raise ValueError('Historical ledger continuity unavailable') from error
+    finally:
+        connection.close()
+
+
+def _historical_state(state):
+    # All non-SQL state (reservations, audit JSON, sidecars, unknown charges,
+    # archives) remains byte-identical. There are no field exceptions for 1.9.5.
+    return {path: ({'tables': _ledger_projection(raw)} if raw.startswith(b'SQLite format 3\0')
+                   else {'sha256': hashlib.sha256(raw).hexdigest()})
+            for path, raw in state.items()}
+
+
+def _check_state_continuity(historical, expected_paths, read):
+    failures = []
+    if not isinstance(historical, dict) or set(historical) != expected_paths:
+        return ['historical state continuity evidence missing']
+    for path, expected in sorted(historical.items()):
+        try:
+            raw = read(path)
+            if 'tables' in expected:
+                tables = _ledger_projection(raw, {name: record['columns']
+                                                 for name, record in expected['tables'].items()})
+                valid = all(not (Counter(record['rows']) - Counter(tables[name]['rows']))
+                            for name, record in expected['tables'].items())
+            else:
+                valid = hashlib.sha256(raw).hexdigest() == expected['sha256']
+            if not valid:
+                raise ValueError('Historical values lost')
+        except (ValueError, KeyError, TypeError, OSError):
+            failures.append('historical state continuity mismatch: ' + path)
+    return failures
 
 
 def prepare_upgrade(source, project, pin, before):
@@ -243,8 +390,12 @@ def prepare_upgrade(source, project, pin, before):
         raise ValueError('No approved preservation migration for this release pair')
     immutable = {path: digest for path, digest in manifest['files'].items()
                  if managed(path) and path not in {CONFIG, PROVENANCE, CODEOWNERS}}
+    collisions = before['files'].keys() & (immutable.keys() - identity['immutable_files'].keys())
+    if collisions:
+        raise ValueError('Baseline owner collision with newly managed target: ' + ', '.join(sorted(collisions)))
     state = {path: (project / path).read_bytes() for path in before['files']
              if path.startswith('.agentic-state/')}
+    historical_state = _historical_state(state)  # Capture BEFORE invoking any migration code.
     operating = project / 'OPERATING_CONFIG.yaml'
     bundle, steps = apply_chain(versions, identity['version'], config_raw,
         operating.read_bytes() if operating.exists() else None, receipt_raw,
@@ -306,6 +457,7 @@ def prepare_upgrade(source, project, pin, before):
             'removed': set(identity['immutable_files']) - set(immutable),
             'old_immutable': identity['immutable_files'], 'config': load_yaml(config_raw),
             'receipt': receipt, 'creation': creation, 'started_at': time.time(),
+            'historical_state': historical_state,
             'archive_actions': archive_actions, 'state_migrations': migrations}
 
 
@@ -319,8 +471,14 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
         failures.append('migration policy baseline binding mismatch')
     old_entries = {**before['files'], **before['directories']}
     new_entries = {**after['files'], **after['directories']}
+    collisions = before['files'].keys() & (policy['immutable'].keys() - policy['old_immutable'].keys())
+    checks = {'source_managed_membership': 'FAIL' if collisions else 'PASS'}
+    for path in sorted(collisions):
+        failures.append('baseline owner collision with newly managed target: ' + path)
 
     def approve(path, evidence):
+        if path in collisions:
+            return
         old, new = old_entries.get(path), new_entries.get(path)
         if old != new:
             delta[path] = {'before': old, 'after': new}
@@ -335,7 +493,7 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
 
     def expected_state(path, *, preserve=False):
         old = old_entries.get(path)
-        expected = ({key: old[key] for key in ('mode', 'permissions')} if old is not None
+        expected = ({key: old.get(key) for key in ('mode', 'permissions', 'named_streams')} if old is not None
                     else policy['creation'].get(path))
         if not preserve and path in policy['files'] and policy['files'][path]['rule'] == 'upgrade-archive':
             # Prior archives (including already-existing target archives) never change.
@@ -343,6 +501,18 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
                 return new_entries.get(path) == old
         new = new_entries.get(path)
         return bool(expected and new and all(new.get(key) == value for key, value in expected.items()))
+
+    historical = policy.get('historical_state')
+    expected_paths = {path for path in before['files'] if path.startswith('.agentic-state/')}
+    continuity_failures = _check_state_continuity(historical, expected_paths, bound_bytes)
+    failures.extend(continuity_failures)
+    checks['historical_state_continuity'] = 'FAIL' if continuity_failures else 'PASS'
+    checks['named_streams'] = ('PASS' if all(_streams_verified(entry) for entry in
+        [*old_entries.values(), *new_entries.values()]) and all(
+            old.get('named_streams') == new_entries.get(path, {}).get('named_streams')
+            for path, old in old_entries.items() if (old.get('named_streams') or {}).get('streams')) else 'FAIL')
+    if checks['named_streams'] != 'PASS':
+        failures.append('named stream preservation incomplete or changed')
 
     for path, expected in sorted(policy['files'].items()):
         new = after['files'].get(path)
@@ -435,11 +605,16 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
     result['violations'].extend(failures)
     result['preserved'] = not result['violations']
     result['approved_changes'] = approved
+    result['checks'] = checks
     result['migration'] = {'source_version': policy['source_version'], 'target_version': policy['target_version'],
                            'manifest_sha256': policy['manifest_sha256'],
                            'baseline_sha256': policy['baseline_sha256'],
                            'agents_ownership': 'managed: exact target manifest bytes',
                            'state_migrations': policy['state_migrations'],
+                           'historical_continuity': {'paths_checked': len(expected_paths),
+                               'existing_field_exceptions': [],
+                               'new_sql_columns_and_tables_outside_historical_projection': True,
+                               'baseline_state_sha256': hashlib.sha256(_json_identity(historical).encode()).hexdigest()},
                            'archive_actions': policy['archive_actions'],
                            'recovery_objects': 'must be absent after successful commit'}
     return result
@@ -589,12 +764,19 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
                 with owner.open('xb') as stream:
                     stream.write(b'Synthetic owner customization; not adopter evidence.\n')
             report['before'] = inventory(project)
-            migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
+            try:
+                migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
+            except ValueError:
+                report['failed_stage'] = 'migration_policy'
+                report['diagnostic'] = 'Preservation migration policy refused; upgrade not executed'
+                return report
         else:
             report['after'] = inventory(project)
             report['preservation'] = compare_upgrade(report['before'], report['after'],
                 migration_policy, project, allowed_delta=allowed_delta)
-            if report['preservation']['preserved'] is not True:
+            if (report['preservation']['preserved'] is not True or
+                    any(report['preservation'].get('checks', {}).get(name) != 'PASS'
+                        for name in REQUIRED_CHECKS)):
                 report['failed_stage'] = 'preservation'
                 return report
     report['status'] = 'QUALIFIED_DISPOSABLE_UPGRADE'

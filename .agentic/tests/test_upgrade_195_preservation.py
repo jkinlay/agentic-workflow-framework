@@ -19,6 +19,8 @@ import os
 from agentic import ValidationError
 from agentic.installer import install
 import hashlib
+import sqlite3
+from unittest.mock import patch
 
 
 @skip_unless_source_repo('requires published Git objects', 'scripts/publish_release.py', '.git')
@@ -49,6 +51,88 @@ class AuthenticBaselineTests(unittest.TestCase):
                 with self.assertRaises((ValueError, AssertionError)):
                     verify_published(copy)
                 self.assertEqual('1.9.5', verify_published(self.source)['template_version'])
+
+    def test_newly_managed_owner_collision_cannot_be_approved_after_deletion(self):
+        project = self.base / 'owner-managed-collision'
+        install_baseline(self.source, project)
+        relative = '.agentic/lib/agentic/lane_labels.py'
+        owner = project / relative
+        self.assertFalse(owner.exists())
+        owner.write_bytes(b'Synthetic owner evidence at a future managed path.\n')
+        before = inventory(project)
+        try:
+            policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+        except ValueError as error:
+            self.assertIn('owner collision', str(error))
+            self.assertIn(relative, str(error))
+            self.assertEqual(before, inventory(project))
+            return
+        # Simulate the faulty upgrade deleting owner evidence before installation.
+        owner.unlink()
+        install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
+        result = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+        self.assertFalse(result['preserved'], result)
+
+    def test_faulty_migration_cannot_approve_its_own_deleted_settlement(self):
+        from upgrade_195_fixtures import seed_legacy_accounting
+        from agentic import upgrade
+        project = self.base / 'deleted-settlement'
+        install_baseline(self.source, project)
+        seed_legacy_accounting(self.source, project)
+        ledger = project / '.agentic-state/routing/ledger.sqlite'
+
+        def identities():
+            connection = sqlite3.connect(':memory:')
+            try:
+                connection.deserialize(ledger.read_bytes())
+                return connection.execute('SELECT run_id FROM model_runs ORDER BY run_id').fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual([('synthetic-settled',), ('synthetic-unknown',)], identities())
+        before = inventory(project)
+        clean_project = self.base / 'clean-accounting'
+        shutil.copytree(project, clean_project)
+        clean_before = inventory(clean_project)
+        clean_policy = qualify_upgrade.prepare_upgrade(self.candidate, clean_project, self.pin, clean_before)
+        install(self.candidate, clean_project, self.pin, mode='upgrade', configure=True, discover=False)
+        clean = qualify_upgrade.compare_upgrade(clean_before, inventory(clean_project), clean_policy, clean_project)
+        self.assertTrue(clean['preserved'], clean['violations'])
+        self.assertEqual('PASS', clean['checks']['historical_state_continuity'])
+        original = upgrade._migrate_routing_ledger
+
+        def lose_settlement(raw):
+            connection = sqlite3.connect(':memory:')
+            try:
+                connection.deserialize(original(raw))
+                connection.execute("DELETE FROM model_runs WHERE run_id='synthetic-settled'")
+                connection.commit()
+                return connection.serialize()
+            finally:
+                connection.close()
+
+        with patch.object(upgrade, '_migrate_routing_ledger', side_effect=lose_settlement):
+            policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+            install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
+        self.assertEqual([('synthetic-unknown',)], identities())
+        result = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+        self.assertFalse(result['preserved'], result)
+        self.assertTrue(any('continuity' in item for item in result['violations']), result)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows named-stream preservation regression')
+    def test_owner_named_stream_deleted_across_upgrade_is_rejected(self):
+        project = self.base / 'deleted-stream'
+        install_baseline(self.source, project)
+        customize_preservation_project(project)
+        stream = Path(str(project / 'owner.txt') + ':owner-receipt')
+        stream.write_bytes(b'Synthetic owner stream evidence.\n')
+        before = inventory(project)
+        policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+        stream.unlink()
+        install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
+        result = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+        self.assertFalse(result['preserved'], result)
+        self.assertIn('owner.txt', result['changes'])
 
     def test_derived_delta_accepts_only_the_clean_authentic_upgrade(self):
         project = self.base / 'preservation-upgrade'

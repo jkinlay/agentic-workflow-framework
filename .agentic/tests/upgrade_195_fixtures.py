@@ -121,3 +121,28 @@ def customize_preservation_project(project):
         path = Path(project) / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
+
+
+def seed_legacy_accounting(source, project):
+    """Synthetic rows in the authentic published initializer's legacy schema."""
+    published_call(source, """
+import sqlite3
+from agentic.model_routing import initialize_routing_ledger
+project = Path(sys.argv[3])
+path = project / '.agentic-state/routing/ledger.sqlite'
+path.parent.mkdir(parents=True, exist_ok=True)
+connection = sqlite3.connect(path)
+try:
+    initialize_routing_ledger(connection, legacy_only=True)
+    for run_id, status, tokens, outcome in (
+        ('synthetic-settled', 'settled', 20, '{"settled_at":"2026-10-01T00:00:00Z"}'),
+        ('synthetic-unknown', 'unknown', None, None)):
+        connection.execute('INSERT INTO model_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (run_id, 'synthetic-project', 'EX-195', 'worker', 'fixture-worker',
+             'implementation', '2026-10-01T00:00:00Z', '2026-10-01', 'a' * 64,
+             status, 100, None, tokens, None, 0, '{}', '{}', outcome))
+    connection.commit()
+finally:
+    connection.close()
+print('{}')
+""", project)

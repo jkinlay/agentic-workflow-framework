@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from qualify_upgrade import (compare, inventory, write_report, plan, checked_bootstrap, qualify,
-                             _creation_state, _json_identity)
+                             _creation_state, _json_identity, _historical_state, _check_state_continuity)
 import os
 from copy import deepcopy
 
@@ -83,11 +83,11 @@ class PreservationReportTests(unittest.TestCase):
             tree.write(file_path, b'permission creation test\n')
         after = inventory(self.root)
         self.assertEqual(file_state, {key: after['files'][file_path][key]
-                                     for key in ('mode', 'permissions')})
+                                     for key in ('mode', 'permissions', 'named_streams')})
         self.assertEqual(directory_state, after['directories'][directory_path])
         (self.root / file_path).chmod(stat.S_IREAD)
         readonly = inventory(self.root)['files'][file_path]
-        self.assertEqual(readonly_state, {key: readonly[key] for key in ('mode', 'permissions')})
+        self.assertEqual(readonly_state, {key: readonly[key] for key in ('mode', 'permissions', 'named_streams')})
 
     def test_config_value_identity_preserves_types(self):
         self.assertNotEqual(_json_identity({'enabled': True}), _json_identity({'enabled': 1}))
@@ -116,6 +116,77 @@ class PreservationReportTests(unittest.TestCase):
         before = inventory(self.root)
         (self.root / 'unexpected').mkdir()
         self.assertFalse(compare(before, inventory(self.root), {})['preserved'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows named-stream preservation regression')
+    def test_inventory_detects_owner_stream_loss(self):
+        stream = Path(str(self.root / 'PROJECT_INSTRUCTIONS.md') + ':owner-receipt')
+        stream.write_bytes(b'synthetic stream evidence')
+        before = inventory(self.root)
+        stream.unlink()
+        result = compare(before, inventory(self.root), {})
+        self.assertFalse(result['preserved'], result)
+
+    def test_missing_named_stream_evidence_cannot_pass(self):
+        report = inventory(self.root)
+        report['files']['PROJECT_INSTRUCTIONS.md'].pop('named_streams', None)
+        self.assertFalse(compare(report, report, {})['preserved'])
+
+    def test_unreadable_named_streams_cannot_be_waived(self):
+        before = inventory(self.root)
+        with patch('qualify_upgrade._named_streams', return_value={
+                'verified': False, 'method': 'windows-find-streams'}):
+            after = inventory(self.root)
+        delta = compare(before, after, {})['changes']
+        self.assertFalse(compare(before, after, delta)['preserved'])
+
+    def test_independent_state_oracle_preserves_all_historical_values(self):
+        import sqlite3
+        connection = sqlite3.connect(':memory:')
+        self.addCleanup(connection.close)
+        connection.executescript('''
+            CREATE TABLE ledger (identity TEXT PRIMARY KEY, charge, settlement BLOB);
+            INSERT INTO ledger VALUES ('reserved', 100, NULL);
+            INSERT INTO ledger VALUES ('settled', 20, X'0001');
+            INSERT INTO ledger VALUES ('unknown', NULL, NULL);
+            CREATE TABLE audit (identity TEXT, value TEXT);
+            INSERT INTO audit VALUES ('entry', 'unchanged');
+            INSERT INTO audit VALUES ('entry', 'unchanged');
+            CREATE TABLE empty_history (identity TEXT);
+        ''')
+        original = connection.serialize()
+        path = '.agentic-state/routing/ledger.sqlite'
+        state = {path: original, '.agentic-state/reservations/run.json': b'{"id":"reserved","charge":100}',
+                 '.agentic-state/operating/changes/audit.json': b'{"id":"entry","value":"unchanged"}'}
+        # This oracle must not invoke upgrade code, even for a clean result.
+        with patch('agentic.upgrade.apply_chain', side_effect=AssertionError('migration called')), \
+                patch('agentic.upgrade._migrate_routing_ledger', side_effect=AssertionError('migration called')):
+            historical = _historical_state(state)
+            self.assertEqual([], _check_state_continuity(historical, set(state), state.__getitem__))
+            for sql in ("DELETE FROM ledger WHERE identity='settled'",
+                        "UPDATE ledger SET identity='replacement' WHERE identity='reserved'",
+                        "UPDATE ledger SET charge=0 WHERE identity='unknown'",
+                        "UPDATE ledger SET settlement=X'0002' WHERE identity='settled'",
+                        "UPDATE ledger SET charge='100' WHERE identity='reserved'",
+                        "DELETE FROM audit WHERE rowid=2",
+                        "UPDATE audit SET rowid=3 WHERE rowid=1",
+                        "ALTER TABLE empty_history RENAME COLUMN identity TO replacement"):
+                with self.subTest(sql=sql):
+                    connection.deserialize(original)
+                    connection.execute(sql)
+                    connection.commit()
+                    changed = {**state, path: connection.serialize()}
+                    self.assertNotEqual(original, changed[path])
+                    self.assertTrue(_check_state_continuity(historical, set(state), changed.__getitem__))
+            for changed_path in set(state) - {path}:
+                changed = {**state, changed_path: b'{}'}
+                self.assertTrue(_check_state_continuity(historical, set(state), changed.__getitem__))
+            self.assertTrue(_check_state_continuity(None, set(state), state.__getitem__))
+            self.assertTrue(_check_state_continuity({}, set(state), state.__getitem__))
+            connection.deserialize(original)
+            connection.execute('ALTER TABLE ledger ADD COLUMN additive TEXT')
+            connection.commit()
+            changed = {**state, path: connection.serialize()}
+            self.assertEqual([], _check_state_continuity(historical, set(state), changed.__getitem__))
 
     def test_archive_nested_runtime_git_and_cache_names_are_evidence(self):
         for name in ('.venv', '.git', '__pycache__'):
@@ -184,7 +255,7 @@ class PreservationReportTests(unittest.TestCase):
         self.assertNotIn('S-1-', rendered)
         self.assertNotIn(str(self.root), rendered)
 
-    def qualification_with_unit_children(self, mutation):
+    def qualification_with_unit_children(self, mutation, *, omit_checks=False):
         # Mocked child receipts exercise orchestration only, never installed evidence.
         from types import SimpleNamespace
         sys.path.insert(0, str(ROOT / '.agentic/tests'))
@@ -204,13 +275,19 @@ class PreservationReportTests(unittest.TestCase):
                     mutation(project)
             return SimpleNamespace(returncode=0, stdout=b'{}', stderr=b'')
 
+        def comparison(before, after, policy, project, **kwargs):
+            result = compare(before, after, {})
+            if not omit_checks:
+                result['checks'] = {name: 'PASS' for name in
+                    ('source_managed_membership', 'historical_state_continuity', 'named_streams')}
+            return result
+
         with patch('build_release.release_paths', return_value=[]), \
                 patch('build_release.SOURCE_CONFIGS', {}), \
                 patch.object(upgrade_195_fixtures, 'materialize_published', return_value=ROOT), \
                 patch('qualify_upgrade.run_bounded', side_effect=child), \
                 patch('qualify_upgrade.prepare_upgrade', return_value='unit policy') as prepare, \
-                patch('qualify_upgrade.compare_upgrade', side_effect=lambda before, after, policy, project,
-                      **kwargs: compare(before, after, {})) as preservation, \
+                patch('qualify_upgrade.compare_upgrade', side_effect=comparison) as preservation, \
                 patch('qualify_upgrade.checked_bootstrap', return_value={'status': 'CONFIGURED'}):
             result = qualify(ROOT, work)
             prepare.assert_called_once()
@@ -230,6 +307,11 @@ class PreservationReportTests(unittest.TestCase):
         self.assertEqual('QUALIFIED_DISPOSABLE_UPGRADE', result['status'])
         self.assertTrue(result['preservation']['preserved'])
         self.assertEqual(result['before'], result['after'])
+
+    def test_qualification_cannot_pass_missing_oracle_checks(self):
+        result = self.qualification_with_unit_children(lambda project: None, omit_checks=True)
+        self.assertEqual('NOT_QUALIFIED', result['status'])
+        self.assertEqual('preservation', result['failed_stage'])
 
     def test_qualification_cannot_pass_unverified_permissions(self):
         with patch('qualify_upgrade._permissions', return_value={
