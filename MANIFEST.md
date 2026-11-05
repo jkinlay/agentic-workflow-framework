@@ -119,7 +119,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/launch_surfaces.py` | `441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d` |
 | `.agentic/lib/agentic/lifecycle.py` | `e178cc145d5181cd12f1a829044e1599e3555cec3088626280148e3c82260af7` |
 | `.agentic/lib/agentic/merge_train.py` | `9586b01daca94606fb0f97c608e9e667baac4a68b86af5142d54dbe6ad4e85b7` |
-| `.agentic/lib/agentic/model_routing.py` | `ba67e493820dc1442a7d299002aa35c526a18a2dd0aebc72cf020607a6c6f18f` |
+| `.agentic/lib/agentic/model_routing.py` | `995ed13591d868bbe2023cb7ee080c6c52c4d01ed9d0ac5eb7d630317a77c64c` |
 | `.agentic/lib/agentic/operating.py` | `7b75e02715bf4890ad050f2e9e357c9b28fbcc4672237380170d095aea024cce` |
 | `.agentic/lib/agentic/operating_status.py` | `d10c1289dd3172034adf6b5b52399e0f3dc590f9c601a6ebdfa71d8e703eb17d` |
 | `.agentic/lib/agentic/output.py` | `f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b` |
@@ -465,7 +465,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_store_planning_history.py` | `b56c97f44efc4928bfca884eef39e588363bd36eeb2712bd78632370e8dae5f1` |
 | `.agentic/tests/test_store_regressions.py` | `340df570120f78d77ef33c3e9c8f315ec72b0a3e49bd7e053a5a5ef24679111f` |
 | `.agentic/tests/test_streams.py` | `95c395c7609b7a5cddb9a3e3491d5939ec2c454a94efda1c0ca769c33b730c27` |
-| `.agentic/tests/test_twelve_streams.py` | `fa6bfb52f16651b70b35224a6ead724f2b1e725dc5f3906a5475a244f478d660` |
+| `.agentic/tests/test_twelve_streams.py` | `0a23abaaefd0bca530101c615e88901de72d5de89ab3cc112059000965201ef7` |
 | `.agentic/tests/test_upgrade_194.py` | `9ed7a20ce999c7253c4c1f3db1121e7b4888b332afafcce452f0d01e6c4c7b7c` |
 | `.agentic/tests/test_upgrade_195.py` | `2bfb845b86b60cc33e39d2a2492280e2c7986e54c116e9fa29e49599d0a52460` |
 | `.agentic/tests/test_upgrade_196.py` | `13df96d0ca3f55125a718681068783e8258facd4363cb270cc3889fd5b529b81` |
