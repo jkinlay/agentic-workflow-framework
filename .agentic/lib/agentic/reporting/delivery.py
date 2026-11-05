@@ -41,6 +41,28 @@ def delivery_intent(report_id, binding, payload):
 
 def install_delivery_schema(db):
     """Called only by the controller's accepted migration, in its transaction."""
+    db.execute('''CREATE TABLE IF NOT EXISTS controller_reports(
+        report_id TEXT PRIMARY KEY, kind TEXT NOT NULL, observed_at TEXT NOT NULL, payload_json TEXT NOT NULL)''')
+    # Additive relocation of pre-release reporting rows. The old status outbox
+    # must contain only its own wire format, including after a rollback.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='controller_outbox'").fetchone():
+        for row in db.execute("SELECT delivery_id,observed_at,payload_json FROM controller_outbox WHERE kind='REPORT'").fetchall():
+            record = loads(row[2])
+            require(record.get('report_id') == row[0] and record.get('kind') in
+                    {'hourly', 'eod', 'owner-action', 'jira-review', 'final-human-review'}, 'REPORT_MIGRATION_INVALID')
+            retained = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (row[0],)).fetchone()
+            if retained:
+                require(retained[0] == row[2], 'REPORT_MIGRATION_CONFLICT')
+            else:
+                db.execute('INSERT INTO controller_reports VALUES(?,?,?,?)', (row[0], record['kind'], row[1], row[2]))
+        db.execute("DELETE FROM controller_outbox WHERE kind='REPORT'")
+    for operation in ('UPDATE', 'DELETE'):
+        db.execute('CREATE TRIGGER IF NOT EXISTS controller_reports_no_' + operation.lower() +
+                   ' BEFORE ' + operation + " ON controller_reports BEGIN SELECT RAISE(ABORT, 'Report is immutable'); END")
+    db.execute('''CREATE TRIGGER IF NOT EXISTS controller_reports_no_replace
+        BEFORE INSERT ON controller_reports WHEN EXISTS(
+        SELECT 1 FROM controller_reports WHERE report_id=NEW.report_id) BEGIN
+        SELECT RAISE(ABORT, 'Report already exists'); END''')
     db.execute('''CREATE TABLE IF NOT EXISTS controller_report_delivery(
         delivery_id TEXT PRIMARY KEY, intent_json TEXT NOT NULL, state_json TEXT NOT NULL)''')
     db.execute('''CREATE TRIGGER IF NOT EXISTS controller_report_delivery_no_delete

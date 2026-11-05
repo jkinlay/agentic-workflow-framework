@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from fractions import Fraction
 import math
 
+from .. import ValidationError
 from ..canonical import fingerprint, timestamp
 from .delivery import require
 from .events import utc
@@ -417,7 +418,7 @@ def token_rollup(usage, ticket_epics, components):
                            if consumed is not None and components is not None else None))
 
 
-def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name):
+def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name, *, observed_at=None):
     """Independent overlapping daily views and project-to-date elapsed cohorts.
 
     PR rows are observed merge records; ticket delivery separately requires final
@@ -431,10 +432,19 @@ def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name):
     for pr in prs or []:
         require(pr.get('id') and (pr['id'] not in unique or unique[pr['id']] == pr), 'REPORT_PR_ID_CONFLICT')
         if pr.get('merged_at'):
-            require(timestamp(pr['merged_at']) <= timestamp(end), 'REPORT_FUTURE_MERGE')
+            try:
+                merged = timestamp(pr['merged_at'])
+            except (ValidationError, ValueError, TypeError):
+                raise ValidationError('REPORT_MERGE_TIMESTAMP_INVALID') from None
+            # Observation time bounds validity. Historical period boundaries
+            # filter the view below; later valid observations remain available.
+            require(merged <= timestamp(observed_at or end), 'REPORT_FUTURE_MERGE')
         unique[pr['id']] = pr
     result = dict(additive=False, label=views['label'], project_to_date=elapsed_cohorts(tickets))
     for name in ('today', 'since_previous'):
+        if views[name] is None:
+            result[name] = dict(period=None, status='UNAVAILABLE', reason='NO_PREVIOUS_DAILY_REPORT')
+            continue
         start, finish = timestamp(views[name]['start']), timestamp(views[name]['end'])
         merged = [pr for pr in unique.values() if pr.get('merged_at') and start < timestamp(pr['merged_at']) <= finish]
         completed = [t for t in tickets if delivered(t) and start < timestamp(t['reconciled_at']) <= finish]

@@ -165,9 +165,10 @@ def due_periods(after, now, operating_root, *, effective_calendar):
 
 
 def daily_views(end, previous_daily_end, timezone_name):
-    finish, previous = timestamp(end), timestamp(previous_daily_end)
-    require(previous < finish, 'REPORT_DAILY_ORDER')
+    finish = timestamp(end)
+    previous = timestamp(previous_daily_end) if previous_daily_end is not None else None
+    require(previous is None or previous < finish, 'REPORT_DAILY_ORDER')
     tz = zone(timezone_name)
     return dict(today=dict(start=utc(local_boundary(finish.astimezone(tz).date(), 0, 0, tz)), end=utc(finish)),
-                since_previous=dict(start=utc(previous), end=utc(finish)), additive=False,
+                since_previous=dict(start=utc(previous), end=utc(finish)) if previous is not None else None, additive=False,
                 label='Overlapping reconciliation views; never add together', interval='(start, end]')

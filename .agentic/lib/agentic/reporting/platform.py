@@ -6,6 +6,8 @@ Reconciliation returns the delivery.py channel-evidence envelope. The trusted
 host owns approval, secret store, transport registration and effective mode.
 """
 from copy import deepcopy
+import os
+import re
 
 from .. import ValidationError
 from .delivery import delivery_intent, require, validate_binding
@@ -74,3 +76,57 @@ class PlatformReportingAdapter:
             return safe
         except Exception:
             return dict(status='UNKNOWN')
+
+
+class SlackReportingAdapter(PlatformReportingAdapter):
+    platform = 'slack'
+    max_payload_bytes = 12000
+
+
+class TeamsReportingAdapter(PlatformReportingAdapter):
+    platform = 'teams'
+    max_payload_bytes = 20000
+
+
+def environment_secret(reference):
+    """The reference host supports environment references only, never literals."""
+    require(isinstance(reference, str) and re.fullmatch(r'env:[A-Za-z_][A-Za-z0-9_-]*', reference),
+            'REPORT_SECRET_RESOLVER_REQUIRED')
+    return os.environ.get(reference[4:])
+
+
+def build_reporting_providers(configuration, operating, binding, *, http=None, clock=None):
+    """Reviewed construction; project settings select bindings, never code.
+
+    Tenant/workspace and sender identity are project-owned transport bindings.
+    Construction validates everything without resolving any credential.
+    """
+    from .settings import effective_reporting
+    from .http_transport import SlackTransport, TeamsTransport
+    settings = effective_reporting(operating, binding=binding)
+    if settings['mode'] == 'off':
+        return {}
+    selected = {'teams', 'slack'} if settings['mode'] == 'both' else {settings['mode']}
+    require(isinstance(configuration, dict) and selected <= configuration.keys(), 'REPORT_TRANSPORT_BINDING_REQUIRED')
+    result = {}
+    for destination in settings['bindings']:
+        platform = destination['platform']
+        if platform not in selected:
+            continue
+        value = configuration[platform]
+        require(isinstance(value, dict) and set(value) == {'context', 'sender'}, 'REPORT_TRANSPORT_BINDING_REQUIRED')
+        require(all(isinstance(v, str) and 0 < len(v) <= 256 and not any(ord(c) < 32 for c in v)
+                    for v in value.values()), 'REPORT_TRANSPORT_BINDING_REQUIRED')
+        require(re.fullmatch(r'env:[A-Za-z_][A-Za-z0-9_-]*', destination['secret_ref']), 'REPORT_SECRET_RESOLVER_REQUIRED')
+        require(re.fullmatch(r'[CG][A-Z0-9]+', destination['destination']) if platform == 'slack' else
+                len(destination['destination'].split('/')) == 2 and
+                all(p and p not in {'.', '..'} for p in destination['destination'].split('/')),
+                'REPORT_DESTINATION_INVALID')
+        adapter, transport = ((SlackReportingAdapter, SlackTransport) if platform == 'slack'
+                              else (TeamsReportingAdapter, TeamsTransport))
+        options = dict(context=value['context'], sender=value['sender'], clock=clock)
+        if http is not None:
+            options['http'] = http
+        result[platform] = adapter(transport(**options), destination,
+                                  resolve_secret=environment_secret, mode=settings['mode'])
+    return result

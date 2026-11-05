@@ -153,9 +153,9 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
     data['overhead'] = describe(rollup.get('shared')) if rollup else 'Unknown: attributed shared usage unavailable'
     if kind == 'eod':
         data['delivered'] = str(metrics['delivered']) + ' reconciled in scope (period delivery Unknown)'
-        if values.get('previous_daily_end'):
+        if values.get('period', {}).get('end') and values.get('timezone'):
             daily = daily_metrics(values.get('prs'), tickets, values['period']['end'],
-                                  values['previous_daily_end'], values['timezone'])
+                                  values.get('previous_daily_end'), values['timezone'], observed_at=observed)
             data['detail_metrics']['daily'] = daily
             data['today'] = describe(daily['today']['period'])
             data['since_previous'] = describe(daily['since_previous']['period'])

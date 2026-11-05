@@ -7,9 +7,11 @@ No network, secret resolution, usage write, Jira client or dispatch lives here.
 from copy import deepcopy
 from datetime import timedelta
 
+from .. import ValidationError
 from ..canonical import canonical, fingerprint, loads, timestamp
 from ..operating_calendar import effective_calendar, next_review_presentation
 from .bodies import prepare_body, render_body
+from .bounded import DeliveryBudget, MAX_ADVANCES
 from .compose import compose_report, describe
 from .delivery import DeliveryOutbox, delivery_intent, require
 from .events import due_periods, owner_events, readiness_events, utc
@@ -30,11 +32,11 @@ def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None
         DeliveryOutbox.enqueue_in_transaction(db, intent)
         record['delivery_ids'].append(intent['delivery_id'])
     raw = canonical(record).decode()
-    prior = db.execute('SELECT payload_json FROM controller_outbox WHERE delivery_id=?', (report_id,)).fetchone()
+    prior = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (report_id,)).fetchone()
     if prior:
         require(prior[0] == raw, 'REPORT_IDENTITY_REUSED_WITH_DIFFERENT_BYTES')
     else:
-        db.execute('INSERT INTO controller_outbox VALUES(?,\'REPORT\',0,?,?,NULL)', (report_id, now, raw))
+        db.execute('INSERT INTO controller_reports VALUES(?,?,?,?)', (report_id, kind, now, raw))
     return record
 
 
@@ -76,11 +78,17 @@ def _body(kind, binding, now, calendar, context, period=None, action=None):
     return prepare_body(kind, data, verify_link=context.get('verify_link'))
 
 
-def reporting_status(store, operating, binding):
+def reporting_status(store, operating, binding, *, report_ids=None):
     settings = effective_reporting(operating, binding=binding)
     reports, deliveries = [], []
     with store.connection() as db:
-        for row in db.execute("SELECT payload_json FROM controller_outbox WHERE kind='REPORT' ORDER BY rowid"):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='controller_reports'").fetchone():
+            rows = []
+        else:
+            ids = canonical(sorted(report_ids)).decode() if report_ids is not None else None
+            rows = db.execute('''SELECT payload_json FROM controller_reports
+                WHERE (? IS NULL OR report_id IN (SELECT value FROM json_each(?))) ORDER BY rowid''', (ids, ids))
+        for row in rows:
             record = loads(row[0])
             if record['binding'] != binding:
                 continue
@@ -95,41 +103,58 @@ def reporting_status(store, operating, binding):
                 execution_authority=False)
 
 
-def drain(store, operating, binding, providers, *, report_ids=None, allow_send=True):
+def drain(store, operating, binding, providers, *, report_ids=None, allow_send=True, budget=None):
     settings, destinations = _bindings(operating, binding)
     if settings['mode'] == 'off':
         return []
-    selected = {b['platform']: b for b in destinations}
-    outbox, results = DeliveryOutbox(store), []
-    with store.connection() as db:
-        rows = [loads(row[0]) for row in db.execute("SELECT payload_json FROM controller_outbox WHERE kind='REPORT' ORDER BY rowid")]
-    for record in rows:
-        if record['binding'] != binding or (report_ids is not None and record['report_id'] not in report_ids):
+    budget = budget or DeliveryBudget()
+    outbox, results, work = DeliveryOutbox(store), [], []
+    # Query only actionable delivery rows. Sort across BOTH platforms so no
+    # platform's periodic work queues ahead of the other's owner/safety alert.
+    for destination in destinations:
+        platform = destination['platform']
+        provider = providers.get(platform)
+        if provider is None:
             continue
-        # Routine drain never sends a held or previously claimed review batch.
-        if record['kind'] == 'final-human-review' and report_ids is None:
+        with store.connection() as db:
+            ids = canonical(sorted(report_ids)).decode() if report_ids is not None else None
+            rows = db.execute("""SELECT r.payload_json,d.delivery_id,r.kind,r.rowid FROM controller_reports r
+                JOIN controller_report_delivery d ON json_extract(d.intent_json,'$.report_id')=r.report_id
+                WHERE json_extract(d.intent_json,'$.binding.platform')=?
+                  AND json_extract(d.intent_json,'$.binding')=json(?)
+                  AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED')
+                  AND (? OR r.kind<>'final-human-review')
+                  AND (? IS NULL OR r.report_id IN (SELECT value FROM json_each(?)))
+                ORDER BY CASE r.kind WHEN 'owner-action' THEN 0 ELSE 1 END,r.rowid LIMIT ?""",
+                (platform, canonical(destination).decode(), report_ids is not None, ids, ids, MAX_ADVANCES)).fetchall()
+        bounded = budget.provider(store, platform, provider)
+        for row in rows:
+            record = loads(row[0])
+            if record['binding'] == binding:
+                work.append((0 if row[2] == 'owner-action' else 1, row[3], len(work), platform, row[1], bounded))
+    for _priority, _sequence, _order, platform, delivery_id, bounded in sorted(work):
+        if not budget.admit(platform):
             continue
-        for delivery_id in record['delivery_ids']:
-            with store.connection() as db:
-                intent, state = outbox._load(db, delivery_id)
-            platform = intent['binding']['platform']
-            provider = providers.get(platform)
-            if selected.get(platform) != intent['binding'] or provider is None:
-                continue  # Binding rotations never retarget historical intents.
-            # A provider failure is isolated to this destination and this report.
-            try:
-                state = outbox.advance(delivery_id, provider, allow_send=allow_send)
-            except Exception:
-                state = dict(status='UNKNOWN', reason='REPORT_PROVIDER_UNAVAILABLE')
-            results.append(dict(delivery_id=delivery_id, platform=platform, **state))
+        try:
+            state = outbox.advance(delivery_id, bounded, allow_send=allow_send)
+        except Exception:
+            state = dict(status='UNKNOWN', reason='REPORT_PROVIDER_UNAVAILABLE')
+        results.append(dict(delivery_id=delivery_id, platform=platform, **state))
+
     return results
 
 
-def reporting_cycle(store, *, operating, binding, now, providers=None, context=None):
+def reporting_cycle(store, *, operating, binding, now, providers=None, context=None, delivery_budget=None):
     settings, destinations = _bindings(operating, binding)
+    if settings['mode'] == 'off' and not settings['bindings']:
+        return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
     timestamp(now)
     key = 'reporting:' + fingerprint('reporting-scope', binding)
     if settings['mode'] == 'off':
+        with store.connection() as db:
+            existing = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+        if existing is None:
+            return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
         with store.transaction() as db:
             row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
             state = loads(row[0]) if row else dict(owner={})
@@ -146,19 +171,47 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
         require(timestamp(state['cursor']) <= timestamp(now), 'REPORT_CLOCK_REGRESSION')
         if state.pop('suspended', False):
             state['cursor'] = utc(timestamp(now) - timedelta(microseconds=1))
-        # Contiguous bounded windows preserve every missed interval after long downtime.
-        cursor = state['cursor']
-        while timestamp(cursor) < timestamp(now):
-            end = utc(min(timestamp(now), timestamp(cursor) + timedelta(days=366)))
-            for period in due_periods(cursor, end, operating, effective_calendar=effective_calendar):
-                period['catch_up'] = timestamp(period['end']) < timestamp(now)
-                report_id = fingerprint('controller-report-period', [binding, period['id']])
-                generated.append(_retain(db, report_id, period['kind'],
-                    _body(period['kind'], binding, now, calendar,
-                          dict(context, previous_daily_end=state.get('daily_end')), period), binding, destinations, now))
-                if period['kind'] == 'eod':
-                    state['daily_end'] = period['end']
-            cursor = end
+        # Bound calendar generation as well as sends. Further downtime remains
+        # behind the durable cursor for the next controller cycle.
+        end = utc(min(timestamp(now), timestamp(state['cursor']) + timedelta(days=7)))
+        periods = due_periods(state['cursor'], end, operating, effective_calendar=effective_calendar)
+        hours = [p for p in periods if p['kind'] == 'hourly']
+        daily = [p for p in periods if p['kind'] == 'eod']
+        summary = hours[-1] if len(hours) > 1 else None
+        summarized = [p for p in periods if p['kind'] == 'hourly' or p in daily[:-2]] if summary else []
+        for period in periods:
+            period['catch_up'] = timestamp(period['end']) < timestamp(now) or period == summary
+            report_id = fingerprint('controller-report-period', [binding, period['id']])
+            extra = dict(period=deepcopy(period))
+            try:
+                body = _body(period['kind'], binding, now, calendar,
+                             dict(context, previous_daily_end=state.get('daily_end')), period)
+            except ValidationError as exc:
+                # Bad merge evidence fails this daily projection explicitly;
+                # rendering/identity failures still roll back atomically.
+                if str(exc) not in {'REPORT_MERGE_TIMESTAMP_INVALID', 'REPORT_FUTURE_MERGE'}:
+                    raise
+                extra['generation_error'] = str(exc)
+                body = _body(period['kind'], binding, now, calendar, dict(context, records=None), period)
+                data = dict(body['data'], summary='UNAVAILABLE: ' + str(exc), generation_error=str(exc))
+                body = prepare_body(period['kind'], data)
+            if period == summary:
+                extra['catch_up_periods'] = deepcopy(summarized)
+                data = deepcopy(body['data'])
+                data['sections']['Changes since the previous report'] = (
+                    'CATCH-UP: missed hourly periods ending ' + ', '.join(p['end'] for p in hours)
+                    + '\nSpan: ' + hours[0]['start'] + ' to ' + hours[-1]['end']
+                    + '\nOlder End of Day dates (retained, no separate post): '
+                    + (', '.join(p['local_end'][:10] for p in daily[:-2]) or 'None'))
+                body = prepare_body('hourly', data, verify_link=context.get('verify_link'))
+            send = (period['kind'] == 'hourly' and (summary is None or period == summary)
+                    or period['kind'] == 'eod' and period in daily[-2:])
+            if not send:
+                extra['delivery_policy'] = 'LISTED_IN_CATCH_UP'
+            generated.append(_retain(db, report_id, period['kind'], body, binding,
+                                     destinations if send else [], now, extra=extra))
+            if period['kind'] == 'eod':
+                state['daily_end'] = period['end']
         if context.get('owner_actions') is not None:
             events, state['owner'] = owner_events(fingerprint('reporting-scope', binding), context['owner_actions'], state['owner'])
             for action in events:
@@ -176,12 +229,12 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                     summary='Correction: prior readiness withdrawn', sections={'Evidence': describe(notice),
                         'Owner action': 'Do not rely on prior readiness; await current candidate review'}))
                 generated.append(_retain(db, notice['id'], 'owner-action', body, binding, destinations, now))
-        state['cursor'] = now
+        state['cursor'] = end
         db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                    (key, canonical(state).decode()))
-    deliveries = drain(store, operating, binding, providers or {})
+    deliveries = drain(store, operating, binding, providers or {}, budget=delivery_budget)
     return dict(state='ENABLED', generated=len(generated), reports=generated, deliveries=deliveries,
-                coverage=reporting_status(store, operating, binding)['coverage'])
+                coverage=deepcopy(context.get('coverage', {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})))
 
 
 class ReviewReportingPort:
@@ -190,10 +243,11 @@ class ReviewReportingPort:
     Exhausted/partial destinations stay visible in reporting diagnostics. They
     never issue NOT_DELIVERED and thus never multiply lane C's retry allowance.
     """
-    def __init__(self, store, operating, binding, providers, clock, *, observe_candidate=None):
+    def __init__(self, store, operating, binding, providers, clock, *, observe_candidate=None, delivery_budget=None):
         self.store, self.operating, self.binding = store, operating, binding
         self.providers, self.clock = providers, clock
         self.observe_candidate = observe_candidate
+        self.delivery_budget = delivery_budget
 
     def _id(self, payload):
         return 'review-' + payload['batch_id']
@@ -230,14 +284,14 @@ class ReviewReportingPort:
                     extra={'review_batch': deepcopy(payload)})
         if self.observe_candidate is not None:
             self._check(payload, effective_calendar(self.operating), self.observe_candidate)
-        drain(self.store, self.operating, self.binding, self.providers, report_ids={self._id(payload)})
+        drain(self.store, self.operating, self.binding, self.providers, report_ids={self._id(payload)}, budget=self.delivery_budget)
         return self.observe_review_delivery(payload)
 
     def observe_review_delivery(self, payload):
         # This port cannot send, even when terminal absence admits a retry.
         drain(self.store, self.operating, self.binding, self.providers,
-              report_ids={self._id(payload)}, allow_send=False)
-        status = reporting_status(self.store, self.operating, self.binding)
+              report_ids={self._id(payload)}, allow_send=False, budget=self.delivery_budget)
+        status = reporting_status(self.store, self.operating, self.binding, report_ids={self._id(payload)})
         reports = [r for r in status['reports'] if r['report_id'] == self._id(payload)]
         if not reports:
             return None
@@ -254,12 +308,16 @@ class ReviewReportingPort:
     def resume(self, calendar, observe_candidate):
         """Controller-only retry: repeat lane C's pre-send check for this batch."""
         from ..review_batching import ReviewBatchStore
-        status = reporting_status(self.store, self.operating, self.binding)
         pending = ReviewBatchStore(self.store)
-        for payload in pending.pending_batches():
+        with self.store.connection() as db:
+            payloads = [pending._payload(row) for row in db.execute(
+                "SELECT * FROM review_presentation_outbox_v1 WHERE state='CLAIMED' ORDER BY batch_id LIMIT ?",
+                (MAX_ADVANCES,))]
+        for payload in payloads:
             report_id = self._id(payload)
+            status = reporting_status(self.store, self.operating, self.binding, report_ids={report_id})
             states = [s for s in status['deliveries'] if s['report_id'] == report_id]
             if not any(s['status'] in {'PENDING', 'ABSENT'} for s in states):
                 continue
             self._check(payload, calendar, observe_candidate)
-            drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id})
+            drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id}, budget=self.delivery_budget)

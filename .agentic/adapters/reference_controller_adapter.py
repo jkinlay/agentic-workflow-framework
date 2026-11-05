@@ -1689,8 +1689,74 @@ def _build(config):
 		_require(isinstance(body, str) and comment['user'].get('id') == request['actor_id'] and body == owner_source.get('raw_body') and sha256(body.encode('utf-8')) == request['raw_body_sha256'], 'GitHub owner comment differs from the recorded owner source')
 		_require(comment.get('created_at') == comment.get('updated_at') == owner_source.get('created_at'), 'GitHub owner comment was edited or differs from its recorded time')
 		return {'status': 'VERIFIED', 'actor_id': request['actor_id'], 'binding': deepcopy(request['binding']), 'raw_body_sha256': request['raw_body_sha256'], 'source_id': 'github-comment:' + comment['node_id'], 'observed_at': _clock_text(clock)}
+
+	def configure_reporting(operating, binding):
+		from agentic.reporting.platform import build_reporting_providers
+		accepted = dict(project=github['project_id'], repository=str(github['repository_id']), scope_revision=github['scope_sha256'])
+		_require(binding == accepted, 'REPORT_SCOPE_BINDING_MISMATCH')
+		return build_reporting_providers(config.get('reporting'), operating, binding,
+			http=config.get('_reporting_http'), clock=lambda: _clock_text(clock))
+
+	def reporting_request(request):
+		_require(isinstance(request, dict) and set(request) == {'binding', 'observed_at'}, 'REPORT_SOURCE_ENVELOPE_INVALID')
+		_require(request['binding'] == dict(project=github['project_id'], repository=str(github['repository_id']),
+			scope_revision=github['scope_sha256']), 'REPORT_SCOPE_BINDING_MISMATCH')
+		timestamp(request['observed_at'])
+
+	def observe_reporting_sources(request):
+		reporting_request(request)
+		inventory = deepcopy(inventory_cache)
+		_require(inventory.get('observed_at') == request['observed_at'], 'REPORT_CURRENT_INVENTORY_REQUIRED')
+		# The existing authenticated controller inventory is the ticket source.
+		# It supplies no project history, estimates, Jira Done or review authority.
+		tickets, actions = [], []
+		for item in inventory['tickets']:
+			tickets.append(dict(key=item['ticket'], kind='implementation', state='UNKNOWN',
+				actor=item['actor'], activity=item['activity']))
+			if item['disposition'] == 'BLOCKED' and item['actor'] == 'owner':
+				actions.append(dict(id=item['ticket'], decision=item['next_action'], owner=item['actor'],
+					due='Owner response required', reason=item['reason'], options=[item['next_action'], 'Park'],
+					resume=item['resume_trigger']))
+		source = config.get('reporting_sources')
+		prs = None
+		if source is not None:
+			_require(isinstance(source, dict) and set(source) == {'binding', 'pull_requests'}
+				and source['binding'] == request['binding'], 'REPORT_SOURCE_BINDING_MISMATCH')
+			ids = source['pull_requests']
+			_require(isinstance(ids, list) and len(ids) <= 100 and len(set(ids)) == len(ids)
+				and all(type(n) is int and n > 0 for n in ids), 'REPORT_SOURCE_PR_SCOPE_REQUIRED')
+			prs = []
+		for pr in github_pages('repos/' + github['repository'] + '/pulls?state=closed', 'items') if source is not None else []:
+			if pr.get('merged_at') and pr.get('number') in ids:
+				prs.append(dict(id=str(pr['id']), number=pr['number'], url=pr['html_url'],
+					merged_at=pr['merged_at'], merge_commit=pr.get('merge_commit_sha'), head=pr.get('head', {}).get('sha')))
+		records = dict(binding=deepcopy(request['binding']), created_at=request['observed_at'],
+			included=[t['key'] for t in tickets], excluded=[], tickets=tickets, prs=prs,
+			summary='Current controller inventory; project history, estimates and Jira reconciliation unavailable',
+			sources=[dict(field='tickets', observed_at=inventory['observed_at'], stale=False,
+				source='controller-inventory:' + inventory['inventory_sha256'])])
+		body = dict(binding=deepcopy(request['binding']), observed_at=request['observed_at'], records=records, owner_actions=actions)
+		evidence_id, _digest = retain_planning_evidence('reporting', dict(kind='reporting', request=request, snapshot=body))
+		return dict(**deepcopy(body), authentication={'evidence_id': evidence_id})
+
+	def verify_reporting_sources(authentication, request):
+		reporting_request(request)
+		_require(isinstance(authentication, dict) and set(authentication) == {'evidence_id'}, 'REPORT_SOURCE_AUTHENTICATION_REQUIRED')
+		value = read_planning_evidence('reporting', authentication['evidence_id'])
+		_require(value.get('request') == request, 'REPORT_SOURCE_BINDING_MISMATCH')
+		return dict(status='VERIFIED', evidence_id=authentication['evidence_id'], snapshot=deepcopy(value['snapshot']))
+
+	def verify_reporting_link(url):
+		# Only canonical PR links read from this repository are admitted here.
+		return isinstance(url, str) and re.fullmatch(re.escape('https://github.com/' + github['repository'] + '/pull/') + r'[1-9][0-9]*', url) is not None
+
 	dispatch_ticket.configure_budgeting = configure_budgeting
-	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'observe_issue_policy': observe_issue_policy, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
+	# Preserve the legacy default-OFF factory interface. Reporting transport
+	# bindings opt into these additional executable ports; operating mode alone
+	# cannot register them. Missing providers are refused by production.
+	reporting_ports = dict(configure_reporting=configure_reporting, observe_reporting_sources=observe_reporting_sources,
+		verify_reporting_sources=verify_reporting_sources, verify_reporting_link=verify_reporting_link) if 'reporting' in config else {}
+	return {**reporting_ports, 'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'observe_issue_policy': observe_issue_policy, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
 
 def build_adapters(config):
 	return _build(config)

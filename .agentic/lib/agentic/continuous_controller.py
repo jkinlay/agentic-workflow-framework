@@ -2967,7 +2967,7 @@ def production_review_batching_cycle(store, *, calendar, binding, clock,
 	return result
 
 
-def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None, observe_owner_ready=None, observe_review_candidate=None, deliver_review_batch=None, observe_review_delivery=None, reporting_providers=None, observe_reporting_sources=None, verify_reporting_sources=None, verify_reporting_link=None):
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None, observe_owner_ready=None, observe_review_candidate=None, deliver_review_batch=None, observe_review_delivery=None, reporting_providers=None, configure_reporting=None, observe_reporting_sources=None, verify_reporting_sources=None, verify_reporting_link=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')
 	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
@@ -3378,6 +3378,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	streams = store.snapshot()
 	from .reporting.settings import effective_reporting
 	from .reporting.runtime import reporting_cycle, ReviewReportingPort
+	from .reporting.bounded import DeliveryBudget
+	report_delivery_budget = DeliveryBudget()
 	from .reporting.observations import attributed_accounting, collect_sources
 	report_binding = dict(project=inventory_binding['project_id'], repository=inventory_binding['repository_id'],
 		scope_revision=inventory_binding['scope_sha256'])
@@ -3392,6 +3394,10 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE', 'capacity': 'OBSERVED',
 				'graph': 'OBSERVED' if plan is not None else 'UNAVAILABLE', 'gates': 'RETAINED; current provider gates unavailable'})
 		if report_settings['mode'] != 'off':
+			if callable(configure_reporting):
+				reporting_providers = configure_reporting(operating_root, report_binding)
+			selected = {'teams', 'slack'} if report_settings['mode'] == 'both' else {report_settings['mode']}
+			_require(isinstance(reporting_providers, dict) and selected <= reporting_providers.keys(), 'REPORT_PROVIDERS_REQUIRED')
 			try:
 				context.update(collect_sources(report_binding, now, observe_reporting_sources, verify_reporting_sources))
 				if context.get('records') is not None:
@@ -3406,14 +3412,14 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		# ledger is the accounting boundary; missing token components stay unknown.
 		context['accounting'] = {'mode': 'off' if not budget_settings['accounting_enabled'] else 'unknown'}
 		reporting = reporting_cycle(store, operating=operating_root, binding=report_binding, now=now,
-			providers=reporting_providers, context=context)
+			providers=reporting_providers, context=context, delivery_budget=report_delivery_budget)
 		if reporting_providers is not None:
 			# Explicit reporting ownership replaces legacy review delivery ports.
 			# OFF collects without claiming/sending; it resolves no credentials.
 			deliver_review_batch = observe_review_delivery = None
 			if report_settings['mode'] != 'off':
 				port = ReviewReportingPort(store, operating_root, report_binding, reporting_providers, post_provider_time,
-					observe_candidate=observe_review_candidate)
+					observe_candidate=observe_review_candidate, delivery_budget=report_delivery_budget)
 				if callable(observe_review_candidate):
 					try:
 						port.resume(calendar, observe_review_candidate)
@@ -3423,8 +3429,10 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	except Exception as exc:
 		# Invalid bindings and generation failure cannot fall back to a different
 		# destination or delay already-authorized dispatch.
-		if reporting_providers is not None:
+		if reporting_providers is not None or configure_reporting is not None or operating_root.get('reporting', {}).get('mode', 'off') != 'off':
 			deliver_review_batch = observe_review_delivery = None
+		reporting.update(state='REFUSED', reason=str(exc) if re.fullmatch(r'REPORT_[A-Z_]+', str(exc))
+			else 'REPORT_CONFIGURATION_OR_PROVIDER_UNAVAILABLE')
 		errors.append({'operation': 'reporting', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
 	# Calendar waits and uncertain review sends never gate dispatch, independent
 	# review, amendments, or the separate immediate status/action channel above.
