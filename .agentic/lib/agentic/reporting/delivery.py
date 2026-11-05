@@ -62,17 +62,23 @@ class DeliveryOutbox:
     def enqueue(self, intent):
         expected = delivery_intent(intent['report_id'], intent['binding'], intent['payload'])
         require(intent == expected, 'REPORT_INTENT_MISMATCH')
-        encoded = canonical(intent).decode()
         with self.controller.transaction() as db:
-            row = db.execute('SELECT intent_json FROM controller_report_delivery WHERE delivery_id=?',
-                             (intent['delivery_id'],)).fetchone()
-            if row:
-                require(row[0] == encoded, 'REPORT_IDENTITY_REUSED_WITH_DIFFERENT_BYTES')
-                return intent['delivery_id']
-            state = dict(status='PENDING', attempts=[], history=[], fence=None)
-            db.execute('INSERT INTO controller_report_delivery VALUES(?,?,?)',
-                       (intent['delivery_id'], encoded, canonical(state).decode()))
+            self.enqueue_in_transaction(db, intent)
         return intent['delivery_id']
+
+    @staticmethod
+    def enqueue_in_transaction(db, intent):
+        require(intent == delivery_intent(intent['report_id'], intent['binding'], intent['payload']),
+                'REPORT_INTENT_MISMATCH')
+        encoded = canonical(intent).decode()
+        row = db.execute('SELECT intent_json FROM controller_report_delivery WHERE delivery_id=?',
+                         (intent['delivery_id'],)).fetchone()
+        if row:
+            require(row[0] == encoded, 'REPORT_IDENTITY_REUSED_WITH_DIFFERENT_BYTES')
+            return
+        state = dict(status='PENDING', attempts=[], history=[], fence=None)
+        db.execute('INSERT INTO controller_report_delivery VALUES(?,?,?)',
+                   (intent['delivery_id'], encoded, canonical(state).decode()))
 
     @staticmethod
     def _load(db, delivery_id):
@@ -139,7 +145,7 @@ class DeliveryOutbox:
                         observed_at=raw['observed_at'], attempt_ids=attempts, observation_id=observation_id)
         return unknown
 
-    def advance(self, delivery_id, provider):
+    def advance(self, delivery_id, provider, *, allow_send=True):
         """One bounded step; retries require a prior terminal-absence observation.
 
         A crashed IN_FLIGHT reservation is reconciled, never repeated. There is
@@ -149,7 +155,11 @@ class DeliveryOutbox:
             intent, state = self._load(db, delivery_id)
             if state['status'] in {'DELIVERED', 'FAILED'}:
                 return state
-            send = state['status'] in {'PENDING', 'ABSENT'} and len(state['attempts']) < 2
+            if not allow_send and state['status'] in {'PENDING', 'ABSENT'}:
+                return state
+            send = allow_send and state['status'] in {'PENDING', 'ABSENT'} and len(state['attempts']) < 2
+            if not send and not state['attempts']:
+                return state
             if send:
                 attempt_id = str(uuid.uuid4())
                 state['attempts'].append(attempt_id)

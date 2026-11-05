@@ -234,6 +234,15 @@ def main(argv=None, default_root=ROOT):
 		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence', 'observe_owner_ready', 'observe_review_candidate', 'deliver_review_batch', 'observe_review_delivery'):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
+		for name in ('observe_reporting_sources', 'verify_reporting_sources', 'verify_reporting_link'):
+			if callable(adapters.get(name)):
+				calls[name] = adapters[name]
+		# Reviewed code registers the reporting port; configuration cannot supply
+		# executable providers. An empty mapping keeps channel delivery OFF.
+		providers = adapters.get('reporting_providers', {})
+		if not isinstance(providers, dict) or not set(providers) <= {'teams', 'slack'}:
+			raise ValidationError('Reviewed reporting providers must be a platform mapping')
+		calls['reporting_providers'] = providers
 		from agentic.operating import read_operating
 		operating = read_operating(args.repository_root, config)
 		from agentic.store import Store

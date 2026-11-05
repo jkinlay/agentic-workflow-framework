@@ -10,6 +10,78 @@
     "simple_worker"
   ],
   "properties": {
+    "reporting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "mode": {
+          "enum": [
+            "off",
+            "teams",
+            "slack",
+            "both"
+          ]
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project",
+              "repository",
+              "scope_revision",
+              "platform",
+              "destination",
+              "revision",
+              "secret_ref"
+            ],
+            "properties": {
+              "project": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "repository": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "scope_revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "platform": {
+                "enum": [
+                  "teams",
+                  "slack"
+                ]
+              },
+              "destination": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "secret_ref": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^(env|vault|secret):[A-Za-z0-9_./-]+$"
+              }
+            }
+          },
+          "minItems": 0,
+          "maxItems": 2
+        }
+      }
+    },
     "operating_calendar": {
       "type": "object",
       "additionalProperties": false,

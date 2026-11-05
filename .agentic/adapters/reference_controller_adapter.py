@@ -1344,7 +1344,10 @@ def _build(config):
 		except (OSError, ValueError, UnicodeError) as exc:
 			raise ValidationError('Status outbox write or readback failed') from exc
 		_require(found.get('digest_sha256') == fingerprint('controller-delivery', digest), 'Status outbox readback differs from the requested digest')
-		return {'delivery_id': delivery_id, 'status': 'DELIVERED', 'observed_at': found['observed_at']}
+		# DELIVERED retains the local status-outbox API. This is exclusively a
+		# local receipt; channel reports require the separate reporting port.
+		return {'delivery_id': delivery_id, 'status': 'DELIVERED', 'observed_at': found['observed_at'],
+			'evidence_kind': 'LOCAL_RECEIPT', 'channel_delivery': False}
 
 	def jira_token():
 		token = os.environ.get(token_env)

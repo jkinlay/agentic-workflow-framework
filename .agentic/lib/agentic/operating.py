@@ -28,6 +28,7 @@ from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 from .budgeting import resolve_settings
 from .operating_calendar import effective_calendar, SETTING_PATHS
+from .reporting.settings import effective_reporting
 
 CONFIG = "OPERATING_CONFIG.yaml"
 GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
@@ -143,6 +144,7 @@ def default_operating(policy=None, *, count=3):
     defaults = policy["role_defaults"]
     stream = _stream(policy)
     return {"version": 1, "source": "default", "budgeting": fresh_settings(),
+            "reporting": effective_reporting({}),
             "operating_calendar": effective_calendar({}),
             "streams": {"count": count,
                         **{label: deepcopy(stream) for label in stream_labels(count)}},
@@ -175,6 +177,7 @@ def _upgrade_safe_operating(governance):
         legacy = default_operating()
         legacy.pop('budgeting')
         legacy.pop('operating_calendar')
+        legacy.pop('reporting')
         return legacy
     stream = {"worker": dict(defaults["worker"])}
     return {"version": 1, "source": "default",
@@ -280,6 +283,19 @@ class OperatingSnapshot:
 
 def validate_operating(value, governance):
     """Validate choices against both allowlists/floors; never silently clamp."""
+    if isinstance(value, dict) and 'reporting' in value:
+        try:
+            reporting = effective_reporting(value)
+            if reporting['bindings']:
+                project = governance.get('project', {})
+                github = governance.get('github', {})
+                if (not isinstance(project, dict) or not isinstance(github, dict) or
+                        not project.get('id') or github.get('repository_id') is None):
+                    raise ValidationError('REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED')
+                effective_reporting(value, binding={'project': project['id'],
+                    'repository': str(github['repository_id'])})
+        except ValidationError as exc:
+            fail('$.reporting', str(exc))
     if isinstance(value, dict) and 'operating_calendar' in value:
         try:
             effective_calendar(value)
@@ -531,6 +547,7 @@ def inspect_operating(project_root, governance):
         return {"status": "ACCEPTED", "hash": value.operating_hash, "source": value.source,
                 "streams": value.count, "last_change_id": value.last_change_id, "refusals": [],
                 "budgeting": resolve_settings(value.config),
+                "reporting": effective_reporting(value.config),
                 **operating_ceiling(governance)}
     except OSError as exc:
         from .activation import access_diagnostic
@@ -598,7 +615,7 @@ def _new(tree, name, raw):
             pass
 
 
-def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, calendar_owner_observation=None):
+def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, calendar_owner_observation=None, reporting_owner_observation=None):
     after = validate_operating(value, _bound_governance(tree, governance))
     events = _events(tree)
     if _read(tree, JOURNAL) is not None:
@@ -617,6 +634,8 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
         event['budget_owner_observation'] = deepcopy(budget_owner_observation)
     if calendar_owner_observation is not None:
         event['calendar_owner_observation'] = deepcopy(calendar_owner_observation)
+    if reporting_owner_observation is not None:
+        event['reporting_owner_observation'] = deepcopy(reporting_owner_observation)
     errors = _schema("operating-change", event)
     if errors:
         raise OperatingError(errors)
@@ -749,6 +768,10 @@ def recover_operating(project_root, governance, expected_journal_sha256):
 
 
 def _path(path, epic_id=None):
+    if path in {'reporting.mode', 'reporting.bindings'}:
+        if epic_id is not None:
+            fail('$.reporting', 'Reporting settings are project-wide')
+        return path
     if path.startswith('operating_calendar.') and path[19:] in SETTING_PATHS:
         if epic_id is not None:
             fail('$.operating_calendar', 'Calendar settings are project-wide')
@@ -794,6 +817,13 @@ def _put(value, path, selected):
 
 
 def _selection(path, text):
+    if path.startswith('reporting.'):
+        if path == 'reporting.bindings':
+            try:
+                return loads(text)
+            except ValueError:
+                fail('$.' + path, 'Expected a JSON list of approved destination bindings')
+        return text
     if path.startswith('operating_calendar.'):
         if path.endswith('.enabled'):
             if text not in {'true', 'false'}:
@@ -885,7 +915,7 @@ def _editable_snapshot(tree, governance, initialize):
         return OperatingSnapshot(canonical(value), fingerprint("operating", value), fingerprint("operating-governance", governance), events[-1]["id"]), raw
 
 
-def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, budget_registry=None, calendar_registry=None):
+def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, budget_registry=None, calendar_registry=None, reporting_registry=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction.encode("utf-8")) > 65536:
         fail("$.instruction", "Record the nonempty bounded user instruction verbatim")
     if bool(assignments) == bool(recommendation_id) or bool(recommendation_id) != bool(accept):
@@ -944,6 +974,15 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             _put(value, path, choice)
         value["source"] = source
         validate_operating(value, governance)
+        reporting_changes = {p[10:]: v for p, v in selected.items() if p.startswith('reporting.')}
+        reporting_admitted = None
+        if reporting_changes:
+            if reporting_registry is None:
+                fail('$.reporting', 'Trusted-host owner observer required; chat words and source:user do not authenticate an owner')
+            reporting_admitted = reporting_registry.admit_owner_direction(
+                governance['project']['id'], effective_reporting(snapshot.config), reporting_changes)
+            if reporting_admitted['settings'] != effective_reporting(value):
+                fail('$.reporting', 'Trusted-host reporting admission differs from validated settings')
         calendar_changes = {p[19:]: v for p, v in selected.items() if p.startswith('operating_calendar.')}
         calendar_admitted = None
         if calendar_changes:
@@ -962,7 +1001,8 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                    if _get(snapshot.config, p) != _get(value, p)]
         return _commit(tree, governance, before, value, instruction, changes, "chat",
                        budget_owner_observation=admitted['observation'] if budget_changes else None,
-                       calendar_owner_observation=calendar_admitted['observation'] if calendar_admitted else None)
+                       calendar_owner_observation=calendar_admitted['observation'] if calendar_admitted else None,
+                       reporting_owner_observation=reporting_admitted['observation'] if reporting_admitted else None)
 
 
 def _scope(paths, epic_id):
@@ -1258,6 +1298,7 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
     from .budgeting import resolve_settings
     lines.append('Budgeting (persisted effective settings): ' + json.dumps(resolve_settings(value), sort_keys=True))
     lines.append('Operating calendar (effective settings): ' + json.dumps(effective_calendar(value), sort_keys=True))
+    lines.append('Reporting (effective settings): ' + json.dumps(effective_reporting(value), sort_keys=True))
     return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
 
 
@@ -1295,7 +1336,7 @@ def _local_state(root, governance):
         return "UNVERIFIED"
 
 
-def main(argv=None, default_root=None, *, budget_registry=None, calendar_registry=None):
+def main(argv=None, default_root=None, *, budget_registry=None, calendar_registry=None, reporting_registry=None):
     from .contracts import Contracts
     from .output import configure_streams, json_text
     configure_streams()
@@ -1331,7 +1372,7 @@ def main(argv=None, default_root=None, *, budget_registry=None, calendar_registr
         if args.command == "set":
             snapshot = set_operating(args.root, governance, args.instruction, args.assignments,
                                      recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic,
-                                     budget_registry=budget_registry, calendar_registry=calendar_registry)
+                                     budget_registry=budget_registry, calendar_registry=calendar_registry, reporting_registry=reporting_registry)
         elif args.command == "recover":
             snapshot = recover_operating(args.root, governance, args.expected_journal_sha256)
         else:

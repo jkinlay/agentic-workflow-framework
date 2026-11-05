@@ -7,6 +7,10 @@
     "max_tokens_per_ticket": 4000000,
     "max_tokens_per_project": 1000000000
   },
+  "reporting": {
+    "mode": "off",
+    "bindings": []
+  },
   "operating_calendar": {
     "timezone": "Europe/London",
     "work_mode": "continuous",

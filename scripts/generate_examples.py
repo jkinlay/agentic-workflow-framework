@@ -452,6 +452,8 @@ def generate(output_root, source_root=ROOT):
     fresh_operating['budgeting'] = fresh_settings()
     from agentic.operating_calendar import effective_calendar
     fresh_operating['operating_calendar'] = effective_calendar({})
+    from agentic.reporting.settings import effective_reporting
+    fresh_operating['reporting'] = effective_reporting({})
     operating = default_operating(generation_policy)
     write(output_root / "OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", operating)

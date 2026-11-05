@@ -134,6 +134,10 @@ def main(argv=None, default_root=None):
     parser.add_argument("--root", type=Path, default=default_root or Path.cwd())
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("verify-installation")
+    reporting_parser = sub.add_parser('reporting-status', help='Read effective reporting settings, channel delivery and coverage; no providers or writes')
+    reporting_parser.add_argument('--state', type=Path, required=True)
+    reporting_parser.add_argument('--binding', type=Path, required=True, help='Accepted project/repository/scope_revision object')
+    reporting_parser.add_argument('--config', type=Path)
     config_parser = sub.add_parser("validate-config")
     config_parser.add_argument("--config", type=Path)
     config_parser.add_argument("--require-enablement", action="store_true",
@@ -270,6 +274,17 @@ def main(argv=None, default_root=None):
     args = parser.parse_args(argv)
     try:
         root = args.root.absolute()
+        if args.command == 'reporting-status':
+            from .operating import read_operating
+            from .reporting.observations import inspect_reporting
+            config = load(args.config or root / '.agentic/PROJECT_CONFIG.yaml')
+            snapshot = read_operating(root, config)
+            binding = load(args.binding)
+            if (not isinstance(binding, dict) or set(binding) != {'project', 'repository', 'scope_revision'} or
+                    binding['project'] != config['project']['id'] or binding['repository'] != str(config['github']['repository_id'])):
+                raise ValidationError('REPORT_SCOPE_BINDING_MISMATCH')
+            emit_json(inspect_reporting(args.state, snapshot.config, binding, worktree_roots=[root]))
+            return 0
         if args.command == "handoff" or (args.command == "doctor" and args.handoff is not None):
             from .handoff import build_snapshot, compare_snapshot, render_markdown
             snapshot = build_snapshot(root)

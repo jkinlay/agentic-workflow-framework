@@ -1,0 +1,265 @@
+"""Reporting extension of the sole controller and outbox, never a service loop.
+
+Context/observations and provider objects are trusted executable host ports.
+One serialized controller cycle collects them before this atomic projection.
+No network, secret resolution, usage write, Jira client or dispatch lives here.
+"""
+from copy import deepcopy
+from datetime import timedelta
+
+from ..canonical import canonical, fingerprint, loads, timestamp
+from ..operating_calendar import effective_calendar, next_review_presentation
+from .bodies import prepare_body, render_body
+from .compose import compose_report, describe
+from .delivery import DeliveryOutbox, delivery_intent, require
+from .events import due_periods, owner_events, readiness_events, utc
+from .settings import effective_reporting
+
+
+def _bindings(operating, binding):
+    settings = effective_reporting(operating, binding=binding)
+    selected = {'teams', 'slack'} if settings['mode'] == 'both' else {settings['mode']} - {'off'}
+    return settings, [b for b in settings['bindings'] if b['platform'] in selected]
+
+
+def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None):
+    record = dict(report_id=report_id, kind=kind, binding=deepcopy(binding), body=body,
+                  delivery_ids=[], **(extra or {}))
+    for destination in destinations:
+        intent = delivery_intent(report_id, destination, render_body(body, destination['platform']))
+        DeliveryOutbox.enqueue_in_transaction(db, intent)
+        record['delivery_ids'].append(intent['delivery_id'])
+    raw = canonical(record).decode()
+    prior = db.execute('SELECT payload_json FROM controller_outbox WHERE delivery_id=?', (report_id,)).fetchone()
+    if prior:
+        require(prior[0] == raw, 'REPORT_IDENTITY_REUSED_WITH_DIFFERENT_BYTES')
+    else:
+        db.execute('INSERT INTO controller_outbox VALUES(?,\'REPORT\',0,?,?,NULL)', (report_id, now, raw))
+    return record
+
+
+def _body(kind, binding, now, calendar, context, period=None, action=None):
+    supplied = deepcopy(context.get('records'))
+    if supplied is not None:
+        require(supplied.get('binding') == binding and supplied.get('created_at') == now,
+                'REPORT_SOURCE_BINDING_MISMATCH')
+        supplied.update(timezone=calendar['timezone'], period=period or {},
+                        capacity=context.get('capacity'), accounting=context.get('accounting', {'mode': 'off'}))
+        if context.get('previous_daily_end'):
+            supplied['previous_daily_end'] = context['previous_daily_end']
+        body = compose_report(kind, supplied, binding, verify_sources=lambda value, accepted: value,
+                              verify_link=context.get('verify_link'))
+        data = deepcopy(body['data'])
+    else:
+        data = dict(project=binding['project'], observed_at=now, timezone=calendar['timezone'],
+                    scope=binding['scope_revision'], candidate=describe(context.get('candidate')),
+                    summary='Unknown: source records unavailable', sections={}, freshness='UNAVAILABLE',
+                    period=describe(period), catch_up=bool(period and period['catch_up']))
+    data['coverage'] = deepcopy(context.get('coverage', {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'}))
+    data['observations'] = {k: deepcopy(context.get(k)) for k in ('streams', 'gates', 'graph', 'capacity', 'accounting_summary')}
+    data['source_records'] = deepcopy(context.get('records'))
+    data['sections']['Sources and freshness'] = data['sections'].get('Sources and freshness', 'UNAVAILABLE') + '\nCoverage: ' + describe(data['coverage'])
+    if kind == 'hourly':
+        data['sections']['Capacity and review queue'] = describe(context.get('capacity'))
+        data['sections']['Current work'] = describe(context.get('streams'))
+        data['sections']['Changes since the previous report'] = 'Gates: ' + describe(context.get('gates'))
+    if kind == 'eod' and context.get('accounting_summary') is not None:
+        data['sections']['Token usage'] = describe(context['accounting_summary'])
+    if action is not None:
+        record = action['record']['action']
+        data.update(decision=record['decision'], decision_owner=record['owner'],
+                    requested_response=record['due'], options=record['options'], resume=record['resume'],
+                    delay_consequence=record['reason'], summary=action['kind'],
+                    owner_action=record['decision'])
+        data['sections']['Owner action'] = record['decision']
+        data['sections']['Evidence'] = describe(action)
+    return prepare_body(kind, data, verify_link=context.get('verify_link'))
+
+
+def reporting_status(store, operating, binding):
+    settings = effective_reporting(operating, binding=binding)
+    reports, deliveries = [], []
+    with store.connection() as db:
+        for row in db.execute("SELECT payload_json FROM controller_outbox WHERE kind='REPORT' ORDER BY rowid"):
+            record = loads(row[0])
+            if record['binding'] != binding:
+                continue
+            reports.append(record)
+            for delivery_id in record['delivery_ids']:
+                intent, state = DeliveryOutbox._load(db, delivery_id)
+                deliveries.append(dict(delivery_id=delivery_id, platform=intent['binding']['platform'],
+                    destination=intent['binding']['destination'], report_id=record['report_id'], **state))
+    coverage = reports[-1]['body']['data'].get('coverage', {}) if reports else {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'}
+    return dict(settings=settings, reports=reports, deliveries=deliveries, coverage=coverage,
+                channel_delivery=bool(deliveries) and all(d['status'] == 'DELIVERED' for d in deliveries),
+                execution_authority=False)
+
+
+def drain(store, operating, binding, providers, *, report_ids=None, allow_send=True):
+    settings, destinations = _bindings(operating, binding)
+    if settings['mode'] == 'off':
+        return []
+    selected = {b['platform']: b for b in destinations}
+    outbox, results = DeliveryOutbox(store), []
+    with store.connection() as db:
+        rows = [loads(row[0]) for row in db.execute("SELECT payload_json FROM controller_outbox WHERE kind='REPORT' ORDER BY rowid")]
+    for record in rows:
+        if record['binding'] != binding or (report_ids is not None and record['report_id'] not in report_ids):
+            continue
+        # Routine drain never sends a held or previously claimed review batch.
+        if record['kind'] == 'final-human-review' and report_ids is None:
+            continue
+        for delivery_id in record['delivery_ids']:
+            with store.connection() as db:
+                intent, state = outbox._load(db, delivery_id)
+            platform = intent['binding']['platform']
+            provider = providers.get(platform)
+            if selected.get(platform) != intent['binding'] or provider is None:
+                continue  # Binding rotations never retarget historical intents.
+            # A provider failure is isolated to this destination and this report.
+            try:
+                state = outbox.advance(delivery_id, provider, allow_send=allow_send)
+            except Exception:
+                state = dict(status='UNKNOWN', reason='REPORT_PROVIDER_UNAVAILABLE')
+            results.append(dict(delivery_id=delivery_id, platform=platform, **state))
+    return results
+
+
+def reporting_cycle(store, *, operating, binding, now, providers=None, context=None):
+    settings, destinations = _bindings(operating, binding)
+    timestamp(now)
+    key = 'reporting:' + fingerprint('reporting-scope', binding)
+    if settings['mode'] == 'off':
+        with store.transaction() as db:
+            row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+            state = loads(row[0]) if row else dict(owner={})
+            require('cursor' not in state or timestamp(state['cursor']) <= timestamp(now), 'REPORT_CLOCK_REGRESSION')
+            state.update(cursor=now, suspended=True)
+            db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                       (key, canonical(state).decode()))
+        return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
+    calendar, context = effective_calendar(operating), context or {}
+    generated = []
+    with store.transaction() as db:
+        row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+        state = loads(row[0]) if row else dict(cursor=utc(timestamp(now) - timedelta(microseconds=1)), owner={})
+        require(timestamp(state['cursor']) <= timestamp(now), 'REPORT_CLOCK_REGRESSION')
+        if state.pop('suspended', False):
+            state['cursor'] = utc(timestamp(now) - timedelta(microseconds=1))
+        # Contiguous bounded windows preserve every missed interval after long downtime.
+        cursor = state['cursor']
+        while timestamp(cursor) < timestamp(now):
+            end = utc(min(timestamp(now), timestamp(cursor) + timedelta(days=366)))
+            for period in due_periods(cursor, end, operating, effective_calendar=effective_calendar):
+                period['catch_up'] = timestamp(period['end']) < timestamp(now)
+                report_id = fingerprint('controller-report-period', [binding, period['id']])
+                generated.append(_retain(db, report_id, period['kind'],
+                    _body(period['kind'], binding, now, calendar,
+                          dict(context, previous_daily_end=state.get('daily_end')), period), binding, destinations, now))
+                if period['kind'] == 'eod':
+                    state['daily_end'] = period['end']
+            cursor = end
+        if context.get('owner_actions') is not None:
+            events, state['owner'] = owner_events(fingerprint('reporting-scope', binding), context['owner_actions'], state['owner'])
+            for action in events:
+                generated.append(_retain(db, action['id'], 'owner-action',
+                    _body('owner-action', binding, now, calendar, context, action=action), binding, destinations, now))
+        candidates = context.get('readiness_candidates')
+        if candidates is not None:
+            require(all(all(c.get(k) == binding[k] for k in binding) for c in candidates), 'REPORT_SCOPE_BINDING_MISMATCH')
+            events, state['readiness'] = readiness_events(candidates, state.get('readiness', {}))
+            for notice in events:
+                if notice['kind'] != 'correction':
+                    continue  # Lane C exclusively presents final-review readiness.
+                body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
+                    timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=describe(notice['record']),
+                    summary='Correction: prior readiness withdrawn', sections={'Evidence': describe(notice),
+                        'Owner action': 'Do not rely on prior readiness; await current candidate review'}))
+                generated.append(_retain(db, notice['id'], 'owner-action', body, binding, destinations, now))
+        state['cursor'] = now
+        db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                   (key, canonical(state).decode()))
+    deliveries = drain(store, operating, binding, providers or {})
+    return dict(state='ENABLED', generated=len(generated), reports=generated, deliveries=deliveries,
+                coverage=reporting_status(store, operating, binding)['coverage'])
+
+
+class ReviewReportingPort:
+    """Lane C's exact batch seam; only channel evidence can close a batch.
+
+    Exhausted/partial destinations stay visible in reporting diagnostics. They
+    never issue NOT_DELIVERED and thus never multiply lane C's retry allowance.
+    """
+    def __init__(self, store, operating, binding, providers, clock, *, observe_candidate=None):
+        self.store, self.operating, self.binding = store, operating, binding
+        self.providers, self.clock = providers, clock
+        self.observe_candidate = observe_candidate
+
+    def _id(self, payload):
+        return 'review-' + payload['batch_id']
+
+    def _check(self, payload, calendar, observe_candidate):
+        from ..review_batching import ReviewBatchStore
+        require(all(str(m['candidate']['repository_id']) == self.binding['repository'] for m in payload['members']),
+                'REPORT_SCOPE_BINDING_MISMATCH')
+        now, checked = self.clock(), []
+        def observe(candidate):
+            value = observe_candidate(candidate, now)
+            checked.append(value)
+            return value
+        checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar, observe)
+        require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
+        send_at = self.clock()
+        require(not next_review_presentation(send_at, calendar)['held'] and
+                all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked),
+                'REPORT_REVIEW_CHECK_EXPIRED')
+
+    def deliver_review_batch(self, payload):
+        settings, destinations = _bindings(self.operating, self.binding)
+        require(settings['mode'] != 'off', 'REPORTING_OFF')
+        now = self.clock()
+        data = dict(project=self.binding['project'], scope=self.binding['scope_revision'],
+            observed_at=now, timezone=effective_calendar(self.operating)['timezone'],
+            candidate=describe([m['candidate'] for m in payload['members']]),
+            summary='Combined final human review / Jira review passed batch', sections={
+                'Evidence': describe(payload), 'Owner action': 'Review the exact candidates; merge remains an owner decision'},
+            coverage={'gates': 'CURRENT_AT_PRESENTATION', 'accounting': 'UNAVAILABLE'})
+        body = prepare_body('final-human-review', data)
+        with self.store.transaction() as db:
+            _retain(db, self._id(payload), 'final-human-review', body, self.binding, destinations, now,
+                    extra={'review_batch': deepcopy(payload)})
+        if self.observe_candidate is not None:
+            self._check(payload, effective_calendar(self.operating), self.observe_candidate)
+        drain(self.store, self.operating, self.binding, self.providers, report_ids={self._id(payload)})
+        return self.observe_review_delivery(payload)
+
+    def observe_review_delivery(self, payload):
+        # This port cannot send, even when terminal absence admits a retry.
+        drain(self.store, self.operating, self.binding, self.providers,
+              report_ids={self._id(payload)}, allow_send=False)
+        status = reporting_status(self.store, self.operating, self.binding)
+        reports = [r for r in status['reports'] if r['report_id'] == self._id(payload)]
+        if not reports:
+            return None
+        report = reports[0]
+        require(report.get('review_batch') == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
+        states = [d for d in status['deliveries'] if d['delivery_id'] in report['delivery_ids']]
+        if states and all(s['status'] == 'DELIVERED' for s in states):
+            observed_at = max((h['observed_at'] for s in states for h in s['history'] if h.get('status') == 'DELIVERED'), key=timestamp)
+            return dict(batch_id=payload['batch_id'], payload_sha256=payload['payload_sha256'],
+                status='DELIVERED', observed_at=observed_at,
+                provider_receipt_id=fingerprint('report-review-receipt', states))
+        return None
+
+    def resume(self, calendar, observe_candidate):
+        """Controller-only retry: repeat lane C's pre-send check for this batch."""
+        from ..review_batching import ReviewBatchStore
+        status = reporting_status(self.store, self.operating, self.binding)
+        pending = ReviewBatchStore(self.store)
+        for payload in pending.pending_batches():
+            report_id = self._id(payload)
+            states = [s for s in status['deliveries'] if s['report_id'] == report_id]
+            if not any(s['status'] in {'PENDING', 'ABSENT'} for s in states):
+                continue
+            self._check(payload, calendar, observe_candidate)
+            drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id})

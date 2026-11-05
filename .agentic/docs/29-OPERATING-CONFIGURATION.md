@@ -26,11 +26,7 @@ Generated schemas accept `streams.count` 1–12 with A–L routes and optional p
 
 `OPERATING_CONFIG.yaml`: project choices. Fresh defaults: twelve `gpt-6.1-sol`/high workers, shared critic/controller/specialists; `gpt-6-luna`/high simple work. Preserve existing routes; invalid choices prevent CONFIGURED.
 
-`independent_reviewers.allocation: shared_critic` uses one slot; legacy fixed counts remain binding. Capacity proposals require reviewed governance changes.
-
 Authenticated `fixed`/`max` decisions retain audited history. After sealed safe capacity, `fixed` refuses unsafe counts; `max` limits recommendations. Replans await round boundaries; running reservations remain. Neither raises governance/observed capacity.
-
-Authenticated provider readers normalize known statuses. Unknown custom names require reviewed adapter mappings; they grant neither admission nor closed dependencies.
 
 ## Apply the user's choices
 
@@ -66,11 +62,7 @@ Read Jira without transitions; save observed IDs/paths using `operating-epics.sc
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating recommend --epics EPICS.json --inventory INVENTORY.json
 ```
 
-Inventory prefixes `data/`, `data/**`, `data/*` are equivalent; other globs refuse. Unknown/overlapping scopes group work; risk/specialist triggers raise routes.
-
 Present table; wait for adoption or keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Stale hashes require recomputation.
-
-Defaults stay unpinned; adoption preserves pins/floors. Replay checks remain.
 
 ## Audit and recovery
 
@@ -78,7 +70,6 @@ Commit `.agentic-state/operating/changes/` with settings; audits retain instruct
 
 Publish flushed journal/audit without replacement. Preserve conflicts/staging evidence. Recovery requires independently inspected journal SHA-256; unsupported atomic primitives refuse.
 
-Reservations/settlement retain operating/policy hashes. Historical absent/null hashes remain unobserved. Host authenticates instructions/routes; records establish consistency.
 
 
 ## Budget choices
@@ -94,3 +85,9 @@ Optional `operating_calendar` resolves omitted defaults on read without changing
 Dotted set paths cover `timezone`, `work_mode`, `review_batching.enabled`, `.weekdays`, `.presentation_time`, `.cutoff_time`, `eod.time`, `eod.weekdays`, prefixed `operating_calendar.`. Weekdays use JSON lists. Unknown/null fields, invalid IANA zones/times/days and presentation >= cutoff refuse atomically. No Epic overrides. Show exposes effective settings separately from persisted configuration.
 
 Trusted infrastructure injects `CalendarSettingsRegistry` through `calendar_registry`, using budgeting's host-observer pattern; instruction text authenticates nobody. Observation consumption follows validation under the operating lock; existing journal/audit/pinned recovery applies. Calendar changes enable no reporting, budgeting, chat or adapters. See [calendar](operating-calendar.md) for DST and controller wiring.
+
+## Reporting choices
+
+Optional `reporting` defaults OFF: `mode` accepts `off`, `teams`, `slack`, `both`; `bindings` holds approved project/repository/scope destinations and secret references. Set `reporting.mode` and JSON `reporting.bindings` together. No Epic overrides. Missing/foreign bindings refuse before secret resolution.
+
+Infrastructure injects `ReportingSettingsRegistry` through `reporting_registry`, using the trusted-host pattern and existing lock/journal/audit/pinned recovery. Standalone changes refuse. Effective settings appear in show; `reporting-status` exposes delivery states/coverage. Reporting enables no chat, accounting, dispatch or Jira writes. See [reporting](REPORTING-196.md).

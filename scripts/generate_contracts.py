@@ -416,7 +416,17 @@ def catalog(*, include_ticket_plan=True):
         }, required=[]),
         "eod": obj({"time": calendar_clock, "weekdays": calendar_days}, required=[]),
     }, required=[])
+    reporting = obj({
+        'mode': enum('off', 'teams', 'slack', 'both'),
+        'bindings': arr(obj({
+            'project': text(maxLength=256), 'repository': text(maxLength=256),
+            'scope_revision': text(maxLength=256), 'platform': enum('teams', 'slack'),
+            'destination': text(maxLength=256), 'revision': text(maxLength=256),
+            'secret_ref': text(maxLength=256, pattern=r'^(env|vault|secret):[A-Za-z0-9_./-]+$'),
+        }), maxItems=2),
+    }, required=[])
     schemas["operating-config"] = obj({
+        'reporting': reporting,
         "operating_calendar": operating_calendar,
         "budgeting": obj({"accounting_enabled": BOOL, "enforcement_enabled": BOOL,
                           "max_tokens_per_ticket": integer(1),
@@ -462,6 +472,12 @@ def catalog(*, include_ticket_plan=True):
         "then": {"properties": {"instruction": text()}},
         "else": {"properties": {"instruction": {"type": "null"}}},
     }])
+    schemas['operating-change']['properties']['reporting_owner_observation'] = obj({
+        'observation_id': text(maxLength=256), 'actor_id': text(maxLength=256),
+        'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
+        'changes': {'type': 'object', 'minProperties': 1, 'additionalProperties': False,
+                    'properties': reporting['properties']},
+    })
     schemas['operating-change']['properties']['budget_owner_observation'] = obj({
         'observation_id': text(maxLength=256), 'actor_id': text(maxLength=256),
         'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,

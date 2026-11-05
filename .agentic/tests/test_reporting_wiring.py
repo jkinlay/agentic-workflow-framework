@@ -1,0 +1,444 @@
+"""Stage-three integration regressions; trusted ports are synthetic, never live."""
+from copy import deepcopy
+import json
+import io
+from contextlib import closing, redirect_stdout
+import sqlite3
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import source_only
+from agentic import ValidationError
+from agentic import operating as op
+from agentic.canonical import fingerprint, sha256
+from agentic.continuous_controller import ContinuousControllerStore
+from test_operating import governance
+
+
+def binding(platform='slack', project='p', repository='101', scope='s'):
+    return dict(project=project, repository=repository, scope_revision=scope,
+                platform=platform, destination='approved-' + platform, revision='1', secret_ref='env:REPORT_TOKEN')
+
+
+class ReportingSettingsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / 'project'
+        self.root.mkdir()
+        self.gov = governance()
+        self.gov['project']['id'] = 'p'
+        self.gov['github']['repository_id'] = 101
+        (self.root / '.agentic').mkdir()
+        (self.root / op.GOVERNANCE).write_text(json.dumps(self.gov))
+        self.count = 0
+        owner = self
+        class Host:
+            def observe_owner_direction(self, project, prior, changes):
+                owner.count += 1
+                return dict(observation_id='owner-' + str(owner.count), actor_id='trusted-owner',
+                            project_id=project, prior_settings_hash=prior, changes=deepcopy(changes))
+        from agentic.reporting.settings import ReportingSettingsRegistry
+        self.registry = ReportingSettingsRegistry(Path(self.temp.name) / 'owner.sqlite3', Host(), [self.root])
+        op.initialize_operating(self.root, self.gov)
+
+    def set(self, mode, **kwargs):
+        return op.set_operating(self.root, self.gov, 'Use reporting ' + mode,
+            ['reporting.mode=' + mode, 'reporting.bindings=' + json.dumps([binding('teams'), binding()])],
+            reporting_registry=self.registry, **kwargs)
+
+    def test_modes_persist_show_and_enable_no_other_feature(self):
+        from agentic.reporting.settings import effective_reporting
+        self.assertEqual(effective_reporting({}), dict(mode='off', bindings=[]))
+        initial = op.read_operating(self.root, self.gov).config
+        for mode in ('teams', 'slack', 'both', 'off'):
+            result = self.set(mode)
+            self.assertEqual(op.read_operating(self.root, self.gov), result)
+            self.assertEqual(result.config['reporting']['mode'], mode)
+            self.assertEqual(result.config.get('budgeting'), initial.get('budgeting'))
+            self.assertNotIn('chat', result.config)
+            self.assertIn('Reporting (effective settings)', op.render_operating(result, self.gov, state='CONFIGURED'))
+        self.assertEqual(self.count, 4)
+
+    def test_inert_default_preserves_planning_only_governance_without_github(self):
+        gov = deepcopy(self.gov)
+        gov.pop('github')
+        value = op.default_operating(gov['execution']['model_routing'])
+        self.assertEqual(op.validate_operating(value, gov).config['reporting']['mode'], 'off')
+        value['reporting'] = dict(mode='slack', bindings=[binding()])
+        with self.assertRaisesRegex(ValidationError, 'REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED'):
+            op.validate_operating(value, gov)
+
+    def test_missing_foreign_and_mixed_invalid_refuse_before_host(self):
+        for assignments in (['reporting.mode=both'],
+            ['reporting.mode=slack', 'reporting.bindings=' + json.dumps([binding(project='foreign')])],
+            ['reporting.mode=slack', 'reporting.bindings=' + json.dumps([binding()]), 'streams.count=99']):
+            before = (self.root / op.CONFIG).read_bytes()
+            with self.assertRaises(ValidationError):
+                op.set_operating(self.root, self.gov, 'Enable', assignments, reporting_registry=self.registry)
+            self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
+        self.assertEqual(self.count, 0)
+        with self.assertRaisesRegex(ValidationError, 'Trusted-host'):
+            op.set_operating(self.root, self.gov, 'off', ['reporting.mode=off'])
+
+    def test_recovery_retains_owner_observation(self):
+        real = op._new
+        def interrupted(tree, name, raw):
+            if '/changes/' in name:
+                raise OSError('synthetic interruption')
+            return real(tree, name, raw)
+        with patch.object(op, '_new', interrupted), self.assertRaises(OSError):
+            self.set('both')
+        journal = (self.root / op.JOURNAL).read_bytes()
+        observation = json.loads(journal)['event']['reporting_owner_observation']
+        result = op.recover_operating(self.root, self.gov, sha256(journal))
+        self.assertEqual(result.config['reporting']['mode'], 'both')
+        events = list((self.root / op.STATE / 'changes').glob('*.json'))
+        self.assertTrue(any(json.loads(p.read_bytes()).get('reporting_owner_observation') == observation for p in events))
+        self.assertEqual(self.count, 1)
+
+    def test_cli_shows_effective_settings_delivery_and_coverage_without_migration(self):
+        from agentic.cli import main
+        from agentic.reporting.runtime import reporting_cycle
+        snapshot = self.set('both')
+        controller = ContinuousControllerStore(Path(self.temp.name) / 'controller.sqlite3', ['A'])
+        accepted = dict(project='p', repository='101', scope_revision='s')
+        reporting_cycle(controller, operating=snapshot.config, binding=accepted, now='2026-11-07T17:00:00Z')
+        path = self.root / 'binding.json'
+        path.write_text(json.dumps(accepted))
+        output = io.StringIO()
+        before = controller.path.read_bytes()
+        with redirect_stdout(output), patch.object(ContinuousControllerStore, '__init__', side_effect=AssertionError('migration forbidden')):
+            result = main(['--root', str(self.root), 'reporting-status', '--state', str(controller.path), '--binding', str(path)])
+        self.assertEqual(result, 0)
+        shown = json.loads(output.getvalue())
+        self.assertEqual(shown['settings']['mode'], 'both')
+        self.assertEqual({s['status'] for s in shown['deliveries']}, {'PENDING'})
+        self.assertEqual(shown['coverage']['accounting'], 'UNAVAILABLE')
+        self.assertEqual(controller.path.read_bytes(), before)
+
+
+class ReportingRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'controller.sqlite3'
+        self.store = ContinuousControllerStore(self.path, ['A'])
+        self.binding = dict(project='p', repository='101', scope_revision='s')
+        self.root = dict(reporting=dict(mode='both', bindings=[binding('teams'), binding()]))
+        self.sent = []
+        owner = self
+        class Provider:
+            def send(self, intent, attempt):
+                owner.sent.append((intent, attempt))
+            def reconcile(self, intent, attempts):
+                return dict(status='VISIBLE' if intent['binding']['platform'] == 'slack' else 'UNKNOWN',
+                    evidence_kind='CHANNEL_READBACK', delivery_id=intent['delivery_id'],
+                    destination=intent['binding']['destination'], platform=intent['binding']['platform'],
+                    payload_sha256=intent['payload_sha256'], attempt_ids=attempts,
+                    observation_id='read-' + intent['delivery_id'], observed_at='2026-11-07T19:00:00Z', message_id='visible')
+        self.providers = {p: Provider() for p in ('teams', 'slack')}
+
+    def cycle(self, now, **kwargs):
+        from agentic.reporting.runtime import reporting_cycle
+        return reporting_cycle(self.store, operating=self.root, binding=self.binding, now=now,
+                               providers=self.providers, **kwargs)
+
+    def test_weekend_idle_eod_continuity_restart_and_destination_independence(self):
+        self.cycle('2026-11-07T16:59:59Z')
+        self.cycle('2026-11-07T17:00:00Z')
+        self.store = ContinuousControllerStore(self.path, ['A'])
+        self.cycle('2026-11-07T18:00:00Z')
+        from agentic.reporting.runtime import reporting_status
+        result = reporting_status(self.store, self.root, self.binding)
+        self.assertEqual(len(result['reports']), 3)
+        self.assertEqual([r['kind'] for r in result['reports']].count('eod'), 1)
+        self.assertEqual(len(self.sent), 6)
+        self.assertEqual({r['status'] for r in result['deliveries'] if r['platform'] == 'slack'}, {'DELIVERED'})
+        self.assertEqual({r['status'] for r in result['deliveries'] if r['platform'] == 'teams'}, {'UNKNOWN'})
+        self.assertIn('UNAVAILABLE', str(result['coverage']))
+        self.cycle('2026-11-07T18:00:00Z')
+        self.assertEqual(len(self.sent), 6)
+
+    def test_off_and_foreign_bindings_never_invoke_provider(self):
+        self.root['reporting']['mode'] = 'off'
+        self.cycle('2026-11-07T17:00:00Z')
+        self.assertEqual(self.sent, [])
+        self.root['reporting']['mode'] = 'both'
+        self.root['reporting']['bindings'][0]['scope_revision'] = 'foreign'
+        with self.assertRaises(ValidationError):
+            self.cycle('2026-11-07T18:00:00Z')
+        self.assertEqual(self.sent, [])
+
+    def test_atomic_generation_failure_and_labelled_catchup(self):
+        self.cycle('2026-11-07T16:00:01Z')
+        from agentic.reporting import runtime
+        real = runtime.render_body
+        with patch.object(runtime, 'render_body', side_effect=ValidationError('synthetic render failure')):
+            with self.assertRaises(ValidationError):
+                self.cycle('2026-11-07T18:30:00Z')
+        result = self.cycle('2026-11-07T18:30:00Z')
+        self.assertEqual(result['generated'], 3)
+        self.assertTrue(all(r['body']['data']['catch_up'] for r in result['reports']))
+        self.assertTrue(all('CATCH-UP' in i['payload'] for i, _ in self.sent))
+
+    def test_immediate_owner_events_deduplicate_and_unavailable_never_resolves(self):
+        action = dict(id='access', decision='Grant access', owner='owner', due='now',
+                      reason='blocked', options=['grant', 'park'], resume='access')
+        context = dict(owner_actions=[action])
+        self.cycle('2026-11-07T18:30:00Z', context=context)
+        self.assertEqual(len(self.sent), 2)
+        self.cycle('2026-11-07T18:31:00Z', context=context)
+        self.cycle('2026-11-07T18:32:00Z')
+        self.assertEqual(len(self.sent), 2)
+        self.cycle('2026-11-07T18:33:00Z', context=dict(owner_actions=[]))
+        self.assertEqual(len(self.sent), 4)
+
+    def test_first_boundary_and_configured_weekend_eod_are_due(self):
+        self.root['operating_calendar'] = dict(eod=dict(time='19:15'))
+        first = self.cycle('2026-11-07T18:00:00Z')
+        self.assertEqual(first['generated'], 1)
+        result = self.cycle('2026-11-07T20:00:00Z')
+        self.assertEqual(result['generated'], 3)
+        self.assertEqual([r['kind'] for r in result['reports']].count('eod'), 1)
+
+    def test_disabled_periods_are_not_backfilled_as_downtime(self):
+        self.cycle('2026-11-07T16:59:59Z')
+        self.cycle('2026-11-07T17:00:00Z')
+        self.root['reporting']['mode'] = 'off'
+        self.cycle('2026-11-07T17:30:00Z')
+        self.root['reporting']['mode'] = 'both'
+        result = self.cycle('2026-11-07T20:00:00Z')
+        self.assertEqual(result['generated'], 1)
+        self.assertEqual(result['reports'][0]['body']['data']['period'].count('20:00'), 2)
+
+    def test_readiness_correction_is_immediate_but_final_notice_is_batched(self):
+        c = dict(project='p', repository='101', scope_revision='s', pr=1, head='a'*40,
+                 base='b'*40, gate='g', stage='READY_FOR_OWNER_AUTHORIZATION',
+                 critic=True, specialists=True, final_gate=True)
+        result = self.cycle('2026-11-07T18:30:00Z', context=dict(readiness_candidates=[c]))
+        self.assertEqual(result['generated'], 0)
+        result = self.cycle('2026-11-07T18:31:00Z', context=dict(readiness_candidates=[dict(c, head='c'*40, final_gate=False)]))
+        self.assertEqual(result['generated'], 1)
+        self.assertEqual(result['reports'][0]['kind'], 'owner-action')
+        self.assertIn('READINESS_INVALIDATED', str(result['reports'][0]))
+
+    def test_cli_readback_uses_no_controller_migration_or_provider(self):
+        from agentic.reporting.observations import inspect_reporting
+        self.cycle('2026-11-07T16:59:59Z')
+        self.cycle('2026-11-07T17:00:00Z')
+        before = self.path.read_bytes()
+        status = inspect_reporting(self.path, self.root, self.binding)
+        self.assertEqual(before, self.path.read_bytes())
+        self.assertEqual(len(status['reports']), 2)
+        self.assertEqual(status['settings']['mode'], 'both')
+        self.assertEqual({s['status'] for s in status['deliveries']}, {'DELIVERED', 'UNKNOWN'})
+        missing = self.path.with_name('missing.sqlite3')
+        with self.assertRaises(ValidationError):
+            inspect_reporting(missing, self.root, self.binding)
+        self.assertFalse(missing.exists())
+
+    def test_review_receipt_requires_both_destinations_and_readback_never_sends(self):
+        from agentic.reporting.runtime import ReviewReportingPort
+        from test_awf244_controller_wiring import candidate
+        from agentic.review_batching import ReviewBatchStore
+        now = '2026-11-10T10:00:00Z'
+        batch_store = ReviewBatchStore(self.store)
+        c = candidate()
+        batch_store.enqueue(c, now, {})
+        def observe(value):
+            return dict(candidate=value, observed_at=now, expires_at='2026-11-10T10:01:00Z',
+                open=True, merged=False, readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True)
+        payload = batch_store.claim(now, {}, observe)
+        # All-readback evidence timestamps must be current for this batch.
+        for provider in self.providers.values():
+            original = provider.reconcile
+            provider.reconcile = lambda intent, attempts, f=original: dict(f(intent, attempts), observed_at=now)
+        port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now)
+        self.assertIsNone(port.deliver_review_batch(payload))
+        self.assertEqual(len(self.sent), 2)
+        self.assertIsNone(port.observe_review_delivery(payload))
+        self.assertEqual(len(self.sent), 2)
+        teams = self.providers['teams'].reconcile
+        self.providers['teams'].reconcile = lambda i, a: dict(teams(i, a), status='VISIBLE')
+        receipt = port.observe_review_delivery(payload)
+        self.assertEqual(receipt['status'], 'DELIVERED')
+        self.assertEqual(receipt['batch_id'], payload['batch_id'])
+        self.assertEqual(len(self.sent), 2)
+
+    def test_review_retry_rechecks_gate_and_never_multiplies_attempts(self):
+        from agentic.reporting.runtime import ReviewReportingPort, reporting_status
+        from test_awf244_controller_wiring import candidate
+        from agentic.review_batching import ReviewBatchStore
+        now = '2026-11-10T10:00:00Z'
+        self.root['reporting']['mode'] = 'slack'
+        batches = ReviewBatchStore(self.store)
+        c = candidate()
+        batches.enqueue(c, now, {})
+        def observation(value, current):
+            return dict(candidate=value, observed_at=current, expires_at='2026-11-10T10:05:00Z',
+                open=True, merged=False, readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True)
+        payload = batches.claim(now, {}, lambda c: observation(c, now))
+        original = self.providers['slack'].reconcile
+        self.providers['slack'].reconcile = lambda i, a: dict(original(i, a), status='ABSENT', terminal=True, observed_at=now)
+        port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now)
+        self.assertIsNone(port.deliver_review_batch(payload))
+        self.assertEqual(len(self.sent), 1)
+        now = '2026-11-10T10:01:00Z'
+        self.assertIsNone(port.observe_review_delivery(payload))
+        self.assertEqual(len(self.sent), 1)
+        with self.assertRaises(ValidationError):
+            port.resume({}, lambda c, n: dict(observation(c, n), final_gate_valid=False))
+        self.assertEqual(len(self.sent), 1)
+        port.resume({}, observation)
+        self.assertEqual(len(self.sent), 2)
+        port.resume({}, observation)
+        self.assertEqual(len(self.sent), 2)
+        state = reporting_status(self.store, self.root, self.binding)['deliveries'][0]
+        self.assertEqual(state['status'], 'FAILED')
+        self.assertEqual(len(state['attempts']), 2)
+        self.assertIsNone(port.observe_review_delivery(payload))
+
+    def test_reporting_port_checks_the_last_clock_after_current_gate_reads(self):
+        from agentic.reporting.runtime import ReviewReportingPort
+        from agentic.review_batching import ReviewBatchStore
+        from test_awf244_controller_wiring import candidate
+        now = '2026-11-10T16:59:59Z'
+        c = candidate()
+        batches = ReviewBatchStore(self.store)
+        batches.enqueue(c, now, {})
+        def observe(value, observed):
+            nonlocal now
+            result = dict(candidate=value, observed_at=observed, expires_at='2026-11-10T17:00:59Z',
+                open=True, merged=False, readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True)
+            now = '2026-11-10T17:00:00Z'
+            return result
+        payload = batches.claim(now, {}, lambda value: dict(candidate=value, observed_at=now,
+            expires_at='2026-11-10T17:00:59Z', open=True, merged=False,
+            readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True))
+        port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now,
+                                   observe_candidate=observe)
+        with self.assertRaises(ValidationError):
+            port.deliver_review_batch(payload)
+        self.assertEqual(self.sent, [])
+
+    def test_read_only_missing_parent_creates_nothing(self):
+        from agentic.reporting.observations import inspect_reporting
+        parent = self.path.parent / 'absent-parent'
+        with self.assertRaises(ValidationError):
+            inspect_reporting(parent / 'state.sqlite3', self.root, self.binding)
+        self.assertFalse(parent.exists())
+
+
+class ControllerReportingTests(unittest.TestCase):
+    def test_real_cycle_wires_sources_reports_batches_and_continued_dispatch(self):
+        from test_awf244_controller_wiring import ControllerBatchingTests
+        from test_continuous_controller import INVENTORY_BINDING, ticket
+        helper = ControllerBatchingTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        original_validate = op.validate_operating
+        destinations = [binding(p, INVENTORY_BINDING['project_id'], INVENTORY_BINDING['repository_id'],
+                                INVENTORY_BINDING['scope_sha256']) for p in ('teams', 'slack')]
+        def validate(config, gov):
+            config = deepcopy(config)
+            config['reporting'] = dict(mode='both', bindings=destinations)
+            return original_validate(config, gov)
+        sends = []
+        class Provider:
+            def send(self, intent, attempt):
+                sends.append(intent)
+            def reconcile(self, intent, attempts):
+                return dict(status='UNKNOWN')
+        def observe(request):
+            return dict(binding=request['binding'], observed_at=request['observed_at'],
+                records=None, owner_actions=[dict(id='a', decision='Access', owner='owner', due='now',
+                    reason='blocked', options=['grant'], resume='access')], authentication={'evidence_id': 'source'})
+        def verify(auth, request):
+            return dict(status='VERIFIED', evidence_id='source', snapshot={k: v for k, v in observe(request).items() if k != 'authentication'})
+        calls = dict(reporting_providers={p: Provider() for p in ('teams', 'slack')},
+                     observe_reporting_sources=observe, verify_reporting_sources=verify)
+        with patch('test_awf244_controller_wiring.validate_operating', validate):
+            first = helper.cycle('2026-11-10T10:00:01Z', [ticket('EX-1', 1)], **calls)
+            second = helper.cycle('2026-11-10T11:00:00Z', **calls)
+        self.assertEqual(len(first['dispatch_receipts']), 1)
+        self.assertEqual(first['reporting']['generated'], 1)
+        self.assertEqual(second['reporting']['generated'], 1)
+        self.assertEqual(helper.delivered, [])  # reporting owns the review port
+        self.assertEqual(len([s for s in sends if 'Ready for final human review' in s['payload']]), 2)
+        self.assertEqual(len(sends), 6)
+        self.assertFalse(second['execution_authority'])
+
+    def test_reference_receipt_explicitly_is_local(self):
+        import runpy
+        from test_reference_controller_adapter import ReferenceControllerAdapterTests
+        # Reuse its inert configuration and fake transports, never its tests.
+        helper = ReferenceControllerAdapterTests()
+        helper.setUp()
+        self.addCleanup(helper.tearDown)
+        from test_reference_controller_adapter import FakeClock
+        adapters = runpy.run_path(str(helper.adapter))['build_adapters']({**helper.config, '_clock': FakeClock()})
+        receipt = adapters['deliver_status'](dict(delivery_id='test', observed_at='2026-11-05T10:00:00Z'))
+        self.assertEqual(receipt['evidence_kind'], 'LOCAL_RECEIPT')
+        self.assertFalse(receipt['channel_delivery'])
+
+
+class AccountingObservationTests(unittest.TestCase):
+    def test_off_unknown_and_only_explicit_attribution_with_read_only_bytes(self):
+        from agentic.reporting.observations import attributed_accounting
+        from agentic.budgeting import fresh_settings
+        from agentic.budget_enrollment import EnrollmentRegistry
+        from agentic.budgeting import BudgetLedger
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'routing.sqlite3'
+            off = dict(budgeting=fresh_settings())
+            self.assertIsNone(attributed_accounting(path, off, 'p')['consumed'])
+            self.assertFalse(path.exists())
+            settings = dict(fresh_settings(), accounting_enabled=True)
+            class Host:
+                def observe_enrollment(self, b):
+                    return deepcopy(b)
+            registry = EnrollmentRegistry(Path(raw) / 'enrollment.sqlite3', Host())
+            ledger = BudgetLedger(path, registry)
+            b = dict(project_id='p', ticket_id='EX-1', run_id='run', dispatch_id='dispatch',
+                     session_id='session', role='critic')
+            registry.enroll(b)
+            ledger.reserve(b, settings, 100)
+            ledger.settle(b, 20, 'usage')
+            # Fake provider rows include controller/independent and a legacy run.
+            with closing(sqlite3.connect(path)) as db:
+                original = db.execute('SELECT * FROM model_runs').fetchone()
+                columns = [row[1] for row in db.execute('PRAGMA table_info(model_runs)')]
+                for run, req in [('controller', {'_budgeting': {**settings, 'attributable': False}}),
+                                 ('independent-ultra', {}), ('unknown', {'_budgeting': {**settings, 'attributable': True},
+                                    '_budget_binding': dict(b, run_id='unknown', session_id='other')})]:
+                    values = dict(zip(columns, original))
+                    values.update(run_id=run, request=json.dumps(req), agent_id='other',
+                                  actual_tokens=None if run == 'unknown' else 999)
+                    db.execute('INSERT INTO model_runs VALUES(' + ','.join('?' for _ in columns) + ')', list(values.values()))
+                db.commit()
+            before = path.read_bytes()
+            status = attributed_accounting(path, dict(budgeting=settings), 'p')
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(status['known_tokens'], 20)
+            self.assertIsNone(status['consumed'])
+            self.assertEqual(status['unknown_runs'], ['unknown'])
+            self.assertEqual(status['coverage'], dict(observed=1, enrolled=2))
+            self.assertIsNone(attributed_accounting(path, off, 'p')['known_tokens'])
+
+    def test_sources_require_independent_matching_current_bytes(self):
+        from agentic.reporting.observations import collect_sources
+        b = dict(project='p', repository='101', scope_revision='s')
+        now = '2026-11-07T10:00:00Z'
+        value = dict(binding=b, observed_at=now, records=None, owner_actions=[], authentication={'evidence_id': 'e'})
+        for bad in (dict(value, observed_at='2026-11-07T09:00:00Z'), dict(value, binding=dict(b, project='foreign'))):
+            with self.assertRaises(ValidationError):
+                collect_sources(b, now, lambda request: bad, lambda auth, request: {})
+        with self.assertRaises(ValidationError):
+            collect_sources(b, now, lambda request: value, lambda auth, request: {})
+
+
+if __name__ == '__main__':
+    unittest.main()
