@@ -44,7 +44,13 @@ class PlatformReportingAdapter:
             require(self.transport.verify_destination(deepcopy(self.binding), secret) is True,
                     'REPORT_DESTINATION_UNVERIFIED')
             # No response bodies, tokens or credentials escape this boundary.
-            self.transport.send(deepcopy(intent), attempt_id, secret)
+            raw = self.transport.send(deepcopy(intent), attempt_id, secret)
+            from .delivery import DeliveryOutbox
+            safe = DeliveryOutbox._rejection(raw, intent, attempt_id)
+            if safe is not None and secret not in str(safe):
+                safe.update(delivery_id=intent['delivery_id'], destination=self.binding['destination'],
+                            platform=self.platform, payload_sha256=intent['payload_sha256'])
+                return safe
         except Exception:
             raise ValidationError('REPORT_PROVIDER_UNAVAILABLE') from None
         return dict(status='ACCEPTED_UNVERIFIED')

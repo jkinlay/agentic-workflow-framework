@@ -11,6 +11,8 @@ import html
 from html.parser import HTMLParser
 import json
 import re
+from time import sleep
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
@@ -19,6 +21,17 @@ from ..canonical import fingerprint
 from .delivery import require
 
 MAX_RESPONSE = 2 * 1024 * 1024
+# These responses reject the request; timeouts, conflicts and server errors
+# are intentionally absent. Never infer non-delivery from arbitrary diagnostics.
+REJECTED_HTTP = {400, 401, 403, 404, 405, 410, 413, 415, 422, 429}
+REJECTED_SLACK = {'channel_not_found', 'not_in_channel', 'invalid_auth', 'account_inactive',
+                  'token_revoked', 'missing_scope', 'is_archived', 'msg_too_long', 'no_text',
+                  'invalid_arguments', 'invalid_blocks', 'restricted_action', 'ratelimited'}
+
+
+class TerminalRejection(ValidationError):
+    def __init__(self):
+        super().__init__('REPORT_PROVIDER_REJECTED')
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -40,6 +53,10 @@ def http_json(method, url, headers, payload):
         value = json.loads(raw)
         require(isinstance(value, dict), 'REPORT_HTTP_RESPONSE_SHAPE')
         return value
+    except HTTPError as error:
+        if method == 'POST' and error.code in REJECTED_HTTP:
+            raise TerminalRejection() from None
+        raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
     except Exception:
         raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
 
@@ -88,10 +105,11 @@ def teams_html(value):
 class BaseTransport:
     platform = None
 
-    def __init__(self, *, context, sender, http=http_json, clock=None):
+    def __init__(self, *, context, sender, http=http_json, clock=None, pause=sleep):
         require(isinstance(context, str) and context and isinstance(sender, str) and sender, 'REPORT_TRANSPORT_BINDING')
         self.context, self.sender, self.http = context, sender, http
         self.clock = clock or (lambda: datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
+        self.pause = pause
 
     def call(self, method, url, secret, payload=None):
         try:
@@ -99,6 +117,12 @@ class BaseTransport:
             raw = self.http(method, url, {'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/json; charset=utf-8'}, payload)
             require(isinstance(raw, dict), 'REPORT_HTTP_RESPONSE_SHAPE')
             return raw
+        except TerminalRejection:
+            raise TerminalRejection() from None
+        except HTTPError as error:
+            if method == 'POST' and error.code in REJECTED_HTTP:
+                raise TerminalRejection() from None
+            raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
         except Exception:
             raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
 
@@ -114,6 +138,25 @@ class BaseTransport:
                     payload_sha256=intent['payload_sha256'], attempt_ids=list(attempts), message_id=message_id,
                     observed_at=observed, observation_id=fingerprint('report-readback-1', [intent['delivery_id'], message_id, observed]))
 
+    def rejection(self, intent, attempt_id):
+        observed = self.clock()
+        return dict(status='REJECTED', terminal=True, evidence_kind='PROVIDER_REJECTION',
+                    delivery_id=intent['delivery_id'], platform=self.platform,
+                    destination=intent['binding']['destination'], payload_sha256=intent['payload_sha256'],
+                    attempt_id=attempt_id, observed_at=observed,
+                    observation_id=fingerprint('report-rejection-1', [intent['delivery_id'], attempt_id, observed]))
+
+    def reconcile(self, intent, attempts, secret):
+        # A finite settle window helps delayed visibility, never proves absence.
+        # These listing APIs cannot exclude delayed POSTs or stale senders.
+        for poll in range(3):
+            if poll:
+                self.pause(0.1)
+            result = self._readback(intent, attempts, secret)
+            if result.get('status') == 'VISIBLE':
+                return result
+        return dict(status='UNKNOWN')
+
 
 class SlackTransport(BaseTransport):
     platform = 'slack'
@@ -122,6 +165,8 @@ class SlackTransport(BaseTransport):
     def api(self, method, path, secret, payload=None, **query):
         url = self.origin + path + ('?' + urlencode(query) if query else '')
         result = self.call(method, url, secret, payload)
+        if method == 'POST' and result.get('ok') is False and result.get('error') in REJECTED_SLACK:
+            raise TerminalRejection()
         require(result.get('ok') is True, 'REPORT_SLACK_UNAVAILABLE')
         return result
 
@@ -136,10 +181,13 @@ class SlackTransport(BaseTransport):
     def send(self, intent, attempt_id, secret):
         text = self.wire_text(intent)
         require(len(text.encode('utf-8')) <= 12000, 'REPORT_PAYLOAD_TOO_LARGE')
-        self.api('POST', 'chat.postMessage', secret, dict(channel=intent['binding']['destination'], text=text,
-                 mrkdwn=True, parse='none', unfurl_links=False, unfurl_media=False, client_msg_id=attempt_id))
+        try:
+            self.api('POST', 'chat.postMessage', secret, dict(channel=intent['binding']['destination'], text=text,
+                     mrkdwn=True, parse='none', unfurl_links=False, unfurl_media=False, client_msg_id=attempt_id))
+        except TerminalRejection:
+            return self.rejection(intent, attempt_id)
 
-    def reconcile(self, intent, attempts, secret):
+    def _readback(self, intent, attempts, secret):
         cursor = None
         for _ in range(10):
             query = dict(channel=intent['binding']['destination'], limit=100)
@@ -188,10 +236,13 @@ class TeamsTransport(BaseTransport):
         team, channel = self.route(intent['binding'])
         text = self.wire_text(intent)
         require(len(text.encode('utf-8')) <= 20000, 'REPORT_PAYLOAD_TOO_LARGE')
-        self.call('POST', team + '/channels/' + channel + '/messages', secret,
-                  dict(body=dict(contentType='html', content=text)))
+        try:
+            self.call('POST', team + '/channels/' + channel + '/messages', secret,
+                      dict(body=dict(contentType='html', content=text)))
+        except TerminalRejection:
+            return self.rejection(intent, attempt_id)
 
-    def reconcile(self, intent, attempts, secret):
+    def _readback(self, intent, attempts, secret):
         team, channel = self.route(intent['binding'])
         path = team + '/channels/' + channel + '/messages'
         url = path + '?$top=50'

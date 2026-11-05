@@ -4,6 +4,7 @@ No Jira client, accounting switch, ledger, capacity reservation or scheduler.
 Scenarios are deterministic assumptions, never statistical percentiles.
 """
 from collections import Counter, defaultdict
+from copy import deepcopy
 from datetime import date, timedelta
 from fractions import Fraction
 import math
@@ -208,6 +209,7 @@ def token_metrics(mode, observations, enrolled, *, completed=(), complete_ticket
                 input_tokens=input_tokens if consumed is not None else None,
                 output_tokens=output_tokens if consumed is not None else None,
                 by_role=dict(roles), by_outcome=dict(outcomes),
+                forecast_components=deepcopy(forecasts),
                 remaining=remaining, expected_total={s: consumed + remaining[s] for s in SCENARIOS}
                 if consumed is not None and remaining is not None else None)
 
@@ -215,12 +217,13 @@ def token_metrics(mode, observations, enrolled, *, completed=(), complete_ticket
 def elapsed_comparison(tickets):
     """Original estimates stay distinct; only calendar seconds are comparable."""
     from .metrics import elapsed_seconds
-    samples, comparisons, components = [], [], defaultdict(list)
+    samples, delays, comparisons, components = [], [], [], defaultdict(list)
     for ticket in tickets:
         actual = elapsed_seconds(ticket)
         if actual is None:
             continue
         samples.append(actual[0])
+        delays.append(actual[1])
         estimate = ticket.get('original_estimate', {})
         if estimate.get('unit') == 'calendar_seconds' and type(estimate.get('value')) is int:
             comparisons.append(dict(key=ticket['key'], original=estimate['value'], actual=ratio(actual[0]),
@@ -235,6 +238,11 @@ def elapsed_comparison(tickets):
                 median_seconds=ratio(median(samples)) if samples else None,
                 iqr_seconds=ratio(median(upper)-median(lower)) if lower else None,
                 coverage=dict(numerator=len(samples), denominator=len(tickets)), comparisons=comparisons,
+                reconciliation_delay=dict(status='KNOWN' if delays else 'UNAVAILABLE', n=len(delays),
+                    coverage=dict(numerator=len(delays), denominator=len(tickets)),
+                    mean_seconds=ratio(sum(delays)/len(delays)) if delays else None,
+                    median_seconds=ratio(median(delays)) if delays else None,
+                    basis='Final required PR merge to closeout/Jira reconciliation'),
                 comparison_unavailable=len(samples)-len(comparisons),
                 components={k: dict(n=len(v), mean_seconds=ratio(Fraction(sum(v), len(v)))) for k, v in components.items()},
                 basis='Elapsed includes nights and waits; engineer-days are not converted')
@@ -258,7 +266,7 @@ def scope_metrics(tickets):
     Parent/subtask counting is explicit. A shared dependency has one key and one
     primary Epic owner; extra relationships never increase the scope total.
     """
-    from .metrics import delivered
+    from .metrics import delivered, required_leaves
     keys = [t['key'] for t in tickets]
     require(len(keys) == len(set(keys)), 'REPORT_DUPLICATE_TICKET')
     by_key = {t['key']: t for t in tickets}
@@ -273,7 +281,7 @@ def scope_metrics(tickets):
             current = by_key[current['parent']]
     parents = {t['parent'] for t in tickets if t.get('parent')}
     leaves = [t for t in tickets if t['kind'] == 'implementation' and t['key'] not in parents]
-    required = [t for t in leaves if not t.get('conditional') and t.get('state') not in {'CANCELLED', 'DEFERRED', 'OUT_OF_SCOPE'}]
+    required = required_leaves(tickets)
     def matrix(rows):
         counts = defaultdict(Counter)
         for row in rows:
@@ -286,6 +294,7 @@ def scope_metrics(tickets):
     def is_delivered(t):
         return delivered(dict(t, state=t.get('state', 'UNKNOWN')))
     delivered_n = sum(bool(is_delivered(t)) for t in required)
+    remaining_groups = {e: [t for t in rows if not is_delivered(t)] for e, rows in groups.items()}
     return dict(epics=len(epics), implementation_tickets=len(required), delivered=delivered_n,
         remaining=len(required)-delivered_n, priority_size=matrix(required), epic_priority_size=matrix(epics),
         states=dict(Counter(t.get('state', 'UNKNOWN') for t in required)),
@@ -293,7 +302,10 @@ def scope_metrics(tickets):
                           deferred=sum(t.get('state') in {'DEFERRED', 'OUT_OF_SCOPE'} for t in leaves),
                           conditional=sum(bool(t.get('conditional')) for t in leaves)),
         per_epic={e: dict(count=len(groups[e]), priority_size=matrix(groups[e]),
-                         states=dict(Counter(t.get('state', 'UNKNOWN') for t in groups[e])))
+                         states=dict(Counter(t.get('state', 'UNKNOWN') for t in groups[e])),
+                         remaining=dict(count=len(remaining_groups.get(e, [])),
+                             priority_size=matrix(remaining_groups.get(e, [])),
+                             states=dict(Counter(t.get('state', 'UNKNOWN') for t in remaining_groups.get(e, [])))))
                   for e in sorted({t['key'] for t in epics} | set(groups))},
         planned_dates=[dict(key=t['key'], kind=t['kind'], start=t.get('planned_start'), end=t.get('planned_end')) for t in tickets],
         planning_defects=planning_defects(tickets),
@@ -351,6 +363,19 @@ def token_rollup(usage, ticket_epics, components):
     primary Epic ownership. Unknown scope usage propagates; known Epic subtotals
     are never asserted to be complete while the scope has unknown charges.
     """
+    if 'forecast_components' in usage:
+        retained = usage['forecast_components']
+        if components is None:
+            components = deepcopy(retained)
+        else:
+            require(retained is not None and isinstance(components, list), 'REPORT_TOKEN_COMPONENT_MISMATCH')
+            expected = {c['id']: c for c in retained}
+            require(len(components) == len(expected) and {c.get('id') for c in components} == set(expected),
+                    'REPORT_TOKEN_COMPONENT_MISMATCH')
+            for component in components:
+                original = expected[component['id']]
+                require(all(component.get(k) == v for k, v in original.items())
+                        and set(component) <= set(original) | {'epic'}, 'REPORT_TOKEN_COMPONENT_MISMATCH')
     epics, shared, seen = {}, dict(consumed=usage.get('overhead'), remaining={s: 0 for s in SCENARIOS}), set()
     def row(epic):
         if not epic:
@@ -369,6 +394,8 @@ def token_rollup(usage, ticket_epics, components):
         for scenario in SCENARIOS:
             group['remaining'][scenario] += component[scenario]
     remaining = {s: shared['remaining'][s] + sum(e['remaining'][s] for e in epics.values()) for s in SCENARIOS}
+    if 'remaining' in usage:
+        require(usage['remaining'] == (remaining if components is not None else None), 'REPORT_TOKEN_TOTAL_MISMATCH')
     consumed = usage.get('consumed')
     if consumed is not None:
         require(shared['consumed'] is not None and consumed == shared['consumed'] + sum(e['consumed'] for e in epics.values()),
@@ -400,7 +427,8 @@ def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name):
     from .metrics import delivered
     views = daily_views(end, previous_daily_end, timezone_name)
     unique = {}
-    for pr in prs:
+    require(prs is None or isinstance(prs, list), 'REPORT_PR_INPUT_INVALID')
+    for pr in prs or []:
         require(pr.get('id') and (pr['id'] not in unique or unique[pr['id']] == pr), 'REPORT_PR_ID_CONFLICT')
         if pr.get('merged_at'):
             require(timestamp(pr['merged_at']) <= timestamp(end), 'REPORT_FUTURE_MERGE')
@@ -410,7 +438,9 @@ def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name):
         start, finish = timestamp(views[name]['start']), timestamp(views[name]['end'])
         merged = [pr for pr in unique.values() if pr.get('merged_at') and start < timestamp(pr['merged_at']) <= finish]
         completed = [t for t in tickets if delivered(t) and start < timestamp(t['reconciled_at']) <= finish]
-        result[name] = dict(period=views[name], merged_pr_count=len(merged), merged_prs=merged,
+        result[name] = dict(period=views[name], merged_pr_count=len(merged) if prs is not None else None,
+                            merged_prs=merged if prs is not None else None,
+                            pr_status='KNOWN' if prs is not None else 'UNAVAILABLE',
                             reconciled_ticket_count=len(completed), reconciled_tickets=[t['key'] for t in completed],
                             elapsed=elapsed_cohorts(completed))
     result['merged_pending_reconciliation'] = [t['key'] for t in tickets if t.get('state') in {'MERGED', 'OWNER_WAITING'}

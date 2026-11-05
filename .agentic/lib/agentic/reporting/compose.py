@@ -73,6 +73,10 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
     if freshness != 'FRESH':
         data['summary'] = 'Unknown: source observations ' + freshness
         return prepare_body(kind, data, verify_link=verify_link)
+    if values.get('prs') is None:
+        # Ticket observations remain usable; PR absence cannot establish zero.
+        data['freshness'] = 'PARTIAL'
+        sections['Sources and freshness'] = 'PARTIAL: PR observations unavailable\n' + describe(sources)
     metrics = scope_metrics(tickets)
     completed = [t['key'] for t in tickets if t.get('state') == 'DONE']
     accounting = values.get('accounting', {})
@@ -123,7 +127,7 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
     # Keep only this report's declared labels; preparation refuses unknown keys.
     from .bodies import LAYOUTS
     data['sections'] = {k: v for k, v in sections.items() if k in LAYOUTS[kind]}
-    if 'prs' in values:
+    if values.get('prs') is not None:
         data['prs'] = values['prs']
     by_key = {t['key']: t for t in tickets}
     def entry(t):
@@ -142,7 +146,7 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
     for ticket in tickets:
         if ticket.get('kind') == 'epic':
             epic = entry(ticket)
-            epic['remaining'] = describe(metrics['per_epic'].get(ticket['key']))
+            epic['remaining'] = describe(metrics['per_epic'][ticket['key']]['remaining'])
             epic['eta'] = describe(forecast.get('milestones', {}).get(ticket['key']))
             epic['tokens'] = describe(rollup['epics'].get(ticket['key'])) if rollup else 'Unknown: accounting OFF or incomplete'
             data['epics'].append(epic)
@@ -150,13 +154,14 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
     if kind == 'eod':
         data['delivered'] = str(metrics['delivered']) + ' reconciled in scope (period delivery Unknown)'
         if values.get('previous_daily_end'):
-            daily = daily_metrics(values.get('prs', []), tickets, values['period']['end'],
+            daily = daily_metrics(values.get('prs'), tickets, values['period']['end'],
                                   values['previous_daily_end'], values['timezone'])
             data['detail_metrics']['daily'] = daily
             data['today'] = describe(daily['today']['period'])
             data['since_previous'] = describe(daily['since_previous']['period'])
             data['delivered'] = str(daily['today']['reconciled_ticket_count']) + ' reconciled today'
-            data['prs'] = daily['today']['merged_prs']
+            if daily['today']['merged_prs'] is not None:
+                data['prs'] = daily['today']['merged_prs']
             data['sections']['PRs merged and Jira delivery'] = ('Since previous daily report: '
                 + describe(daily['since_previous']) + '\nOverlapping views; never add together')
     for field in ('decision', 'decision_owner', 'requested_response', 'options', 'recommendation', 'delay_consequence',

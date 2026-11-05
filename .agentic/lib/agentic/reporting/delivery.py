@@ -91,6 +91,25 @@ class DeliveryOutbox:
             return self._load(db, delivery_id)[1]
 
     @staticmethod
+    def _rejection(raw, intent, attempt_id):
+        """A trusted send port's terminal non-acceptance, bound to one attempt."""
+        if not isinstance(raw, dict) or any(raw.get(k) != v for k, v in dict(
+                status='REJECTED', terminal=True, evidence_kind='PROVIDER_REJECTION',
+                delivery_id=intent['delivery_id'], destination=intent['binding']['destination'],
+                platform=intent['binding']['platform'], payload_sha256=intent['payload_sha256'],
+                attempt_id=attempt_id).items()):
+            return None
+        observation_id = raw.get('observation_id')
+        if not isinstance(observation_id, str) or not 0 < len(observation_id) <= 256 or any(ord(c) < 32 for c in observation_id):
+            return None
+        try:
+            timestamp(raw['observed_at'])
+        except (ValidationError, KeyError, TypeError, ValueError):
+            return None
+        return dict(status='REJECTED', terminal=True, evidence_kind='PROVIDER_REJECTION', attempt_id=attempt_id,
+                    observation_id=observation_id, observed_at=raw['observed_at'])
+
+    @staticmethod
     def _observation(raw, intent, attempts):
         """Retain only closed safe fields; provider error bodies never enter state."""
         unknown = dict(status='UNKNOWN', reason='CHANNEL_EVIDENCE_UNAVAILABLE')
@@ -139,11 +158,25 @@ class DeliveryOutbox:
                 self._save(db, delivery_id, state)
             fence, attempts = state['fence'], list(state['attempts'])
         if send:
+            rejection = None
             try:
-                # HTTP acceptance and local receipts are deliberately discarded.
-                provider.send(deepcopy(intent), attempt_id)
+                # Acceptance/local receipts prove nothing. Definite rejection
+                # alone can establish this reserved attempt's non-delivery.
+                raw = provider.send(deepcopy(intent), attempt_id)
+                rejection = self._rejection(raw, intent, attempt_id)
             except Exception:
                 pass
+            if rejection:
+                with self.controller.transaction() as db:
+                    _, current = self._load(db, delivery_id)
+                    # A competing readback may change the fence, but cannot
+                    # erase an actual send outcome for the immutable attempt.
+                    current['history'].append(dict(kind='SEND_REJECTED', **rejection))
+                    if current['attempts'] == attempts and current['status'] not in {'DELIVERED', 'FAILED'}:
+                        current['status'] = 'FAILED' if len(attempts) == 2 else 'ABSENT'
+                        current['fence'] = str(uuid.uuid4())
+                    self._save(db, delivery_id, current)
+                    return current
         try:
             raw = provider.reconcile(deepcopy(intent), list(attempts))
             observation = self._observation(raw, intent, attempts)

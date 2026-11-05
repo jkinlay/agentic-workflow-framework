@@ -68,7 +68,20 @@ def readiness_events(candidates, previous):
     function does not authenticate them. A full snapshot includes nonready PRs;
     absent formerly ready PRs are withdrawn, never silently retained.
     """
+    # Retain the sequence even when every readiness is withdrawn. Legacy maps
+    # migrate on their next projection; callers persist the entire returned state.
+    if previous.get('format') == 'awf-readiness-2':
+        prior, sequence = previous['ready'], previous['sequence']
+        require(isinstance(prior, dict) and type(sequence) is int and sequence >= 0, 'REPORT_READINESS_STATE')
+    else:
+        prior, sequence = previous, 0
     current, events, seen = {}, [], set()
+    def emit(kind, key, record):
+        nonlocal sequence
+        sequence += 1
+        notice = event(kind, key, dict(record, occurrence=sequence))
+        events.append(notice)
+        return notice
     for candidate in candidates:
         require(isinstance(candidate, dict) and all(k in candidate for k in TUPLE), 'REPORT_READINESS_INPUT')
         key = fingerprint('report-pr-1', [candidate[k] for k in ('project', 'repository', 'pr')])
@@ -77,20 +90,18 @@ def readiness_events(candidates, previous):
         ready = (candidate.get('stage') == 'READY_FOR_OWNER_AUTHORIZATION'
                  and all(candidate.get(k) is True for k in ('critic', 'specialists', 'final_gate')))
         identity = {k: candidate[k] for k in TUPLE}
-        old = previous.get(key)
+        old = prior.get(key)
         if old and (not ready or old != identity):
-            events.append(event('correction', key, dict(withdrawn=old, current=identity,
-                                                      reason='READINESS_INVALIDATED')))
+            emit('correction', key, dict(withdrawn=old, current=identity, reason='READINESS_INVALIDATED'))
         if ready:
             current[key] = identity
             if old != identity:
-                notice = event('final-human-review', key, identity)
+                notice = emit('final-human-review', key, identity)
                 notice['includes_jira_review'] = True
                 notice['merge_authorized'] = False
-                events.append(notice)
-    for key in sorted(set(previous) - seen):
-        events.append(event('correction', key, dict(withdrawn=previous[key], reason='NO_CURRENT_OBSERVATION')))
-    return events, current
+    for key in sorted(set(prior) - seen):
+        emit('correction', key, dict(withdrawn=prior[key], reason='NO_CURRENT_OBSERVATION'))
+    return events, dict(format='awf-readiness-2', sequence=sequence, ready=current)
 
 
 def approval_event(scope, revision, approval):

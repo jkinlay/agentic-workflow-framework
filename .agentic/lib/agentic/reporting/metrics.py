@@ -50,7 +50,7 @@ def project_metrics(tickets):
     """
     parents = {t['parent'] for t in tickets if t.get('parent')}
     leaves = [t for t in tickets if t['kind'] == 'implementation' and t['key'] not in parents]
-    required = [t for t in leaves if not t.get('conditional', False)]
+    required = required_leaves(tickets)
     epics = {t['key'] for t in tickets if t['kind'] == 'epic'}
     matrix, groups, states = defaultdict(Counter), defaultdict(list), Counter()
     cohorts = defaultdict(list)
@@ -86,7 +86,7 @@ def project_metrics(tickets):
             reconciliation_delay_mean_seconds=ratio(Fraction(sum(a[1] for a in samples), n)) if n else None,
             basis='first WORKER_STARTED to final required PR merge; elapsed includes waits')
     return dict(status='KNOWN', epics=len(epics), implementation_tickets=len(required),
-        conditional_tickets=len(leaves)-len(required), delivered=delivered_count,
+        conditional_tickets=sum(bool(t.get('conditional')) for t in leaves), delivered=delivered_count,
         priority_size={p: dict(sorted(sizes.items())) for p, sizes in sorted(matrix.items())},
         per_epic={e: dict(implementation_tickets=len(groups[e]),
                          delivered=sum(bool(delivered(t)) for t in groups[e]))
@@ -94,3 +94,10 @@ def project_metrics(tickets):
         states=dict(sorted(states.items())), elapsed=elapsed, planning_defects=defects,
         accounting=dict(status='UNAVAILABLE', reason='NO_ADMITTED_ENROLLMENT_ACCOUNTING_SNAPSHOT'),
         forecast=dict(status='UNAVAILABLE', reason='NO_ADMITTED_DEPENDENCY_CAPACITY_SCENARIOS'))
+
+
+def required_leaves(tickets):
+    """Shared snapshot/composition denominator, excluding non-required work."""
+    parents = {t['parent'] for t in tickets if t.get('parent')}
+    return [t for t in tickets if t['kind'] == 'implementation' and t['key'] not in parents
+            and not t.get('conditional') and t.get('state') not in {'CANCELLED', 'DEFERRED', 'OUT_OF_SCOPE'}]

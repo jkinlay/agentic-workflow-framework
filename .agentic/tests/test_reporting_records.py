@@ -61,8 +61,14 @@ class RecordTests(unittest.TestCase):
     def test_distinct_epics_leaf_denominator_and_unknown_buckets(self):
         metrics = self.prepare()['values']['metrics']
         self.assertEqual(metrics['epics'], 1)
-        self.assertEqual(metrics['implementation_tickets'], 2)
+        # Correct the reviewed count: cancelled work is outside the denominator.
+        self.assertEqual(metrics['implementation_tickets'], 1)
         self.assertEqual(metrics['delivered'], 1)
+        self.assertNotIn('Unknown', metrics['priority_size'])
+        # Unknown buckets still count required work, rather than dispositions.
+        r = request()
+        r['tickets'][2]['state'] = 'READY'
+        metrics = self.prepare(r)['values']['metrics']
         self.assertEqual(metrics['priority_size']['Unknown']['Unestimated'], 1)
         self.assertEqual(metrics['per_epic']['Unassigned']['implementation_tickets'], 1)
         self.assertEqual(metrics['elapsed']['standard']['mean_seconds'], {'numerator': 3600, 'denominator': 1})
@@ -78,7 +84,7 @@ class RecordTests(unittest.TestCase):
         r['included'].append('T-4')
         r['tickets'].append(child)
         metrics = self.prepare(r)['values']['metrics']
-        self.assertEqual(metrics['implementation_tickets'], 2)
+        self.assertEqual(metrics['implementation_tickets'], 1)
         self.assertEqual(metrics['delivered'], 0)
         self.assertEqual(metrics['elapsed']['standard']['n'], 0)
 
