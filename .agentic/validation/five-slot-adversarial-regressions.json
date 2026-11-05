@@ -829,6 +829,60 @@
       "regression_id": "AWF243-PRE3-MIGRATION",
       "source_finding_id": "AWF243-PRE3-MIGRATION",
       "test_id": "AssignmentRegressions.test_pre3_legacy_batch_provider_spelling_and_identity_migrate_without_rewriting_rows"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch completion retains actor-bound recovery after a lost POST response",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-RECOVERED",
+      "source_finding_id": "AWF243-PRE4-1",
+      "test_id": "BatchRecoveryRegressions.test_pre4_lost_batch_response_recovers_once_and_closeout_stays_complete"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch pre-write read failure resumes through BLOCK without transition recovery",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-PREWRITE-BLOCK",
+      "source_finding_id": "AWF243-PRE4-2",
+      "test_id": "BatchRecoveryRegressions.test_pre4_batch_prewrite_read_failure_retries_without_transition_recovery"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch pre-write read failure retries directly after reopening",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-PREWRITE-RETRY",
+      "source_finding_id": "AWF243-PRE4-2",
+      "test_id": "BatchRecoveryRegressions.test_pre4_batch_prewrite_failure_retries_directly_after_reopen"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Status alone cannot resolve or repeat an attempted batch write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-STATUS-ONLY",
+      "source_finding_id": "AWF243-PRE4-1",
+      "test_id": "BatchRecoveryRegressions.test_pre4_lost_batch_response_status_alone_never_resolves_or_repeats"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Legacy copied predecessor receipt proves a deferred batch write was unattempted",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-LEGACY",
+      "source_finding_id": "AWF243-PRE4-3",
+      "test_id": "BatchRecoveryRegressions.test_pre4_legacy_proven_deferred_row_does_not_invent_transition"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Ambiguous legacy stop preserves valid original recovery and stops further writes",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-AMBIGUOUS",
+      "source_finding_id": "AWF243-PRE4-3",
+      "test_id": "BatchRecoveryRegressions.test_pre4_ambiguous_legacy_stop_preserves_original_resolution"
     }
   ]
 }

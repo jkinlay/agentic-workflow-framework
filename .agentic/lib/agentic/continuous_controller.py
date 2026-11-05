@@ -2113,10 +2113,13 @@ def _recover_jira_ticket(store, *, config, issue, provider, now, read_transition
 
 	Call under the issue ownership lock. A reporting/batch caller without a
 	recovery observer gets the same durable stop and can use jira-lifecycle.
-	Failed observations leave every retained byte intact, including prior success.
+	Failed observations preserve retained bytes. Ambiguous legacy batch stops do
+	not discard valid evidence resolving the original operation.
 	"""
 	recovered, deferred, unattempted = [], [], []
-	for row, table in _jira_ticket_operations(store, issue):
+	legacy_unproven = False
+	rows = _jira_ticket_operations(store, issue)
+	for row, table in rows:
 		record = loads(row['record_json'])
 		from .canonical import fingerprint
 		_require(fingerprint('controller-jira-operation', {key: value for key, value in record.items() if key != 'created_at'}) == row['intent_sha256'], 'Durable Jira intent is corrupt')
@@ -2125,16 +2128,30 @@ def _recover_jira_ticket(store, *, config, issue, provider, now, read_transition
 		with store.connection() as db:
 			predecessor = db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-deferred:' + row['operation_id'],)).fetchone()
 			no_attempt = db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-not-attempted:' + row['operation_id'],)).fetchone()
+		if predecessor is None and table == 'controller_batch_jira_operation' and row['status'] == 'FAILED' and row['operation_json'] is None:
+			# Legacy closeout copied the stopped predecessor's readback before
+			# claiming this row. FAILED with no write receipt alone is not proof.
+			priors = [old for old, _ in rows if old['operation_id'] != row['operation_id']
+				and timestamp(loads(old['record_json'])['created_at']) <= timestamp(record['created_at'])
+				and old['status'] in {'IN_FLIGHT', 'UNKNOWN', 'FAILED', 'SUCCEEDED'}
+				and row['readback_json'] == canonical(_retained_jira_observation(old['readback_json'])).decode()]
+			if len(priors) == 1:
+				predecessor = {'value': priors[0]['operation_id']}
 		if predecessor is not None:
 			deferred.append((row, table, predecessor['value']))
 			continue
 		if no_attempt is not None:
-			_require(resume_unattempted and row['status'] == 'FAILED' and row['operation_json'] is None,
+			_require((resume_unattempted or table == 'controller_batch_jira_operation' and row['readback_json'] is None)
+				and (row['status'] == 'FAILED' or table == 'controller_batch_jira_operation' and row['status'] == 'UNKNOWN')
+				and row['operation_json'] is None,
 				'Jira intent was stopped before its write; use jira-lifecycle BLOCK to resume this locally proven unattempted intent without a Jira mutation')
 			unattempted.append((row, table))
 			continue
 		if row['status'] not in {'IN_FLIGHT', 'UNKNOWN', 'FAILED'}:
 			continue
+		if table == 'controller_batch_jira_operation' and row['status'] == 'FAILED' and row['operation_json'] is None:
+			legacy_unproven = True
+			break
 		_require(callable(read_transition), 'Unresolved or failed Jira operation; use jira-lifecycle read_transition recovery; suspected external automation conflict; never reissue')
 		operation = loads(row['operation_json']) if row['operation_json'] is not None else {
 			'operation_id': record['operation_id'], 'issue_id': issue, 'status': 'ATTEMPTED',
@@ -2168,16 +2185,25 @@ def _recover_jira_ticket(store, *, config, issue, provider, now, read_transition
 						('jira-prior-readback:' + row['operation_id'], row['readback_json']))
 				db.execute(f"UPDATE {table} SET status='SUCCEEDED',readback_json=?,updated_at=? WHERE operation_id=?",
 					(canonical(observation).decode(), observation['observed_at'], row['operation_id']))
+				if table == 'controller_batch_jira_operation' and row['operation_json'] is None:
+					db.execute('INSERT OR REPLACE INTO controller_meta VALUES(?,?)',
+						('jira-recovered-readback:' + row['operation_id'], canonical({
+							'operation_id': row['operation_id'], 'intent_sha256': row['intent_sha256'],
+							'observation': observation}).decode()))
 			for row, table in unattempted:
 				_require(dict(db.execute(f'SELECT * FROM {table} WHERE operation_id=?', (row['operation_id'],)).fetchone()) == row, 'Unattempted Jira intent changed during recovery')
 				db.execute(f"UPDATE {table} SET status='PENDING',updated_at=? WHERE operation_id=?", (now, row['operation_id']))
 				db.execute('DELETE FROM controller_meta WHERE key=?', ('jira-not-attempted:' + row['operation_id'],))
 			for row, table, predecessor in deferred:
+				_require(dict(db.execute(f'SELECT * FROM {table} WHERE operation_id=?', (row['operation_id'],)).fetchone()) == row, 'Deferred Jira intent changed during recovery')
 				prior = db.execute('SELECT status FROM controller_jira_operation WHERE operation_id=? UNION ALL SELECT status FROM controller_batch_jira_operation WHERE operation_id=?', (predecessor, predecessor)).fetchone()
 				locally_resumed = any(old['operation_id'] == predecessor for old, _ in unattempted)
 				_require(prior is not None and (prior['status'] == 'SUCCEEDED' or locally_resumed), 'Deferred Jira intent still needs original transition evidence')
 				db.execute(f"UPDATE {table} SET status='PENDING',updated_at=? WHERE operation_id=?", (now, row['operation_id']))
 				db.execute('DELETE FROM controller_meta WHERE key=?', ('jira-deferred:' + row['operation_id'],))
+	# Preserve valid original recovery even when a legacy batch stop needs the owner.
+	_require(not legacy_unproven,
+		'Legacy batch FAILED row has no proof of an unattempted write; owner must restore independently retained journal receipts before jira-lifecycle recovery; never infer from status or reissue')
 	return [(record, observation) for row, table, record, observation in recovered]
 
 
@@ -2313,7 +2339,16 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 			_require(isinstance(row['readback_json'], str), 'Retained Jira readback must be JSON text')
 			observation = loads(row['readback_json'])
 			if row['operation_json'] is None:
-				status, _ = receipt(observation, row['issue_id'], floor, 'before')
+				if isinstance(observation, dict) and 'actor' in observation:
+					with store.connection() as db:
+						proof = db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-recovered-readback:' + row['operation_id'],)).fetchone()
+					_require(proof is not None and proof['value'] == canonical({
+						'operation_id': row['operation_id'], 'intent_sha256': row['intent_sha256'],
+						'observation': observation}).decode(), 'Retained Jira recovery proof is missing or mismatched')
+					status, _ = receipt(observation, row['issue_id'], floor, 'after')
+					_require(observation['actor'] == provider['controller_actor_id'], 'Retained Jira actor is mismatched')
+				else:
+					status, _ = receipt(observation, row['issue_id'], floor, 'before')
 			else:
 				_require(isinstance(row['operation_json'], str), 'Retained Jira write receipt must be JSON text')
 				operation = loads(row['operation_json'])
@@ -2394,7 +2429,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 					continue
 				_require(status in {'FAILED', 'UNKNOWN', 'HELD'}, 'Invalid durable batch Jira status')
 				continue
-			observation, operation = None, None
+			observation, operation, write_attempted = None, None, False
 			try:
 				facts = policy_context.get(issue, {})
 				from .jira_lifecycle import require_jira_issue_scope
@@ -2416,6 +2451,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 				if current == record['to_status_id']:
 					store.finish_batch_jira_operation(operation_id, 'SUCCEEDED', observation, now)
 					continue
+				write_attempted = True
 				operation = write_transition(deepcopy(record))
 				_, operation_time = receipt(operation, issue, current_time, 'write', operation_id)
 				observation = read_transition(deepcopy(record), deepcopy(operation))
@@ -2427,7 +2463,17 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 			except Exception:
 				# Persistence failure also leaves a durable claim. Do not retry any call.
 				try:
-					store.finish_batch_jira_operation(operation_id, 'UNKNOWN', observation, now, operation)
+					if write_attempted:
+						store.finish_batch_jira_operation(operation_id, 'UNKNOWN', observation, now, operation)
+					else:
+						# Atomically distinguish a failed observation from an attempt.
+						# Batch retry/BLOCK may resume this claim without transition proof.
+						with store.transaction() as db:
+							row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
+							_require(row['status'] == 'IN_FLIGHT' and row['operation_json'] is None, 'Batch pre-write claim changed')
+							db.execute('INSERT INTO controller_meta VALUES(?,?)', ('jira-not-attempted:' + operation_id, now))
+							db.execute("UPDATE controller_batch_jira_operation SET status='UNKNOWN',readback_json=?,updated_at=? WHERE operation_id=?",
+								(canonical(observation).decode() if observation is not None else None, now, operation_id))
 				except Exception:
 					pass
 				break

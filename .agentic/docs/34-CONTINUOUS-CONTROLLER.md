@@ -22,7 +22,7 @@ permissions: POSIX owner read/write; Windows ACLs unchanged.
 
 Format 2: `cycle_sequence`; `seen` digest/last-cycle pairs. Legacy ages
 start at zero; identical observations refresh. Above 4096, evict oldest
-`(last_cycle, source_id)`, preserving pending sources beyond target. Evicted
+`(last_cycle, source_id)`, preserving pending sources. Evicted
 observations may recompute; identical plans never duplicate. Canonical UTF-8
 saves cap at 4 MiB; ordinary reads cap at 8 MiB; cycles at 4,000 events including repeats.
 Staged-state 4 MiB refusal precedes event processing. Overflow refuses before
@@ -35,8 +35,7 @@ python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB 
 ```
 
 Recovery caps input at 16 MiB, trims only `seen`, reports
-bytes/counts, and preserves pending work, overrides, observations, candidate
-metadata and other rows/history. Unshrinkable state refuses: reduce event windows before they accumulate.
+bytes/counts, and preserves all other state/history. Unshrinkable state refuses: reduce event windows before they accumulate.
 After provider-owner confirmation, `--forget-source SOURCE_ID` reconsiders changed bytes; pending identities cannot be forgotten. Never delete the planning key.
 Restart only after repair.
 
@@ -89,23 +88,28 @@ are mandatory. Missing/mismatched evidence refuses counts. Owner-closure keyword
 hold In Review. Complete, stable, bounded pagination precedes authoritative counts;
 final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
-Unknown/failed ordinary/batch operations stop all ticket writes. Every event
-recovers through `jira-lifecycle` with original bindings: `read_transition` validates
+Unknown/failed ordinary/batch operations stop ticket writes.
+Recover via `jira-lifecycle`: `read_transition` validates original
 operation/actor/provider/target/time; status alone never resolves uncertainty.
-Never repeat writes. Batch closeout defers; rerun progress/closeout after recovery.
-Missing/malformed/stale/failed reads preserve durable evidence for later reads.
-Prior success survives; genuine conflicts stop writes, preserve success receipts,
+Never repeat writes. Batch closeout accepts actor-bound recovery without write
+receipts. Original resolutions survive ambiguous legacy stops.
+Failed reads preserve evidence; conflicts retain success,
 report suspected external automation and require transition evidence.
-Locally proven unattempted claims resume through `jira-lifecycle BLOCK` without
-Jira mutation; deferred batch claims resume.
 
-Snapshots in `controller_meta['jira-identity:<operation_id>']` bind connector,
-cloud/site/project/key/actor, issue, project_id and repository_id. Legacy rows
-fail closed. Optional reviewed-adapter `observe_jira_operation_identity(record)`
-restores `{operation_id,intent_sha256,identity}` from independent historical evidence, never current configuration; CLI forwards it. Additive migration
-preserves rows/receipts/hashes. Restore historical configuration after identity drift.
-AWF-175 still owns changelog pagination/completeness; recovery uses
-`read_transition` actor/target/time validation without asserting complete history.
+`jira-not-attempted:<operation_id>` atomically distinguishes batch pre-write failures.
+Retry closeout after failed reads; malformed observations require `jira-lifecycle BLOCK`,
+without mutation. Proven unattempted/deferred claims resume.
+Legacy FAILED/no-receipt rows require uniquely copied predecessor readback
+(including JSON null). Otherwise owner restores independently retained
+receipts before `jira-lifecycle`; never edit status/invent evidence.
+
+`controller_meta['jira-identity:<operation_id>']` binds connector, cloud/site/project/key/actor,
+issue, project_id and repository_id. Legacy rows fail closed.
+Reviewed-adapter `observe_jira_operation_identity(record)` restores
+`{operation_id,intent_sha256,identity}` from independent historical evidence,
+never current configuration; CLI-forwarded. Migration preserves rows/receipts/hashes.
+Restore historical configuration after drift. AWF-175 owns changelog
+pagination/completeness; recovery asserts no completeness.
 
 ## Reference adapter (AWF-32)
 

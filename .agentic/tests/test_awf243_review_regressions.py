@@ -826,5 +826,153 @@ class AssignmentRegressions(unittest.TestCase):
                 self.assertFalse(result["planned"])
 
 
+class BatchRecoveryRegressions(unittest.TestCase):
+    def setUp(self):
+        from test_merge_train_controller import OperationalControllerTests, JiraSpy
+        self.fixture = OperationalControllerTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.batch['constituents'] = self.fixture.batch['constituents'][:1]
+        self.spy = JiraSpy()
+        self.args = self.fixture.operational_inputs(self.spy)
+
+    def reopen(self):
+        self.fixture.store = ContinuousControllerStore(self.fixture.store.path, ['B'])
+
+    def batch(self, **overrides):
+        return self.fixture.controller.production_batch_closeout(
+            self.fixture.store, **{**self.args, **overrides})['jira']
+
+    def lifecycle(self, **overrides):
+        args = dict(config=self.args['config'], contract={}, event='BLOCK', facts={},
+            binding={'issue_id': 'AWF-1'}, issue_type='LEAF', state='MERGED',
+            producer_id='controller-1', run_id='fixture', now=self.args['now'],
+            evidence=[], transition_id='31', merge_result_id='merge-1',
+            **{key: self.args[key] for key in ('observe_provider_identity',
+                'observe_issue_identity', 'observe_issue_policy', 'read_current_status',
+                'write_transition', 'read_transition')})
+        return production_jira_lifecycle(self.fixture.store, **{**args, **overrides})
+
+    def row(self):
+        with self.fixture.store.connection() as db:
+            return dict(db.execute('SELECT * FROM controller_batch_jira_operation').fetchone())
+
+    def counts(self, writes, reads, transitions):
+        self.assertEqual(writes, sum(op == 'write' for op, _ in self.spy.calls))
+        self.assertEqual(reads, sum(op == 'read' for op, _ in self.spy.calls))
+        self.assertEqual(transitions, sum(op == 'read_back' for op, _ in self.spy.calls))
+
+    def test_pre4_lost_batch_response_recovers_once_and_closeout_stays_complete(self):
+        def lost(record):
+            self.spy.write_transition(record)
+            raise TimeoutError('response lost after POST')
+        self.assertFalse(self.batch(write_transition=lost)['complete'])
+        self.counts(1, 1, 0)
+        self.reopen()
+        self.assertFalse(self.lifecycle().get('writes_stopped', False))
+        self.assertEqual('SUCCEEDED', self.row()['status'])
+        self.assertIsNone(self.row()['operation_json'])
+        self.counts(1, 2, 1)
+        for _ in range(2):
+            self.reopen()
+            self.assertTrue(self.batch()['complete'])
+            self.assertEqual('SUCCEEDED', self.row()['status'])
+            self.counts(1, 2, 1)
+
+    def test_pre4_batch_prewrite_read_failure_retries_without_transition_recovery(self):
+        def timeout(binding):
+            self.spy.read_current_status(binding)
+            raise TimeoutError('GET failed before POST')
+        self.assertFalse(self.batch(read_current_status=timeout)['complete'])
+        self.counts(0, 1, 0)
+        with self.fixture.store.connection() as db:
+            self.assertIsNotNone(db.execute('SELECT value FROM controller_meta WHERE key=?',
+                ('jira-not-attempted:' + self.row()['operation_id'],)).fetchone())
+        self.reopen()
+        self.assertFalse(self.lifecycle().get('writes_stopped', False))
+        self.assertEqual('PENDING', self.row()['status'])
+        self.counts(0, 2, 0)
+        self.reopen()
+        self.assertTrue(self.batch()['complete'])
+        self.counts(1, 3, 1)
+
+    def test_pre4_batch_prewrite_failure_retries_directly_after_reopen(self):
+        def timeout(binding):
+            self.spy.read_current_status(binding)
+            raise TimeoutError()
+        self.batch(read_current_status=timeout)
+        self.counts(0, 1, 0)
+        self.reopen()
+        self.assertTrue(self.batch()['complete'])
+        self.counts(1, 2, 1)
+
+    def test_pre4_lost_batch_response_status_alone_never_resolves_or_repeats(self):
+        def lost(record):
+            self.spy.write_transition(record)
+            raise TimeoutError()
+        self.batch(write_transition=lost)
+        stopped = self.row()
+        def status_only(record, operation):
+            self.spy.calls.append(('read_back', 'AWF-1'))
+            return {'status': 'Done'}
+        for _ in range(2):
+            self.reopen()
+            self.assertTrue(self.lifecycle(read_transition=status_only)['writes_stopped'])
+            self.assertFalse(self.batch()['complete'])
+            self.assertEqual(stopped, self.row())
+        self.counts(1, 3, 2)
+
+    def legacy_deferred(self, provable):
+        from agentic.canonical import canonical, loads
+        def lost(record):
+            self.spy.write_transition(record)
+            raise TimeoutError('original POST response lost')
+        self.assertEqual('UNKNOWN', self.lifecycle(event='WORKER_STARTED', state='DISPATCHED',
+            facts={'run_registered': True, 'worktree_verified': True},
+            write_transition=lost)['record']['status'])
+        self.batch()
+        # Legacy closeout copied the predecessor readback (including JSON null)
+        # into FAILED, without an operation receipt or a deferred metadata key.
+        histories = {}
+        with self.fixture.store.transaction() as db:
+            db.execute("UPDATE controller_batch_jira_operation SET status='FAILED',readback_json=?",
+                       ('null' if provable else canonical({'reason': 'unproven legacy stop'}).decode(),))
+            for row in db.execute('SELECT * FROM controller_meta WHERE key LIKE \'jira-identity:%\'').fetchall():
+                history = loads(row['value'])
+                histories[history['operation_id']] = history
+            db.execute("DELETE FROM controller_meta WHERE key LIKE 'jira-deferred:%' OR key LIKE 'jira-identity:%'")
+        self.counts(1, 1, 0)
+        self.reopen()
+        def evidence(record, operation):
+            value = self.spy.read_transition(record, operation)
+            if record['lifecycle_event'] != 'WORKER_STARTED':
+                return None
+            return {**value, 'status': record['to_status_id']}
+        return self.lifecycle(read_transition=evidence,
+            observe_jira_operation_identity=lambda record: histories[record['operation_id']])
+
+    def test_pre4_legacy_proven_deferred_row_does_not_invent_transition(self):
+        self.assertFalse(self.legacy_deferred(True).get('writes_stopped', False))
+        self.assertEqual('SUCCEEDED', self.fixture.store.jira_operations('AWF-1')[0]['status'])
+        self.assertEqual('PENDING', self.row()['status'])
+        self.counts(1, 2, 1)
+        self.reopen()
+        self.assertTrue(self.batch()['complete'])
+        self.counts(2, 3, 2)
+
+    def test_pre4_ambiguous_legacy_stop_preserves_original_resolution(self):
+        result = self.legacy_deferred(False)
+        self.assertTrue(result['writes_stopped'])
+        self.assertIn('Legacy batch FAILED row has no proof of an unattempted write', result['reason'])
+        self.assertEqual('SUCCEEDED', self.fixture.store.jira_operations('AWF-1')[0]['status'])
+        stopped = self.row()
+        self.assertEqual('FAILED', stopped['status'])
+        self.counts(1, 2, 1)
+        self.reopen()
+        self.assertFalse(self.batch()['complete'])
+        self.assertEqual(stopped, self.row())
+        self.counts(1, 2, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
