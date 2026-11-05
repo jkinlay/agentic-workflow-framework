@@ -1399,9 +1399,9 @@ class RoutingLedger:
             enforcing = mode is None or (mode['enforcement_enabled'] and mode['attributable'])
             if mode is None:
                 _integer(outcome.get('actual_tokens'), 'actual_tokens')
-            if accounting and 'observation_id' in outcome:
+            if accounting and (mode is not None or 'observation_id' in outcome):
                 from .budgeting import require_unused_usage_observation
-                require_unused_usage_observation(connection, outcome['observation_id'])
+                require_unused_usage_observation(connection, outcome.get('observation_id'))
             outcome = deepcopy(outcome)
             # OFF completion records operational security/recovery facts only.
             # Absent/unknown enabled telemetry remains NULL, never zero.

@@ -189,7 +189,12 @@ def load_config(path, runtime_root, *, require_qualification=True):
     optional = {'github_host', 'evidence_paths', 'max_cap_extensions', 'governed_source_paths', 'risk_tier',
                 'first_draft',
                 'reasoning_effort', 'approved_model_effort_pairs', 'codex_config_overrides',
-                'trusted_owner_ids', 'provenance'}
+                'trusted_owner_ids', 'provenance', 'budget_ledger_path', 'budget_stream'}
+    if 'budget_stream' in config:
+        require(config['budget_stream'] in tuple('ABCDEFGHIJKL'), 'budget_stream must be an observed stream A through L')
+    if 'budget_ledger_path' in config:
+        require(isinstance(config['budget_ledger_path'], str) and Path(config['budget_ledger_path']).is_absolute(),
+                'budget_ledger_path must name the protected canonical ledger')
     if 'first_draft' in config:
         require(config['first_draft'] is True, 'first_draft must be true when present')
     require(isinstance(config, dict) and required <= set(config) and set(config) <= required | optional, 'Missing or unexpected host configuration field')
@@ -325,6 +330,76 @@ def load_config(path, runtime_root, *, require_qualification=True):
 
 class HostDriver:
     requires_critic_binding = True
+
+    @classmethod
+    def from_project(cls, config, runtime_root):
+        """Load installed settings; candidate checkout bytes cannot select policy.
+
+        Deployments sharing a controller pin its canonical budget_ledger_path.
+        This CLI reports usage but has no verified per-run token ceiling.
+        """
+        from ..budgeting import ControllerBudgeting
+        from ..canonical import load_yaml
+        from ..operating import read_operating
+        driver = cls(config, runtime_root)
+        with Tree(driver.root) as tree:
+            governance = load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
+            legacy = tree.inspect('OPERATING_CONFIG.yaml') is None
+        if legacy:
+            # Absence never initializes fresh OFF settings over an old host.
+            # Existing max_agent_runs/recovery/review controls still apply.
+            driver.budgeting = None
+            driver.budget_ticket_id = None
+            return driver
+        snapshot = read_operating(driver.root, governance)
+        pattern = re.escape(governance['github']['branch_pattern'])
+        pattern = pattern.replace(r'\{ticket\}', r'(?P<ticket>[A-Z][A-Z0-9]*-[0-9]+)')
+        pattern = pattern.replace(r'\{slug\}', r'[A-Za-z0-9_.-]+')
+        matched = re.fullmatch(pattern, config['head_branch'])
+        ticket = matched.groupdict().get('ticket') if matched else None
+        context = ControllerBudgeting(config.get('budget_ledger_path') or driver.state / 'routing.sqlite3',
+            governance, snapshot, driver, worktree_roots=(driver.worker, driver.critic))
+        driver.configure_budgeting(context, ticket_id=ticket)
+        return driver
+
+    def observe_enrollment(self, binding):
+        from ..budget_enrollment import validate_binding
+        validate_binding(binding)
+        run = self.state / 'runs' / self._controller_run_id(binding['run_id'])
+        with Tree(run) as tree:
+            intent = loads(tree.read('budget-intent.json', maximum=16384).decode('utf-8'))
+        require(intent == binding, 'Review enrollment differs from host dispatch intent')
+        return intent
+
+    def observe_budget_admission(self, binding, selected):
+        from ..budgeting import subprocess_budget_request
+        self.observe_enrollment(binding)
+        contexts = set()
+        for identity in (self.state / 'runs').glob('*/codex-identity.json'):
+            contexts.add(self.codex_run_id(identity.parent.name))
+        require(len(contexts) == 1 or binding['role'] == 'worker',
+                'Review budgeting needs one observed worker context; host-dependent identity unavailable')
+        request = subprocess_budget_request(binding,
+            worker_context_id=next(iter(contexts)) if contexts else None, stream=self.c.get('budget_stream'))
+        return {'request': request, 'capabilities': {'models': {
+            selected['model']: [selected['reasoning_effort']]}}, 'limits_enforced': False}
+
+    def observe_budget_outcome(self, admission, observation):
+        from ..budgeting import codex_usage
+        binding = admission['binding']
+        self.observe_enrollment(binding)
+        run = self.state / 'runs' / binding['run_id']
+        with Tree(run) as tree:
+            raw = tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT)
+        require(observation['session_id'] == self._codex_thread_id(run / 'codex.jsonl'),
+                'Review usage differs from observed thread')
+        events = [loads(line) for line in raw.decode('utf-8').splitlines() if line.strip()]
+        selected = admission['reservation']
+        return dict(actual_model=selected['model'], actual_reasoning_effort=selected['reasoning_effort'],
+            actual_context_id=observation['session_id'], actual_tokens=codex_usage(events),
+            actual_cost_microusd=None, success=True, validation_passed=False,
+            independent_review_passed=False, escaped_defect=False,
+            observation_id='codex-session-usage:' + sha256(canonical(observation['session_id'])))
 
     def configure_budgeting(self, context, *, ticket_id=None):
         """Bind the same protected context used by the trusted dispatch host."""
@@ -1480,6 +1555,7 @@ class HostDriver:
             binding = {'project_id': budgeting.governance['project']['id'],
                 'ticket_id': self.budget_ticket_id, 'run_id': run_id,
                 'dispatch_id': run_id, 'session_id': run_id, 'role': role}
+            (run / 'budget-intent.json').write_bytes(canonical(binding))
             admission = budgeting.admit(binding, {'model': self.c['models'][template_role], 'reasoning_effort': effort})
             if admission is not None:
                 (run / 'budget-admission.json').write_bytes(canonical(admission))

@@ -68,6 +68,42 @@ def settings_hash(value):
     return hashlib.sha256(encoded(validate_settings(value)).encode('utf-8')).hexdigest()
 
 
+def codex_usage(events):
+    """Sum completed-turn input/output; cached input is a subset, not extra.
+
+    Missing/malformed usage or no completed turn is UNKNOWN. CLI reports do not
+    authenticate provider billing or establish a token enforcement capability.
+    """
+    total, seen = 0, False
+    for event in events:
+        if not isinstance(event, dict) or event.get('type') != 'turn.completed':
+            continue
+        seen = True
+        usage = event.get('usage')
+        if not isinstance(usage, dict) or any(type(usage.get(key)) is not int or usage[key] < 0
+                for key in ('input_tokens', 'output_tokens')):
+            return None
+        total += usage['input_tokens'] + usage['output_tokens']
+        if total > 2**63 - 1:
+            return None
+    return total if seen else None
+
+
+def subprocess_budget_request(binding, *, worker_context_id=None, stream=None):
+    """Conservative routing facts for an explicitly dispatched CLI run."""
+    value = dict(ticket_id=binding['ticket_id'], role=binding['role'],
+        agent_id=binding['session_id'], context_id=None, phase=binding['role'],
+        task_class='awf-subprocess', complexity='high', risk='high',
+        uncertainty='high', verification='none', risk_flags=[],
+        reservation_tokens=None, reservation_cost_microusd=None)
+    if binding['role'] in ('critic', 'specialist'):
+        require(text_id(worker_context_id), 'Review budgeting requires an observed worker context')
+        value['worker_context_id'] = worker_context_id
+    if stream is not None:
+        value['stream'] = stream
+    return value
+
+
 class ControllerBudgeting:
     """Lazy trusted-host bridge shared by dispatch and review adapters.
 

@@ -136,7 +136,8 @@ class ModeIntegrationTests(unittest.TestCase):
             budget_registry=registry, budget_binding=binding)
         self.assertFalse(reserved['requires_host_limit_enforcement'])
         self.assertEqual(reserved['run_cap_signal'], 'OFF')
-        self.assertEqual(ledger.settle(reserved['run_id'], outcome(reserved, actual_tokens=5000))['status'], 'settled')
+        self.assertEqual(ledger.settle(reserved['run_id'], outcome(reserved, actual_tokens=5000,
+            observation_id='accounting-overrun-usage'))['status'], 'settled')
         self.assertEqual(BudgetLedger(ledger.path, registry).summary(binding['project_id'])['known_tokens'], 5000)
 
     def test_accounting_without_estimate_is_unknown_until_observed_and_never_refused_for_quota(self):
