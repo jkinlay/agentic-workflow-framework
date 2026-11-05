@@ -22,7 +22,7 @@ import uuid
 from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
-from .lane_labels import MAX_LANES
+from .lane_labels import MAX_LANES, STREAM_LABELS
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
@@ -46,6 +46,8 @@ def stream_labels(count):
     """Return stable spreadsheet-style stream labels (A..Z, AA..)."""
     if type(count) is not int or count < 0:
         raise ValidationError("Stream label count must be a non-negative integer")
+    if count <= MAX_LANES:
+        return STREAM_LABELS[:count]
     labels = []
     for index in range(count):
         value, label = index + 1, ""
