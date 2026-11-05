@@ -57,21 +57,28 @@ def _identity(value):
     return fingerprint("review-presentation-intent-v1", _candidate(value))
 
 
+def _observation_current(value, now):
+    """Only a complete, fresh trusted observation can establish invalidation."""
+    if not isinstance(value, dict) or set(value) != _OBSERVATION_KEYS:
+        return False
+    try:
+        _candidate(value["candidate"])
+        observed = utc_instant(value["observed_at"])
+        expiry = utc_instant(value["expires_at"])
+    except (ValidationError, TypeError, ValueError):
+        return False
+    return (observed == now and now < expiry and
+            type(value["open"]) is bool and type(value["merged"]) is bool and
+            isinstance(value["readiness"], str) and type(value["final_gate_valid"]) is bool)
+
+
 def _observation_valid(value, candidate, now):
     """A trusted collector must observe at the tick instant, with a live expiry.
 
     No caller-selected age tolerance: stale observations fail closed. The adapter
     must independently validate current final-gate bytes, not echo a stored bool.
     """
-    if not isinstance(value, dict) or set(value) != _OBSERVATION_KEYS:
-        return False
-    try:
-        same = _candidate(value["candidate"]) == candidate
-        observed = utc_instant(value["observed_at"])
-        expiry = utc_instant(value["expires_at"])
-    except (ValidationError, TypeError, ValueError):
-        return False
-    return (same and observed == now and now < expiry and
+    return (_observation_current(value, now) and value["candidate"] == candidate and
             value["open"] is True and value["merged"] is False and
             value["readiness"] == "READY_FOR_OWNER_AUTHORIZATION" and
             value["final_gate_valid"] is True)
@@ -95,25 +102,37 @@ class ReviewBatchStore:
         """Retain first readiness and original schedule; identical events dedup.
 
         A new tuple withdraws pending older tuples for the same repository/PR.
-        Withdrawn identities need fresh evidence/new tuple; replay cannot revive
-        them. Already claimed presentations require provider reconciliation.
+        Replay cannot revive withdrawn identities. None means no pending intent
+        was retained; claimed/delivered/exhausted identities never enqueue again.
         """
+        return self._enqueue(candidate, ready_at, calendar, restore=False)
+
+    def _enqueue(self, candidate, ready_at, calendar, *, restore):
         candidate = _candidate(candidate)
         identity = _identity(candidate)
         schedule = next_review_presentation(ready_at, calendar)
         with self.controller.transaction() as db:
-            existing = db.execute("SELECT intent_id FROM review_presentation_intent_v1 WHERE intent_id=?",
+            existing = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?",
                                   (identity,)).fetchone()
             if existing is not None:
-                return identity
+                if existing["state"] == "PENDING":
+                    return identity
+                if not (restore and existing["state"] == "WITHDRAWN" and existing["attempts"] < 2):
+                    return None
             for row in db.execute("SELECT intent_id,candidate_json FROM review_presentation_intent_v1 WHERE state='PENDING'").fetchall():
                 prior = loads(row["candidate_json"])
                 if (prior["repository_id"], prior["pull_request"]) == (candidate["repository_id"], candidate["pull_request"]):
                     db.execute("UPDATE review_presentation_intent_v1 SET state='WITHDRAWN' WHERE intent_id=?",
                                (row["intent_id"],))
-            db.execute("INSERT INTO review_presentation_intent_v1 VALUES(?,?,?,?,?,0)",
-                       (identity, canonical(candidate).decode(), schedule["ready_at"],
-                        canonical(schedule).decode(), "PENDING"))
+            if existing is None:
+                db.execute("INSERT INTO review_presentation_intent_v1 VALUES(?,?,?,?,?,0)",
+                           (identity, canonical(candidate).decode(), schedule["ready_at"],
+                            canonical(schedule).decode(), "PENDING"))
+            else:
+                # Fresh qualification restores only a resolved, unsent intent.
+                # Preserve first readiness, schedule and the delivery retry cap.
+                db.execute("UPDATE review_presentation_intent_v1 SET state='PENDING' WHERE intent_id=?",
+                           (identity,))
         return identity
 
     def enqueue_observed(self, candidate, observation, now, calendar, *, repository_id):
@@ -121,21 +140,24 @@ class ReviewBatchStore:
 
         Discovery supplies locators, never readiness. The reviewed collector
         independently verifies lifecycle and current final-gate evidence. Invalid
-        readiness cannot create an intent or revive a withdrawn identity.
+        readiness cannot create an intent or revive a withdrawn identity. Fresh
+        qualification may restore an unsent withdrawn intent, never a delivery.
         """
         candidate = _candidate(candidate)
         _require(str(candidate['repository_id']) == repository_id,
                  'Review candidate repository differs from the controller binding')
         if not _observation_valid(observation, candidate, utc_instant(now)):
             return None
-        return self.enqueue(candidate, now, calendar)
+        return self._enqueue(candidate, now, calendar, restore=True)
 
     def claim(self, now, calendar, observer):
         """Recompute pending eligibility and atomically claim one due digest.
 
         The trusted observer runs inside the serialized transaction. An exception
-        rolls back the tick; invalid/stale/closed members withdraw. A missed run
-        catches up during a current presentation window, never after cutoff.
+        rolls back the tick; fresh invalid/changed/closed members withdraw.
+        Stale, malformed or unavailable evidence retains the pending intent.
+        A missed run catches up during a current presentation window, never
+        after cutoff.
         A pending intent whose schedule cannot resolve stays pending without
         blocking other intents; later settings may make it resolvable again.
         No lease timeout can retry an ambiguous provider send.
@@ -163,6 +185,8 @@ class ReviewBatchStore:
                 if utc_instant(schedule["presentation_at"]) > current:
                     continue
                 observation = observer(deepcopy(candidate))
+                if not _observation_current(observation, current):
+                    continue
                 if not _observation_valid(observation, candidate, current):
                     db.execute("UPDATE review_presentation_intent_v1 SET state='WITHDRAWN' WHERE intent_id=?",
                                (row["intent_id"],))

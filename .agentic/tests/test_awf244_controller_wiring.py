@@ -172,6 +172,74 @@ class ControllerBatchingTests(unittest.TestCase):
         self.assertEqual(self.delivered, [])
         self.assertEqual(self.intent_states(), ['WITHDRAWN'])
 
+    def test_expired_presentation_recovers_after_restart_as_timestamped_catchup(self):
+        self.cycle('2026-11-06T18:00:00Z')
+        self.listed = []
+        self.change = {'expires_at': '2026-11-09T07:00:00Z'}
+        self.cycle('2026-11-09T07:00:00Z')
+        self.assertEqual(self.intent_states(), ['PENDING'])
+        self.assertEqual(self.delivered, [])
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT attempts FROM review_presentation_intent_v1').fetchone()[0], 0)
+        self.store = ContinuousControllerStore(self.path, ['A', 'B', 'C'], cadence_seconds=3600)
+        self.change = {}
+        self.listed = [candidate()]
+        result = self.cycle('2026-11-09T08:00:00Z')
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(len(self.delivered), 1)
+        batch = self.delivered[0]
+        self.assertTrue(batch['catch_up'])
+        self.assertEqual(batch['prepared_at'], '2026-11-09T08:00:00Z')
+        self.assertEqual(batch['members'][0]['ready_at'], '2026-11-06T18:00:00Z')
+        self.assertEqual(batch['members'][0]['scheduled_at'], '2026-11-09T07:00:00Z')
+        repeated = self.cycle('2026-11-09T09:00:00Z')
+        self.assertEqual(repeated['review_batching']['enqueued'], [])
+        self.assertEqual(len(self.delivered), 1)
+        self.assertEqual(self.intent_states(), ['DELIVERED'])
+
+    def test_unavailable_or_stale_observation_keeps_unsent_candidate_pending(self):
+        for number, change in enumerate((None, {}, {'observed_at': '2026-11-09T06:59:59Z'},
+                                         {'expires_at': '2026-11-09T07:00:00Z', 'merged': True})):
+            with self.subTest(change=change):
+                self.store = ContinuousControllerStore(Path(self.temp.name) / ('stale%d.db' % number), ['A', 'B', 'C'])
+                self.listed = [candidate()]
+                self.cycle('2026-11-06T18:00:00Z')
+                self.listed = []
+                def unavailable(value, now):
+                    if change is None or change == {}:
+                        return change
+                    return self.observe_candidate(value, now) | change
+                self.cycle('2026-11-09T07:00:00Z', observe_review_candidate=unavailable)
+                self.assertEqual(self.intent_states(), ['PENDING'])
+                self.assertEqual(self.delivered, [])
+                self.cycle('2026-11-09T08:00:00Z')
+                self.assertEqual(self.intent_states(), ['DELIVERED'])
+                self.assertEqual(len(self.delivered), 1)
+                self.delivered.clear()
+
+    def test_returned_identity_requires_fresh_qualification_to_restore(self):
+        self.cycle('2026-11-06T18:00:00Z')
+        self.listed = []
+        self.current['head_sha'] = 'e'*40
+        self.cycle('2026-11-09T07:00:00Z')
+        self.assertEqual(self.intent_states(), ['WITHDRAWN'])
+        self.assertIsNone(ReviewBatchStore(self.store).enqueue(candidate(), self.now, {}))
+        self.current = candidate()
+        self.cycle('2026-11-09T08:00:00Z')
+        self.assertEqual(self.intent_states(), ['WITHDRAWN'])
+        self.assertEqual(self.delivered, [])
+        self.listed = [candidate()]
+        self.change = {'final_gate_valid': False}
+        self.cycle('2026-11-09T09:00:00Z')
+        self.assertEqual(self.intent_states(), ['WITHDRAWN'])
+        self.change = {}
+        self.cycle('2026-11-09T10:00:00Z')
+        self.assertEqual(self.intent_states(), ['DELIVERED'])
+        self.assertEqual(len(self.delivered), 1)
+        self.assertTrue(self.delivered[0]['catch_up'])
+        self.assertEqual(self.delivered[0]['members'][0]['ready_at'], '2026-11-06T18:00:00Z')
+        self.assertIsNone(ReviewBatchStore(self.store).enqueue(candidate(), self.now, {}))
+
     def test_all_candidate_pins_and_readiness_reobserved_when_due(self):
         changes = [dict(candidate={**candidate(), key: value}) for key, value in (
             ('repository_id', 102), ('pull_request', 42), ('base_sha', 'e'*40),
@@ -227,7 +295,8 @@ class ControllerBatchingTests(unittest.TestCase):
         self.negative_delivery = True
         self.cycle('2026-11-10T10:00:00Z')
         self.cycle('2026-11-10T11:00:00Z')
-        self.cycle('2026-11-10T12:00:00Z')
+        exhausted = self.cycle('2026-11-10T12:00:00Z')
+        self.assertEqual(exhausted['review_batching']['enqueued'], [])
         self.assertEqual(len(self.delivered), 2)
         self.assertEqual(self.intent_states(), ['EXHAUSTED'])
 
