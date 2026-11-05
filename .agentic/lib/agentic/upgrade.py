@@ -19,7 +19,7 @@ INSTALLED = ".agentic/installed-manifest.json"
 PROVENANCE = ".agentic/workflow-version.yaml"
 OPERATING = "OPERATING_CONFIG.yaml"
 ARCHIVE_ROOT = f".agentic-state/archive/upgrade-to-{VERSION}"
-_ARCHIVE_PREFIXES = (".agentic-state/archive/upgrade-to-1.9.5/", ARCHIVE_ROOT + "/")
+_ARCHIVE_PREFIXES = (".agentic-state/archive/",)
 CURRENT_RECEIPT_SCHEMA = "awf-installed-receipt-embedded-manifest-1"
 
 
@@ -910,23 +910,26 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
     return bundle, reports
 
 
-def state_archive_plan(state):
+def state_archive_plan(state, *, target_version=VERSION):
+    if _version_tuple(target_version) is None:
+        raise ValidationError("Invalid state archive target version")
+    archive_root = f".agentic-state/archive/upgrade-to-{target_version}"
     unknown = {path: (raw, _state_validation(path, raw)[1]) for path, raw in state.items()
-               if _state_validation(path, raw)[0] is None
-               and not path.startswith(_ARCHIVE_PREFIXES)}
+               if not path.startswith(_ARCHIVE_PREFIXES)
+               and _state_validation(path, raw)[0] is None}
     if not unknown:
         return {}, []
     files = []
     additions = {}
     for path, (raw, reason) in sorted(unknown.items()):
         relative = path.removeprefix(".agentic-state/")
-        archive = f"{ARCHIVE_ROOT}/files/{relative}"
+        archive = f"{archive_root}/files/{relative}"
         additions[archive] = raw
         files.append({"source": path, "archive": archive, "sha256": sha256(raw),
                       "source_retained": True, "validation_path": path,
                       "validation_reason": reason})
-    manifest = {"format": "awf-state-archive-1", "target_version": VERSION, "files": files}
-    additions[f"{ARCHIVE_ROOT}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+    manifest = {"format": "awf-state-archive-1", "target_version": target_version, "files": files}
+    additions[f"{archive_root}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
     return additions, [{"path": item["source"], "action": "archived_read_only_copy",
                         "archive": item["archive"],
                         "validation_path": item["validation_path"],

@@ -1736,10 +1736,24 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             ignore_report.update(report)
     def configure_plan(existing_config=None, existing_receipt=None):
         nonlocal configuration_report, governance_proposal
-        from .adoption_config import prepare_config, operating_capacity_proposal
+        from .adoption_config import (prepare_config, operating_capacity_proposal,
+                                      repository_name, unresolved)
         from .contracts import Contracts
         from .policy import inspect_config
         existing = load_yaml(existing_config) if existing_config is not None else None
+        if mode == "upgrade" and isinstance(existing, dict):
+            github = existing.get("github", {})
+            for key in ("repository", "repository_id", "base_branch"):
+                if key not in (overrides or {}) or not isinstance(github, dict):
+                    continue
+                established = github.get(key)
+                supplied = overrides[key]
+                if key == "repository":
+                    supplied = repository_name(supplied)
+                if not unresolved(established) and supplied != established:
+                    raise ValidationError(
+                        "Explicit " + key + " conflicts with the established upgrade identity; "
+                        "reconcile reviewed PROJECT_CONFIG.yaml before upgrading; no files changed")
         result = prepare_config(load_yaml(planned[CONFIG]), existing=existing,
             receipt_project_id=(existing_receipt or {}).get("project_id"), project_root=destination,
             overrides=overrides, codeowner=codeowner, discover=discover)
@@ -1867,7 +1881,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                                              "source_sha256": sha256(state[path]),
                                              "target_sha256": sha256(data)})
             archives, archive_actions = (({}, []) if identity["version"] == VERSION
-                                         else state_archive_plan(migrated_state))
+                                         else state_archive_plan(migrated_state, target_version=VERSION))
             state_actions = migrated_actions + archive_actions
             for path, data in archives.items():
                 if dst.inspect(path) is not None and dst.read(path) != data:
