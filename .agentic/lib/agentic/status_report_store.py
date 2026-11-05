@@ -291,6 +291,9 @@ def prepare_report(config, request, *, operating=None, verify_inventory=None,
 
 def replay_report(record):
     """Replay the retained projection and verify its original input digest."""
+    if isinstance(record, dict) and record.get('format') == 'awf-status-report-record-2':
+        from .reporting.records import replay_snapshot
+        return replay_snapshot(record)
     _require(set(record) == {'format','record_id','created_at','trigger','project_id','source_mode',
                             'inputs','inputs_sha256','projection','values_json'}
              and record.get('format') == 'awf-status-report-record-1', 'Invalid report record format')
