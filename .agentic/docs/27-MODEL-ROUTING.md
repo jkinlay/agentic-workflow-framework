@@ -2,6 +2,21 @@
 
 Version 1.9.6. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router proposes routes and records usage; the host authenticates evidence, launches models and enforces limits.
 
+## Budget modes
+
+Fresh operating settings default accounting and enforcement OFF, with dormant
+4,000,000-ticket and 1,000,000,000-lifetime-project token limits. Missing new
+settings preserve legacy policy. [Budgeting](39-BUDGETING.md) defines explicit
+host enrollment, owner admission, canonical usage history and preservation.
+The legacy daily/run/cost quotas below apply only to legacy admissions.
+Explicit accounting-only runs record attributable usage without quota warnings
+or refusal. Explicit enforcement uses atomic ticket and lifetime-project totals.
+OFF requires no budget reservation or usage telemetry. Operational routing
+history still retains security, review independence, draining ownership and
+bounded incident-recovery checks. Budget-only historical overruns do not block
+OFF; security mismatches still quarantine. A no-ledger OFF CLI result is only
+a proposal and requires the host's independent operational admission.
+
 ## Policy and escalation
 
 Configure `execution.model_routing`; `defaults` prints its schema-compatible settings. New projects use one shared critic; upgrades preserve existing reviewer allocation.
@@ -38,7 +53,7 @@ Outstanding runs block duplicate admission. History survives policy changes; usa
 
 ### Settlement outcome shapes
 
-Every role supplies actual model, effort, context, nonnegative tokens, nullable cost, and booleans for success, validation, independent review and escaped defect. Failed runs add `failure_kind`; successful runs omit it.
+Every role supplies actual model, effort and context. Legacy settlement also requires nonnegative tokens and nullable cost; explicit enabled accounting permits UNKNOWN tokens, and OFF completion requires no usage telemetry. Every role supplies booleans for success, validation, independent review and escaped defect. Failed runs add `failure_kind`; successful runs omit it.
 
 | Role | Required interpretation |
 | --- | --- |

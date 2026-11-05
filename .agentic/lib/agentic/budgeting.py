@@ -1,4 +1,4 @@
-"""Additive AWF-242 budget contract; host/operating integration is separate.
+"""AWF-242 modes and enrollment facade over the canonical routing usage ledger.
 
 Fresh setup must explicitly install fresh_settings(). Missing fields in an
 existing installation mean legacy behavior, never implicit consent to disable.
@@ -68,87 +68,179 @@ def settings_hash(value):
     return hashlib.sha256(encoded(validate_settings(value)).encode('utf-8')).hexdigest()
 
 
-DDL = """
-CREATE TABLE IF NOT EXISTS budget_charges(
- run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
- binding TEXT NOT NULL, settings TEXT NOT NULL, reserved_tokens INTEGER NOT NULL,
- status TEXT NOT NULL, actual_tokens INTEGER, observation_id TEXT UNIQUE,
- budget_overrun INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS budget_charges_project ON budget_charges(project_id,ticket_id);
-CREATE TRIGGER IF NOT EXISTS budget_charges_no_delete BEFORE DELETE ON budget_charges
- BEGIN SELECT RAISE(ABORT,'charges cannot be deleted'); END;
-CREATE TRIGGER IF NOT EXISTS budget_charges_binding BEFORE UPDATE ON budget_charges
- WHEN NEW.run_id != OLD.run_id OR NEW.project_id != OLD.project_id OR NEW.ticket_id != OLD.ticket_id
- OR NEW.binding != OLD.binding OR NEW.settings != OLD.settings OR NEW.reserved_tokens != OLD.reserved_tokens
- OR OLD.status != 'RESERVED'
- BEGIN SELECT RAISE(ABORT,'immutable charge identity or closed charge'); END;
-"""
+def admit_totals(db, project_id, ticket_id, settings, tokens):
+    """Check lifetime totals while holding RoutingLedger's BEGIN IMMEDIATE lock.
+
+    Legacy rows remain charged conservatively. Explicit OFF/unattributed runs
+    have no usage charge; unknown enabled usage retains its reservation.
+    """
+    rows = db.execute('SELECT * FROM model_runs WHERE project_id=?', (project_id,)).fetchall()
+    charged = []
+    for row in rows:
+        request = json.loads(row['request'])
+        mode = request.get('_budgeting')
+        if mode is not None and not (mode['accounting_enabled'] and mode['attributable']):
+            continue
+        outcome = json.loads(row['outcome'] or '{}')
+        require(row['actual_tokens'] is not None or not request.get('_reservation_unknown'),
+                'Reservation estimate is UNKNOWN; enforced admission unavailable')
+        require(row['status'] == 'reserved' or row['actual_tokens'] is not None,
+                'Historical usage is UNKNOWN; enforced admission unavailable')
+        require(row['status'] == 'reconciled' or not (outcome.get('budget_overrun') or
+                set(outcome.get('violations', [])) & {'host token ceiling overrun', 'host cost ceiling overrun'}),
+                'Unresolved budget overrun; owner recovery required')
+        charged.append(row)
+    def used(history):
+        return sum(row['actual_tokens'] if row['actual_tokens'] is not None else row['reserved_tokens'] for row in history)
+    require(used(charged) + tokens <= settings['max_tokens_per_project'], 'Lifetime project token budget exhausted')
+    require(used([row for row in charged if row['ticket_id'] == ticket_id]) + tokens <= settings['max_tokens_per_ticket'],
+            'Ticket token budget exhausted')
+
+
+def bridge_stage_one(db):
+    """Seal the pre-integration table as an archive; charge each identity once.
+
+    Called within routing schema initialization's write transaction. Source rows
+    are retained byte-for-byte. Stage one recorded no times: UNKNOWN placeholders
+    are retained instead of inventing historical run/closure timestamps.
+    """
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='budget_charges'").fetchone() is None:
+        return
+    for row in db.execute('SELECT * FROM budget_charges').fetchall():
+        source_hash = hashlib.sha256(encoded(dict(row)).encode()).hexdigest()
+        prior = db.execute('SELECT request FROM model_runs WHERE run_id=?', (row['run_id'],)).fetchone()
+        if prior is not None:
+            require(json.loads(prior['request']).get('_legacy_budget_source_sha256') == source_hash,
+                    'Stage-one charge conflicts with canonical run identity; preserve both and reconcile')
+            continue
+        binding = json.loads(row['binding'])
+        settings = validate_settings(json.loads(row['settings']))
+        from .budget_enrollment import validate_binding
+        validate_binding(binding)
+        require((row['run_id'], row['project_id'], row['ticket_id']) ==
+                (binding['run_id'], binding['project_id'], binding['ticket_id']), 'Stage-one charge binding mismatch')
+        require(row['status'] in ('RESERVED', 'UNKNOWN', 'SETTLED'), 'Unrecognized stage-one charge status')
+        request = {'role': binding['role'], '_budget_binding': binding,
+                   '_budgeting': {**settings, 'attributable': True}, 'task_class': 'enrolled-host-run',
+                   '_legacy_budget_source_sha256': source_hash}
+        route = {'model': 'unobserved', 'reasoning_effort': 'unobserved', 'simple': False, 'high_risk': True}
+        status = 'reserved' if row['status'] == 'RESERVED' else 'quarantined' if row['budget_overrun'] else 'settled'
+        outcome = None if status == 'reserved' else encoded({
+            'observation_id': row['observation_id'], 'budget_overrun': bool(row['budget_overrun']),
+            'success': False, 'actual_usage_known': row['actual_tokens'] is not None,
+            'historical_time': 'UNKNOWN',
+            'violations': ['host token ceiling overrun'] if row['budget_overrun'] else []})
+        db.execute("""INSERT INTO model_runs
+            (run_id,project_id,ticket_id,role,agent_id,phase,created_at,day,policy_hash,status,
+             reserved_tokens,reserved_cost,actual_tokens,actual_cost,escalated,request,route,outcome,operating_hash)
+            VALUES(?,?,?,?,?,?,'UNKNOWN','UNKNOWN','enrolled-budget-1',?,?,NULL,?,NULL,0,?,?,?,NULL)""",
+            (binding['run_id'], binding['project_id'], binding['ticket_id'], binding['role'], binding['session_id'],
+             'enrolled-host-run', status, row['reserved_tokens'], row['actual_tokens'], encoded(request), encoded(route), outcome))
+    for operation in ('INSERT', 'UPDATE', 'DELETE'):
+        db.execute(f"CREATE TRIGGER IF NOT EXISTS stage_one_budget_no_{operation.lower()} BEFORE {operation} ON budget_charges BEGIN SELECT RAISE(ABORT,'archived budget charges; use canonical routing ledger'); END")
 
 
 class BudgetLedger(ProtectedDatabase):
-    """Lifetime token ledger for explicitly enrolled AWF runs only.
+    """Enrollment facade over RoutingLedger's sole authoritative model_runs.
 
-    Hosts must feed verified usage, including tools/retries attributable to that
-    run, as one cumulative final observation. A tool event is not an additional
-    settlement. Unknown observations retain their reservation and fail enforced
-    admission closed; they never turn into retrospective zero usage.
+    No second usage table is created. Hosts may use this facade for an enrolled
+    run without routing, or RoutingLedger.reserve with the same registry/binding;
+    the run ID is shared and cannot be charged twice. Existing routing history
+    participates in lifetime admission under the same SQLite write lock.
     """
     def __init__(self, path, registry, worktree_roots=()):
         super().__init__(path, worktree_roots)
         self.registry = registry
 
+    def _routing(self):
+        from .model_routing import RoutingLedger
+        # Apply the protected-state path/permission checks before schema access.
+        with self.transaction(''):
+            pass
+        return RoutingLedger(self.path)
+
     def reserve(self, binding, settings, tokens):
+        from datetime import datetime, timezone
         settings = validate_settings(settings)
         if not settings['accounting_enabled']:
             return {'status': 'OFF', 'budget_required': False, 'created': False}
         if not self.registry.enrolled(binding):
             return {'status': 'UNKNOWN', 'budget_required': False, 'attribution': 'UNKNOWN', 'created': False}
-        require(type(tokens) is int and 0 < tokens <= 2**63 - 1, 'Enabled accounting requires a positive token reservation')
-        with self.transaction(DDL) as db:
-            old = db.execute('SELECT * FROM budget_charges WHERE run_id=?', (binding['run_id'],)).fetchone()
+        unknown = tokens is None and not settings['enforcement_enabled']
+        require(unknown or (type(tokens) is int and 0 < tokens <= 2**63 - 1),
+                'Enforcement requires a positive token reservation; accounting estimates may be UNKNOWN')
+        stored_tokens = 0 if unknown else tokens
+        with self._routing()._transaction() as db:
+            old = db.execute('SELECT * FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
             if old is not None:
-                require((old['binding'], old['settings'], old['reserved_tokens']) ==
-                        (encoded(binding), encoded(settings), tokens), 'Reservation identity collision')
-                return {'status': old['status'], 'run_id': binding['run_id'], 'settings_hash': settings_hash(settings), 'created': False}
-            rows = db.execute('SELECT * FROM budget_charges WHERE project_id=?', (binding['project_id'],)).fetchall()
+                request = json.loads(old['request'])
+                require(request.get('_budget_binding') == binding and
+                        request.get('_budgeting') == {**settings, 'attributable': True} and
+                        old['reserved_tokens'] == stored_tokens and bool(request.get('_reservation_unknown')) == unknown,
+                        'Reservation identity collision')
+                return {'status': self._status(old), 'run_id': binding['run_id'], 'settings_hash': settings_hash(settings), 'created': False}
             if settings['enforcement_enabled']:
-                require(not any(row['status'] == 'UNKNOWN' for row in rows), 'Historical usage is UNKNOWN; enforced admission unavailable')
-                require(not any(row['budget_overrun'] for row in rows), 'Unresolved budget overrun; owner recovery required')
-                def used(history):
-                    return sum(row['actual_tokens'] if row['actual_tokens'] is not None else row['reserved_tokens'] for row in history)
-                require(used(rows) + tokens <= settings['max_tokens_per_project'], 'Lifetime project token budget exhausted')
-                require(used([row for row in rows if row['ticket_id'] == binding['ticket_id']]) + tokens
-                        <= settings['max_tokens_per_ticket'], 'Ticket token budget exhausted')
-            db.execute('INSERT INTO budget_charges(run_id,project_id,ticket_id,binding,settings,reserved_tokens,status) VALUES(?,?,?,?,?,?,?)',
-                       (binding['run_id'], binding['project_id'], binding['ticket_id'], encoded(binding), encoded(settings), tokens, 'RESERVED'))
+                admit_totals(db, binding['project_id'], binding['ticket_id'], settings, tokens)
+            now = datetime.now(timezone.utc).isoformat()
+            request = {'role': binding['role'], '_budget_binding': binding,
+                       '_budgeting': {**settings, 'attributable': True}, 'task_class': 'enrolled-host-run'}
+            if unknown:
+                request['_reservation_unknown'] = True
+            route = {'model': 'unobserved', 'reasoning_effort': 'unobserved', 'simple': False, 'high_risk': True}
+            db.execute("""INSERT INTO model_runs
+                (run_id,project_id,ticket_id,role,agent_id,phase,created_at,day,policy_hash,status,
+                 reserved_tokens,reserved_cost,actual_tokens,actual_cost,escalated,request,route,outcome,operating_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,'reserved',?,NULL,NULL,NULL,0,?,?,NULL,NULL)""",
+                (binding['run_id'], binding['project_id'], binding['ticket_id'], binding['role'],
+                 binding['session_id'], 'enrolled-host-run', now, now[:10], 'enrolled-budget-1',
+                 stored_tokens, encoded(request), encoded(route)))
         return {'status': 'RESERVED', 'run_id': binding['run_id'], 'settings_hash': settings_hash(settings), 'created': True}
 
+    @staticmethod
+    def _status(row):
+        if row['status'] == 'reserved':
+            return 'RESERVED'
+        return 'UNKNOWN' if row['actual_tokens'] is None else 'SETTLED'
+
     def settle(self, binding, tokens, observation_id):
-        """Use admission-time mode even if subsequent work has accounting OFF."""
+        """Admission-time mode survives later OFF settings; UNKNOWN is never zero."""
+        from datetime import datetime, timezone
         require(self.registry.enrolled(binding), 'Settlement requires the exact enrolled identity')
         require(tokens is None or (type(tokens) is int and 0 <= tokens <= 2**63 - 1), 'Observed tokens must be a nonnegative integer or UNKNOWN (null)')
         require(text_id(observation_id), 'Settlement requires immutable host observation identity')
-        with self.transaction(DDL) as db:
-            row = db.execute('SELECT * FROM budget_charges WHERE run_id=?', (binding['run_id'],)).fetchone()
-            require(row is not None and row['binding'] == encoded(binding), 'Unknown reservation or mismatched identity')
-            if row['status'] != 'RESERVED':
-                require(row['actual_tokens'] == tokens and row['observation_id'] == observation_id, 'Conflicting or replayed settlement')
-                return {'status': row['status'], 'budget_overrun': bool(row['budget_overrun'])}
-            require(db.execute('SELECT 1 FROM budget_charges WHERE observation_id=?', (observation_id,)).fetchone() is None,
-                    'Usage observation already belongs to another run')
-            settings = json.loads(row['settings'])
+        with self._routing()._transaction() as db:
+            row = db.execute('SELECT * FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(row is not None and json.loads(row['request']).get('_budget_binding') == binding,
+                    'Unknown reservation or mismatched identity')
+            require(row['phase'] == 'enrolled-host-run',
+                    'Routed runs must complete through RoutingLedger.settle to retain host security checks')
+            prior = json.loads(row['outcome'] or '{}')
+            if row['status'] != 'reserved':
+                require(row['actual_tokens'] == tokens and prior.get('observation_id') == observation_id, 'Conflicting or replayed settlement')
+                return {'status': self._status(row), 'budget_overrun': bool(prior.get('budget_overrun'))}
+            for other in db.execute('SELECT outcome FROM model_runs WHERE outcome IS NOT NULL'):
+                require(json.loads(other['outcome']).get('observation_id') != observation_id,
+                        'Usage observation already belongs to another run')
+            settings = json.loads(row['request'])['_budgeting']
             overrun = bool(settings['enforcement_enabled'] and tokens is not None and tokens > row['reserved_tokens'])
-            status = 'UNKNOWN' if tokens is None else 'SETTLED'
-            db.execute('UPDATE budget_charges SET status=?,actual_tokens=?,observation_id=?,budget_overrun=? WHERE run_id=?',
-                       (status, tokens, observation_id, int(overrun), binding['run_id']))
-        return {'status': status, 'budget_overrun': overrun}
+            now = datetime.now(timezone.utc).isoformat()
+            outcome = {'observation_id': observation_id, 'budget_overrun': overrun, 'success': False,
+                       'actual_usage_known': tokens is not None, 'settled_at': now,
+                       'violations': ['host token ceiling overrun'] if overrun else []}
+            db.execute('UPDATE model_runs SET status=?,actual_tokens=?,outcome=?,closed_day=? WHERE run_id=?',
+                       ('quarantined' if overrun else 'settled', tokens, encoded(outcome), now[:10], binding['run_id']))
+        return {'status': 'UNKNOWN' if tokens is None else 'SETTLED', 'budget_overrun': overrun}
 
     def summary(self, project_id):
         require(text_id(project_id), 'Project identity required')
-        with self.transaction(DDL) as db:
-            rows = db.execute('SELECT * FROM budget_charges WHERE project_id=?', (project_id,)).fetchall()
-        return {'known_tokens': sum(row['actual_tokens'] for row in rows if row['actual_tokens'] is not None),
-                'reserved_tokens': sum(row['reserved_tokens'] for row in rows if row['status'] == 'RESERVED'),
-                'unresolved_reserved_tokens': sum(row['reserved_tokens'] for row in rows if row['status'] == 'UNKNOWN'),
-                'unknown_runs': sum(row['status'] == 'UNKNOWN' for row in rows),
-                'reservations': len(rows), 'budget_overruns': sum(row['budget_overrun'] for row in rows)}
+        with self._routing()._transaction() as db:
+            rows = db.execute('SELECT * FROM model_runs WHERE project_id=?', (project_id,)).fetchall()
+        rows = [r for r in rows if json.loads(r['request']).get('_budgeting') is None or
+                (json.loads(r['request'])['_budgeting']['accounting_enabled'] and
+                 json.loads(r['request'])['_budgeting']['attributable'])]
+        return {'known_tokens': sum(r['actual_tokens'] for r in rows if r['actual_tokens'] is not None),
+                'reserved_tokens': sum(r['reserved_tokens'] for r in rows if r['status'] == 'reserved'),
+                'unresolved_reserved_tokens': sum(r['reserved_tokens'] for r in rows if r['status'] != 'reserved' and r['actual_tokens'] is None),
+                'unknown_runs': sum(r['actual_tokens'] is None and
+                                    (r['status'] != 'reserved' or json.loads(r['request']).get('_reservation_unknown', False)) for r in rows),
+                'reservations': len(rows), 'budget_overruns': sum(bool(json.loads(r['outcome'] or '{}').get('budget_overrun')) for r in rows)}

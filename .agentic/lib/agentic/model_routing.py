@@ -901,6 +901,8 @@ def initialize_routing_ledger(connection, *, legacy_only=False):
     connection.execute("CREATE INDEX IF NOT EXISTS model_runs_status ON model_runs(project_id,status)")
     connection.execute("CREATE INDEX IF NOT EXISTS model_runs_day ON model_runs(project_id,day)")
     connection.execute("CREATE INDEX IF NOT EXISTS model_runs_closed ON model_runs(project_id,closed_day)")
+    from .budgeting import bridge_stage_one
+    bridge_stage_one(connection)
 
 
 class RoutingLedger:
@@ -1009,7 +1011,7 @@ class RoutingLedger:
         return require_routing_switch_provenance(
             self, policy, prior_route, new_route, record)
 
-    def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None):
+    def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None, budget_registry=None, budget_binding=None):
         """Persist a validated policy observation, then atomically admit a run.
 
         The savepoint rolls back failed admission work while the enclosing write
@@ -1019,10 +1021,40 @@ class RoutingLedger:
         validate_policy(policy)
         _, operating_binding = _operating_binding(operating, governance, policy)
         _request(request)
-        _integer(request.get("reservation_tokens"), "reservation_tokens", 1)
-        _integer(request.get("reservation_cost_microusd"), "reservation_cost_microusd", nullable=True)
+        from .budgeting import resolve_settings
+        settings = resolve_settings(operating.config if operating is not None else {})
+        explicit = 'legacy_behavior' not in settings
+        enrolled = bool(explicit and settings['accounting_enabled'] and budget_registry is not None
+                        and budget_registry.enrolled(budget_binding))
+        if enrolled:
+            _require(budget_binding['project_id'] == project_id
+                     and budget_binding['ticket_id'] == request['ticket_id']
+                     and budget_binding['role'] == request['role'], 'Enrollment differs from routing request')
+        accounting = not explicit or enrolled
+        request = deepcopy(request)
+        # This metadata is derived at the trusted API boundary, never accepted
+        # from a request document. model_runs remains the sole usage ledger.
+        request.pop('_budgeting', None)
+        request.pop('_budget_binding', None)
+        request.pop('_reservation_unknown', None)
+        if explicit:
+            request['_budgeting'] = {**settings, 'attributable': enrolled}
+            if enrolled:
+                request['_budget_binding'] = deepcopy(budget_binding)
+        if accounting:
+            if explicit and not settings['enforcement_enabled'] and request.get('reservation_tokens') is None:
+                request['_reservation_unknown'] = True
+                request['reservation_tokens'] = 0  # storage sentinel; not measured/estimated zero usage
+            else:
+                _integer(request.get("reservation_tokens"), "reservation_tokens", 1)
+            _integer(request.get("reservation_cost_microusd"), "reservation_cost_microusd", nullable=True)
+        else:
+            request['reservation_tokens'] = 0
+            request['reservation_cost_microusd'] = None
+        if explicit:
+            request['reservation_cost_microusd'] = None
         validate_value(capabilities)
-        run_id = str(uuid.uuid4())
+        run_id = budget_binding['run_id'] if enrolled else str(uuid.uuid4())
         request_hash = _raw_fingerprint({"project_id": project_id, "policy_sha256": _fingerprint(policy),
                                          "request": request, "capabilities": capabilities,
                                          "operating_hash": operating_binding["operating_hash"]})
@@ -1067,10 +1099,15 @@ class RoutingLedger:
         return {**result, **attempt, "admitted": result["status"] == "reserved"}
 
     def _admit(self, connection, project_id, policy, request, capabilities, retry_limit, now, day, run_id, *, operating=None, governance=None):
-        costs_required = any(value is not None for key, value in policy["budgets"].items() if "cost" in key)
+        mode = request.get('_budgeting')
+        enforcing = mode is None or (mode['enforcement_enabled'] and mode['attributable'])
+        costs_required = mode is None and any(value is not None for key, value in policy["budgets"].items() if "cost" in key)
         _require(not costs_required or request.get("reservation_cost_microusd") is not None,
                  "cost ceiling is configured but a verified hard cost reservation is unavailable")
-        _require(connection.execute("SELECT 1 FROM model_runs WHERE project_id=? AND status='quarantined' LIMIT 1", (project_id,)).fetchone() is None,
+        incidents = connection.execute("SELECT outcome FROM model_runs WHERE project_id=? AND status='quarantined'", (project_id,)).fetchall()
+        budget_violations = {'host token ceiling overrun', 'host cost ceiling overrun'}
+        _require(not any(enforcing or not json.loads(row['outcome'] or '{}').get('violations') or
+                         not set(json.loads(row['outcome']).get('violations', [])) <= budget_violations for row in incidents),
                  "project has a quarantined host mismatch or budget overrun; reconcile with authorized operator evidence")
         ticket_rows = list(connection.execute("SELECT * FROM model_runs WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, request["ticket_id"])))
         if operating is not None and request.get("stream") in STREAM_LABELS and STREAM_LABELS.index(request["stream"]) >= operating.count:
@@ -1121,7 +1158,10 @@ class RoutingLedger:
           (project_id, day, project_id, project_id, day)))
         ticket_cap = policy["budgets"]["max_runs_per_ticket"]
         ticket_used = len(ticket_rows) + 1
-        for scope, history in (("ticket", ticket_rows), ("project_day", daily_rows)):
+        if mode is not None and enforcing:
+            from .budgeting import admit_totals
+            admit_totals(connection, project_id, request['ticket_id'], mode, request['reservation_tokens'])
+        for scope, history in (("ticket", ticket_rows), ("project_day", daily_rows)) if mode is None else ():
             budgets = policy["budgets"]
             _require(len(history) + 1 <= budgets["max_runs_per_" + scope], scope + " run budget exhausted")
             used_tokens = sum(row["actual_tokens"] if row["actual_tokens"] is not None else row["reserved_tokens"] for row in history)
@@ -1141,16 +1181,16 @@ class RoutingLedger:
                             None, None, int(route["escalated"]), json.dumps(enriched), json.dumps(route), None, route["operating_hash"]))
         warn_at = (3 * ticket_cap + 3) // 4
         disposition_at = (9 * ticket_cap + 9) // 10
-        signal = ("NEEDS_DISPOSITION" if ticket_used >= disposition_at else
+        signal = ("OFF" if not enforcing else "NEEDS_DISPOSITION" if ticket_used >= disposition_at else
                   "WARN" if ticket_used >= warn_at else "OK")
         disposition = None
         prior_dispositions = []
-        if ticket_used >= disposition_at:
+        if enforcing and ticket_used >= disposition_at:
             prior_dispositions = connection.execute(
                 "SELECT observation FROM model_disposition_requests "
                 "WHERE project_id=? AND ticket_id=? ORDER BY rowid",
                 (project_id, request["ticket_id"])).fetchall()
-        if ticket_used >= disposition_at and not any(
+        if enforcing and ticket_used >= disposition_at and not any(
                 json.loads(row["observation"]).get("run_cap") == ticket_cap
                 for row in prior_dispositions):
             open_findings = request.get("open_findings", [])
@@ -1175,7 +1215,9 @@ class RoutingLedger:
                 "reservation_cost_microusd": request.get("reservation_cost_microusd"),
                 "ticket_runs_used": ticket_used, "ticket_run_cap": ticket_cap,
                 "run_cap_signal": signal, "disposition_request": disposition,
-                "requires_host_limit_enforcement": True}
+                "budget_required": mode is None or bool(mode['accounting_enabled'] and mode['attributable']),
+                "budgeting": mode,
+                "requires_host_limit_enforcement": enforcing}
 
     def summary(self, project_id, ticket_id):
         """Return ticket-wide run and token accounting grouped by recorded role."""
@@ -1323,7 +1365,7 @@ class RoutingLedger:
             _name(outcome.get(field), field)
         for field in ("success", "validation_passed", "independent_review_passed", "escaped_defect"):
             _require(type(outcome.get(field)) is bool, field + " must be boolean")
-        _integer(outcome.get("actual_tokens"), "actual_tokens")
+        _integer(outcome.get("actual_tokens"), "actual_tokens", nullable=True)
         _integer(outcome.get("actual_cost_microusd"), "actual_cost_microusd", nullable=True)
         if not outcome["success"]:
             _require(outcome.get("failure_kind") in REASONING_FAILURES + NON_REASONING_FAILURES, "failed run requires a classified failure_kind")
@@ -1336,6 +1378,17 @@ class RoutingLedger:
             _require(row is not None, "unknown reservation")
             _require(row["status"] == "reserved", "reservation already settled; duplicate settlement denied")
             route, request = json.loads(row["route"]), json.loads(row["request"])
+            mode = request.get('_budgeting')
+            accounting = mode is None or (mode['accounting_enabled'] and mode['attributable'])
+            enforcing = mode is None or (mode['enforcement_enabled'] and mode['attributable'])
+            if mode is None:
+                _integer(outcome.get('actual_tokens'), 'actual_tokens')
+            outcome = deepcopy(outcome)
+            # OFF completion records operational security/recovery facts only.
+            # Absent/unknown enabled telemetry remains NULL, never zero.
+            outcome['actual_tokens'] = outcome.get('actual_tokens') if accounting else None
+            if not accounting:
+                outcome['actual_cost_microusd'] = None
             if request["role"] in ("critic", "specialist"):
                 _require(not outcome["independent_review_passed"],
                          "review runs cannot self-attest review independence; see .agentic/docs/27-MODEL-ROUTING.md#settlement-outcome-shapes")
@@ -1353,9 +1406,9 @@ class RoutingLedger:
                 violations.append("host context mismatch")
             if request["role"] in ("critic", "specialist") and outcome["actual_context_id"] == request["worker_context_id"]:
                 violations.append("host review context is not independent")
-            if outcome["actual_tokens"] > row["reserved_tokens"]:
+            if enforcing and outcome["actual_tokens"] is not None and outcome["actual_tokens"] > row["reserved_tokens"]:
                 violations.append("host token ceiling overrun")
-            if row["reserved_cost"] is not None and outcome["actual_cost_microusd"] > row["reserved_cost"]:
+            if enforcing and row["reserved_cost"] is not None and outcome["actual_cost_microusd"] > row["reserved_cost"]:
                 violations.append("host cost ceiling overrun")
             status = "quarantined" if violations else "settled"
             recorded = {**outcome, "operating_hash": row["operating_hash"],

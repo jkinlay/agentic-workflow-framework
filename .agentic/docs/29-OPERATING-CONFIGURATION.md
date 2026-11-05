@@ -79,3 +79,23 @@ Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`; audits 
 Publish complete flushed journal/audit writes without replacement. Preserve conflicts and interrupted staging files outside audit chain within inventory bounds. Recovery requires independently inspected journal SHA-256. Unsupported atomic primitives fail closed.
 
 Dispatch/reservation/settlement retain separate `operating_hash` and `policy_hash`; settlement uses its reservation's hash. Historical absent/null hashes remain unobserved. Host authenticates instructions/routes; records establish local consistency.
+
+
+## Budget choices
+
+Fresh generated `OPERATING_CONFIG.yaml` includes project-wide `budgeting`:
+accounting/enforcement both `false`, dormant ticket limit `4000000` and
+lifetime-project limit `1000000000`. Missing fields in older installations
+retain legacy budgeting. Limits alone enable neither switch; accounting OFF
+also disables enforcement. Epic overrides cannot change budget settings.
+
+Supported set paths are `budgeting.accounting_enabled`,
+`budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` and
+`budgeting.max_tokens_per_project`. Budget mutations require the trusted host
+registry injected into `set_operating` or `operating.main`; the standalone CLI
+has no authenticated owner observer and refuses them. The observer is consumed
+under the operating lock after complete validation. Settings and owner
+observation use the same journal and append-only change audit, including pinned
+recovery after interruption. Show/status display persisted effective settings.
+See [budgeting](39-BUDGETING.md) for host integration, UNKNOWN attribution,
+canonical totals, preserved reservations and the versioned upgrade decision.
