@@ -1157,7 +1157,14 @@ class RoutingLedger:
           SELECT rowid FROM model_runs WHERE project_id=? AND closed_day=?)""",
           (project_id, day, project_id, project_id, day)))
         ticket_cap = policy["budgets"]["max_runs_per_ticket"]
-        ticket_used = len(ticket_rows) + 1
+        # Operational history above remains ticket-wide for security, recovery,
+        # ownership and escalation. Explicit budgeting counts only enrolled runs
+        # for budget warnings/dispositions; legacy installations retain all rows.
+        budget_history = ticket_rows if mode is None else [row for row in ticket_rows
+            if (prior_mode := json.loads(row['request']).get('_budgeting')) is not None
+            and prior_mode['accounting_enabled'] and prior_mode['attributable']]
+        ticket_used = len(budget_history) + int(mode is None or
+            (mode['accounting_enabled'] and mode['attributable']))
         if mode is not None and enforcing:
             from .budgeting import admit_totals
             admit_totals(connection, project_id, request['ticket_id'], mode, request['reservation_tokens'])
@@ -1190,6 +1197,10 @@ class RoutingLedger:
                 "SELECT observation FROM model_disposition_requests "
                 "WHERE project_id=? AND ticket_id=? ORDER BY rowid",
                 (project_id, request["ticket_id"])).fetchall()
+            if mode is not None:
+                enrolled_ids = {row['run_id'] for row in budget_history}
+                prior_dispositions = [row for row in prior_dispositions
+                    if json.loads(row['observation']).get('run_id') in enrolled_ids]
         if enforcing and ticket_used >= disposition_at and not any(
                 json.loads(row["observation"]).get("run_cap") == ticket_cap
                 for row in prior_dispositions):
@@ -1229,7 +1240,7 @@ class RoutingLedger:
             # disposition request without exposing the corresponding run.
             connection.execute("BEGIN")
             rows = connection.execute(
-                "SELECT role,status,reserved_tokens,actual_tokens FROM model_runs "
+                "SELECT role,status,reserved_tokens,actual_tokens,request FROM model_runs "
                 "WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, ticket_id)).fetchall()
             requests = connection.execute(
                 "SELECT observation FROM model_disposition_requests "
@@ -1237,18 +1248,23 @@ class RoutingLedger:
         by_role = {}
         for row in rows:
             group = by_role.setdefault(row["role"], {"runs": 0, "tokens": 0, "reserved_tokens": 0,
-                                                      "actual_tokens": 0, "unsettled_runs": 0})
+                                                      "actual_tokens": 0, "unsettled_runs": 0,
+                                                      "closed_runs": 0, "unknown_runs": 0})
             group["runs"] += 1
-            group["reserved_tokens"] += row["reserved_tokens"]
-            if row["actual_tokens"] is None:
-                group["unsettled_runs"] += 1
-                group["tokens"] += row["reserved_tokens"]
-            else:
-                group["actual_tokens"] += row["actual_tokens"]
-                group["tokens"] += row["actual_tokens"]
+            reserved = None if json.loads(row['request']).get('_reservation_unknown') else row['reserved_tokens']
+            open_run = row['status'] == 'reserved'
+            group['unsettled_runs'] += int(open_run)
+            group['closed_runs'] += int(not open_run)
+            group['unknown_runs'] += int(row['actual_tokens'] is None and (not open_run or reserved is None))
+            # Only a still-open reservation supplies an estimate. Closed UNKNOWN
+            # usage stays unknown even when its original estimate was known.
+            tokens = reserved if open_run else row['actual_tokens']
+            for field, value in (('reserved_tokens', reserved), ('actual_tokens', row['actual_tokens']),
+                                 ('tokens', tokens)):
+                group[field] = None if group[field] is None or value is None else group[field] + value
         return {"status": "summary", "project_id": project_id, "ticket_id": ticket_id,
-                "runs": len(rows), "tokens": sum(row["actual_tokens"] if row["actual_tokens"] is not None
-                                                    else row["reserved_tokens"] for row in rows),
+                "runs": len(rows), "tokens": None if any(group['tokens'] is None for group in by_role.values())
+                    else sum(group['tokens'] for group in by_role.values()),
                 "by_role": {role: by_role[role] for role in sorted(by_role)},
                 "disposition_requests": [json.loads(row["observation"]) for row in requests]}
 
@@ -1383,6 +1399,9 @@ class RoutingLedger:
             enforcing = mode is None or (mode['enforcement_enabled'] and mode['attributable'])
             if mode is None:
                 _integer(outcome.get('actual_tokens'), 'actual_tokens')
+            if accounting and 'observation_id' in outcome:
+                from .budgeting import require_unused_usage_observation
+                require_unused_usage_observation(connection, outcome['observation_id'])
             outcome = deepcopy(outcome)
             # OFF completion records operational security/recovery facts only.
             # Absent/unknown enabled telemetry remains NULL, never zero.

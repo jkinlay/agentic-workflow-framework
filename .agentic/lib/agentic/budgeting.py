@@ -68,6 +68,19 @@ def settings_hash(value):
     return hashlib.sha256(encoded(validate_settings(value)).encode('utf-8')).hexdigest()
 
 
+def require_unused_usage_observation(db, observation_id):
+    """Consume through the caller's model_runs update under BEGIN IMMEDIATE.
+
+    Both settlement interfaces hold the canonical write lock across this check
+    and their outcome write. Retained outcomes (including bridged history) are
+    the consumption record; no separate usage ledger or history rewrite is needed.
+    """
+    require(text_id(observation_id), 'Settlement requires immutable host observation identity')
+    for other in db.execute('SELECT outcome FROM model_runs WHERE outcome IS NOT NULL'):
+        require(json.loads(other['outcome']).get('observation_id') != observation_id,
+                'Usage observation already belongs to another run')
+
+
 def admit_totals(db, project_id, ticket_id, settings, tokens):
     """Check lifetime totals while holding RoutingLedger's BEGIN IMMEDIATE lock.
 
@@ -218,9 +231,7 @@ class BudgetLedger(ProtectedDatabase):
             if row['status'] != 'reserved':
                 require(row['actual_tokens'] == tokens and prior.get('observation_id') == observation_id, 'Conflicting or replayed settlement')
                 return {'status': self._status(row), 'budget_overrun': bool(prior.get('budget_overrun'))}
-            for other in db.execute('SELECT outcome FROM model_runs WHERE outcome IS NOT NULL'):
-                require(json.loads(other['outcome']).get('observation_id') != observation_id,
-                        'Usage observation already belongs to another run')
+            require_unused_usage_observation(db, observation_id)
             settings = json.loads(row['request'])['_budgeting']
             overrun = bool(settings['enforcement_enabled'] and tokens is not None and tokens > row['reserved_tokens'])
             now = datetime.now(timezone.utc).isoformat()
