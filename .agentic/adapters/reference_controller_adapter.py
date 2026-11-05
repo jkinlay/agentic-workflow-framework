@@ -50,11 +50,82 @@ class _Clock:
 	def monotonic(self):
 		return time.monotonic()
 
+class _TerminalRunFailure(ValidationError):
+	"""A failed command with independently observed, nonce-bound terminal proof."""
+	def __init__(self, message, observation):
+		super().__init__(message)
+		self.observation = deepcopy(observation)
+
 class _SubprocessRunner:
 
-	def __init__(self):
+	def __init__(self, *, record_dir=None):
 		self._processes = {}
 		self._overlap_operations = {}
+		self._budget_record_dir = None if record_dir is None else Path(record_dir)
+
+	def _budget_record(self, binding):
+		from agentic.budget_enrollment import validate_binding
+		validate_binding(binding)
+		_require(self._budget_record_dir is not None and re.fullmatch(r'[A-Za-z0-9_.-]+', binding['dispatch_id'])
+			and binding['dispatch_id'] not in {'.', '..'}, 'Budget dispatch record identity is unavailable')
+		record = _read_record(self._budget_record_dir / (binding['dispatch_id'] + '.json'))
+		_require(record.get('format') == 'awf-reference-dispatch-2'
+			and record.get('dispatch_id') == binding['dispatch_id'] and record.get('ticket') == binding['ticket_id']
+			and record.get('launch_nonce') == binding['run_id'] == binding['session_id']
+			and record.get('role') == {'worker': 'writer', 'critic': 'critic'}.get(binding['role']),
+			'Budget enrollment differs from the durable host dispatch')
+		return record
+
+	def observe_enrollment(self, binding):
+		# session_id is the allocated host launch session, never a predicted
+		# Codex thread. Completion binds it to the observed process/thread.
+		self._budget_record(binding)
+		return deepcopy(binding)
+
+	def observe_budget_admission(self, binding, selected):
+		from agentic.budgeting import subprocess_budget_request
+		record = self._budget_record(binding)
+		argv = record['argv']
+		_require(argv[argv.index('--model') + 1] == selected['model']
+			and 'model_reasoning_effort=' + selected['reasoning_effort'] in argv,
+			'Budget route differs from prepared subprocess arguments')
+		worker_context = None
+		if binding['role'] == 'critic':
+			writers = []
+			for path in self._budget_record_dir.glob('*.json'):
+				prior = _read_record(path)
+				if prior.get('format') == 'awf-reference-dispatch-2' and prior.get('ticket') == binding['ticket_id'] and prior.get('role') == 'writer' and prior.get('session_id'):
+					writers.append(prior)
+			if writers:
+				worker_context = max(writers, key=lambda row: (row.get('created_at', ''), row['dispatch_id']))['session_id']
+		request = subprocess_budget_request(binding, worker_context_id=worker_context, stream=record.get('stream'))
+		# The CLI exposes usage after completion, not a verified total-token
+		# limiter/estimate. Accounting proceeds UNKNOWN; enforcement refuses.
+		return {'request': request, 'capabilities': {'models': {
+			selected['model']: [selected['reasoning_effort']]}}, 'limits_enforced': False}
+
+	def observe_budget_outcome(self, admission, observation):
+		binding = admission['binding']
+		record = self._budget_record(binding)
+		proof = _read_record(Path(record['terminal_proof_path']))
+		success = proof.get('status') == 'COMPLETED' and proof.get('returncode') == 0
+		session = proof.get('session_id')
+		context_known = isinstance(session, str) and bool(session.strip())
+		_require(proof == observation and proof.get('terminal') is True
+			and (success or proof.get('status') in {'COMPLETED', 'FAILED', 'TIMED_OUT'})
+			and proof.get('pid') == record.get('pid') and proof.get('launch_nonce') == binding['run_id']
+			and (context_known or not success and session is None)
+			and record.get('session_id', session) == session,
+			'Budget usage differs from observed process/session completion')
+		argv = record['argv']
+		model = argv[argv.index('--model') + 1]
+		efforts = [item.split('=', 1)[1] for item in argv if item.startswith('model_reasoning_effort=')]
+		_require(len(efforts) == 1, 'Budget outcome has no unique observed launch effort')
+		from agentic.budgeting import subprocess_budget_outcome
+		return subprocess_budget_outcome(binding, dict(model=model, reasoning_effort=efforts[0]),
+			session_id=session, actual_tokens=proof.get('actual_tokens'), success=success,
+			failure_kind='infrastructure' if proof.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR'
+				or proof.get('status') == 'TIMED_OUT' else 'unknown')
 
 	def bind_overlap_operations(self, **operations):
 		_require(all((callable(value) for value in operations.values())), 'Production overlap operations are incomplete')
@@ -74,7 +145,7 @@ class _SubprocessRunner:
 		operation = self._overlap_operations.get('observe_overlap_sync_inventory')
 		_require(callable(operation), 'Production post-sync PR observer is unavailable')
 		return operation(gate)
-	_WATCHER = '\nimport json\nimport os\nimport subprocess\nimport sys\nimport tempfile\nimport threading\nimport time\n\nspec_path = sys.argv[1]\nMAX_RECORD = 1_048_576\ndef require_record(raw):\n    if len(raw) > MAX_RECORD:\n        raise ValueError("RECORD_SIZE: watcher record exceeds byte bound")\n    return raw\n\nwith open(spec_path, "rb") as stream:\n    raw = require_record(stream.read(MAX_RECORD + 1))\nspec = json.loads(raw.decode("utf-8"))\n\ndef durable(path, value):\n    raw = require_record((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\\n").encode("utf-8"))\n    directory = os.path.dirname(path) or "."\n    fd, temporary = tempfile.mkstemp(prefix=".awf-durable-", dir=directory)\n    try:\n        with os.fdopen(fd, "wb") as stream:\n            stream.write(raw)\n            stream.flush()\n            os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        try:\n            os.unlink(temporary)\n        except FileNotFoundError:\n            pass\n\npid = os.getpid()\nnonce = spec["launch_nonce"]\nhandoff = spec["handoff_path"]\nproof = spec["terminal_proof_path"]\nstartup_proof = spec["startup_proof_path"]\ndurable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})\nstartup_lock = threading.Lock()\nstartup_recorded = False\nsession_id = None\n\ndef publish_startup(value):\n    global startup_recorded\n    with startup_lock:\n        if startup_recorded:\n            return\n        durable(startup_proof, value)\n        startup_recorded = True\n\ncode = None\nstatus = "COMPLETED"\ndiagnostic = None\ntry:\n    child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],\n                             shell=False, stdin=subprocess.PIPE,\n                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n    stderr_tail = bytearray()\n    stderr_limit = spec["max_stderr_bytes"]\n    markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",\n               "winerror 32", "invalid transport", "being used by another process")\n\n    def drain_stderr():\n        while True:\n            chunk = child.stderr.read1(8192)\n            if not chunk:\n                return\n            stderr_tail.extend(chunk)\n            if len(stderr_tail) > stderr_limit:\n                del stderr_tail[:-stderr_limit]\n            lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n            if any(marker in lowered for marker in markers):\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "FAILED", "terminal": False,\n                                 "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",\n                                 "config_source": spec["config_source"]})\n\n    def drain_stdout():\n        global session_id\n        while True:\n            line = child.stdout.readline(spec["max_output_bytes"] + 1)\n            if not line:\n                return\n            if len(line) > spec["max_output_bytes"]:\n                continue\n            try:\n                event = json.loads(line.decode("utf-8", "strict"))\n            except (UnicodeDecodeError, json.JSONDecodeError):\n                continue\n            # Codex JSON mode emits this only after isolated configuration has\n            # been accepted and the execution thread has been initialized.\n            if (isinstance(event, dict) and event.get("type") == "thread.started"\n                    and isinstance(event.get("thread_id"), str) and event["thread_id"].strip()):\n                session_id = event["thread_id"]\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "STARTED", "terminal": False,\n                                 "session_id": session_id})\n\n    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)\n    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)\n    stderr_thread.start()\n    stdout_thread.start()\n    try:\n        try:\n            child.stdin.write(spec["stdin"].encode("utf-8"))\n        except BrokenPipeError:\n            pass\n        finally:\n            child.stdin.close()\n        child.wait(timeout=spec["timeout"])\n        code = child.returncode\n        stderr_thread.join()\n        stdout_thread.join()\n        lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n        if code and any(marker in lowered for marker in markers):\n            diagnostic = "SANDBOX_SETUP_CONFIG_ERROR"\n    except subprocess.TimeoutExpired:\n        status = "TIMED_OUT"\n        child.kill()\n        child.wait()\n        stderr_thread.join()\n        stdout_thread.join()\nexcept Exception:\n    status = "FAILED"\nvalue = {"pid": pid, "launch_nonce": nonce, "status": status,\n         "returncode": code, "terminal": True}\nif session_id is not None:\n    value["session_id"] = session_id\nif diagnostic is not None:\n    value["diagnostic"] = diagnostic\n    value["config_source"] = spec["config_source"]\ndurable(proof, value)\npublish_startup(value)\n'
+	_WATCHER = '\nimport json\nimport os\nimport subprocess\nimport sys\nimport tempfile\nimport threading\nimport time\n\nspec_path = sys.argv[1]\nMAX_RECORD = 1_048_576\ndef require_record(raw):\n    if len(raw) > MAX_RECORD:\n        raise ValueError("RECORD_SIZE: watcher record exceeds byte bound")\n    return raw\n\nwith open(spec_path, "rb") as stream:\n    raw = require_record(stream.read(MAX_RECORD + 1))\nspec = json.loads(raw.decode("utf-8"))\n\ndef durable(path, value):\n    raw = require_record((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\\n").encode("utf-8"))\n    directory = os.path.dirname(path) or "."\n    fd, temporary = tempfile.mkstemp(prefix=".awf-durable-", dir=directory)\n    try:\n        with os.fdopen(fd, "wb") as stream:\n            stream.write(raw)\n            stream.flush()\n            os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        try:\n            os.unlink(temporary)\n        except FileNotFoundError:\n            pass\n\npid = os.getpid()\nnonce = spec["launch_nonce"]\nhandoff = spec["handoff_path"]\nproof = spec["terminal_proof_path"]\nstartup_proof = spec["startup_proof_path"]\ndurable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})\nstartup_lock = threading.Lock()\nstartup_recorded = False\nsession_id = None\nusage_tokens = 0\nusage_seen = False\nusage_known = True\n\ndef publish_startup(value):\n    global startup_recorded\n    with startup_lock:\n        if startup_recorded:\n            return\n        durable(startup_proof, value)\n        startup_recorded = True\n\ncode = None\nstatus = "COMPLETED"\ndiagnostic = None\ntry:\n    child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],\n                             shell=False, stdin=subprocess.PIPE,\n                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n    stderr_tail = bytearray()\n    stderr_limit = spec["max_stderr_bytes"]\n    markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",\n               "winerror 32", "invalid transport", "being used by another process")\n\n    def drain_stderr():\n        while True:\n            chunk = child.stderr.read1(8192)\n            if not chunk:\n                return\n            stderr_tail.extend(chunk)\n            if len(stderr_tail) > stderr_limit:\n                del stderr_tail[:-stderr_limit]\n            lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n            if any(marker in lowered for marker in markers):\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "FAILED", "terminal": False,\n                                 "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",\n                                 "config_source": spec["config_source"]})\n\n    def drain_stdout():\n        global session_id, usage_tokens, usage_seen, usage_known\n        while True:\n            line = child.stdout.readline(spec["max_output_bytes"] + 1)\n            if not line:\n                return\n            if len(line) > spec["max_output_bytes"]:\n                continue\n            try:\n                event = json.loads(line.decode("utf-8", "strict"))\n            except (UnicodeDecodeError, json.JSONDecodeError):\n                continue\n            if spec.get("budget_accounting") and isinstance(event, dict) and event.get("type") == "turn.completed":\n                usage_seen = True\n                usage = event.get("usage")\n                if (not isinstance(usage, dict) or any(type(usage.get(key)) is not int or usage[key] < 0\n                        for key in ("input_tokens", "output_tokens"))):\n                    usage_known = False\n                else:\n                    usage_tokens += usage["input_tokens"] + usage["output_tokens"]\n                    if usage_tokens > 2**63 - 1:\n                        usage_known = False\n            # Codex JSON mode emits this only after isolated configuration has\n            # been accepted and the execution thread has been initialized.\n            if (isinstance(event, dict) and event.get("type") == "thread.started"\n                    and isinstance(event.get("thread_id"), str) and event["thread_id"].strip()):\n                session_id = event["thread_id"]\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "STARTED", "terminal": False,\n                                 "session_id": session_id})\n\n    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)\n    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)\n    stderr_thread.start()\n    stdout_thread.start()\n    try:\n        try:\n            child.stdin.write(spec["stdin"].encode("utf-8"))\n        except BrokenPipeError:\n            pass\n        finally:\n            child.stdin.close()\n        child.wait(timeout=spec["timeout"])\n        code = child.returncode\n        stderr_thread.join()\n        stdout_thread.join()\n        lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n        if code and any(marker in lowered for marker in markers):\n            diagnostic = "SANDBOX_SETUP_CONFIG_ERROR"\n    except subprocess.TimeoutExpired:\n        status = "TIMED_OUT"\n        child.kill()\n        child.wait()\n        stderr_thread.join()\n        stdout_thread.join()\nexcept Exception:\n    status = "FAILED"\nvalue = {"pid": pid, "launch_nonce": nonce, "status": status,\n         "returncode": code, "terminal": True}\nif spec.get("budget_accounting"):\n    value["actual_tokens"] = usage_tokens if usage_seen and usage_known else None\nif session_id is not None:\n    value["session_id"] = session_id\nif diagnostic is not None:\n    value["diagnostic"] = diagnostic\n    value["config_source"] = spec["config_source"]\ndurable(proof, value)\npublish_startup(value)\n'
 
 	def run(self, argv, *, cwd, env, timeout, max_bytes, stdin=None):
 		_require(stdin is None or isinstance(stdin, str), 'External command stdin is invalid')
@@ -129,7 +200,9 @@ class _SubprocessRunner:
 		spec_path = Path(handoff_path).with_suffix('.launch.json')
 		terminal_path = Path(terminal_proof_path)
 		startup_path = terminal_path.with_name(terminal_path.name.removesuffix('.terminal.json') + '.startup.json')
-		_write_record(spec_path, {'argv': list(argv), 'cwd': str(cwd), 'env': dict(env), 'stdin': stdin, 'timeout': timeout, 'max_output_bytes': MAX_OUTPUT, 'max_stderr_bytes': MAX_OUTPUT, 'config_source': _CODEX_CONFIG_SOURCE, 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_path), 'terminal_proof_path': str(terminal_proof_path)})
+		budget_record = Path(handoff_path).with_name(Path(handoff_path).name.removesuffix('.handoff.json') + '.json')
+		accounting = budget_record.is_file() and _read_record(budget_record).get('budget_admission') is not None
+		_write_record(spec_path, {'budget_accounting': accounting, 'argv': list(argv), 'cwd': str(cwd), 'env': dict(env), 'stdin': stdin, 'timeout': timeout, 'max_output_bytes': MAX_OUTPUT, 'max_stderr_bytes': MAX_OUTPUT, 'config_source': _CODEX_CONFIG_SOURCE, 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_path), 'terminal_proof_path': str(terminal_proof_path)})
 		watcher_executable = getattr(sys, '_base_executable', sys.executable) if os.name == 'nt' else sys.executable
 		try:
 			process = subprocess.Popen([watcher_executable, '-B', '-c', self._WATCHER, str(spec_path)], cwd=str(cwd), env=env, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -171,6 +244,15 @@ class _SubprocessRunner:
 				pass
 		value = _read_record(proof)
 		_require(value.get('pid') == pid and value.get('launch_nonce') == record.get('launch_nonce'), 'Detached terminal proof is bound to a different process')
+		failed = value.get('terminal') is True and (
+			value.get('status') in {'FAILED', 'TIMED_OUT'} or
+			value.get('status') == 'COMPLETED' and type(value.get('returncode')) is int and value['returncode'] != 0)
+		if failed:
+			message = (_CODEX_SANDBOX_ERROR if value.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR' else
+				'Detached Codex run timed out' if value.get('status') == 'TIMED_OUT' else
+				'Detached Codex run returned a non-zero exit' if value.get('returncode') is not None else
+				'Detached Codex launch failed')
+			raise _TerminalRunFailure(message, value)
 		if value.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR':
 			raise ValidationError(_CODEX_SANDBOX_ERROR)
 		if value.get('status') == 'TIMED_OUT':
@@ -199,6 +281,8 @@ class _SubprocessRunner:
 			raise ValidationError('Detached Codex startup outcome was not proven')
 		value = _read_record(proof)
 		_require(value.get('pid') == pid and value.get('launch_nonce') == record.get('launch_nonce'), 'Detached startup proof is bound to a different process')
+		if value.get('terminal') is True:
+			return self.observe(record, timeout=0)
 		if value.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR':
 			if process is not None and hasattr(process, 'wait'):
 				try:
@@ -210,8 +294,6 @@ class _SubprocessRunner:
 			raise ValidationError(_CODEX_SANDBOX_ERROR)
 		if value.get('status') == 'STARTED' and value.get('terminal') is False:
 			return {'status': 'RUNNING', 'terminal': False, 'pid': value['pid'], 'launch_nonce': value['launch_nonce'], 'session_id': value.get('session_id')}
-		if value.get('terminal') is True:
-			return self.observe(record, timeout=0)
 		raise ValidationError('Detached Codex startup outcome was not proven')
 
 	def observe_quiescence(self, record):
@@ -569,10 +651,42 @@ def _build(config):
 	_require(outbox_dir != worktree_root and worktree_root not in outbox_dir.parents, 'outbox.directory must be outside codex.worktree_root')
 	_require(_disjoint(isolated_home, outbox_dir), 'codex.isolated_home must be outside the outbox')
 	default_runner = config.get('_runner') is None
-	runner = config.get('_runner') or _SubprocessRunner()
+	runner = config.get('_runner') or _SubprocessRunner(record_dir=record_dir)
 	http = config.get('_http_transport') or _HttpTransport()
 	clock = config.get('_clock') or _Clock()
 	_require(callable(getattr(clock, 'now', None)) and callable(getattr(clock, 'monotonic', None)), 'Clock injection is incomplete')
+
+	budgeting = None
+
+	def configure_budgeting(context=None, *, path=None, governance=None, operating=None, worktree_roots=()):
+		nonlocal budgeting
+		from agentic.budgeting import ControllerBudgeting
+		budgeting = context if context is not None else ControllerBudgeting(
+			path, governance, operating, runner, worktree_roots=(*worktree_roots, worktree_root))
+		_require(isinstance(budgeting, ControllerBudgeting), 'Budget context must come from the trusted controller')
+		return budgeting
+
+	def complete_budget(record, result):
+		admission = record.get('budget_admission')
+		if admission is not None:
+			_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
+			settlement = budgeting.complete(admission, result)
+			_require(settlement['accepted'], 'Budget routing settlement quarantined this dispatch')
+
+	def observe_run(method, record, **kwargs):
+		try:
+			return _invoke(runner, method, record, **kwargs)
+		except _TerminalRunFailure as exc:
+			if record.get('budget_admission') is None:
+				raise
+			# Failure remains an error to dispatch/recovery, but terminal usage is
+			# settled exactly once and the failed outcome survives a host restart.
+			try:
+				complete_budget(record, exc.observation)
+			finally:
+				record.update(status='FAILED', terminal_failure=exc.observation, observed_at=_clock_text(clock))
+				_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
+			raise
 
 	def observation_evidence():
 		value = config.get('observations')
@@ -1168,6 +1282,14 @@ def _build(config):
 		terminal_proof_path = record_path.with_suffix('.terminal.json')
 		record = {'format': 'awf-reference-dispatch-2', 'dispatch_schema_version': 2, 'dispatch_id': payload['dispatch_id'], 'dispatch_nonce': payload['dispatch_nonce'], 'stream': payload['stream'], 'ticket': payload['ticket'], 'exact_tuple': payload['exact_tuple'], 'prepared_at': payload['prepared_at'], 'begun_at': payload['begun_at'], 'role': role, 'lifecycle_stage': payload['lifecycle_stage'], 'lane_start_waivers': list(payload['lane_start_waivers']), 'argv': argv, 'worktree': str(worktree), 'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest(), 'argv_sha256': hashlib.sha256(canonical(argv)).hexdigest(), 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_proof_path), 'terminal_proof_path': str(terminal_proof_path), 'status': 'PREPARED', 'created_at': _clock_text(clock)}
 		_write_record(record_path, record)
+		if budgeting is not None and role in {'writer', 'critic'}:
+			binding = {'project_id': budgeting.governance['project']['id'], 'ticket_id': payload['ticket'],
+				'run_id': launch_nonce, 'dispatch_id': payload['dispatch_id'],
+				'session_id': launch_nonce, 'role': 'worker' if role == 'writer' else 'critic'}
+			admission = budgeting.admit(binding, selected, stream=payload['stream'])
+			if admission is not None:
+				record['budget_admission'] = admission
+				_write_record(record_path, record)
 		_verify_executable(codex_executable)
 		launch_env = _safe_env(token_env)
 		launch_env['CODEX_HOME'] = str(isolated_home)
@@ -1185,7 +1307,7 @@ def _build(config):
 		record.update({'status': 'LAUNCHED', 'pid': launched['pid'], 'launched_at': _clock_text(clock)})
 		_write_record(record_path, record)
 		try:
-			result = _invoke(runner, 'observe_startup', record, timeout=timeout)
+			result = observe_run('observe_startup', record, timeout=timeout)
 		except ValidationError as exc:
 			if _sandbox_setup_failure(exc):
 				record['diagnostic'] = 'SANDBOX_SETUP_CONFIG_ERROR'
@@ -1220,6 +1342,7 @@ def _build(config):
 		record['startup_observed_at'] = _clock_text(clock)
 		if terminal:
 			record['observed_at'] = record['startup_observed_at']
+			complete_budget(record, result)
 		_write_record(record_path, record)
 		return _record_receipt(payload, record['startup_observed_at'], session_id, 'TERMINAL' if terminal else 'LAUNCHED')
 
@@ -1232,6 +1355,9 @@ def _build(config):
 		_require(record.get('ticket') == payload.get('ticket') and record.get('stream') == payload.get('stream'), 'Dispatch observation identity differs from durable record')
 		_require(record.get('role') == payload.get('role') and record.get('lifecycle_stage') == payload.get('lifecycle_stage'), 'Dispatch observation role or lifecycle stage differs from durable record')
 		_require(record.get('exact_tuple') == payload.get('exact_tuple') and record.get('lane_start_waivers') == payload.get('lane_start_waivers'), 'Dispatch observation tuple or waiver evidence differs from durable record')
+		if record.get('status') == 'FAILED':
+			observe_run('observe', record, timeout=timeout)
+			raise ValidationError('Failed dispatch cannot produce a successful receipt')
 		reconcile = 'reconcile_nonce' in payload
 		if reconcile:
 			_require(record.get('status') in {'PREPARED', 'LAUNCHED', 'COMPLETED'}, 'Interrupted dispatch has no observable durable launch intent')
@@ -1241,7 +1367,7 @@ def _build(config):
 				record.update({'pid': handoff['pid'], 'status': 'LAUNCHED'})
 				_write_record(path, record)
 			try:
-				result = _invoke(runner, 'observe', record, timeout=timeout)
+				result = observe_run('observe', record, timeout=timeout)
 			except ValidationError as exc:
 				if _sandbox_setup_failure(exc):
 					raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
@@ -1251,12 +1377,22 @@ def _build(config):
 			observed_session = result.get('session_id')
 			_require(isinstance(observed_session, str) and observed_session.strip(), 'Interrupted dispatch did not prove an observed session identity')
 			_require(record.get('session_id') in {None, observed_session}, 'Interrupted dispatch session identity changed')
+			complete_budget(record, result)
 			record['session_id'] = observed_session
 			record['status'] = 'COMPLETED'
 			record['observed_at'] = _clock_text(clock)
 			_write_record(path, record)
 		else:
 			_require(record.get('status') in {'LAUNCHED', 'COMPLETED'}, 'Dispatch has no accepted durable launch')
+			if record.get('budget_admission') is not None and record['status'] == 'LAUNCHED':
+				result = observe_run('observe', record, timeout=timeout)
+				if result.get('terminal') is True:
+					_require(result.get('status') == 'COMPLETED' and result.get('returncode') == 0
+						and result.get('pid') == record['pid'] and result.get('launch_nonce') == record['launch_nonce']
+						and result.get('session_id') == record['session_id'], 'Budget completion process identity differs')
+					complete_budget(record, result)
+					record.update(status='COMPLETED', observed_at=_clock_text(clock))
+					_write_record(path, record)
 		_require(isinstance(record.get('session_id'), str) and record['session_id'].strip(), 'Dispatch durable record has no observed session identity')
 		return _record_receipt(payload, _clock_text(clock), record['session_id'], 'TERMINAL' if record['status'] == 'COMPLETED' else 'LAUNCHED', reconcile=reconcile)
 
@@ -1268,7 +1404,7 @@ def _build(config):
 		_require(record.get('dispatch_id') == payload['dispatch_id'] and record.get('dispatch_nonce') == payload.get('dispatch_nonce') and (record.get('ticket') == payload.get('ticket')) and (record.get('session_id') is not None), 'Dispatch quiescence observation differs from the accepted run')
 		observer = 'observe_quiescence' if callable(getattr(runner, 'observe_quiescence', None)) else 'observe'
 		kwargs = {} if observer == 'observe_quiescence' else {'timeout': 0}
-		result = _invoke(runner, observer, record, **kwargs)
+		result = observe_run(observer, record, **kwargs)
 		_require(isinstance(result, dict) and result.get('status') == 'COMPLETED' and (result.get('returncode') == 0) and (result.get('terminal') is True) and (result.get('pid') == record.get('pid')) and (result.get('launch_nonce') == record.get('launch_nonce')) and (result.get('session_id') == record.get('session_id')), 'Accepted dispatch is not proved terminal and quiescent')
 		observed_at = _clock_text(clock)
 		record['status'] = 'COMPLETED'
@@ -1432,8 +1568,20 @@ def _build(config):
 		return {'operation_id': record['operation_id'], 'issue_id': issue_id, 'status': 'ATTEMPTED', 'observed_at': attempted_at, 'jira_provider': record['jira_provider']}
 
 	def read_transition(record, operation):
+		# Older batch journals used provider_project_id in immutable intents.
+		# Normalize only the observer's copy; never rewrite their retained bytes.
+		from agentic.continuous_controller import _jira_record_provider
+		record = deepcopy(record)
+		record['jira_provider'] = _jira_record_provider(record)
 		issue_id = record['binding']['issue_id']
+		_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'}
+			and operation['operation_id'] == record['operation_id'] and operation['issue_id'] == issue_id
+			and operation['jira_provider'] == record['jira_provider'] and operation['status'] == 'ATTEMPTED',
+			'Jira transition readback has a missing or mismatched operation')
+		operation_time = timestamp(operation['observed_at'])
 		value = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '?fields=status&expand=changelog')
+		observed_at = _clock_text(clock)
+		observation_time = timestamp(observed_at)
 		status = value.get('fields', {}).get('status', {}).get('id')
 		histories = value.get('changelog', {}).get('histories')
 		_require(isinstance(status, str) and status and isinstance(histories, list), 'Jira transition history is unavailable')
@@ -1441,39 +1589,26 @@ def _build(config):
 		for history in histories:
 			if not isinstance(history, dict) or not isinstance(history.get('created'), str):
 				continue
-			_require(isinstance(operation, dict) and isinstance(operation.get('observed_at'), str), 'Jira transition readback has no operation attempt time')
-			operation_time = operation['observed_at']
-			if timestamp(history['created']) < timestamp(operation_time):
+			if not operation_time <= timestamp(history['created']) <= observation_time:
 				continue
 			author = history.get('author', {})
 			actor = author.get('accountId') if isinstance(author, dict) else None
 			for item in history.get('items', []):
 				if not isinstance(item, dict) or item.get('field') != 'status':
 					continue
-				if item.get('to') == record.get('to_status_id') or item.get('toString') == status:
+				if item.get('to') == record.get('to_status_id'):
 					if isinstance(actor, str) and actor:
 						candidates.append((history['created'], actor))
 		_require(candidates, 'Jira transition history does not prove the current transition')
 		candidates.sort(key=lambda item: item[0])
 		_created, actor = candidates[-1]
-		observed_at = _clock_text(clock)
 		return {'issue_id': issue_id, 'status': status, 'actor': actor, 'observed_at': observed_at, 'jira_provider': record['jira_provider']}
 
 	def reconcile_merged_ticket(ticket):
-		_text(ticket, 'Merged Jira ticket')
-		provider = provider_identity()
-		before = read_current_status({'issue_id': ticket, 'jira_provider': provider})
-		target = jira['merged_status_id']
-		operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'awf:jira-merge:' + jira['cloud_id'] + ':' + ticket))
-		if before['status_id'] != target:
-			record = {'operation_id': operation_id, 'binding': {'issue_id': ticket}, 'transition_id': jira['merged_transition_id'], 'to_status_id': target, 'jira_provider': provider}
-			operation = write_transition({**record, 'producer_id': provider['controller_actor_id']})
-			after = read_transition({**record, 'producer_id': provider['controller_actor_id']}, operation)
-		else:
-			after = {'issue_id': ticket, 'status': target, 'actor': provider['controller_actor_id'], 'observed_at': before['observed_at'], 'jira_provider': provider}
-		_require(after.get('actor') == provider['controller_actor_id'], 'Jira merge transition actor was not independently observed')
-		_require(after['status'] == target, 'Jira merge readback did not reach the configured terminal status')
-		return {'ticket': ticket, 'issue_id': ticket, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'], 'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': operation_id, 'before_status_id': before['status_id'], 'after_status_id': after['status'], 'observed_at': after['observed_at']}
+		# A ticket string cannot carry the protected controller journal, observed
+		# merge guards or owner-closure policy. Retain a fail-closed diagnostic for
+		# old consumers; all transitions go through production_jira_lifecycle.
+		raise ValidationError('Use controller jira-lifecycle for durable post-merge reconciliation; legacy reconciliation cannot write')
 	scope_snapshots = {}
 
 	def fetch_scope_page(scope, cursor):
@@ -1651,6 +1786,7 @@ def _build(config):
 		_require(isinstance(body, str) and comment['user'].get('id') == request['actor_id'] and body == owner_source.get('raw_body') and sha256(body.encode('utf-8')) == request['raw_body_sha256'], 'GitHub owner comment differs from the recorded owner source')
 		_require(comment.get('created_at') == comment.get('updated_at') == owner_source.get('created_at'), 'GitHub owner comment was edited or differs from its recorded time')
 		return {'status': 'VERIFIED', 'actor_id': request['actor_id'], 'binding': deepcopy(request['binding']), 'raw_body_sha256': request['raw_body_sha256'], 'source_id': 'github-comment:' + comment['node_id'], 'observed_at': _clock_text(clock)}
+	dispatch_ticket.configure_budgeting = configure_budgeting
 	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'observe_issue_policy': observe_issue_policy, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
 
 def build_adapters(config):

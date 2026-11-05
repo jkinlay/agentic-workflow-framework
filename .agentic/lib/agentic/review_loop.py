@@ -667,7 +667,14 @@ def tick(store, config, driver):
                 store.save(state)
                 return state
             require(phase in {'REVIEW','AMEND'}, 'Unknown review loop phase')
-            require(state['agent_runs'] < config['max_agent_runs'], 'Total agent-run budget exhausted')
+            budgeting = getattr(driver, 'budgeting', None)
+            if budgeting is not None:
+                from .budgeting import ControllerBudgeting
+                require(isinstance(budgeting, ControllerBudgeting), 'Review budgeting requires a validated controller context')
+            # Explicit modes use lifetime token admission when enforced. Legacy
+            # total-run quotas are not recovery limits or amendment caps.
+            if budgeting is None or 'legacy_behavior' in budgeting.settings:
+                require(state['agent_runs'] < config['max_agent_runs'], 'Total agent-run budget exhausted')
             if phase == 'AMEND' and state['cycles'] >= cap_limit(config, state):
                 # Cap reached is a state, not a dead end: present the open findings
                 # and wait for one owner disposition. No further amendment runs.

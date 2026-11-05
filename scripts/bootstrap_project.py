@@ -23,10 +23,10 @@ from agentic.adoption_config import (ensure_installed_runtime, post_install_chec
                                      assign_project_start)
 
 
-def assign_startup_inventory(config, inventory, state, jira_client, *, now, controller_actor_id):
+def assign_startup_inventory(config, inventory, state, jira_client, *, now, controller_actor_id, store=None):
     """Controller hook for assigning a complete bootstrap ticket inventory."""
     return assign_project_start(config, inventory, state, jira_client, now=now,
-                                controller_actor_id=controller_actor_id)
+                                controller_actor_id=controller_actor_id, store=store)
 
 
 def _load_json(path, description):
@@ -69,7 +69,7 @@ def _write_assignment_state(path, state, dest):
             os.unlink(temporary)
 
 
-def _run_assignment_path(args, jira_client, owner_source_verifier):
+def _run_assignment_path(args, jira_client, owner_source_verifier, store=None):
     requested = (args.project_start_inventory is not None or args.ticket_intake is not None
                  or args.assignment_change is not None)
     if not requested:
@@ -88,6 +88,10 @@ def _run_assignment_path(args, jira_client, owner_source_verifier):
     # Refuse invalid or unwritable controller-state destinations before an
     # assignment can perform any Jira read-modify-write operation.
     state_path = _prepare_assignment_state_path(args.assignment_state, args.dest)
+    store = store if store is not None else getattr(jira_client, 'controller_store', None)
+    if store is not None:
+        from agentic.controller_state import protected_state_path
+        protected_state_path(store.path, (*store.worktree_roots, args.dest))
     state = _load_json(state_path, "Assignment state") if state_path.exists() else {}
     if not isinstance(state, dict):
         raise ValidationError("Assignment state must be an object")
@@ -99,13 +103,13 @@ def _run_assignment_path(args, jira_client, owner_source_verifier):
             inventory = _load_json(args.project_start_inventory, "Project-start inventory")
             records = assign_startup_inventory(config, inventory, state, jira_client,
                                                now=assigned_at,
-                                               controller_actor_id=args.controller_actor_id)
+                                               controller_actor_id=args.controller_actor_id, store=store)
         elif args.ticket_intake is not None:
             from agentic.intake_assignment import assign_intake, inherit_pr_assignment
             item = _load_json(args.ticket_intake, "Ticket intake record")
             record = assign_intake(
                 config, item, state, jira_client, now=assigned_at,
-                controller_actor_id=args.controller_actor_id, source="intake")
+                controller_actor_id=args.controller_actor_id, source="intake", store=store)
             records = {item.get("key"): record}
             pr_number, pr_body = item.get("pr_number"), item.get("pr_body")
             if (pr_number is None) != (pr_body is None):
@@ -125,7 +129,7 @@ def _run_assignment_path(args, jira_client, owner_source_verifier):
                 requested_tier=change["requested_tier"], requested_cap=change["requested_cap"],
                 owner_source=change["owner_source"], verify_owner_source=owner_source_verifier,
                 reason=change["reason"], now=assigned_at,
-                controller_actor_id=args.controller_actor_id)
+                controller_actor_id=args.controller_actor_id, store=store)
             records = {change["ticket_key"]: record}
     finally:
         # Unknown/mismatched Jira outcomes must survive even when assignment raises.
@@ -136,7 +140,7 @@ def _run_assignment_path(args, jira_client, owner_source_verifier):
             for key, record in records.items()}
 
 
-def main(argv=None, jira_client=None, owner_source_verifier=None):
+def main(argv=None, jira_client=None, owner_source_verifier=None, store=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dest", type=Path, required=True)
     parser.add_argument("--expected-manifest-sha256")
@@ -217,7 +221,7 @@ def main(argv=None, jira_client=None, owner_source_verifier=None):
                 result["runtime"] = complete_runtime_transaction(
                     args.dest, transaction_id, build_runtime)
                 result.update(post_install_checks(args.dest, result))
-            assignments = _run_assignment_path(args, jira_client, owner_source_verifier)
+            assignments = _run_assignment_path(args, jira_client, owner_source_verifier, store=store)
             if assignments is not None:
                 result["intake_assignments"] = assignments
         print(json.dumps(result, indent=2))
