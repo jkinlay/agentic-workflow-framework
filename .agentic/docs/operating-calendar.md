@@ -75,9 +75,12 @@ ambiguous local boundary uses its later occurrence. A nonexistent local boundary
 uses the first valid local instant after the gap. A window collapsed by that
 resolution is skipped. The bounded search includes the next weekly recurrence.
 
-Python on Windows often has no IANA database. Provision a reviewed `tzdata`
-dependency for the executing interpreter or configure a trusted IANA database
-through `PYTHONTZPATH`. Missing or invalid timezone data raises an explicit
+Python on Windows often has no IANA database. The runtime lock declares
+`tzdata==2026.6` with the reviewed wheel SHA-256 for every platform, so a runtime
+installed from that lock supplies IANA data without a `PYTHONTZPATH` override.
+Offline runtime wheelhouses must include that pinned wheel. The installed-runtime
+dependency allowlist and import/version validation must also admit `tzdata`.
+Missing or invalid timezone data still raises an explicit
 `ValidationError` and refuses scheduling, even with batching disabled. There is
 no UTC-offset fallback. Tests need real IANA data for London and New York.
 

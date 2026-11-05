@@ -13,6 +13,15 @@ from agentic.operating_calendar import effective_calendar, validate_calendar, ne
 
 
 class CalendarTests(unittest.TestCase):
+    def test_iana_data_is_hash_pinned_for_installed_runtimes(self):
+        lock = (Path(__file__).resolve().parents[1] / "requirements.lock").read_text(encoding="utf-8")
+        self.assertTrue(
+            "tzdata==2026.6 \\\n"
+            "    --hash=sha256:0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec\n"
+            in lock,
+            "Installed runtimes require the reviewed tzdata wheel pin and hash",
+        )
+
     def test_defaults_are_non_mutating_and_detached(self):
         config = {"version": 1, "streams": {"count": 12}}
         before = deepcopy(config)
