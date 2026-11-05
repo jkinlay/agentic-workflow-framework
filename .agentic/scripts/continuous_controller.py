@@ -132,6 +132,7 @@ def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapte
 def main(argv=None, default_root=ROOT):
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument('--state', type=Path, required=True)
+	parser.add_argument('--budget-ledger', type=Path, help='canonical protected routing ledger shared with review hosts')
 	parser.add_argument('--stream', action='append', dest='streams')
 	parser.add_argument('--worktree-root', type=Path, action='append', required=True)
 	parser.add_argument('--cadence-seconds', type=int)
@@ -238,7 +239,7 @@ def main(argv=None, default_root=ROOT):
 		from agentic.store import Store
 		planning_store = Store(args.state.with_suffix('.planning.sqlite3'), config['project']['id'], worktree_roots=args.worktree_root)
 		provider = {'provider_id': 'reviewed-controller', 'implementation_sha256': args.adapter_sha256, 'verifier_implementation_sha256': args.adapter_sha256}
-		output = production_controller_cycle(store, planning_state_store=planning_store, planning_config=config, planning_operating_snapshot=operating, planning_provider=provider, planning_resource_producer_sha256=args.adapter_sha256, project_config_sha256=fingerprint('accepted-project-config', config), operating_config_sha256=operating.operating_hash, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id or fingerprint('controller-planning-cycle', {'binding': load(args.inventory_binding), 'head': args.repository_head_sha, 'now': args.now}), overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
+		output = production_controller_cycle(store, budget_ledger_path=args.budget_ledger, planning_state_store=planning_store, planning_config=config, planning_operating_snapshot=operating, planning_provider=provider, planning_resource_producer_sha256=args.adapter_sha256, project_config_sha256=fingerprint('accepted-project-config', config), operating_config_sha256=operating.operating_hash, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id or fingerprint('controller-planning-cycle', {'binding': load(args.inventory_binding), 'head': args.repository_head_sha, 'now': args.now}), overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
 	elif args.command == 'jira-lifecycle':
 		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'})
 		if callable(adapters.get('observe_jira_operation_identity')):
