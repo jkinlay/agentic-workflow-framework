@@ -96,16 +96,23 @@ reporting-OFF or unattended-host qualification.
 
 ## Integration still required
 
-Lane A owns operating validation/set/render: reuse lock/journal/audit/recovery,
-validate complete mixed roots, preserve omitted defaults and twelve-stream
-adoption behavior. Authenticated owner ingress needs actual trusted evidence and
-restart/interruption/mixed-root tests. Centrally extend the closed operating
-schema, regenerate examples/defaults, preserve installed settings and regenerate
-release inventories; this lane changes no generated files.
+Operating validation/set/show accepts this optional subtree through the existing
+lock/journal/audit/recovery. Dotted leaf paths use JSON weekday lists. Fresh
+generated defaults/schema include the calendar; legacy files omit it unchanged.
+`CalendarSettingsRegistry` reuses budgeting's protected registry and trusted-host
+`observe_owner_direction` pattern, with separate immutable replay records.
+Infrastructure injects `calendar_registry` into `set_operating`/`main`; standalone
+CLI instructions refuse calendar mutations. Host observations bind the project,
+effective prior-calendar hash and exact changes, consumed after complete mixed-root
+validation under the operating lock. Journal recovery retains that observation.
 
-Controller/AWF-241 must wire protected persistence, trusted time/current-gate
-observation, pre-send checks, readback/reconciliation and effective EoD settings.
-Held presentation must never block dispatch, reviews or reporting; reporting stays
-default-OFF. Qualify bootstrap, real hourly/EoD delivery and disabled reporting;
-extend operating documentation. FULL closure still requires integration,
+Controller/AWF-241 must resolve `effective_calendar(snapshot.config)` each cycle;
+construct `ReviewBatchStore` over protected controller state; enqueue only freshly
+qualified owner-ready candidates; supply trusted time/current-gate observations
+to claim/recheck immediately before delivery; and reconcile pending batches by
+verified readback after restart. Connect effective EoD time/days to the separate
+report scheduler. Preserve per-platform receipts, OFF and the shared two-attempt
+ceiling. Held presentation must never block dispatch, reviews or hourly reports.
+Qualify bootstrap, real hourly/EoD delivery and disabled reporting.
+FULL closure still requires integration,
 current-head independent critic/specialists, final gate and owner review.

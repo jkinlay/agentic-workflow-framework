@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import ValidationError
 from .canonical import fingerprint, timestamp
+from .budget_enrollment import EnrollmentRegistry, encoded, text_id
 
 
 _DEFAULTS = {
@@ -90,6 +91,67 @@ def effective_calendar(config):
     """
     _require(isinstance(config, dict), "Operating configuration must be an object")
     return validate_calendar(config.get("operating_calendar", {}))
+
+
+SETTING_PATHS = frozenset({
+    'timezone', 'work_mode', 'review_batching.enabled', 'review_batching.weekdays',
+    'review_batching.presentation_time', 'review_batching.cutoff_time',
+    'eod.time', 'eod.weekdays',
+})
+
+
+def transition_calendar(current, changes):
+    result = validate_calendar(current)
+    _require(isinstance(changes, dict) and bool(changes) and set(changes) <= SETTING_PATHS,
+             'Calendar changes require supported dotted paths')
+    for path, value in changes.items():
+        keys = path.split('.')
+        cursor = result
+        for key in keys[:-1]:
+            cursor = cursor[key]
+        cursor[keys[-1]] = deepcopy(value)
+    return validate_calendar(result)
+
+
+class CalendarSettingsRegistry(EnrollmentRegistry):
+    """Budgeting's trusted-host admission pattern, with separate replay state.
+
+    Infrastructure injects the host and protects this database outside workers.
+    Its observe_owner_direction callback authenticates the owner independently,
+    binding project, effective prior-calendar hash and exact dotted changes.
+    Consumption precedes operating's journal commit under its lock. An earlier
+    crash requires a fresh observation; a retained journal uses pinned recovery.
+    """
+
+    def admit_owner_direction(self, project_id, current, changes):
+        _require(text_id(project_id), 'project_id must be a bounded identity')
+        result = transition_calendar(current, changes)
+        _require(self.host is not None and callable(getattr(self.host, 'observe_owner_direction', None)),
+                 'Trusted-host owner observer unavailable; caller-authored identity is refused')
+        prior = fingerprint('operating-calendar', validate_calendar(current))
+        observed = self.host.observe_owner_direction(project_id, prior, deepcopy(changes))
+        keys = {'observation_id', 'actor_id', 'project_id', 'prior_settings_hash', 'changes'}
+        _require(isinstance(observed, dict) and set(observed) == keys,
+                 'Trusted-host owner observation unavailable or malformed')
+        _require(text_id(observed['observation_id']) and text_id(observed['actor_id']),
+                 'Host observation requires immutable source and authenticated actor identities')
+        _require(observed['project_id'] == project_id and observed['prior_settings_hash'] == prior
+                 and encoded(observed['changes']) == encoded(changes),
+                 'Owner observation must bind project, exact changes and prior settings hash')
+        with self.transaction('CREATE TABLE IF NOT EXISTS calendar_owner_observations '
+                              '(observation_id TEXT PRIMARY KEY, observation TEXT NOT NULL);'
+                              'CREATE TRIGGER IF NOT EXISTS calendar_observations_no_update '
+                              'BEFORE UPDATE ON calendar_owner_observations '
+                              "BEGIN SELECT RAISE(ABORT,'immutable owner observation'); END;"
+                              'CREATE TRIGGER IF NOT EXISTS calendar_observations_no_delete '
+                              'BEFORE DELETE ON calendar_owner_observations '
+                              "BEGIN SELECT RAISE(ABORT,'immutable owner observation'); END;") as db:
+            _require(db.execute('SELECT 1 FROM calendar_owner_observations WHERE observation_id=?',
+                                (observed['observation_id'],)).fetchone() is None,
+                     'Owner observation already consumed')
+            db.execute('INSERT INTO calendar_owner_observations VALUES (?,?)',
+                       (observed['observation_id'], encoded(observed)))
+        return {'settings': result, 'observation': deepcopy(observed)}
 
 
 def utc_instant(value):

@@ -406,7 +406,18 @@ def catalog(*, include_ticket_plan=True):
                 label: {"required": ["reviewer"]},
             }}}},
         })
+    calendar_clock = text(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+    calendar_days = arr(integer(1, maximum=7), minimum=1, maxItems=7, uniqueItems=True)
+    operating_calendar = obj({
+        "timezone": text(), "work_mode": const("continuous"),
+        "review_batching": obj({
+            "enabled": BOOL, "weekdays": calendar_days,
+            "presentation_time": calendar_clock, "cutoff_time": calendar_clock,
+        }, required=[]),
+        "eod": obj({"time": calendar_clock, "weekdays": calendar_days}, required=[]),
+    }, required=[])
     schemas["operating-config"] = obj({
+        "operating_calendar": operating_calendar,
         "budgeting": obj({"accounting_enabled": BOOL, "enforcement_enabled": BOOL,
                           "max_tokens_per_ticket": integer(1),
                           "max_tokens_per_project": integer(1)},
@@ -456,6 +467,19 @@ def catalog(*, include_ticket_plan=True):
         'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
         'changes': {'type': 'object', 'minProperties': 1, 'additionalProperties': False,
                     'properties': schemas['operating-config']['properties']['budgeting']['properties']},
+    })
+    calendar_changes = {
+        key: schema
+        for key, schema in operating_calendar['properties'].items()
+        if key not in ('review_batching', 'eod')
+    }
+    for section in ('review_batching', 'eod'):
+        calendar_changes.update({section + '.' + key: schema for key, schema in
+                                 operating_calendar['properties'][section]['properties'].items()})
+    schemas['operating-change']['properties']['calendar_owner_observation'] = obj({
+        'observation_id': text(maxLength=256), 'actor_id': text(maxLength=256),
+        'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
+        'changes': obj(calendar_changes, required=[], minProperties=1),
     })
     schemas["operating-epics"] = obj({
         "schema_version": const(1),
