@@ -168,7 +168,7 @@ def main(argv=None, default_root=ROOT):
 	jira.add_argument('--evidence', action='append', default=[])
 	jira.add_argument('--transition-id', required=True)
 	jira.add_argument('--merge-result-id')
-	merge = sub.add_parser('merge-observed', help='Validate merge, reconcile Jira, then count a fresh scope snapshot')
+	merge = sub.add_parser('merge-observed', help='Validate merge and prior journaled Jira reconciliation, then count a fresh scope snapshot')
 	merge.add_argument('--lifecycle-state', required=True)
 	merge.add_argument('--lifecycle-facts', type=Path, required=True)
 	merge.add_argument('--jira-progress', type=Path, required=True)
@@ -241,16 +241,22 @@ def main(argv=None, default_root=ROOT):
 		output = production_controller_cycle(store, planning_state_store=planning_store, planning_config=config, planning_operating_snapshot=operating, planning_provider=provider, planning_resource_producer_sha256=args.adapter_sha256, project_config_sha256=fingerprint('accepted-project-config', config), operating_config_sha256=operating.operating_hash, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id or fingerprint('controller-planning-cycle', {'binding': load(args.inventory_binding), 'head': args.repository_head_sha, 'now': args.now}), overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
 	elif args.command == 'jira-lifecycle':
 		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'})
+		if callable(adapters.get('observe_jira_operation_identity')):
+			calls['observe_jira_operation_identity'] = adapters['observe_jira_operation_identity']
+		if callable(adapters.get('read_assignment')):
+			calls['read_assignment'] = adapters['read_assignment']
 		output = production_jira_lifecycle(store, config=config, contract=load(args.contract), event=args.event, facts=load(args.facts), binding=load(args.binding), issue_type=args.issue_type, state=args.lifecycle_state, producer_id=args.producer_id, run_id=args.run_id, now=args.now, evidence=args.evidence, transition_id=args.transition_id, merge_result_id=args.merge_result_id, **calls)
 	elif args.command == 'merge-observed':
-		calls = _require_adapters(adapters, {'reconcile_merged_ticket', 'fetch_scope_page'})
+		calls = _require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'fetch_scope_page'})
 		progress = _jira_progress_request(args.jira_progress)
 		gate_names = {'observe_accepted_project_config', 'observe_closeout_record'}
 		if config.get('jira', {}).get('enabled') is True:
 			gate_names.add('observe_jira_reconciliation')
 		gate_adapters = _require_adapters(adapters, gate_names)
 		count_gate = _count_gate_inputs(progress['count_gate'], config=config, repository=args.repository_root, contracts=Contracts(default_root / '.agentic/schemas'), adapters=gate_adapters, adapter_sha256=args.adapter_sha256, observed_at=progress['observed_at'])
-		output = production_merge_observed(lifecycle_state=args.lifecycle_state, lifecycle_facts=load(args.lifecycle_facts), jira_progress={**progress, 'count_gate': count_gate, **calls})
+		if progress['jira_enabled'] is not config['jira']['enabled']:
+			raise ValidationError('Post-merge Jira enablement differs from reviewed configuration')
+		output = production_merge_observed(lifecycle_state=args.lifecycle_state, lifecycle_facts=load(args.lifecycle_facts), jira_progress={**progress, 'store': store, 'config': config, 'count_gate': count_gate, **calls})
 	else:
 		output = {'streams': store.snapshot(), 'execution_authority': False}
 	print(json.dumps(output, indent=2))

@@ -81,6 +81,8 @@ class MergeTrainControllerTests(unittest.TestCase):
         config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text("utf-8"))
         # This synthetic fixture owns main, independent of the adopting project.
         config["github"]["base_branch"] = "main"
+        config["project"]["id"] = "local-project"
+        config["github"]["repository_id"] = "101"
         config["jira"].update({
             "enabled": True,
             "cloud_id": "cloud-1",
@@ -210,6 +212,8 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         self.config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text("utf-8"))
         # This synthetic fixture owns main, independent of the adopting project.
         self.config["github"]["base_branch"] = "main"
+        self.config["project"]["id"] = "local-project"
+        self.config["github"]["repository_id"] = "101"
         self.config["jira"].update(enabled=True, cloud_id="cloud-1",
             site="https://jira.example.invalid", provider_project_id="project-1",
             project_key="AWF", controller_actor_id="controller-1")
@@ -1715,7 +1719,7 @@ class RetainedReceiptStorageTests(unittest.TestCase):
         import uuid
         provider = deepcopy(PROVIDER)
         binding = dict(issue_id='AWF-1', project_id='local-project',
-                       repository_id='101', requirements_hash='a' * 64)
+                       repository_id=self.config['github']['repository_id'], requirements_hash='a' * 64)
         def write(record):
             if writes is not None:
                 writes.append(record)
