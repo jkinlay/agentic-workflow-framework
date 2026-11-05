@@ -1179,10 +1179,24 @@ class JiraProgressTests(unittest.TestCase):
 		recovered_at='2026-10-02T10:00:01Z'
 		restarted.recover_jira_operations(recovered_at)
 		self.assertEqual(restarted.jira_operations(binding['issue_id'])[0]['status'],'UNKNOWN')
+		# The crash callback above must not read back before its process loss.
+		# Recovery has a different, explicitly operation-bound evidence observer;
+		# the fresh status read alone cannot establish the original transition.
+		recovery_reads=[]
+		def recovered_transition(record,operation):
+			recovery_reads.append((record['operation_id'],operation['operation_id']))
+			self.assertEqual((record['operation_id'],operation['operation_id']),(operation_id,operation_id))
+			self.assertEqual(operation['issue_id'],binding['issue_id'])
+			self.assertEqual(operation['jira_provider'],configured_jira_provider(config))
+			return {'issue_id':binding['issue_id'],'status':external['status'],
+				'actor':'fixture-controller','observed_at':recovered_at,
+				'jira_provider':configured_jira_provider(config)}
+		common['read_transition']=recovered_transition
 		result=production_jira_lifecycle(restarted,now=recovered_at,read_current_status=lambda value:observe(value,recovered_at),write_transition=lambda record:self.fail('unknown side effect was reissued'),**common)
 		durable=restarted.jira_operations(binding['issue_id'])
 		self.assertEqual((external['writes'],durable[0]['operation_id'],durable[0]['status']),(1,operation_id,'SUCCEEDED'))
 		self.assertFalse(result['planned'])
+		self.assertEqual(recovery_reads,[(operation_id,operation_id)])
 
 	def test_unknown_jira_intent_without_success_readback_stops_all_retries(self):
 		path=Path(self.temporary.name)/'jira-unknown.sqlite3'

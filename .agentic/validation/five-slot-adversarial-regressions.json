@@ -739,6 +739,96 @@
       "regression_id": "AWF243-ROUND2-IDENTITY-REGRESSION",
       "source_finding_id": "AWF243-ROUND2-IDENTITY",
       "test_id": "AssignmentRegressions.test_r2_project_and_repository_identity_changes_or_missing_fields_refuse_zero_writes"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Malformed and stale progress reads preserve success for a later valid read",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-1",
+      "source_finding_id": "AWF243-PRE3-1",
+      "test_id": "AssignmentRegressions.test_pre3_progress_malformed_stale_and_foreign_reads_preserve_success_then_retry"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Issue-only operations pin historical project and repository identity with additive legacy recovery",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-2",
+      "source_finding_id": "AWF243-PRE3-2",
+      "test_id": "AssignmentRegressions.test_pre3_issue_only_identity_is_historical_and_legacy_recovery_is_additive"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch closeout defers behind the original unknown operation and completes after transition evidence",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-3",
+      "source_finding_id": "AWF243-PRE3-3",
+      "test_id": "AssignmentRegressions.test_pre3_batch_closeout_defers_original_unknown_then_completes_after_evidence"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "All lifecycle events require original transition evidence before another write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-4",
+      "source_finding_id": "AWF243-PRE3-4",
+      "test_id": "AssignmentRegressions.test_pre3_every_event_requires_transition_evidence_before_next_event"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "A genuine status conflict retains prior success and has an evidence recovery route",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-CONFLICT",
+      "source_finding_id": "AWF243-PRE3-CONFLICT",
+      "test_id": "AssignmentRegressions.test_pre3_conflict_retains_success_and_recovers_only_with_transition_evidence"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch-owned unknown and failed operations recover through lifecycle transition evidence",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-BATCH",
+      "source_finding_id": "AWF243-PRE3-BATCH",
+      "test_id": "AssignmentRegressions.test_pre3_batch_owned_unknown_and_failed_have_lifecycle_evidence_route"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Proven unattempted claims and deferred batch rows resume without an invented transition",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-CLAIM",
+      "source_finding_id": "AWF243-PRE3-CLAIM",
+      "test_id": "AssignmentRegressions.test_pre3_unattempted_claim_and_deferred_batch_resume_without_inventing_transition"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "An ordinary unknown appearing after precheck prevents another ticket write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-RACE",
+      "source_finding_id": "AWF243-PRE3-RACE",
+      "test_id": "AssignmentRegressions.test_pre3_unknown_appearing_after_precheck_stops_other_ordinary_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Invalid historical identity evidence preserves the journal for a later valid import",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-LEGACY",
+      "source_finding_id": "AWF243-PRE3-LEGACY",
+      "test_id": "AssignmentRegressions.test_pre3_failed_legacy_identity_observers_preserve_journal_until_valid_history"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Legacy batch provider spelling and historical identity migrate without rewriting operation rows",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-MIGRATION",
+      "source_finding_id": "AWF243-PRE3-MIGRATION",
+      "test_id": "AssignmentRegressions.test_pre3_legacy_batch_provider_spelling_and_identity_migrate_without_rewriting_rows"
     }
   ]
 }

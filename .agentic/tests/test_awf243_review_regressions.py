@@ -154,6 +154,360 @@ class AssignmentRegressions(unittest.TestCase):
                 "requirements_hash": "c" * 64, "contract_hash": "d" * 64,
                 "policy_hash": "e" * 64, "candidate_id": "a" * 64}
 
+    def counted_done(self, calls, **overrides):
+        current = overrides.pop("current", "In Review")
+        observer = overrides.pop("observer", self.transition_evidence)
+        def before(binding):
+            calls.append("status")
+            return {"issue_id": KEY, "status_id": current, "observed_at": NOW,
+                    "jira_provider": copy.deepcopy(self.provider)}
+        def after(record, operation):
+            calls.append("transition")
+            return observer(record, operation)
+        return self.done(read_current_status=before, read_transition=after, **overrides)
+
+    def test_pre3_progress_malformed_stale_and_foreign_reads_preserve_success_then_retry(self):
+        self.writes = []
+        calls = []
+        self.counted_done(calls)
+        before = self.store.jira_operations(KEY)[0]
+        valid = {"issue_id": KEY, "status_id": "Done", "observed_at": NOW,
+                 "jira_provider": self.provider}
+        variants = [{"status_id": "Done"}, {**valid, "observed_at": "2026-11-03T08:29:59Z"},
+                    {**valid, "issue_id": "EX-99"}, {**valid, "observed_at": "bad"}]
+        for value in variants:
+            def read(binding):
+                calls.append("progress")
+                return value
+            with self.subTest(value=value):
+                self.assertEqual("UNOBSERVED", self.progress(read_current_status=read)["jira_state"])
+                self.assertEqual(before, self.store.jira_operations(KEY)[0])
+                self.assertEqual(1, len(self.writes))
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        def read(binding):
+            calls.append("progress")
+            return valid
+        self.assertEqual("COUNTED", self.progress(read_current_status=read)["jira_state"])
+        self.assertEqual(["status", "transition"] + ["progress"] * 5, calls)
+        self.assertEqual(1, len(self.writes))
+
+    def test_pre3_every_event_requires_transition_evidence_before_next_event(self):
+        from pathlib import Path
+        events = [("WORKER_STARTED", {"run_registered": True, "worktree_verified": True}, "DISPATCHED"),
+                  ("PR_READY", {"draft_cleared": True}, "PR_DRAFT"),
+                  ("OWNER_CHANGES_REQUESTED", {"external_event_recorded": True, "prior_evidence_invalidated": True}, "READY_FOR_CRITIC"),
+                  ("HEAD_CHANGED", {"external_event_recorded": True, "prior_evidence_invalidated": True}, "READY_FOR_CRITIC"),
+                  ("JIRA_RECONCILED", {"merge_confirmed": True, "closeout_valid": True}, "MERGED")]
+        for index, (event, facts, state) in enumerate(events):
+            with self.subTest(event=event):
+                self.store = ContinuousControllerStore(Path(self.temp.name) / f"event-{index}.sqlite", ["A"])
+                self.writes, calls = [], []
+                def timeout(record, operation):
+                    raise TimeoutError()
+                self.assertEqual("UNKNOWN", self.counted_done(calls, event=event, facts=facts,
+                    state=state, current="Ready", observer=timeout)["record"]["status"])
+                original = self.store.jira_operations(KEY)[0]
+                for value in (None, {}, {"status": original["record"]["to_status_id"]},
+                              {"issue_id": KEY, "status": original["record"]["to_status_id"],
+                               "actor": self.provider["controller_actor_id"], "jira_provider": self.provider,
+                               "observed_at": "2026-11-03T08:29:59Z"}):
+                    self.store = ContinuousControllerStore(self.store.path, ["A"])
+                    result = self.counted_done(calls, event="PR_READY", facts={"draft_cleared": True},
+                        state="PR_DRAFT", current=original["record"]["to_status_id"], observer=lambda r, o: value)
+                    self.assertTrue(result["writes_stopped"])
+                    self.assertEqual(original, self.store.jira_operations(KEY)[0])
+                    self.assertEqual(1, len(self.writes))
+                result = self.counted_done(calls, event="PR_READY", facts={"draft_cleared": True},
+                    state="PR_DRAFT", current=original["record"]["to_status_id"])
+                self.assertEqual("SUCCEEDED", self.store.jira_operations(KEY)[0]["status"])
+                self.assertEqual(1 if event == "PR_READY" else 2, len(self.writes))
+                self.assertEqual(6, calls.count("status"))
+                self.assertEqual(6 if event == "PR_READY" else 7, calls.count("transition"))
+
+    def test_pre3_issue_only_identity_is_historical_and_legacy_recovery_is_additive(self):
+        from agentic.canonical import loads
+        self.writes, calls = [], []
+        self.counted_done(calls, event="WORKER_STARTED", facts={"run_registered": True,
+            "worktree_verified": True}, state="DISPATCHED", current="Ready")
+        row = self.store.jira_operations(KEY)[0]
+        for section, field, value in (("project", "id", "other-project"),
+                                      ("github", "repository_id", 999999)):
+            with self.subTest(field=field), patch.dict(self.config[section], {field: value}):
+                self.store = ContinuousControllerStore(self.store.path, ["A"])
+                with self.assertRaisesRegex(ValidationError, "different project/repository/issue"):
+                    self.counted_done(calls)
+                self.assertEqual(1, len(self.writes))
+        with self.store.transaction() as db:
+            pin = db.execute("SELECT value FROM controller_meta WHERE key=?", ("jira-identity:" + row["operation_id"],)).fetchone()
+            self.assertIsNotNone(pin)
+            historical = loads(pin["value"])
+            db.execute("DELETE FROM controller_meta WHERE key=?", ("jira-identity:" + row["operation_id"],))
+        self.store = ContinuousControllerStore(self.store.path, ["A"])
+        with self.assertRaisesRegex(ValidationError, "Historical Jira identity.*observe_jira_operation_identity"):
+            self.counted_done(calls)
+        self.assertEqual(row, self.store.jira_operations(KEY)[0])
+        history_reads = []
+        def history(record):
+            history_reads.append(record["operation_id"])
+            return historical
+        self.counted_done(calls, observe_jira_operation_identity=history)
+        self.assertEqual([row["operation_id"]], history_reads)
+        self.assertEqual(2, len(self.writes))
+        self.assertEqual(5, calls.count("status"))
+        self.assertEqual(2, calls.count("transition"))
+
+    def test_pre3_batch_closeout_defers_original_unknown_then_completes_after_evidence(self):
+        from test_merge_train_controller import OperationalControllerTests, JiraSpy, NOW as BATCH_NOW
+        fixture = OperationalControllerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        spy = JiraSpy()
+        args = fixture.operational_inputs(spy)
+        calls = []
+        def before(binding):
+            calls.append("status")
+            return spy.read_current_status(binding)
+        def after(record, operation):
+            calls.append("transition")
+            raise TimeoutError()
+        lifecycle = dict(config=args["config"], contract={}, event="JIRA_RECONCILED",
+            facts={"merge_confirmed": True, "closeout_valid": True}, binding={"issue_id": "AWF-1"},
+            issue_type="LEAF", state="MERGED", producer_id="controller-1", run_id="fixture",
+            now=BATCH_NOW, evidence=[], transition_id="31", merge_result_id="merge-1",
+            **{name: args[name] for name in ("observe_provider_identity", "observe_issue_identity", "observe_issue_policy")},
+            read_current_status=before, write_transition=spy.write_transition, read_transition=after)
+        self.assertEqual("UNKNOWN", production_jira_lifecycle(fixture.store, **lifecycle)["record"]["status"])
+        result = fixture.controller.production_batch_closeout(fixture.store, **args)
+        with fixture.store.connection() as db:
+            self.assertEqual("PENDING", db.execute("SELECT status FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()[0])
+        self.assertFalse(result["jira"]["complete"])
+        self.assertEqual(2, len(spy.writes))
+        self.assertEqual(2, sum(op == "read" for op, key in spy.calls))
+        self.assertEqual(1, sum(op == "read_back" for op, key in spy.calls))
+        fixture.store = ContinuousControllerStore(fixture.store.path, ["B"])
+        def evidence(record, operation):
+            calls.append("transition")
+            return spy.read_transition(record, operation)
+        lifecycle["read_transition"] = evidence
+        self.assertEqual("SUCCEEDED", production_jira_lifecycle(fixture.store, **lifecycle)["record"]["status"])
+        args["read_current_status"] = lambda binding: {**spy.read_current_status(binding), "status_id": "Done"}
+        self.assertTrue(fixture.controller.production_batch_closeout(fixture.store, **args)["jira"]["complete"])
+        self.assertEqual(["status", "transition", "status", "transition"], calls)
+        self.assertEqual(2, len(spy.writes))
+        self.assertEqual(4, sum(op == "read" for op, key in spy.calls))
+        self.assertEqual(2, sum(op == "read_back" for op, key in spy.calls))
+
+    def test_pre3_conflict_retains_success_and_recovers_only_with_transition_evidence(self):
+        self.writes, calls = [], []
+        self.counted_done(calls)
+        success = self.store.jira_operations(KEY)[0]
+        def changed(binding):
+            calls.append("progress")
+            return {"issue_id": KEY, "status_id": "In Review", "observed_at": NOW,
+                    "jira_provider": self.provider}
+        self.assertEqual("UNOBSERVED", self.progress(read_current_status=changed)["jira_state"])
+        conflict = self.store.jira_operations(KEY)[0]
+        self.assertEqual("FAILED", conflict["status"])
+        self.assertEqual(success["readback_json"], conflict["readback_json"])
+        for value in (None, {}, {"status": "Done"}):
+            self.assertTrue(self.counted_done(calls, observer=lambda r, o: value)["writes_stopped"])
+            self.assertEqual(conflict, self.store.jira_operations(KEY)[0])
+        self.assertEqual("SUCCEEDED", self.counted_done(calls)["record"]["status"])
+        self.assertEqual("COUNTED", self.progress()["jira_state"])
+        self.assertEqual(1, len(self.writes))
+        self.assertEqual(5, calls.count("status"))
+        self.assertEqual(5, calls.count("transition"))
+        self.assertEqual(1, calls.count("progress"))
+
+    def test_pre3_unattempted_claim_and_deferred_batch_resume_without_inventing_transition(self):
+        from test_merge_train_controller import BatchReconciliationSafetyTests, JiraSpy, scope_lifecycle, NOW as BATCH_NOW, PROVIDER
+        fixture = BatchReconciliationSafetyTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.config["github"]["repository_id"] = 101
+        calls, writes = [], []
+        def before(binding):
+            calls.append("status")
+            return {"issue_id": "AWF-1", "status_id": "Ready", "observed_at": BATCH_NOW,
+                    "jira_provider": PROVIDER}
+        def after(record, operation):
+            calls.append("transition")
+            return {"issue_id": "AWF-1", "status": "In Progress", "observed_at": BATCH_NOW,
+                    "actor": "controller-1", "jira_provider": PROVIDER}
+        def write(record):
+            writes.append(record)
+            return {"issue_id": "AWF-1", "operation_id": record["operation_id"], "status": "ATTEMPTED",
+                    "observed_at": BATCH_NOW, "jira_provider": PROVIDER}
+        args = dict(config=fixture.config, contract={}, event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True}, binding={"issue_id": "AWF-1"},
+            issue_type="LEAF", state="DISPATCHED", producer_id="controller-1", run_id="fixture",
+            now=BATCH_NOW, evidence=[], transition_id="31", observe_provider_identity=lambda: PROVIDER,
+            observe_issue_identity=lambda key: {"issue_key": key, "observed_at": BATCH_NOW},
+            read_current_status=before, write_transition=write, read_transition=after)
+        begin = fixture.store.begin_jira_operation
+        spy = JiraSpy()
+        def claimed(operation_id, now):
+            result = begin(operation_id, now)
+            fixture.run_batch(spy)
+            return result
+        with patch.object(fixture.store, "begin_jira_operation", side_effect=claimed):
+            self.assertTrue(scope_lifecycle(fixture.controller, fixture.store, **args)["writes_stopped"])
+        self.assertEqual([], writes)
+        self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"), ("read_back", "AWF-2")], spy.calls)
+        self.assertTrue(scope_lifecycle(fixture.controller, fixture.store, **args)["writes_stopped"])
+        self.assertEqual([], writes)
+        self.assertEqual(0, calls.count("transition"))
+        result = scope_lifecycle(fixture.controller, fixture.store, **{**args, "event": "BLOCK"})
+        self.assertFalse(result["planned"])
+        self.assertEqual("PENDING", fixture.store.jira_operations("AWF-1")[0]["status"])
+        self.assertEqual(0, calls.count("transition"))
+        self.assertEqual("SUCCEEDED", scope_lifecycle(fixture.controller, fixture.store, **args)["record"]["status"])
+        self.assertEqual(1, len(writes))
+        self.assertEqual(4, calls.count("status"))
+        self.assertEqual(1, calls.count("transition"))
+        fixture.run_batch(spy, read_current_status=lambda b: {**spy.read_current_status(b), "status_id": "Done"})
+        self.assertEqual(1, len(spy.writes))
+        self.assertEqual(2, sum(op == "read" for op, key in spy.calls))
+        self.assertEqual(1, sum(op == "read_back" for op, key in spy.calls))
+
+    def test_pre3_unknown_appearing_after_precheck_stops_other_ordinary_write(self):
+        self.writes, calls = [], []
+        identities = []
+        def provider():
+            identities.append(1)
+            if len(identities) == 2:
+                def timeout(record, operation):
+                    raise TimeoutError()
+                self.assertEqual("UNKNOWN", self.counted_done(calls, observer=timeout,
+                    run_id="00000000-0000-0000-0000-000000000002")["record"]["status"])
+            return copy.deepcopy(self.provider)
+        self.assertTrue(self.counted_done(calls, observe_provider_identity=provider)["writes_stopped"])
+        self.assertEqual(1, len(self.writes))
+        self.assertEqual(["status", "status", "transition"], calls)
+        self.assertFalse(self.counted_done(calls, event="BLOCK")["planned"])
+        self.assertEqual(1, len(self.writes))
+        self.assertEqual(3, calls.count("status"))
+        self.assertEqual(2, calls.count("transition"))
+
+    def test_pre3_failed_legacy_identity_observers_preserve_journal_until_valid_history(self):
+        from agentic.canonical import loads
+        self.writes, calls = [], []
+        self.counted_done(calls)
+        row = self.store.jira_operations(KEY)[0]
+        key = "jira-identity:" + row["operation_id"]
+        with self.store.transaction() as db:
+            history = loads(db.execute("SELECT value FROM controller_meta WHERE key=?", (key,)).fetchone()["value"])
+            db.execute("DELETE FROM controller_meta WHERE key=?", (key,))
+        history_reads = []
+        for value in (None, {}, TimeoutError(), {**history, "operation_id": "foreign"},
+                      {**history, "intent_sha256": "0" * 64},
+                      {**history, "identity": {**history["identity"], "repository_id": 999999}}):
+            def observe(record):
+                history_reads.append(record["operation_id"])
+                if isinstance(value, Exception):
+                    raise value
+                return value
+            with self.subTest(value=value):
+                self.store = ContinuousControllerStore(self.store.path, ["A"])
+                with self.assertRaises((ValidationError, TimeoutError)):
+                    self.counted_done(calls, observe_jira_operation_identity=observe)
+                self.assertEqual(row, self.store.jira_operations(KEY)[0])
+                with self.store.connection() as db:
+                    self.assertIsNone(db.execute("SELECT value FROM controller_meta WHERE key=?", (key,)).fetchone())
+                self.assertEqual(1, len(self.writes))
+        self.counted_done(calls, current="Done", observe_jira_operation_identity=lambda r: history_reads.append(r["operation_id"]) or history)
+        self.assertEqual(row, self.store.jira_operations(KEY)[0])
+        self.assertEqual(7, len(history_reads))
+        self.assertEqual(8, calls.count("status"))
+        self.assertEqual(1, calls.count("transition"))
+        self.assertEqual(1, len(self.writes))
+
+    def test_pre3_legacy_batch_provider_spelling_and_identity_migrate_without_rewriting_rows(self):
+        from agentic.canonical import canonical, loads
+        from test_merge_train_controller import OperationalControllerTests, JiraSpy, NOW as BATCH_NOW
+        fixture = OperationalControllerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        spy = JiraSpy()
+        args = fixture.operational_inputs(spy)
+        def timeout(record, operation):
+            spy.calls.append(("read_back", record["binding"]["issue_id"]))
+            raise TimeoutError()
+        fixture.controller.production_batch_closeout(fixture.store, **{**args, "read_transition": timeout})
+        with fixture.store.transaction() as db:
+            row = dict(db.execute("SELECT * FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone())
+            record = loads(row["record_json"])
+            record["jira_provider"]["provider_project_id"] = record["jira_provider"].pop("project_id")
+            original = canonical(record).decode()
+            intent = fingerprint("controller-jira-operation", {k: v for k, v in record.items() if k != "created_at"})
+            db.execute("UPDATE controller_batch_jira_operation SET record_json=?,intent_sha256=? WHERE operation_id=?", (original, intent, row["operation_id"]))
+            history = loads(db.execute("SELECT value FROM controller_meta WHERE key=?", ("jira-identity:" + row["operation_id"],)).fetchone()["value"])
+            history["intent_sha256"] = intent
+            db.execute("DELETE FROM controller_meta WHERE key=?", ("jira-identity:" + row["operation_id"],))
+        reads = []
+        lifecycle = dict(config=args["config"], contract={}, event="JIRA_RECONCILED",
+            facts={"merge_confirmed": True, "closeout_valid": True}, binding={"issue_id": "AWF-1"},
+            issue_type="LEAF", state="MERGED", producer_id="controller-1", run_id="fixture",
+            now=BATCH_NOW, evidence=[], transition_id="31", merge_result_id="merge-1",
+            **{name: args[name] for name in ("observe_provider_identity", "observe_issue_identity", "observe_issue_policy")},
+            read_current_status=lambda b: reads.append("status") or spy.read_current_status(b),
+            write_transition=lambda r: self.fail("legacy recovery must not write"),
+            read_transition=lambda r, o: reads.append("transition") or spy.read_transition(r, o),
+            observe_jira_operation_identity=lambda r: reads.append("identity") or history)
+        self.assertEqual("SUCCEEDED", production_jira_lifecycle(fixture.store, **lifecycle)["record"]["status"])
+        self.assertTrue(fixture.controller.production_batch_closeout(fixture.store, **args)["jira"]["complete"])
+        with fixture.store.connection() as db:
+            retained = db.execute("SELECT * FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()
+            self.assertEqual(original, retained["record_json"])
+            self.assertEqual(intent, retained["intent_sha256"])
+        self.assertEqual(["status", "identity", "transition"], reads)
+        self.assertEqual(2, len(spy.writes))
+        self.assertEqual(3, sum(op == "read" for op, key in spy.calls))
+        self.assertEqual(3, sum(op == "read_back" for op, key in spy.calls))
+
+    def test_pre3_batch_owned_unknown_and_failed_have_lifecycle_evidence_route(self):
+        from test_merge_train_controller import OperationalControllerTests, JiraSpy, NOW as BATCH_NOW
+        for failure in ("UNKNOWN", "FAILED"):
+            with self.subTest(failure=failure):
+                fixture = OperationalControllerTests()
+                fixture.setUp()
+                self.addCleanup(fixture.doCleanups)
+                spy = JiraSpy(mismatch="AWF-1" if failure == "FAILED" else None)
+                args = fixture.operational_inputs(spy)
+                if failure == "UNKNOWN":
+                    def timeout(record, operation):
+                        spy.calls.append(("read_back", record["binding"]["issue_id"]))
+                        raise TimeoutError()
+                    args["read_transition"] = timeout
+                fixture.controller.production_batch_closeout(fixture.store, **args)
+                with fixture.store.connection() as db:
+                    before = dict(db.execute("SELECT * FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone())
+                self.assertEqual(failure, before["status"])
+                reads = []
+                lifecycle = dict(config=args["config"], contract={}, event="JIRA_RECONCILED",
+                    facts={"merge_confirmed": True, "closeout_valid": True}, binding={"issue_id": "AWF-1"},
+                    issue_type="LEAF", state="MERGED", producer_id="controller-1", run_id="fixture",
+                    now=BATCH_NOW, evidence=[], transition_id="31", merge_result_id="merge-1",
+                    **{name: args[name] for name in ("observe_provider_identity", "observe_issue_identity", "observe_issue_policy")},
+                    read_current_status=lambda b: reads.append("status") or spy.read_current_status(b),
+                    write_transition=lambda r: self.fail("recovery must not write"))
+                for value in (None, {}, {"status": "Done"}):
+                    fixture.store = ContinuousControllerStore(fixture.store.path, ["B"])
+                    lifecycle["read_transition"] = lambda r, o: reads.append("transition") or value
+                    self.assertTrue(production_jira_lifecycle(fixture.store, **lifecycle)["writes_stopped"])
+                    with fixture.store.connection() as db:
+                        self.assertEqual(before, dict(db.execute("SELECT * FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()))
+                    self.assertEqual(1, len(spy.writes))
+                spy.mismatch = None
+                lifecycle["read_transition"] = lambda r, o: reads.append("transition") or spy.read_transition(r, o)
+                self.assertEqual("SUCCEEDED", production_jira_lifecycle(fixture.store, **lifecycle)["record"]["status"])
+                args["read_transition"] = spy.read_transition
+                self.assertTrue(fixture.controller.production_batch_closeout(fixture.store, **args)["jira"]["complete"])
+                self.assertEqual(["status", "transition"] * 4, reads)
+                self.assertEqual(2, len(spy.writes))
+                self.assertEqual(6, sum(op == "read" for op, key in spy.calls))
+                self.assertEqual(3, sum(op == "read_back" for op, key in spy.calls))
+
     def unknown_readback(self):
         self.writes = []
         def timeout(record, operation):

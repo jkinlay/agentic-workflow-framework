@@ -1432,6 +1432,11 @@ def _build(config):
 		return {'operation_id': record['operation_id'], 'issue_id': issue_id, 'status': 'ATTEMPTED', 'observed_at': attempted_at, 'jira_provider': record['jira_provider']}
 
 	def read_transition(record, operation):
+		# Older batch journals used provider_project_id in immutable intents.
+		# Normalize only the observer's copy; never rewrite their retained bytes.
+		from agentic.continuous_controller import _jira_record_provider
+		record = deepcopy(record)
+		record['jira_provider'] = _jira_record_provider(record)
 		issue_id = record['binding']['issue_id']
 		_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'}
 			and operation['operation_id'] == record['operation_id'] and operation['issue_id'] == issue_id
