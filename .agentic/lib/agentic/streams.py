@@ -546,6 +546,8 @@ def native_execution_policy(execution=None):
     from .operating import operating_ceiling
     operating_ceiling({"execution": value})
     result = {name: deepcopy(reviewers if name == "independent_reviewers" else value[name]) for name in DEFAULT_NATIVE_EXECUTION}
+    if "max_lanes" in value:
+        result["max_lanes"] = value["max_lanes"]
     if "host_broker" in value:
         result["host_broker"] = deepcopy(value["host_broker"])
     return result
@@ -1236,7 +1238,7 @@ def render_markdown(plan):
     effective = capacity["effective_writer_capacity"]
     lines.extend(["## Effective native writer capacity", "",
                   f"Configured project writer limit: {capacity['project_writer_limit']}. Effective per-stream limit: 1. Native streams enabled: {str(capacity['native_streams_enabled']).lower()}.", "",
-                  f"Planner structural writer limit: {capacity['planner_writer_limit']} (streams A–F). Operating count: {capacity['operating_count']}; attribution: {capacity['operating_state']}. Binding capacity source(s): {', '.join(capacity['limiting_sources'])}.", "",
+                  f"Planner structural writer limit: {capacity['planner_writer_limit']} (streams A–L). Operating count: {capacity['operating_count']}; attribution: {capacity['operating_state']}. Binding capacity source(s): {', '.join(capacity['limiting_sources'])}.", "",
                   f"Operating hash: `{capacity['operating_hash']}`. Draining streams: {', '.join(capacity['draining_streams']) or 'none'}.", "",
                   "Observed host total writer capacity, including the coordinator: " + (str(capacity["host_writer_capacity"]) if capacity["host_capacity_observed"] else "not yet observed") + ".", "",
                   "Effective writer capacity: " + (str(effective) if effective is not None else "unverified; planning ceiling " + str(capacity["planning_writer_capacity"])) + ".", "",
