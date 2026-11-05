@@ -685,6 +685,438 @@
       "regression_id": "C-TRX-003-REGRESSION",
       "source_finding_id": "C-TRX-003",
       "test_id": "FiveSlotAccelerationTests.test_canonical_retained_findings_have_exactly_one_permanent_mapping"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Post-merge progress and later lifecycle calls retain the durable unknown reconciliation stop",
+      "permanent": true,
+      "regression_id": "AWF243-R1-REGRESSION",
+      "source_finding_id": "AWF243-R1",
+      "test_id": "AssignmentRegressions.test_r1_unknown_survives_restart_without_second_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Observed owner-closure summary or labels hold ordinary lifecycle Done",
+      "permanent": true,
+      "regression_id": "AWF243-R2-REGRESSION",
+      "source_finding_id": "AWF243-R2",
+      "test_id": "AssignmentRegressions.test_r2_observed_summary_or_labels_hold_done"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment label readback mismatch stops before the comment",
+      "permanent": true,
+      "regression_id": "AWF243-R3-REGRESSION",
+      "source_finding_id": "AWF243-R3",
+      "test_id": "AssignmentRegressions.test_r3_ineffective_label_write_stops_before_comment"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment requires every capability before its first mutation",
+      "permanent": true,
+      "regression_id": "AWF243-R4-REGRESSION",
+      "source_finding_id": "AWF243-R4",
+      "test_id": "AssignmentRegressions.test_r4_all_assignment_capabilities_precede_mutation"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Unknown reconciliation recovers only through its retained operation and transition observer without another write",
+      "permanent": true,
+      "regression_id": "AWF243-ROUND2-RECOVERY-REGRESSION",
+      "source_finding_id": "AWF243-ROUND2-RECOVERY",
+      "test_id": "AssignmentRegressions.test_r2_unknown_recovers_through_original_transition_observer_without_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Candidate revisions retain invariant project and repository identities and refuse missing or unknown binding fields",
+      "permanent": true,
+      "regression_id": "AWF243-ROUND2-IDENTITY-REGRESSION",
+      "source_finding_id": "AWF243-ROUND2-IDENTITY",
+      "test_id": "AssignmentRegressions.test_r2_project_and_repository_identity_changes_or_missing_fields_refuse_zero_writes"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Malformed and stale progress reads preserve success for a later valid read",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-1",
+      "source_finding_id": "AWF243-PRE3-1",
+      "test_id": "AssignmentRegressions.test_pre3_progress_malformed_stale_and_foreign_reads_preserve_success_then_retry"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Issue-only operations pin historical project and repository identity with additive legacy recovery",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-2",
+      "source_finding_id": "AWF243-PRE3-2",
+      "test_id": "AssignmentRegressions.test_pre3_issue_only_identity_is_historical_and_legacy_recovery_is_additive"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch closeout defers behind the original unknown operation and completes after transition evidence",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-3",
+      "source_finding_id": "AWF243-PRE3-3",
+      "test_id": "AssignmentRegressions.test_pre3_batch_closeout_defers_original_unknown_then_completes_after_evidence"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "All lifecycle events require original transition evidence before another write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-4",
+      "source_finding_id": "AWF243-PRE3-4",
+      "test_id": "AssignmentRegressions.test_pre3_every_event_requires_transition_evidence_before_next_event"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "A genuine status conflict retains prior success and has an evidence recovery route",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-CONFLICT",
+      "source_finding_id": "AWF243-PRE3-CONFLICT",
+      "test_id": "AssignmentRegressions.test_pre3_conflict_retains_success_and_recovers_only_with_transition_evidence"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch-owned unknown and failed operations recover through lifecycle transition evidence",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-BATCH",
+      "source_finding_id": "AWF243-PRE3-BATCH",
+      "test_id": "AssignmentRegressions.test_pre3_batch_owned_unknown_and_failed_have_lifecycle_evidence_route"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Proven unattempted claims and deferred batch rows resume without an invented transition",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-CLAIM",
+      "source_finding_id": "AWF243-PRE3-CLAIM",
+      "test_id": "AssignmentRegressions.test_pre3_unattempted_claim_and_deferred_batch_resume_without_inventing_transition"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "An ordinary unknown appearing after precheck prevents another ticket write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-RACE",
+      "source_finding_id": "AWF243-PRE3-RACE",
+      "test_id": "AssignmentRegressions.test_pre3_unknown_appearing_after_precheck_stops_other_ordinary_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Invalid historical identity evidence preserves the journal for a later valid import",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-LEGACY",
+      "source_finding_id": "AWF243-PRE3-LEGACY",
+      "test_id": "AssignmentRegressions.test_pre3_failed_legacy_identity_observers_preserve_journal_until_valid_history"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Legacy batch provider spelling and historical identity migrate without rewriting operation rows",
+      "permanent": true,
+      "regression_id": "AWF243-PRE3-MIGRATION",
+      "source_finding_id": "AWF243-PRE3-MIGRATION",
+      "test_id": "AssignmentRegressions.test_pre3_legacy_batch_provider_spelling_and_identity_migrate_without_rewriting_rows"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch completion retains actor-bound recovery after a lost POST response",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-RECOVERED",
+      "source_finding_id": "AWF243-PRE4-1",
+      "test_id": "BatchRecoveryRegressions.test_pre4_lost_batch_response_recovers_once_and_closeout_stays_complete"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch pre-write read failure resumes through BLOCK without transition recovery",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-PREWRITE-BLOCK",
+      "source_finding_id": "AWF243-PRE4-2",
+      "test_id": "BatchRecoveryRegressions.test_pre4_batch_prewrite_read_failure_retries_without_transition_recovery"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch pre-write read failure retries directly after reopening",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-PREWRITE-RETRY",
+      "source_finding_id": null,
+      "test_id": "BatchRecoveryRegressions.test_pre4_batch_prewrite_failure_retries_directly_after_reopen"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Status alone cannot resolve or repeat an attempted batch write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-STATUS-ONLY",
+      "source_finding_id": null,
+      "test_id": "BatchRecoveryRegressions.test_pre4_lost_batch_response_status_alone_never_resolves_or_repeats"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Legacy copied predecessor receipt proves a deferred batch write was unattempted",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-LEGACY",
+      "source_finding_id": "AWF243-PRE4-3",
+      "test_id": "BatchRecoveryRegressions.test_pre4_legacy_proven_deferred_row_does_not_invent_transition"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Ambiguous legacy stop preserves valid original recovery and stops further writes",
+      "permanent": true,
+      "regression_id": "AWF243-PRE4-AMBIGUOUS",
+      "source_finding_id": null,
+      "test_id": "BatchRecoveryRegressions.test_pre4_ambiguous_legacy_stop_preserves_original_resolution"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Lifecycle rejects foreign incoming project and repository identities across both journals",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-LIFECYCLE",
+      "source_finding_id": "AWF243-AUX5-1",
+      "test_id": "IncomingIdentityRegressions.test_pre5_lifecycle_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Recovery rejects foreign incoming identity before observing or resolving an uncertain write",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-RECOVERY",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_recovery_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment rejects foreign project and repository identities without label or comment writes",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-ASSIGNMENT",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_assignment_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Retained batch closeout rejects project and repository substitution after either journal",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-CLOSEOUT",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_batch_closeout_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Batch reconciliation rejects changed authority before preparing or writing any constituent",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-RECONCILIATION",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_batch_reconciliation_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Progress rejects foreign closeout identity and never invokes the legacy mutation callback",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-PROGRESS",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_progress_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Production progress shares the cross-journal incoming identity admission",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-PRODUCTION-PROGRESS",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_production_progress_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Merge observation cannot count or mutate through foreign Jira closeout authority",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-MERGE-OBSERVED",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_merge_observed_incoming_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Matching incoming and current identities cannot replace either journal's persisted authority",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-PERSISTED-IDENTITY",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_configuration_matching_input_cannot_replace_either_journals_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Every writable lifecycle event refuses full foreign bindings after completed batch history",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-EVENTS",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_every_lifecycle_event_refuses_batch_only_identity_escape"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment uses its adapter's controller journal and accepts a candidate-only revision",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-ASSIGNMENT-CANDIDATE",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_assignment_with_adapter_journal_accepts_candidate_revision"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment cannot bypass persisted identity checks by omitting its protected journal",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-ASSIGNMENT-JOURNAL",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_assignment_without_journal_never_assumes_history_is_absent"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Candidate-only lifecycle revisions succeed after ordinary or completed batch history",
+      "permanent": true,
+      "regression_id": "AWF243-AUX5-CANDIDATE",
+      "source_finding_id": null,
+      "test_id": "IncomingIdentityRegressions.test_pre5_candidate_only_revision_after_each_journal_succeeds"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment refuses unresolved ordinary and batch operations after reopen",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-TICKET-STOPS",
+      "source_finding_id": "AWF243-AUX6-1",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_refuses_unresolved_lifecycle_and_batch"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment uncertainty durably stops ordinary and batch mutations",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-ASSIGNMENT-STOP",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_unknown_stops_lifecycle_and_batch_after_reopen"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Successful intake pins invariant project and repository identity",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-IDENTITY",
+      "source_finding_id": "AWF243-AUX6-2",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_successful_intake_pins_project_and_repository_identity"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Intake and adoption receive the protected store explicitly",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-CALLERS",
+      "source_finding_id": "AWF243-AUX6-3",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_real_intake_and_project_start_accept_explicit_protected_store"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Malformed or foreign assignment recovery evidence preserves durable receipts",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-RECOVERY-REJECTION",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_recovery_rejects_invalid_evidence_and_never_writes"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment read-only recovery unblocks ordinary and batch writes without replay",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-RECOVERY",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_assignment_recovery_uses_observer_once_and_unblocks_both_routes"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Recovery synchronizes the existing intake receipt without another assignment write",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-INTAKE-RECEIPT",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_recovery_synchronizes_existing_intake_receipt_without_reissuing"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment refuses controller storage inside worktrees before mutation",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-STORAGE",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_store_inside_worktree_refuses_before_mutation"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Real bootstrap forwards protected storage through intake, project-start and owner change",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-BOOTSTRAP",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_bootstrap_intake_project_start_and_owner_change_forward_store"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Only locally proven unattempted assignment reads resume through BLOCK without a mutation",
+      "permanent": true,
+      "regression_id": "AWF243-AUX6-READ-BEFORE",
+      "source_finding_id": null,
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre6_read_before_failure_recovers_only_locally_proven_unattempted_assignment"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Protected recovered assignment restores empty or stale intake caches without repeat writes",
+      "permanent": true,
+      "regression_id": "AWF243-AUX7-PROTECTED-CURRENT",
+      "source_finding_id": "AWF243-AUX7-1",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre7_protected_current_assignment_restores_empty_and_stale_cache"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Configured Done hold permits enabled lifecycle and assignment mappings after restart",
+      "permanent": true,
+      "regression_id": "AWF243-AUX7-HELD",
+      "source_finding_id": "AWF243-AUX7-2",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre7_done_hold_allows_enabled_lifecycle_and_assignment_after_reopen"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Assignment and ordinary history preserve every full binding invariant and binding form",
+      "permanent": true,
+      "regression_id": "AWF243-AUX7-ASSIGNMENT-BINDING",
+      "source_finding_id": "AWF243-AUX7-3",
+      "test_id": "AssignmentSharedAdmissionRegressions.test_pre7_assignment_and_ordinary_history_retain_full_binding"
     }
   ]
 }

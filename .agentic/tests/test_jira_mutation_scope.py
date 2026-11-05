@@ -60,7 +60,7 @@ class JiraMutationScopeTests(unittest.TestCase):
 
     def assign(self, jira, config=None):
         return write_tier_assignment(jira, self.assignment, config=self.config if config is None else config,
-                                     controller_actor_id="fixture-controller", acting_actor_id="fixture-controller")
+                                     controller_actor_id="fixture-controller", acting_actor_id="fixture-controller", store=self.store)
 
     def lifecycle(self, observer, writes):
         return production_jira_lifecycle(self.store, config=self.config, contract={},
@@ -145,7 +145,7 @@ class JiraMutationScopeTests(unittest.TestCase):
         ticket = {"key": KEY, "summary": "Routine work", "description": "",
                   "write_paths": ["src/widget.py"], "risk_flags": []}
         with self.assertRaises(ValidationError):
-            assign_intake(self.config, ticket, state, jira, now=NOW, controller_actor_id="fixture-controller")
+            assign_intake(self.config, ticket, state, jira, now=NOW, controller_actor_id="fixture-controller", store=self.store)
         self.assertFalse(any(call in {"labels", "comment"} for call in jira.calls))
         self.assertNotIn(KEY, state.get("tier_assignments", {}))
 

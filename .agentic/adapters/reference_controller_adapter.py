@@ -1432,8 +1432,20 @@ def _build(config):
 		return {'operation_id': record['operation_id'], 'issue_id': issue_id, 'status': 'ATTEMPTED', 'observed_at': attempted_at, 'jira_provider': record['jira_provider']}
 
 	def read_transition(record, operation):
+		# Older batch journals used provider_project_id in immutable intents.
+		# Normalize only the observer's copy; never rewrite their retained bytes.
+		from agentic.continuous_controller import _jira_record_provider
+		record = deepcopy(record)
+		record['jira_provider'] = _jira_record_provider(record)
 		issue_id = record['binding']['issue_id']
+		_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'}
+			and operation['operation_id'] == record['operation_id'] and operation['issue_id'] == issue_id
+			and operation['jira_provider'] == record['jira_provider'] and operation['status'] == 'ATTEMPTED',
+			'Jira transition readback has a missing or mismatched operation')
+		operation_time = timestamp(operation['observed_at'])
 		value = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '?fields=status&expand=changelog')
+		observed_at = _clock_text(clock)
+		observation_time = timestamp(observed_at)
 		status = value.get('fields', {}).get('status', {}).get('id')
 		histories = value.get('changelog', {}).get('histories')
 		_require(isinstance(status, str) and status and isinstance(histories, list), 'Jira transition history is unavailable')
@@ -1441,39 +1453,26 @@ def _build(config):
 		for history in histories:
 			if not isinstance(history, dict) or not isinstance(history.get('created'), str):
 				continue
-			_require(isinstance(operation, dict) and isinstance(operation.get('observed_at'), str), 'Jira transition readback has no operation attempt time')
-			operation_time = operation['observed_at']
-			if timestamp(history['created']) < timestamp(operation_time):
+			if not operation_time <= timestamp(history['created']) <= observation_time:
 				continue
 			author = history.get('author', {})
 			actor = author.get('accountId') if isinstance(author, dict) else None
 			for item in history.get('items', []):
 				if not isinstance(item, dict) or item.get('field') != 'status':
 					continue
-				if item.get('to') == record.get('to_status_id') or item.get('toString') == status:
+				if item.get('to') == record.get('to_status_id'):
 					if isinstance(actor, str) and actor:
 						candidates.append((history['created'], actor))
 		_require(candidates, 'Jira transition history does not prove the current transition')
 		candidates.sort(key=lambda item: item[0])
 		_created, actor = candidates[-1]
-		observed_at = _clock_text(clock)
 		return {'issue_id': issue_id, 'status': status, 'actor': actor, 'observed_at': observed_at, 'jira_provider': record['jira_provider']}
 
 	def reconcile_merged_ticket(ticket):
-		_text(ticket, 'Merged Jira ticket')
-		provider = provider_identity()
-		before = read_current_status({'issue_id': ticket, 'jira_provider': provider})
-		target = jira['merged_status_id']
-		operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'awf:jira-merge:' + jira['cloud_id'] + ':' + ticket))
-		if before['status_id'] != target:
-			record = {'operation_id': operation_id, 'binding': {'issue_id': ticket}, 'transition_id': jira['merged_transition_id'], 'to_status_id': target, 'jira_provider': provider}
-			operation = write_transition({**record, 'producer_id': provider['controller_actor_id']})
-			after = read_transition({**record, 'producer_id': provider['controller_actor_id']}, operation)
-		else:
-			after = {'issue_id': ticket, 'status': target, 'actor': provider['controller_actor_id'], 'observed_at': before['observed_at'], 'jira_provider': provider}
-		_require(after.get('actor') == provider['controller_actor_id'], 'Jira merge transition actor was not independently observed')
-		_require(after['status'] == target, 'Jira merge readback did not reach the configured terminal status')
-		return {'ticket': ticket, 'issue_id': ticket, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'], 'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': operation_id, 'before_status_id': before['status_id'], 'after_status_id': after['status'], 'observed_at': after['observed_at']}
+		# A ticket string cannot carry the protected controller journal, observed
+		# merge guards or owner-closure policy. Retain a fail-closed diagnostic for
+		# old consumers; all transitions go through production_jira_lifecycle.
+		raise ValidationError('Use controller jira-lifecycle for durable post-merge reconciliation; legacy reconciliation cannot write')
 	scope_snapshots = {}
 
 	def fetch_scope_page(scope, cursor):
