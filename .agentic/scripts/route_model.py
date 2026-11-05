@@ -86,6 +86,20 @@ def main(argv=None):
                 with admission_snapshot(args, config) as operating:
                     result = select_route(policy, request, capabilities, operating=operating, governance=config)
             else:
+                if args.command == 'reserve' and args.ledger is None:
+                    from agentic.budgeting import resolve_settings
+                    with admission_snapshot(args, config) as operating:
+                        settings = resolve_settings(operating.config if operating is not None else {})
+                        if settings['accounting_enabled']:
+                            raise ValidationError('--ledger is required for enabled accounting or legacy admission')
+                        # This CLI never launches. The host still admits
+                        # ownership, security, recovery and capacity separately.
+                        result = select_route(policy, request, capabilities, operating=operating, governance=config)
+                        result.update(budget_required=False, budgeting=settings, admitted=False,
+                                      dispatch_performed=False, requires_host_limit_enforcement=False,
+                                      operational_admission_required=True)
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                    return 0 if result.get('status') == 'ready' else 2
                 if args.ledger is None:
                     raise ValidationError("--ledger is required")
                 project_root = (args.project_root or args.config.parent.parent).resolve()

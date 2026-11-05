@@ -57,6 +57,7 @@ _RUNTIME_IMPORTS = {
     "referencing": "referencing",
     "rpds-py": "rpds",
     "typing-extensions": "typing_extensions",
+    "tzdata": "tzdata",
 }
 _STARTUP_HOOKS = {"sitecustomize.py", "usercustomize.py"}
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *{"COM" + str(value) for value in range(1, 10)},
@@ -473,7 +474,7 @@ def _validate_runtime(interpreter, root, runtime_root, expected_versions, expect
     script = (
         "import importlib,importlib.metadata as m,json,sys,sysconfig;"
         "mods={'attrs':'attrs','jsonschema':'jsonschema','jsonschema-specifications':'jsonschema_specifications',"
-        "'pyyaml':'yaml','referencing':'referencing','rpds-py':'rpds','typing-extensions':'typing_extensions'};"
+        "'pyyaml':'yaml','referencing':'referencing','rpds-py':'rpds','typing-extensions':'typing_extensions','tzdata':'tzdata'};"
         "[importlib.import_module(v) for v in mods.values()];"
         "print(json.dumps({'versions':{k:m.version(k) for k in mods},'prefix':sys.prefix,"
         "'purelib':sysconfig.get_path('purelib'),'platlib':sysconfig.get_path('platlib')},sort_keys=True))"
@@ -659,11 +660,11 @@ def detect_test_command(root):
     return None
 
 
-def assign_project_start(config, inventory, state, jira_client, *, now, controller_actor_id):
+def assign_project_start(config, inventory, state, jira_client, *, now, controller_actor_id, store=None):
     """Adoption hook: assign every supplied inventory ticket before dispatch."""
     from .intake_assignment import assign_inventory
     return assign_inventory(config, inventory, state, jira_client, now=now,
-                            controller_actor_id=controller_actor_id, source="project_start")
+                            controller_actor_id=controller_actor_id, source="project_start", store=store)
 
 
 def operating_capacity_proposal(config, *, existing, requested=False, dry_run=False):

@@ -446,6 +446,12 @@ def generate(output_root, source_root=ROOT):
     from agentic.operating import default_operating
     fresh_policy = default_policy(source_root / ".agentic/defaults/routing.yaml")
     fresh_operating = default_operating(fresh_policy, count=12)
+    # Fresh defaults explicitly carry dormant AWF-242 settings. Missing blocks
+    # in upgraded projects continue to mean preservation of legacy behavior.
+    from agentic.budgeting import fresh_settings
+    fresh_operating['budgeting'] = fresh_settings()
+    from agentic.operating_calendar import effective_calendar
+    fresh_operating['operating_calendar'] = effective_calendar({})
     operating = default_operating(generation_policy)
     write(output_root / "OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", operating)

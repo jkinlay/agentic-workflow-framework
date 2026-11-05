@@ -26,6 +26,8 @@ from .lane_labels import MAX_LANES, STREAM_LABELS
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
+from .budgeting import resolve_settings
+from .operating_calendar import effective_calendar, SETTING_PATHS
 
 CONFIG = "OPERATING_CONFIG.yaml"
 GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
@@ -135,11 +137,13 @@ def _stream(policy=None):
 
 def default_operating(policy=None, *, count=3):
     from .model_routing import default_policy, validate_policy
+    from .budgeting import fresh_settings
 
     policy = default_policy() if policy is None else validate_policy(deepcopy(policy))
     defaults = policy["role_defaults"]
     stream = _stream(policy)
-    return {"version": 1, "source": "default",
+    return {"version": 1, "source": "default", "budgeting": fresh_settings(),
+            "operating_calendar": effective_calendar({}),
             "streams": {"count": count,
                         **{label: deepcopy(stream) for label in stream_labels(count)}},
             "critic": deepcopy(defaults["critic"]),
@@ -168,7 +172,10 @@ def _upgrade_safe_operating(governance):
     simple = policy.get("simple_worker") if isinstance(policy, dict) else None
     if not all(isinstance(defaults.get(role), dict)
                for role in ("controller", "worker", "critic", "specialist")) or not isinstance(simple, dict):
-        return default_operating()
+        legacy = default_operating()
+        legacy.pop('budgeting')
+        legacy.pop('operating_calendar')
+        return legacy
     stream = {"worker": dict(defaults["worker"])}
     return {"version": 1, "source": "default",
             "streams": {"count": 3, **{label: deepcopy(stream) for label in stream_labels(3)}},
@@ -273,7 +280,18 @@ class OperatingSnapshot:
 
 def validate_operating(value, governance):
     """Validate choices against both allowlists/floors; never silently clamp."""
+    if isinstance(value, dict) and 'operating_calendar' in value:
+        try:
+            effective_calendar(value)
+        except ValidationError as exc:
+            fail('$.operating_calendar', str(exc))
     canonical(value)
+    if isinstance(value, dict) and 'budgeting' in value:
+        from .budgeting import validate_settings
+        try:
+            validate_settings(value['budgeting'])
+        except ValidationError as exc:
+            fail('$.budgeting', str(exc))
     execution = governance.get("execution") if isinstance(governance, dict) else None
     if not isinstance(execution, dict) or not isinstance(execution.get("model_routing"), dict):
         fail("$", "A complete governing execution/model_routing policy is required", "$.execution", execution)
@@ -511,7 +529,9 @@ def inspect_operating(project_root, governance):
     try:
         value = read_operating(project_root, governance)
         return {"status": "ACCEPTED", "hash": value.operating_hash, "source": value.source,
-                "streams": value.count, "last_change_id": value.last_change_id, "refusals": [], **operating_ceiling(governance)}
+                "streams": value.count, "last_change_id": value.last_change_id, "refusals": [],
+                "budgeting": resolve_settings(value.config),
+                **operating_ceiling(governance)}
     except OSError as exc:
         from .activation import access_diagnostic
         diagnostic = access_diagnostic(exc, "OPERATING_CONFIG.yaml or .agentic-state/operating")
@@ -578,7 +598,7 @@ def _new(tree, name, raw):
             pass
 
 
-def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None):
+def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, calendar_owner_observation=None):
     after = validate_operating(value, _bound_governance(tree, governance))
     events = _events(tree)
     if _read(tree, JOURNAL) is not None:
@@ -593,6 +613,10 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
              "before_hash": before_hash, "after_hash": after.operating_hash, "changes": changed,
              "source": value["source"], "applied_from": applied_from, "sequence": len(events) + 1,
              "previous_change_id": events[-1]["id"] if events else None, "governance_hash": after.governance_hash}
+    if budget_owner_observation is not None:
+        event['budget_owner_observation'] = deepcopy(budget_owner_observation)
+    if calendar_owner_observation is not None:
+        event['calendar_owner_observation'] = deepcopy(calendar_owner_observation)
     errors = _schema("operating-change", event)
     if errors:
         raise OperatingError(errors)
@@ -725,6 +749,15 @@ def recover_operating(project_root, governance, expected_journal_sha256):
 
 
 def _path(path, epic_id=None):
+    if path.startswith('operating_calendar.') and path[19:] in SETTING_PATHS:
+        if epic_id is not None:
+            fail('$.operating_calendar', 'Calendar settings are project-wide')
+        return path
+    from .budgeting import SETTINGS_KEYS
+    if path.startswith('budgeting.') and path[10:] in SETTINGS_KEYS:
+        if epic_id is not None:
+            fail('$.budgeting', 'Budget settings are project-wide')
+        return path
     qualified = re.fullmatch(r"epic_overrides\.([^.]+)\.(.+)", path)
     if qualified:
         if epic_id is not None:
@@ -761,6 +794,25 @@ def _put(value, path, selected):
 
 
 def _selection(path, text):
+    if path.startswith('operating_calendar.'):
+        if path.endswith('.enabled'):
+            if text not in {'true', 'false'}:
+                fail('$.' + path, 'Expected true or false')
+            return text == 'true'
+        if path.endswith('.weekdays'):
+            try:
+                return loads(text)
+            except ValueError:
+                fail('$.' + path, 'Expected a JSON list of ISO weekdays')
+        return text
+    if path.startswith('budgeting.'):
+        if path.endswith('_enabled'):
+            if text not in {'true', 'false'}:
+                fail('$.' + path, 'Expected true or false')
+            return text == 'true'
+        if not re.fullmatch(r'[0-9]+', text):
+            fail('$.' + path, 'Budget limit must be a positive integer')
+        return int(text)
     if path == "streams.count":
         if not re.fullmatch(r"[0-9]+", text):
             fail("$." + path, "Stream count must be an integer")
@@ -833,7 +885,7 @@ def _editable_snapshot(tree, governance, initialize):
         return OperatingSnapshot(canonical(value), fingerprint("operating", value), fingerprint("operating-governance", governance), events[-1]["id"]), raw
 
 
-def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None):
+def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, budget_registry=None, calendar_registry=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction.encode("utf-8")) > 65536:
         fail("$.instruction", "Record the nonempty bounded user instruction verbatim")
     if bool(assignments) == bool(recommendation_id) or bool(recommendation_id) != bool(accept):
@@ -867,6 +919,16 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                     fail("$." + path, "Duplicate or overlapping set paths")
                 selected[path] = _selection(path, text)
             source = "user"
+        budget_changes = {p[10:]: v for p, v in selected.items() if p.startswith('budgeting.')}
+        if budget_changes:
+            from .budgeting import transition_settings
+            if budget_registry is None:
+                fail('$.budgeting', 'Trusted-host owner observer required; chat words and source:user do not authenticate an owner')
+            current_budget = snapshot.config.get('budgeting')
+            if current_budget is None:
+                fail('$.budgeting', 'Legacy budgeting requires versioned adoption with an explicit budget disposition')
+            proposed = transition_settings(current_budget, budget_changes)
+            selected.update({'budgeting.' + k: v for k, v in proposed.items() if v != current_budget[k]})
         count = selected.get("streams.count", value["streams"]["count"])
         structural_ceiling = configured_lane_ceiling(governance)
         ceiling = operating_ceiling(governance)["effective_ceiling"]
@@ -882,10 +944,25 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             _put(value, path, choice)
         value["source"] = source
         validate_operating(value, governance)
+        calendar_changes = {p[19:]: v for p, v in selected.items() if p.startswith('operating_calendar.')}
+        calendar_admitted = None
+        if calendar_changes:
+            if calendar_registry is None:
+                fail('$.operating_calendar', 'Trusted-host owner observer required; chat words and source:user do not authenticate an owner')
+            calendar_admitted = calendar_registry.admit_owner_direction(
+                governance['project']['id'], effective_calendar(snapshot.config), calendar_changes)
+            if calendar_admitted['settings'] != effective_calendar(value):
+                fail('$.operating_calendar', 'Trusted-host calendar admission differs from validated settings')
+        if budget_changes:
+            admitted = budget_registry.admit_owner_direction(governance['project']['id'], current_budget, budget_changes)
+            if admitted['settings'] != value['budgeting']:
+                fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
         paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
-        return _commit(tree, governance, before, value, instruction, changes, "chat")
+        return _commit(tree, governance, before, value, instruction, changes, "chat",
+                       budget_owner_observation=admitted['observation'] if budget_changes else None,
+                       calendar_owner_observation=calendar_admitted['observation'] if calendar_admitted else None)
 
 
 def _scope(paths, epic_id):
@@ -1178,6 +1255,9 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
                   f"Escalation: ≤{policy['escalation']['max_escalations_per_ticket']} per ticket, effort ceiling {policy['escalation']['effort_ceiling']}; "
                   + "review floor " + _display(policy["review_floor"]) + "; risk route " + _display(policy["risk_route"]),
                   "Options: keep | review Epics and recommend | custom (say what you want)"])
+    from .budgeting import resolve_settings
+    lines.append('Budgeting (persisted effective settings): ' + json.dumps(resolve_settings(value), sort_keys=True))
+    lines.append('Operating calendar (effective settings): ' + json.dumps(effective_calendar(value), sort_keys=True))
     return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
 
 
@@ -1215,7 +1295,7 @@ def _local_state(root, governance):
         return "UNVERIFIED"
 
 
-def main(argv=None, default_root=None):
+def main(argv=None, default_root=None, *, budget_registry=None, calendar_registry=None):
     from .contracts import Contracts
     from .output import configure_streams, json_text
     configure_streams()
@@ -1250,7 +1330,8 @@ def main(argv=None, default_root=None):
             return 0
         if args.command == "set":
             snapshot = set_operating(args.root, governance, args.instruction, args.assignments,
-                                     recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic)
+                                     recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic,
+                                     budget_registry=budget_registry, calendar_registry=calendar_registry)
         elif args.command == "recover":
             snapshot = recover_operating(args.root, governance, args.expected_journal_sha256)
         else:
@@ -1260,6 +1341,7 @@ def main(argv=None, default_root=None):
                   "governance_hash": snapshot.governance_hash, "source": snapshot.source, "streams": snapshot.count,
                   **operating_ceiling(governance),
                   "last_change_id": snapshot.last_change_id, "configuration": snapshot.config,
+                  "effective_operating_calendar": effective_calendar(snapshot.config),
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
         print(json_text(result) if args.json else result["table"])
         return 0

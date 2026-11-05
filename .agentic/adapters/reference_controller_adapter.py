@@ -574,6 +574,23 @@ def _build(config):
 	clock = config.get('_clock') or _Clock()
 	_require(callable(getattr(clock, 'now', None)) and callable(getattr(clock, 'monotonic', None)), 'Clock injection is incomplete')
 
+	budgeting = None
+
+	def configure_budgeting(context=None, *, path=None, governance=None, operating=None, worktree_roots=()):
+		nonlocal budgeting
+		from agentic.budgeting import ControllerBudgeting
+		budgeting = context if context is not None else ControllerBudgeting(
+			path, governance, operating, runner, worktree_roots=(*worktree_roots, worktree_root))
+		_require(isinstance(budgeting, ControllerBudgeting), 'Budget context must come from the trusted controller')
+		return budgeting
+
+	def complete_budget(record, result):
+		admission = record.get('budget_admission')
+		if admission is not None:
+			_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
+			settlement = budgeting.complete(admission, result)
+			_require(settlement['accepted'], 'Budget routing settlement quarantined this dispatch')
+
 	def observation_evidence():
 		value = config.get('observations')
 		required = {'accepted_project_config', 'closeout_directory', 'jira_transition_directory'}
@@ -1168,6 +1185,14 @@ def _build(config):
 		terminal_proof_path = record_path.with_suffix('.terminal.json')
 		record = {'format': 'awf-reference-dispatch-2', 'dispatch_schema_version': 2, 'dispatch_id': payload['dispatch_id'], 'dispatch_nonce': payload['dispatch_nonce'], 'stream': payload['stream'], 'ticket': payload['ticket'], 'exact_tuple': payload['exact_tuple'], 'prepared_at': payload['prepared_at'], 'begun_at': payload['begun_at'], 'role': role, 'lifecycle_stage': payload['lifecycle_stage'], 'lane_start_waivers': list(payload['lane_start_waivers']), 'argv': argv, 'worktree': str(worktree), 'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest(), 'argv_sha256': hashlib.sha256(canonical(argv)).hexdigest(), 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_proof_path), 'terminal_proof_path': str(terminal_proof_path), 'status': 'PREPARED', 'created_at': _clock_text(clock)}
 		_write_record(record_path, record)
+		if budgeting is not None and role in {'writer', 'critic'}:
+			binding = {'project_id': budgeting.governance['project']['id'], 'ticket_id': payload['ticket'],
+				'run_id': launch_nonce, 'dispatch_id': payload['dispatch_id'],
+				'session_id': launch_nonce, 'role': 'worker' if role == 'writer' else 'critic'}
+			admission = budgeting.admit(binding, selected)
+			if admission is not None:
+				record['budget_admission'] = admission
+				_write_record(record_path, record)
 		_verify_executable(codex_executable)
 		launch_env = _safe_env(token_env)
 		launch_env['CODEX_HOME'] = str(isolated_home)
@@ -1220,6 +1245,7 @@ def _build(config):
 		record['startup_observed_at'] = _clock_text(clock)
 		if terminal:
 			record['observed_at'] = record['startup_observed_at']
+			complete_budget(record, result)
 		_write_record(record_path, record)
 		return _record_receipt(payload, record['startup_observed_at'], session_id, 'TERMINAL' if terminal else 'LAUNCHED')
 
@@ -1251,12 +1277,22 @@ def _build(config):
 			observed_session = result.get('session_id')
 			_require(isinstance(observed_session, str) and observed_session.strip(), 'Interrupted dispatch did not prove an observed session identity')
 			_require(record.get('session_id') in {None, observed_session}, 'Interrupted dispatch session identity changed')
+			complete_budget(record, result)
 			record['session_id'] = observed_session
 			record['status'] = 'COMPLETED'
 			record['observed_at'] = _clock_text(clock)
 			_write_record(path, record)
 		else:
 			_require(record.get('status') in {'LAUNCHED', 'COMPLETED'}, 'Dispatch has no accepted durable launch')
+			if record.get('budget_admission') is not None and record['status'] == 'LAUNCHED':
+				result = _invoke(runner, 'observe', record, timeout=timeout)
+				if result.get('terminal') is True:
+					_require(result.get('status') == 'COMPLETED' and result.get('returncode') == 0
+						and result.get('pid') == record['pid'] and result.get('launch_nonce') == record['launch_nonce']
+						and result.get('session_id') == record['session_id'], 'Budget completion process identity differs')
+					complete_budget(record, result)
+					record.update(status='COMPLETED', observed_at=_clock_text(clock))
+					_write_record(path, record)
 		_require(isinstance(record.get('session_id'), str) and record['session_id'].strip(), 'Dispatch durable record has no observed session identity')
 		return _record_receipt(payload, _clock_text(clock), record['session_id'], 'TERMINAL' if record['status'] == 'COMPLETED' else 'LAUNCHED', reconcile=reconcile)
 
@@ -1432,8 +1468,20 @@ def _build(config):
 		return {'operation_id': record['operation_id'], 'issue_id': issue_id, 'status': 'ATTEMPTED', 'observed_at': attempted_at, 'jira_provider': record['jira_provider']}
 
 	def read_transition(record, operation):
+		# Older batch journals used provider_project_id in immutable intents.
+		# Normalize only the observer's copy; never rewrite their retained bytes.
+		from agentic.continuous_controller import _jira_record_provider
+		record = deepcopy(record)
+		record['jira_provider'] = _jira_record_provider(record)
 		issue_id = record['binding']['issue_id']
+		_require(isinstance(operation, dict) and set(operation) == {'operation_id', 'issue_id', 'status', 'observed_at', 'jira_provider'}
+			and operation['operation_id'] == record['operation_id'] and operation['issue_id'] == issue_id
+			and operation['jira_provider'] == record['jira_provider'] and operation['status'] == 'ATTEMPTED',
+			'Jira transition readback has a missing or mismatched operation')
+		operation_time = timestamp(operation['observed_at'])
 		value = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '?fields=status&expand=changelog')
+		observed_at = _clock_text(clock)
+		observation_time = timestamp(observed_at)
 		status = value.get('fields', {}).get('status', {}).get('id')
 		histories = value.get('changelog', {}).get('histories')
 		_require(isinstance(status, str) and status and isinstance(histories, list), 'Jira transition history is unavailable')
@@ -1441,39 +1489,26 @@ def _build(config):
 		for history in histories:
 			if not isinstance(history, dict) or not isinstance(history.get('created'), str):
 				continue
-			_require(isinstance(operation, dict) and isinstance(operation.get('observed_at'), str), 'Jira transition readback has no operation attempt time')
-			operation_time = operation['observed_at']
-			if timestamp(history['created']) < timestamp(operation_time):
+			if not operation_time <= timestamp(history['created']) <= observation_time:
 				continue
 			author = history.get('author', {})
 			actor = author.get('accountId') if isinstance(author, dict) else None
 			for item in history.get('items', []):
 				if not isinstance(item, dict) or item.get('field') != 'status':
 					continue
-				if item.get('to') == record.get('to_status_id') or item.get('toString') == status:
+				if item.get('to') == record.get('to_status_id'):
 					if isinstance(actor, str) and actor:
 						candidates.append((history['created'], actor))
 		_require(candidates, 'Jira transition history does not prove the current transition')
 		candidates.sort(key=lambda item: item[0])
 		_created, actor = candidates[-1]
-		observed_at = _clock_text(clock)
 		return {'issue_id': issue_id, 'status': status, 'actor': actor, 'observed_at': observed_at, 'jira_provider': record['jira_provider']}
 
 	def reconcile_merged_ticket(ticket):
-		_text(ticket, 'Merged Jira ticket')
-		provider = provider_identity()
-		before = read_current_status({'issue_id': ticket, 'jira_provider': provider})
-		target = jira['merged_status_id']
-		operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'awf:jira-merge:' + jira['cloud_id'] + ':' + ticket))
-		if before['status_id'] != target:
-			record = {'operation_id': operation_id, 'binding': {'issue_id': ticket}, 'transition_id': jira['merged_transition_id'], 'to_status_id': target, 'jira_provider': provider}
-			operation = write_transition({**record, 'producer_id': provider['controller_actor_id']})
-			after = read_transition({**record, 'producer_id': provider['controller_actor_id']}, operation)
-		else:
-			after = {'issue_id': ticket, 'status': target, 'actor': provider['controller_actor_id'], 'observed_at': before['observed_at'], 'jira_provider': provider}
-		_require(after.get('actor') == provider['controller_actor_id'], 'Jira merge transition actor was not independently observed')
-		_require(after['status'] == target, 'Jira merge readback did not reach the configured terminal status')
-		return {'ticket': ticket, 'issue_id': ticket, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'], 'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': operation_id, 'before_status_id': before['status_id'], 'after_status_id': after['status'], 'observed_at': after['observed_at']}
+		# A ticket string cannot carry the protected controller journal, observed
+		# merge guards or owner-closure policy. Retain a fail-closed diagnostic for
+		# old consumers; all transitions go through production_jira_lifecycle.
+		raise ValidationError('Use controller jira-lifecycle for durable post-merge reconciliation; legacy reconciliation cannot write')
 	scope_snapshots = {}
 
 	def fetch_scope_page(scope, cursor):
@@ -1651,6 +1686,7 @@ def _build(config):
 		_require(isinstance(body, str) and comment['user'].get('id') == request['actor_id'] and body == owner_source.get('raw_body') and sha256(body.encode('utf-8')) == request['raw_body_sha256'], 'GitHub owner comment differs from the recorded owner source')
 		_require(comment.get('created_at') == comment.get('updated_at') == owner_source.get('created_at'), 'GitHub owner comment was edited or differs from its recorded time')
 		return {'status': 'VERIFIED', 'actor_id': request['actor_id'], 'binding': deepcopy(request['binding']), 'raw_body_sha256': request['raw_body_sha256'], 'source_id': 'github-comment:' + comment['node_id'], 'observed_at': _clock_text(clock)}
+	dispatch_ticket.configure_budgeting = configure_budgeting
 	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'observe_issue_policy': observe_issue_policy, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
 
 def build_adapters(config):

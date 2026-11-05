@@ -3,6 +3,7 @@ from pathlib import Path
 import copy
 import sys
 import unittest
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
@@ -31,6 +32,12 @@ class FakeJira:
 
 
 class JiraAssignmentWrites(unittest.TestCase):
+    def setUp(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = ContinuousControllerStore(Path(temporary.name) / 'controller.sqlite', ['B'])
+
     def assignment(self):
         return {"assignment_id": "assign-1", "ticket_key": "AWF-48", "tier": 3,
                 "round_cap": 3, "owner_review_required": True, "reasons": ["governance"]}
@@ -38,7 +45,10 @@ class JiraAssignmentWrites(unittest.TestCase):
     def test_controller_writes_label_and_comment_then_reads_back(self):
         jira = FakeJira()
         result = write_tier_assignment(jira, self.assignment(), controller_actor_id="controller",
-                                       acting_actor_id="controller", config={"jira": {"enabled": True, "project_key": "AWF",
+                                       acting_actor_id="controller", store=self.store, config={"project": {"id": "local-project"}, "github": {"repository_id": "101"},
+                                           "jira": {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                                           "provider_project_id": "project-1", "controller_actor_id": "controller",
+                                           "enabled": True, "project_key": "AWF",
                                            "scope": {"allow_entire_project": False, "selector_mode": "all",
                                                      "included_epics": ["AWF-1"], "labels_any": [], "components_any": [],
                                                      "ownership_required": True, "additional_jql": ""}}})
@@ -62,7 +72,10 @@ class JiraAssignmentWrites(unittest.TestCase):
         jira.add_comment = fail_comment
         with self.assertRaises(TierAssignmentOutcomeError) as raised:
             write_tier_assignment(jira, self.assignment(), controller_actor_id="controller",
-                                  acting_actor_id="controller", config={"jira": {"enabled": True, "project_key": "AWF",
+                                  acting_actor_id="controller", store=self.store, config={"project": {"id": "local-project"}, "github": {"repository_id": "101"},
+                                           "jira": {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                                           "provider_project_id": "project-1", "controller_actor_id": "controller",
+                                           "enabled": True, "project_key": "AWF",
                                            "scope": {"allow_entire_project": False, "selector_mode": "all",
                                                      "included_epics": ["AWF-1"], "labels_any": [], "components_any": [],
                                                      "ownership_required": True, "additional_jql": ""}}})

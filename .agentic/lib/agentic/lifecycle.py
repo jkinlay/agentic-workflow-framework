@@ -243,7 +243,7 @@ def validate_workflow(value):
     return True
 
 
-def transition(state, event, facts=None, resume_state=None):
+def transition(state, event, facts=None, resume_state=None, *, budgeting=None):
     facts = facts or {}
     if state not in STATES:
         raise ValidationError("Unknown state")
@@ -251,6 +251,11 @@ def transition(state, event, facts=None, resume_state=None):
     if event not in known_events:
         raise ValidationError("Unknown event")
     def require(*names):
+        if budgeting is not None:
+            from .budgeting import validate_settings
+            settings = validate_settings(budgeting)
+            if not settings['enforcement_enabled']:
+                names = tuple(name for name in names if name != 'budget_reserved')
         missing = [name for name in names if facts.get(name) is not True]
         if missing:
             raise ValidationError("Missing verified guards: " + ", ".join(missing))

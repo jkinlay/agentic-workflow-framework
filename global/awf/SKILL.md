@@ -16,6 +16,32 @@ When adoption reaches CONFIGURED, show `workflow.py operating show` and offer: k
 
 Follow the located ticket lifecycle. On COMPLETE, push the assigned feature branch/open a draft PR before handoff. Observe PR/head and current validation before mark-ready and critic review. READY_FOR_CRITIC precedes READY_FOR_OWNER_AUTHORIZATION after critic, specialists and final gate; neither permits merge.
 
+For budget choices, read verified `.agentic/docs/39-BUDGETING.md` and inspect
+installed controls first. Fresh 1.9.6 defaults accounting/enforcement OFF, with
+dormant limits exactly 4,000,000 tokens per ticket and 1,000,000,000 per project
+lifetime. A limit enables neither switch; enforcement requires accounting, and
+disabling accounting disables enforcement. Preserve upgraded behavior until
+owner adoption; installed 1.9.5 stays unchanged/enabled. Recommend versioned
+preservation, never in-place edits to integrity-managed bytes or receipts.
+
+Budget owner-direction admission requires an infrastructure-installed trusted
+host observation bound to project, exact changes and prior settings hash. Chat
+text, `source: user`, caller-authored identity and observation files cannot
+authenticate the owner. Until owner selection, do not claim live control or
+invent `operating set`; qualified integration must echo the change, use the
+supported admission/persistence transaction and show reopened effective settings.
+Otherwise state the exact missing integration without changing policy. Accept
+recommendations.
+
+Enabled budgets cover only explicitly enrolled AWF sub-agent runs and attributable
+tools/retries; exclude the main controller and independent agents, including
+ULTRA agents. Preserve UNKNOWN attribution, historical charges, failures and
+running reservation identities across OFF/ON; never reset lifetime totals or
+invent retrospective zero usage. OFF new work needs no ledger, telemetry,
+reservations, quotas, warnings or overrun quarantine; independent security,
+permissions, review, merge, host capacity and bounded recovery still apply.
+Inspect integration before claiming.
+
 The controller is the sole Jira writer and mirrors the lifecycle: WORKER_STARTED → `in_progress`, PR_READY → `in_review`, owner-requested changes → `in_progress`, JIRA_RECONCILED after the observed merge → `done` (closing comment names PR, reviewed head, merge commit); BLOCK/PARK never write; owner-closure tickets stay In Review; never Epics. Read before/after; mismatch/unknown stops that ticket's writes, retains observed actor/time or unknown, reports a suspected external conflict, never retries. Post digests, not prose.
 
 Declare each contract's risk tier and closure standard before review; block only on an acceptance criterion or a mandatory boundary; at the amendment cap record one owner disposition (merge with notes, park, rescope, bounded extension). Read the located review-tiers runbook.

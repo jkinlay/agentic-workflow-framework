@@ -117,18 +117,129 @@ class TwelveStreamTests(unittest.TestCase):
                     self.route(self.request(stream=stream, role="critic", worker_context_id="independent"), snapshot)
 
     def test_upper_lanes_are_draining_after_capacity_reduction(self):
+        from test_model_routing import outcome
+
         reduced = deepcopy(self.value)
         reduced["streams"]["count"] = 3
         snapshot = validate_operating(reduced, self.gov)
+        reduced["streams"]["count"] = 6
+        six_streams = validate_operating(reduced, self.gov)
         with tempfile.TemporaryDirectory() as temporary:
             ledger = RoutingLedger(Path(temporary) / "routing.sqlite")
-            for stream in "GHIJKL":
-                with self.subTest(stream=stream):
+            cases = ((stream, first, continuation) for stream in "GHIJKL"
+                     for first in ("worker", "fix") for continuation in ("worker", "fix"))
+            for stream, first_role, role in cases:
+                with self.subTest(stream=stream, first_role=first_role, role=role):
                     request = self.request(stream=stream)
                     self.assertTrue(self.route(request, snapshot)["draining"])
                     with self.assertRaisesRegex(ValidationError, "draining"):
                         ledger.reserve("project", self.policy, request, self.capabilities,
                                        operating=snapshot, governance=self.gov)
+                    owned = self.request(stream=stream, role=first_role,
+                                         ticket_id="FIX-" + stream + "-" + first_role + "-" + role, agent_id="agent-X")
+                    first = ledger.reserve("project", self.policy, owned, self.capabilities,
+                                           operating=self.operating, governance=self.gov)
+                    self.assertEqual("reserved", first["status"])
+                    settled = ledger.settle(first["run_id"], outcome(first, actual_context_id=owned["context_id"]))
+                    self.assertTrue(settled["accepted"])
+                    for changed in ({"ticket_id": "NEW-" + stream}, {"agent_id": "agent-Y"}):
+                        with self.assertRaisesRegex(ValidationError, "[Dd]raining"):
+                            ledger.reserve("project", self.policy, {**owned, **changed, "role": role},
+                                           self.capabilities, operating=six_streams, governance=self.gov)
+                    continued = ledger.reserve("project", self.policy, {**owned, "role": role},
+                                               self.capabilities, operating=six_streams, governance=self.gov)
+                    self.assertEqual("reserved", continued["status"])
+                    self.assertTrue(continued["draining"])
+                    self.assertEqual(six_streams.operating_hash, continued["operating_hash"])
+                    settled = ledger.settle(continued["run_id"], outcome(continued, actual_context_id=owned["context_id"]))
+                    self.assertTrue(settled["accepted"])
+
+    def test_draining_new_tickets_refuse_every_role(self):
+        reduced = deepcopy(self.value)
+        reduced["streams"]["count"] = 6
+        snapshot = validate_operating(reduced, self.gov)
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = RoutingLedger(Path(temporary) / "routing.sqlite")
+            for stream in ("G", "L"):
+                for role in ("worker", "fix", "critic", "specialist", "controller"):
+                    with self.subTest(stream=stream, role=role):
+                        request = self.request(stream=stream, role=role, worker_context_id="other-context")
+                        with self.assertRaisesRegex(ValidationError, "no previously admitted ticket"):
+                            ledger.reserve("project", self.policy, request, self.capabilities,
+                                           operating=snapshot, governance=self.gov)
+
+    def test_draining_review_history_never_grants_implementation_ownership(self):
+        from test_model_routing import outcome
+
+        reduced = deepcopy(self.value)
+        reduced["streams"]["count"] = 6
+        snapshot = validate_operating(reduced, self.gov)
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = RoutingLedger(Path(temporary) / "routing.sqlite")
+
+            def settle(request, operating):
+                reserved = ledger.reserve("project", self.policy, request, self.capabilities,
+                                          operating=operating, governance=self.gov)
+                self.assertEqual("reserved", reserved["status"])
+                self.assertTrue(ledger.settle(reserved["run_id"], outcome(
+                    reserved, actual_context_id=request["context_id"]))["accepted"])
+
+            for stream in ("G", "L"):
+                for review_role in ("critic", "specialist"):
+                    with self.subTest(stream=stream, review_role=review_role):
+                        review = self.request(stream=stream, ticket_id="REVIEW-" + stream + "-" + review_role,
+                                              role=review_role, agent_id="agent-Y", context_id="review-context",
+                                              worker_context_id="writer-context")
+                        settle(review, self.operating)
+                        # A retained ticket with review history alone has no implementation owner.
+                        for role in ("worker", "fix"):
+                            for agent in ("agent-X", "agent-Y"):
+                                with self.subTest(role=role, agent=agent), self.assertRaisesRegex(
+                                        ValidationError, "previously admitted implementation identity"):
+                                    ledger.reserve("project", self.policy, {**review, "role": role, "agent_id": agent},
+                                                   self.capabilities, operating=snapshot, governance=self.gov)
+                        owned = {**review, "role": "fix", "agent_id": "agent-X", "context_id": "writer-context"}
+                        settle(owned, self.operating)
+                        # Later reviews must not replace that implementation owner either.
+                        settle(review, snapshot)
+                        for role in ("worker", "fix"):
+                            with self.subTest(role=role):
+                                with self.assertRaisesRegex(ValidationError, "previously admitted implementation identity"):
+                                    ledger.reserve("project", self.policy, {**review, "role": role}, self.capabilities,
+                                                   operating=snapshot, governance=self.gov)
+                                settle({**owned, "role": role}, snapshot)
+
+    def test_draining_keeps_only_latest_admitted_implementation_agent(self):
+        from test_model_routing import outcome
+
+        reduced = deepcopy(self.value)
+        reduced["streams"]["count"] = 6
+        snapshot = validate_operating(reduced, self.gov)
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = RoutingLedger(Path(temporary) / "routing.sqlite")
+            for stream in ("G", "L"):
+                for first_role in ("worker", "fix"):
+                    for last_role in ("worker", "fix"):
+                        with self.subTest(stream=stream, first_role=first_role, last_role=last_role):
+                            request = self.request(stream=stream,
+                                                   ticket_id="LATEST-" + stream + "-" + first_role + "-" + last_role)
+                            for agent, role in (("agent-X", first_role), ("agent-Y", last_role)):
+                                reserved = ledger.reserve("project", self.policy, {**request, "agent_id": agent, "role": role},
+                                                          self.capabilities, operating=self.operating, governance=self.gov)
+                                self.assertEqual("reserved", reserved["status"])
+                                self.assertTrue(ledger.settle(reserved["run_id"], outcome(
+                                    reserved, actual_context_id=request["context_id"]))["accepted"])
+                            for role in ("worker", "fix"):
+                                with self.subTest(role=role):
+                                    with self.assertRaisesRegex(ValidationError, "previously admitted implementation identity"):
+                                        ledger.reserve("project", self.policy, {**request, "agent_id": "agent-X", "role": role},
+                                                       self.capabilities, operating=snapshot, governance=self.gov)
+                                    continued = ledger.reserve("project", self.policy, {**request, "agent_id": "agent-Y", "role": role},
+                                                               self.capabilities, operating=snapshot, governance=self.gov)
+                                    self.assertEqual("reserved", continued["status"])
+                                    self.assertTrue(continued["draining"])
+                                    self.assertTrue(ledger.settle(continued["run_id"], outcome(
+                                        continued, actual_context_id=request["context_id"]))["accepted"])
 
     def test_fresh_operating_template_and_legacy_missing_file_are_distinct(self):
         with tempfile.TemporaryDirectory() as temporary:
