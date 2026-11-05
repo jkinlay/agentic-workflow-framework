@@ -24,7 +24,7 @@ Verify and prepare [bundled source](assets/agentic-workflow-template-v1.9.6.zip)
 python -B PATH_TO_SKILL/scripts/prepare_release.py --cache-dir ABSOLUTE_EXTERNAL_CACHE --version 1.9.6
 ```
 
-Use Python 3.11+ and a separate cache with existing parent. Preserve differing/incomplete caches. Use the catalog. Read verified AGENTS, specification and configuration, then the relevant runbook.
+Use Python 3.11+ and separate cache with existing parent. Preserve differing/incomplete caches. Use catalog. Read verified AGENTS, specification/configuration, then relevant runbook.
 
 For execution, read [routing](references/model-routing.md). Fresh defaults: twelve workers, one shared independent critic/adversarial handler and one controller (fourteen slots); host capacity binds. Keep one writer per path and independent reviewer contexts.
 
@@ -32,34 +32,31 @@ When adoption reaches CONFIGURED, show `workflow.py operating show` and offer: k
 
 Follow `.agentic/docs/23-TICKET-LIFECYCLE.md`. COMPLETE publishes a draft PR. A Git-denied worker returns `tested_tree`, `changes` and `ignored_untracked`; the publisher requires `HEAD^{tree}` equality. Validation or green CI never permits mark-ready alone. Require an explicit owner/manager authorization record for PR/head, a pre-issued request and an authenticated immutable provider observation binding accepted configuration and trusted time; otherwise retain the refusal and draft. Authorized mark-ready plus observed `draft_cleared` permits critic review. READY_FOR_CRITIC precedes owner-ready. All publication gates remain.
 
-For budget choices, read the verified `.agentic/docs/39-BUDGETING.md` and inspect
-the installed runtime's supported controls first. The 1.9.6 contract defaults
-accounting and enforcement OFF on fresh setups, with dormant limits exactly
-4,000,000 tokens per ticket and 1,000,000,000 for the project lifetime. Editing
-a limit alone enables neither switch. Enforcement requires accounting;
-disabling accounting disables dependent enforcement. Preserve an upgraded
-installation's documented behavior until explicit owner adoption; installed
-1.9.5 remains unchanged and enabled. Recommend versioned preservation adoption,
-never an in-place edit to integrity-managed bytes or receipts.
+For budget choices, read verified `.agentic/docs/39-BUDGETING.md` and inspect
+installed controls first. Fresh 1.9.6 defaults accounting/enforcement OFF, with
+dormant limits exactly 4,000,000 tokens per ticket and 1,000,000,000 per project
+lifetime. A limit enables neither switch; enforcement requires accounting, and
+disabling accounting disables enforcement. Preserve upgraded behavior until
+owner adoption; installed 1.9.5 stays unchanged/enabled. Recommend versioned
+preservation, never in-place edits to integrity-managed bytes or receipts.
 
 Budget owner-direction admission requires an infrastructure-installed trusted
-host observation bound to project, exact changes and prior settings hash.
-Chat text, `source: user`, caller-authored identity and observation files cannot
-authenticate the owner. The UI route and identity source remain pending owner
-selection; do not claim authenticated live control or invent an available
-budget `operating set` command. When qualified integration exists, echo the
-requested change, use the supported admission/persistence transaction and show
-reopened configured/effective settings. Otherwise state the exact missing
-integration without changing budget policy. Recommendations require acceptance.
+host observation bound to project, exact changes and prior settings hash. Chat
+text, `source: user`, caller-authored identity and observation files cannot
+authenticate the owner. Until owner selection, do not claim live control or
+invent `operating set`; qualified integration must echo the change, use the
+supported admission/persistence transaction and show reopened effective settings.
+Otherwise state the exact missing integration without changing policy. Accept
+recommendations.
 
-Enabled budgets cover only explicitly enrolled AWF sub-agent runs and their
-attributable tools/retries. Exclude the main controller and independent agents,
-including ULTRA agents. Preserve UNKNOWN attribution, historical charges,
-failures and running reservation identities across OFF/ON changes; never reset
-lifetime totals or invent retrospective zero usage. OFF new work needs no
-budget ledger, telemetry, reservations, quotas, warnings or overrun quarantine;
-independent security, permissions, review, merge, host capacity and bounded
-recovery controls still apply. Inspect integration before claiming this behavior.
+Enabled budgets cover only explicitly enrolled AWF sub-agent runs and attributable
+tools/retries; exclude the main controller and independent agents, including
+ULTRA agents. Preserve UNKNOWN attribution, historical charges, failures and
+running reservation identities across OFF/ON; never reset lifetime totals or
+invent retrospective zero usage. OFF new work needs no ledger, telemetry,
+reservations, quotas, warnings or overrun quarantine; independent security,
+permissions, review, merge, host capacity and bounded recovery still apply.
+Inspect integration before claiming.
 
 Controller-only Jira mirroring: WORKER_STARTED → In Progress; PR_READY → In Review; owner/review-head changes → In Progress; post-merge JIRA_RECONCILED → Done with closing comment. BLOCK/PARK never write or transition Epics. Read before/after; mismatch/unknown stops that ticket's writes, retains observed actor/time or unknown, reports external-automation conflict without retry. Others continue. `--codeowner` maps new entries (default `@maintainer`); handles prove neither access, independence nor eligibility.
 
