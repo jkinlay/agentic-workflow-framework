@@ -328,6 +328,13 @@ def load_config(path, runtime_root, *, require_qualification=True):
     return config
 
 
+class _HostCommandFailure(ValidationError):
+    """A terminal command failure with retained bounded output."""
+    def __init__(self, message, *, failure_kind):
+        super().__init__(message)
+        self.failure_kind = failure_kind
+
+
 class HostDriver:
     requires_critic_binding = True
 
@@ -377,56 +384,66 @@ class HostDriver:
     def observe_budget_admission(self, binding, selected):
         from ..budgeting import subprocess_budget_request
         self.observe_enrollment(binding)
-        worker_context = None
-        worker_run = None
-        if binding['role'] in ('critic', 'specialist'):
-            # The latest worker for this project/ticket is the execution under
-            # review, not the set of all historical contexts on this host.
-            with self.budgeting._ledger()._transaction() as db:
-                rows = db.execute("SELECT run_id,outcome FROM model_runs WHERE project_id=? AND ticket_id=? "
-                    "AND role IN ('worker','fix') ORDER BY rowid DESC",
-                    (binding['project_id'], binding['ticket_id'])).fetchall()
-            for row in rows:
-                outcome = loads(row['outcome'] or '{}')
-                if outcome.get('actual_context_id') and outcome.get('actual_context_observed') is not False:
-                    worker_context, worker_run = outcome['actual_context_id'], row['run_id']
-                    break
-            if worker_context is None:
-                # Retained worker identities may predate accounting enrollment.
-                identities = sorted((self.state / 'runs').glob('*/codex-identity.json'),
-                    key=lambda identity: (identity.stat().st_mtime_ns, identity.parent.name), reverse=True)
-                for identity in identities:
-                    intent = identity.parent / 'budget-intent.json'
-                    if intent.exists():
-                        with Tree(identity.parent) as tree:
-                            prior = loads(tree.read('budget-intent.json', maximum=16384).decode('utf-8'))
-                        if any(prior.get(key) != binding[key] for key in ('project_id', 'ticket_id')):
-                            continue
-                    worker_context, worker_run = self.codex_run_id(identity.parent.name), identity.parent.name
-                    break
+        with Tree(self.state / 'runs' / binding['run_id']) as tree:
+            payload = loads(tree.read('input.json', maximum=1024 * 1024).decode('utf-8'))
+        contexts = self._worker_contexts(binding, payload['candidate']) if binding['role'] in ('critic', 'specialist') else []
         request = subprocess_budget_request(binding,
-            worker_context_id=worker_context, stream=self.c.get('budget_stream'))
-        if worker_run is not None:
-            request['worker_run_id'] = worker_run
+            worker_context_id=contexts[-1]['context_id'] if contexts else None, stream=self.c.get('budget_stream'))
+        request['_candidate_id'] = candidate_id(payload['candidate'])
+        request['worker_context_ids'] = sorted({row['context_id'] for row in contexts})
+        if contexts:
+            request['worker_run_id'] = contexts[-1]['run_id']
         return {'request': request, 'capabilities': {'models': {
             selected['model']: [selected['reasoning_effort']]}}, 'limits_enforced': False}
 
+    def _worker_contexts(self, binding, candidate):
+        """All observed worker contexts bound to this ticket and candidate.
+
+        Host intent and execution logs persist even with accounting OFF. Older
+        successful workers have an identity binding instead of a budget intent.
+        Neither an unrelated ticket/candidate nor a reviewer is a worker.
+        """
+        contexts = []
+        roots = {path.parent for name in ('budget-intent.json', 'codex-identity.json')
+                 for path in (self.state / 'runs').glob('*/' + name)}
+        for run in sorted(roots, key=lambda path: (path.stat().st_mtime_ns, path.name)):
+            with Tree(run) as tree:
+                has_identity = tree.inspect('codex-identity.json') is not None
+                if tree.inspect('input.json') is None:
+                    continue
+                payload = loads(tree.read('input.json', maximum=1024 * 1024).decode('utf-8'))
+                if payload.get('candidate') != candidate:
+                    continue
+                if tree.inspect('budget-intent.json') is not None:
+                    prior = loads(tree.read('budget-intent.json', maximum=16384).decode('utf-8'))
+                    from ..budget_enrollment import validate_binding
+                    validate_binding(prior)
+                    if (any(prior[key] != binding[key] for key in ('project_id', 'ticket_id'))
+                            or prior['role'] not in ('worker', 'fix')):
+                        continue
+                elif not has_identity:
+                    continue
+                if tree.inspect('codex.jsonl') is None:
+                    continue  # Prepared intent without an observed execution.
+            context = self.codex_run_id(run.name) if has_identity else self._codex_thread_id(run / 'codex.jsonl')
+            contexts.append(dict(context_id=context, run_id=run.name))
+        return contexts
+
     def observe_budget_outcome(self, admission, observation):
-        from ..budgeting import codex_usage
+        from ..budgeting import codex_usage, subprocess_budget_outcome
         binding = admission['binding']
         self.observe_enrollment(binding)
         run = self.state / 'runs' / binding['run_id']
         with Tree(run) as tree:
             raw = tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT)
-        require(observation['session_id'] == self._codex_thread_id(run / 'codex.jsonl'),
-                'Review usage differs from observed thread')
         events = [loads(line) for line in raw.decode('utf-8').splitlines() if line.strip()]
-        selected = admission['reservation']
-        return dict(actual_model=selected['model'], actual_reasoning_effort=selected['reasoning_effort'],
-            actual_context_id=observation['session_id'], actual_tokens=codex_usage(events),
-            actual_cost_microusd=None, success=True, validation_passed=False,
-            independent_review_passed=False, escaped_defect=False,
-            observation_id='codex-session-usage:' + sha256(canonical(observation['session_id'])))
+        success = observation.get('success', True)
+        thread_events = [event for event in events if isinstance(event, dict) and event.get('type') == 'thread.started']
+        session = self._codex_thread_id(run / 'codex.jsonl') if success or thread_events else None
+        require(observation['session_id'] == session, 'Review usage differs from observed thread')
+        return subprocess_budget_outcome(binding, admission['reservation'], session_id=session,
+            actual_tokens=codex_usage(events), success=success,
+            failure_kind=observation.get('failure_kind', 'unknown'))
 
     def configure_budgeting(self, context, *, ticket_id=None):
         """Bind the same protected context used by the trusted dispatch host."""
@@ -859,8 +876,9 @@ class HostDriver:
                     maximum=CODEX_LOG_LIMIT, credentials=credential_values,
                     paths=(self.root, self.worker, self.critic, self.state),
                 )
-            require(result.returncode == 0,
-                    f'HOST_COMMAND_FAILED: {name} failed; inspect retained run log')
+            if result.returncode != 0:
+                raise _HostCommandFailure(f'HOST_COMMAND_FAILED: {name} failed; inspect retained run log',
+                                          failure_kind='unknown')
             return ''
         failure_message = (f'HOST_COMMAND_FAILED: {name} failed with exit '
                            f'{result.returncode}; reconcile before retry')
@@ -1576,22 +1594,38 @@ class HostDriver:
             'codex_config_overrides': overrides}, sort_keys=True), encoding='utf-8')
         admission = None
         budgeting = getattr(self, 'budgeting', None)
-        if budgeting is not None and budgeting.settings['accounting_enabled'] and 'legacy_behavior' not in budgeting.settings:
+        if budgeting is not None and 'legacy_behavior' not in budgeting.settings:
             require(isinstance(self.budget_ticket_id, str) and self.budget_ticket_id.strip(),
                     'Review budget admission requires a host-bound ticket identity')
             binding = {'project_id': budgeting.governance['project']['id'],
                 'ticket_id': self.budget_ticket_id, 'run_id': run_id,
                 'dispatch_id': run_id, 'session_id': run_id, 'role': role}
             (run / 'budget-intent.json').write_bytes(canonical(binding))
-            admission = budgeting.admit(binding, {'model': self.c['models'][template_role], 'reasoning_effort': effort})
+            admission = budgeting.admit(binding, {'model': self.c['models'][template_role], 'reasoning_effort': effort},
+                                        stream=self.c.get('budget_stream'))
             if admission is not None:
                 (run / 'budget-admission.json').write_bytes(canonical(admission))
-        self.run('codex',args,stdin=prompt,timeout=self.c['agent_timeout_seconds'],log=run/'codex.jsonl')
+        try:
+            self.run('codex',args,stdin=prompt,timeout=self.c['agent_timeout_seconds'],log=run/'codex.jsonl')
+        except _HostCommandFailure as exc:
+            if admission is not None:
+                with Tree(run) as tree:
+                    events = [loads(line) for line in tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT)
+                              .decode('utf-8').splitlines() if line.strip()]
+                has_thread = any(isinstance(event, dict) and event.get('type') == 'thread.started' for event in events)
+                observed = dict(session_id=self._codex_thread_id(run / 'codex.jsonl') if has_thread else None,
+                    success=False, failure_kind=exc.failure_kind)
+                budgeting.complete(admission, observed)
+            raise
+        session = self._codex_thread_id(run / 'codex.jsonl') if admission is not None or reviewer else None
         if admission is not None:
-            observed = {'session_id': self._codex_thread_id(run / 'codex.jsonl'),
-                        'log': str(run / 'codex.jsonl'), 'result': str(output)}
+            observed = {'session_id': session, 'log': str(run / 'codex.jsonl'), 'result': str(output)}
             settled = budgeting.complete(admission, observed)
             require(settled['accepted'], 'Review budget routing settlement quarantined the run')
+        if reviewer and budgeting is not None and 'legacy_behavior' not in budgeting.settings:
+            contexts = self._worker_contexts(binding, candidate)
+            require(session not in {row['context_id'] for row in contexts},
+                    'Review context is not independent of candidate worker contexts')
         raw_result, value = self._bounded_result(output, run)
         # Older host fixtures and retained reports predate the nullable lineage
         # fields.  Migrate those records before strict validation; live Codex

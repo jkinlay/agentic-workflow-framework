@@ -121,19 +121,11 @@ class _SubprocessRunner:
 		model = argv[argv.index('--model') + 1]
 		efforts = [item.split('=', 1)[1] for item in argv if item.startswith('model_reasoning_effort=')]
 		_require(len(efforts) == 1, 'Budget outcome has no unique observed launch effort')
-		# A failed launch before thread initialization still has a verified host
-		# execution identity. Do not invent a Codex thread or zero usage.
-		result = dict(actual_model=model, actual_reasoning_effort=efforts[0],
-			actual_context_id=session if context_known else binding['session_id'],
-			actual_tokens=proof.get('actual_tokens'), actual_cost_microusd=None,
-			success=success, validation_passed=False, independent_review_passed=False, escaped_defect=False,
-			observation_id=('codex-session-usage:' if context_known else 'codex-launch-usage:') +
-				hashlib.sha256(canonical(session if context_known else binding['session_id'])).hexdigest())
-		if not success:
-			result['failure_kind'] = 'infrastructure' if proof.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR' or proof.get('status') == 'TIMED_OUT' else 'unknown'
-		if not context_known:
-			result['actual_context_observed'] = False
-		return result
+		from agentic.budgeting import subprocess_budget_outcome
+		return subprocess_budget_outcome(binding, dict(model=model, reasoning_effort=efforts[0]),
+			session_id=session, actual_tokens=proof.get('actual_tokens'), success=success,
+			failure_kind='infrastructure' if proof.get('diagnostic') == 'SANDBOX_SETUP_CONFIG_ERROR'
+				or proof.get('status') == 'TIMED_OUT' else 'unknown')
 
 	def bind_overlap_operations(self, **operations):
 		_require(all((callable(value) for value in operations.values())), 'Production overlap operations are incomplete')
@@ -1294,7 +1286,7 @@ def _build(config):
 			binding = {'project_id': budgeting.governance['project']['id'], 'ticket_id': payload['ticket'],
 				'run_id': launch_nonce, 'dispatch_id': payload['dispatch_id'],
 				'session_id': launch_nonce, 'role': 'worker' if role == 'writer' else 'critic'}
-			admission = budgeting.admit(binding, selected)
+			admission = budgeting.admit(binding, selected, stream=payload['stream'])
 			if admission is not None:
 				record['budget_admission'] = admission
 				_write_record(record_path, record)
