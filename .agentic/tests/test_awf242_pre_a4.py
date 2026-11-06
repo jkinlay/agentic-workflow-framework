@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from source_only import skip_unless_source_repo
 from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
@@ -77,6 +78,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         self.assertTrue(adapters['observe_dispatch'](dict(payload, reconcile_nonce='off-reconcile', reconcile_at=NOW))['terminal'])
         self.assertEqual(unusable.read_text(), 'Fixture obstruction')
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_production_cycle_refuses_unresolved_worker_retry_with_accounting_off(self):
         config, runner, adapters = self.adapter()
         binding = dict(project_id='project-1', repository_id='101', scope_sha256='a'*64)

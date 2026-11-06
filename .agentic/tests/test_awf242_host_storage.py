@@ -191,7 +191,7 @@ class HostStorageTests(unittest.TestCase):
     @unittest.skipUnless(os.name == 'nt', 'Windows linked metadata sandbox ACL')
     def test_linked_metadata_ignores_owner_rights_but_refuses_worker_steering(self):
         with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
+            base = Path(temporary).resolve()
             common = base / 'main/.git'
             admin = common / 'worktrees/linked'
             admin.mkdir(parents=True)

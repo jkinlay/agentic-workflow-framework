@@ -8,6 +8,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from source_only import skip_unless_source_repo
 from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
@@ -182,6 +183,7 @@ class ProductionPreA5Tests(unittest.TestCase):
                 self.assertEqual(outcome['actual_context_id'], thread)
                 self.assertTrue((driver.state / 'runs' / run / 'codex.jsonl').is_file())
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_fresh_off_failure_blocks_full_production_cycle_after_restart(self):
         config, runner, adapters = self.adapter()
         state = ContinuousControllerStore(self.root / 'controller.sqlite', ['A'],

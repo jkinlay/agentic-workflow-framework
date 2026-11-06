@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from source_only import skip_unless_source_repo
 from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError
 from agentic.providers.github_review_host import HostDriver
@@ -216,6 +217,7 @@ class ProductionPreA10Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'quarantin|remediat'):
             self.agent(restarted, 'critic')
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_production_controller_cycle_ignores_optional_hardlinked_ledger(self):
         config, runner, _ = self.adapter()
         store = ContinuousControllerStore(self.root / 'controller.sqlite', ['A'],
