@@ -347,6 +347,136 @@ class TwelveStreamTests(unittest.TestCase):
                     self.assertEqual((expected["model"], expected["effort"]),
                                      (route["model"], route["reasoning_effort"]))
 
+    def test_single_simple_worker_field_edits_do_not_change_the_origin(self):
+        path = ROOT / ".agentic/defaults/routing.yaml"
+        routing = load(path)
+        routing["role_defaults"]["worker"] = {"model": "gpt-5.6-sol", "effort": "high"}
+        for field, choice in (("model", "gpt-5.6-luna"), ("reasoning_effort", "medium")):
+            operating = default_operating(default_policy(path))
+            operating["simple_worker"][field] = choice
+            for role in ("worker", "fix"):
+                for simple in (False, True):
+                    with self.subTest(field=field, role=role, simple=simple):
+                        route = self.retained_default_route(
+                            routing, operating, role=role, complexity="low" if simple else "medium")
+                        expected = operating["simple_worker"] if simple else {
+                            "model": "gpt-5.6-sol", "reasoning_effort": "high"}
+                        self.assertEqual("ready", route["status"])
+                        self.assertEqual((expected["model"], expected["reasoning_effort"]),
+                                         (route["model"], route["reasoning_effort"]))
+
+    def test_owner_worker_choice_matching_an_older_default_is_preserved(self):
+        path = ROOT / ".agentic/defaults/routing.yaml"
+        for changed_catalog in (False, True):
+            routing = load(path)
+            if changed_catalog:
+                routing["catalog"]["owner-model"] = {"efforts": ["medium", "high"]}
+            operating = default_operating(default_policy(path))
+            operating["simple_worker"].update(model="gpt-5.6-luna", reasoning_effort="low")
+            operating["streams"]["A"]["worker"] = {
+                "model": "gpt-5.6-luna", "reasoning_effort": "medium"}
+            for role in ("worker", "fix"):
+                for complexity in ("low", "medium"):
+                    with self.subTest(changed_catalog=changed_catalog, role=role, complexity=complexity):
+                        route = self.retained_default_route(routing, operating, role=role, complexity=complexity)
+                        self.assertEqual("ready", route["status"])
+                        self.assertEqual(("gpt-5.6-luna", "medium"),
+                                         (route["model"], route["reasoning_effort"]))
+
+    def test_historical_catalog_with_same_simple_pair_preserves_owner_choice(self):
+        from agentic.canonical import load_yaml
+
+        if not (ROOT / ".agentic/tests/fixtures/upgrades/versions.json").is_file():
+            self.skipTest("historical upgrade fixtures are excluded from portable releases")
+        from upgrade_fixtures import fixture_blob, fixture_manifest
+
+        manifest = fixture_manifest("1.9.4")
+        entry = manifest["owner_files"][".agentic/PROJECT_CONFIG.yaml"]
+        governance = load_yaml(fixture_blob(entry["sha256"]))
+        policy = policy_from_config(governance)
+        legacy = default_policy(ROOT / ".agentic/tests/fixtures/routing/valid.yaml")
+        self.assertEqual(legacy["simple_worker"], policy["simple_worker"])
+        self.assertNotEqual(legacy["models"], policy["models"])
+        operating = default_operating(policy)
+        operating["streams"]["A"]["worker"] = {
+            "model": "gpt-5.6-luna", "reasoning_effort": "medium"}
+        snapshot = validate_operating(operating, governance)
+        capabilities = {"models": {m: v["reasoning_efforts"] for m, v in policy["models"].items()}}
+        for role in ("worker", "fix"):
+            for complexity in ("low", "medium"):
+                with self.subTest(role=role, complexity=complexity):
+                    route = select_route(policy, self.request(stream="A", role=role, complexity=complexity),
+                                         capabilities, operating=snapshot, governance=governance)
+                    self.assertEqual("ready", route["status"])
+                    self.assertEqual(("gpt-5.6-luna", "medium"),
+                                     (route["model"], route["reasoning_effort"]))
+
+    def test_single_operating_route_field_edits_are_preserved(self):
+        path = ROOT / ".agentic/defaults/routing.yaml"
+        routing = load(path)
+        for role in ("worker", "controller", "critic", "specialist"):
+            for field, choice in (("model", "gpt-6-luna"), ("reasoning_effort", "xhigh")):
+                # These choices satisfy the governing floor, so a floor cannot
+                # conceal replacement of an accepted single-field edit.
+                changed = deepcopy(routing)
+                changed["catalog"]["gpt-6.1-sol"]["efforts"].append("xhigh")
+                changed["review_floor"] = {"model": "gpt-6-luna", "effort": "high"}
+                operating = default_operating(default_policy(path))
+                pair = operating["streams"]["A"]["worker"] if role == "worker" else operating[role]
+                pair[field] = choice
+                with self.subTest(role=role, field=field):
+                    route = self.retained_default_route(changed, operating, role=role,
+                                                        worker_context_id="independent")
+                    self.assertEqual("ready", route["status"])
+                    self.assertEqual((pair["model"], pair["reasoning_effort"]),
+                                     (route["model"], route["reasoning_effort"]))
+
+    def test_unidentified_generated_origin_preserves_stored_choices(self):
+        path = ROOT / ".agentic/defaults/routing.yaml"
+        routing = load(path)
+        routing["catalog"]["owner-model"] = {"efforts": ["medium", "high"]}
+        routing["role_defaults"]["worker"] = {"model": "owner-model", "effort": "high"}
+        operating = default_operating(default_policy(path))
+        operating["controller"]["model"] = "gpt-5.6-sol"
+        for role in ("worker", "fix", "controller", "critic", "specialist"):
+            with self.subTest(role=role):
+                route = self.retained_default_route(routing, operating, role=role,
+                                                    worker_context_id="independent")
+                expected = operating["streams"]["A"]["worker"] if role in ("worker", "fix") else operating[role]
+                self.assertEqual("ready", route["status"])
+                self.assertEqual((expected["model"], expected["reasoning_effort"]),
+                                 (route["model"], route["reasoning_effort"]))
+
+    def test_conflicting_catalog_and_generated_content_preserve_stored_choices(self):
+        legacy_path = ROOT / ".agentic/tests/fixtures/routing/valid.yaml"
+        operating = default_operating(default_policy(legacy_path))
+        routing = load(ROOT / ".agentic/defaults/routing.yaml")
+        # The whole operating document resembles the legacy generator, while
+        # the complete catalog identifies the fresh generator. Neither is an
+        # authority to discard stored choices when the two origins disagree.
+        routing["review_floor"] = {"model": "gpt-6.1-sol", "effort": "medium"}
+        routing["role_defaults"]["worker"] = {"model": "gpt-5.6-sol", "effort": "high"}
+        for role in ("worker", "fix", "controller", "critic", "specialist"):
+            for complexity in ("low", "medium"):
+                with self.subTest(role=role, complexity=complexity):
+                    route = self.retained_default_route(routing, operating, role=role, complexity=complexity,
+                                                        worker_context_id="independent")
+                    expected = operating["streams"]["A"]["worker"] if role in ("worker", "fix") else operating[role]
+                    self.assertEqual("ready", route["status"])
+                    self.assertEqual((expected["model"], expected["reasoning_effort"]),
+                                     (route["model"], route["reasoning_effort"]))
+
+    def test_missing_simple_worker_keys_still_refuse(self):
+        routing = load(ROOT / ".agentic/defaults/routing.yaml")
+        for field in ("simple_worker", "model", "reasoning_effort"):
+            operating = deepcopy(self.value)
+            if field == "simple_worker":
+                operating.pop(field)
+            else:
+                operating["simple_worker"].pop(field)
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                self.retained_default_route(routing, operating)
+
     def test_changed_catalog_defaults_preserve_pins_explicit_choices_and_floors(self):
         path = ROOT / ".agentic/tests/fixtures/routing/valid.yaml"
         routing = load(path)

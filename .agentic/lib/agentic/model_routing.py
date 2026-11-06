@@ -608,6 +608,29 @@ def _operating_binding(operating, governance, policy):
                               "operating_provenance": deepcopy(operating.provenance)}
 
 
+def _generated_operating_baseline(policy, config):
+    """Identify retained defaults without treating an editable route as origin."""
+    if not config or config.get("source") != "default":
+        return None
+    from .operating import default_operating
+
+    baselines = [default_policy(RELEASE_ROUTING_SOURCE), default_policy(LEGACY_ROUTING_SOURCE)]
+    catalogs = [baseline for baseline in baselines
+                if baseline["model_order"] == policy["model_order"]
+                and baseline["models"] == policy["models"]]
+    # A complete generated configuration can still identify its baseline after
+    # owner edits to routing.yaml's catalog, defaults or review floors. Compare
+    # every stored field, including pins, optional choices and retained streams;
+    # one matching pair cannot identify either a release or an unedited file.
+    generated = [baseline for baseline in baselines
+                 if config == default_operating(baseline, count=config["streams"]["count"])]
+    # Conflicting evidence is ambiguous too. In particular, resemblance to an
+    # older generated configuration must not override a different known catalog.
+    candidates = ([baseline for baseline in catalogs if baseline in generated]
+                  if catalogs and generated else catalogs or generated)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def select_route(policy, request, capabilities, *, operating=None, governance=None):
     """Read-only proposal with explicit legacy attribution or a validated snapshot."""
     config, binding = _operating_binding(operating, governance, policy)
@@ -642,15 +665,9 @@ def _select_route(policy, request, capabilities, operating_config):
     simple = all(request[x] == "low" for x in ("risk", "complexity", "uncertainty")) and request["verification"] == "strong" and not risk_flags
     selected = deepcopy(policy["role_defaults"][policy_role])
     reasons = ["balanced role default"]
-    default_operating = bool(operating_config and operating_config.get("source") == "default")
-    baselines = ([default_policy(RELEASE_ROUTING_SOURCE), default_policy(LEGACY_ROUTING_SOURCE)]
-                 if default_operating else [])
-    # The retained generated simple-worker pair identifies the template's
-    # defaults independently of edits to the current routing catalog or floors.
-    release_defaults = next((baseline for baseline in baselines
-                             if all(operating_config["simple_worker"].get(key) == baseline["simple_worker"][key]
-                                    for key in ("model", "reasoning_effort"))), None)
-    default_operating = default_operating and release_defaults is not None
+    release_defaults = _generated_operating_baseline(policy, operating_config)
+    # Unknown origins retain the stored choices; never guess from a route pair.
+    default_operating = release_defaults is not None
 
     def effective_default(route, policy_route, *released_routes):
         """Resolve unpinned generated defaults through current routing policy."""
