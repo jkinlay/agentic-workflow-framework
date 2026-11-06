@@ -23,6 +23,20 @@ import qualify_upgrade
 PROJECT = '11111111-1111-4111-8111-111111111111'
 
 
+class BudgetDispositionTests(unittest.TestCase):
+    def test_compatibility_state_is_independent_of_source_release(self):
+        config = b'{"execution": {"max_agent_runs_per_ticket": 16}}'
+        for operating in (None, b'{"budgeting": {"accounting_enabled": false}}'):
+            with self.subTest(operating=operating):
+                records = [upgrade.budget_upgrade_disposition(config, operating, version)
+                           for version in ('1.8.3', '1.8.9', '1.9.1', '1.9.2',
+                                           '1.9.3', '1.9.4', '1.9.5')]
+                self.assertNotIn('source_version', records[0])
+                self.assertEqual(1, len({json.dumps(record, indent=2) for record in records}))
+                self.assertTrue(records[0]['owner_adoption_required'])
+                self.assertEqual('EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED', records[0]['history_import'])
+
+
 @skip_unless_source_repo('requires authentic published v1.9.5 Git objects', '.git')
 class BudgetUpgradeTests(unittest.TestCase):
     @classmethod
@@ -325,6 +339,9 @@ class BudgetUpgradeTests(unittest.TestCase):
         self.assertEqual('LEGACY_RETAINED', plan['upgrade']['budgeting']['disposition'])
         result = install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
         self.assertEqual('LEGACY_RETAINED', result['upgrade']['budgeting']['disposition'])
+        self.assertEqual('1.9.5', result['upgrade']['detected_version'])
+        self.assertEqual([('1.9.5', '1.9.6')],
+            [(step['from'], step['to']) for step in result['upgrade']['steps']])
         self.assertEqual(original, (project / 'OPERATING_CONFIG.yaml').read_bytes())
         self.assertNotIn('budgeting', load_yaml(original))
         record = project / '.agentic-state/upgrade/budgeting-1.9.6.json'

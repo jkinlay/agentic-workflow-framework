@@ -564,7 +564,7 @@ def prepare_upgrade(source, project, pin, before):
     # It grants no import/adoption or permission to alter the operating file.
     operating_raw = operating.read_bytes() if operating.exists() else None
     settings = load_yaml(operating_raw).get('budgeting') if operating_raw is not None else None
-    disposition = {'format': 'awf-budget-upgrade-1', 'source_version': '1.9.5', 'target_version': '1.9.6',
+    disposition = {'format': 'awf-budget-upgrade-1', 'target_version': '1.9.6',
         'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
         'operating_sha256': hashlib.sha256(operating_raw).hexdigest() if operating_raw is not None else None,
         'settings': settings,
