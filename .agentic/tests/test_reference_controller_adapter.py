@@ -138,8 +138,14 @@ class FakeHttp:
 		if '/rest/api/3/issue/' in url and method == 'GET':
 			self.issue_reads += 1
 			if 'expand=changelog' in url:
-				status = 'Done' if '/issue/EX-100?' in url else 'In Progress'
-				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}}, 'changelog': {'histories': [{'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'to': status, 'toString': status}]}]}}))
+				posted = bool(getattr(self, 'transition_bodies', [])) or not any('?fields=project,parent,labels,components,issuetype,summary' in call[1] for call in self.calls)
+				from_status = 'In Review' if '/issue/EX-100?' in url else 'Ready'
+				status = ('Done' if '/issue/EX-100?' in url else 'In Progress') if posted else from_status
+				previous = {'id': '1', 'created': '2026-10-09T07:59:59Z', 'author': {'accountId': 'controller'}, 'items': [{'field': 'summary', 'fromString': 'Work', 'toString': 'Routine work'}]}
+				histories = [previous]
+				if posted:
+					histories = [{'id': '2', 'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'to': status, 'toString': status}]}, previous]
+				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}, 'updated': NOW if posted else previous['created']}, 'changelog': {'histories': histories}}))
 			status = 'Ready' if self.issue_reads == 1 else 'In Progress'
 			return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status}}}))
 		if method == 'POST' and '/transitions' in url:
@@ -1314,7 +1320,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=key')), next(i for i, url in enumerate(urls) if url.endswith('?fields=status')))
 					post = next(i for i, call in enumerate(http.calls) if call[0] == 'POST')
 					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=status')), post)
-					self.assertGreater(next(i for i, url in enumerate(urls) if 'expand=changelog' in url), post)
+					# Changelog reads bind the pre-write boundary and verify the post-write readback.
+					self.assertTrue(any(i < post for i, url in enumerate(urls) if 'expand=changelog' in url))
+					self.assertTrue(any(i > post for i, url in enumerate(urls) if 'expand=changelog' in url))
 				else:
 					self.assertEqual([], http.calls)
 					self.assertEqual([], operations)
