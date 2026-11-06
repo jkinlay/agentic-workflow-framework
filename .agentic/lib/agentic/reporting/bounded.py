@@ -1,10 +1,11 @@
-"""Joined destination-stage budgets. No background work survives a cycle.
+"""Joined destination-stage budgets with revocable send authority.
 
 Each destination gets four advances, one historical reconciliation, 32 HTTP
 requests and 30 seconds of admission time. Each HTTP request has a 15 second
 maximum timeout; an admitted request may finish after the admission deadline.
 Thus the network stage bound is 45 seconds, with both destinations concurrent.
-Trusted network ports must honour the HTTP timeout contract.
+Trusted network/observation ports must honour their timeout contract. A port
+violating it is durably reported and its worker can never enter another send.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -22,6 +23,7 @@ SOURCE_SECONDS = 30
 _source = ContextVar('report_source_budget', default=None)
 _current = ContextVar('report_destination_budget', default=None)
 _send_start = ContextVar('report_send_start', default=None)
+_checking = ContextVar('report_candidate_budget', default=None)
 
 
 class SourceBudget:
@@ -49,7 +51,9 @@ class SourceBudget:
 
 def source_timeout():
     budget = _source.get()
-    return budget.remaining() if budget is not None else SOURCE_SECONDS
+    remaining = budget.remaining() if budget is not None else SOURCE_SECONDS
+    delivery = _checking.get() or (_current.get()[0] if _current.get() else None)
+    return min(remaining, delivery.remaining()) if delivery is not None else remaining
 
 
 class DeliveryBudget:
@@ -61,6 +65,16 @@ class DeliveryBudget:
         self.http_counts = {}
         self.reconciliations = {}
         self.lock = threading.Lock()
+        # A destination's reservation/POST cannot race cancellation. Separate
+        # gates preserve destination isolation during a slow HTTP operation.
+        self.send_locks = {p: threading.RLock() for p in ('slack', 'teams')}
+
+    def remaining(self):
+        with self.lock:
+            remaining = self.deadline - monotonic()
+            if self.cancelled or remaining <= 0:
+                raise ValidationError('REPORT_DESTINATION_BUDGET')
+            return min(HTTP_TIMEOUT_SECONDS, remaining)
 
     def admit(self, platform, *, reconciliation=False):
         with self.lock:
@@ -83,6 +97,21 @@ class DeliveryBudget:
     def cancel(self):
         with self.lock:
             self.cancelled = True
+        # Drain already-entered sends; all later entries observe cancellation.
+        # A noncooperative port is reported by the caller at stage_deadline.
+        for lock in self.send_locks.values():
+            if lock.acquire(timeout=max(0, self.stage_deadline - monotonic())):
+                lock.release()
+
+    @contextmanager
+    def checking(self):
+        token = _checking.set(self)
+        try:
+            self.remaining()
+            yield
+            self.remaining()
+        finally:
+            _checking.reset(token)
 
     @contextmanager
     def destination(self, platform):
@@ -98,7 +127,26 @@ def admit_http(method):
     timeout = current[0].http(current[1]) if current else HTTP_TIMEOUT_SECONDS
     if method == 'POST' and _send_start.get() is not None:
         _send_start.get()()
-    return timeout
+    # Candidate observations and reservation consume the SAME allowance.
+    return current[0].remaining() if current else timeout
+
+
+@contextmanager
+def send_guard():
+    """Atomically check the cancellation token at reservation and transport entry."""
+    current = _current.get()
+    if current is None:
+        yield
+        return
+    budget, platform = current
+    with budget.send_locks[platform]:
+        budget.remaining()
+        yield
+
+
+def delivery_timeout():
+    current = _current.get()
+    return current[0].remaining() if current else HTTP_TIMEOUT_SECONDS
 
 
 @contextmanager

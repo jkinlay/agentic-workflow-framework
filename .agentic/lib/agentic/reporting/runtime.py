@@ -8,6 +8,7 @@ references transiently through the shared credential filter.
 from copy import deepcopy
 from datetime import timedelta
 import threading
+import uuid
 from time import monotonic
 
 from .. import ValidationError
@@ -42,7 +43,8 @@ def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None
     for destination in destinations:
         intent = delivery_intent(report_id, destination, render_body(body, destination['platform']),
                                  thread_id=(threads or {}).get(destination['platform']))
-        DeliveryOutbox.enqueue_in_transaction(db, intent)
+        sender = next((s for s in senders if getattr(s, 'binding', None) == destination), None)
+        DeliveryOutbox.enqueue_in_transaction(db, intent, resolve_secret=getattr(sender, 'resolve_secret', None))
         record['delivery_ids'].append(intent['delivery_id'])
     raw = canonical(record).decode()
     prior = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (report_id,)).fetchone()
@@ -137,6 +139,10 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
     if settings['mode'] == 'off':
         return []
     budget = budget or DeliveryBudget()
+    try:
+        budget.remaining()
+    except ValidationError:
+        return []  # An exhausted shared cycle cannot launch another worker.
     outbox, results = DeliveryOutbox(store), []
     lock = threading.Lock()
     destinations = [d for d in destinations if providers.get(d['platform']) is not None]
@@ -209,9 +215,22 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(max(0, budget.stage_deadline - monotonic()))
+        thread.join(max(0, budget.deadline - monotonic()))
     if any(thread.is_alive() for thread in threads):
         budget.cancel()
+        # Revocation comes first; spend the already documented request grace
+        # joining workers, rather than returning while rechecks can still send.
+        for thread in threads:
+            thread.join(max(0, budget.stage_deadline - monotonic()))
+    alive = [d['platform'] for d, t in zip(destinations, threads) if t.is_alive()]
+    if alive:
+        # A trusted port violating its timeout must be visible after restart.
+        # The shared token stays revoked even when that port eventually returns.
+        with store.transaction() as db:
+            db.execute('INSERT INTO controller_meta VALUES(?,?)',
+                ('reporting-worker-timeout:' + str(uuid.uuid4()), canonical(dict(
+                    reason='REPORT_DESTINATION_WORKER_NOT_QUIESCENT', platforms=alive,
+                    cancellation_revoked=True, execution_authority=False)).decode()))
         raise ValidationError('REPORT_DESTINATION_DEADLINE')
     if failures:
         raise ValidationError('REPORT_DESTINATION_STAGE_FAILED') from None
@@ -341,23 +360,32 @@ class ReviewReportingPort:
     def _id(self, payload):
         return 'review-' + payload['batch_id']
 
-    def _check(self, payload, calendar, observe_candidate):
+    def _check(self, payload, calendar, observe_candidate, *, budget=None):
         from ..review_batching import ReviewBatchStore
         require(all(str(m['candidate']['repository_id']) == self.binding['repository'] for m in payload['members']),
                 'REPORT_SCOPE_BINDING_MISMATCH')
-        now, checked = self.clock(), []
-        def observe(candidate):
-            value = observe_candidate(candidate, now)
-            checked.append(value)
-            return value
-        checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar, observe)
-        require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
-        send_at = self.clock()
-        require(not next_review_presentation(send_at, calendar)['held'] and
-                all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked),
-                'REPORT_REVIEW_CHECK_EXPIRED')
+        from .bounded import source_timeout
+        budget = budget or self.delivery_budget or DeliveryBudget()
+        with budget.checking():
+            now, checked = self.clock(), {}
+            # Observe outside SQLite's write transaction: no remote callback
+            # may hold persistence hostage or prevent a durable timeout record.
+            for member in payload['members']:
+                source_timeout()
+                candidate = member['candidate']
+                value = observe_candidate(deepcopy(candidate), now)
+                source_timeout()
+                checked[fingerprint('review-candidate', candidate)] = value
+            checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar,
+                lambda candidate: checked[fingerprint('review-candidate', candidate)])
+            require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
+            send_at = self.clock()
+            require(not next_review_presentation(send_at, calendar)['held'] and
+                    all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked.values()),
+                    'REPORT_REVIEW_CHECK_EXPIRED')
 
     def deliver_review_batch(self, payload):
+        budget = self.delivery_budget or DeliveryBudget()
         settings, destinations = _bindings(self.operating, self.binding)
         require(settings['mode'] != 'off', 'REPORTING_OFF')
         now = self.clock()
@@ -372,16 +400,17 @@ class ReviewReportingPort:
             _retain(db, self._id(payload), 'final-human-review', body, self.binding, destinations, now,
                     extra={'review_batch': deepcopy(payload)}, senders=self.providers.values())
         if self.observe_candidate is not None:
-            self._check(payload, effective_calendar(self.operating), self.observe_candidate)
-        drain(self.store, self.operating, self.binding, self.providers, report_ids={self._id(payload)}, budget=self.delivery_budget,
-              before_send=(lambda: self._check(payload, effective_calendar(self.operating), self.observe_candidate))
+            self._check(payload, effective_calendar(self.operating), self.observe_candidate, budget=budget)
+        drain(self.store, self.operating, self.binding, self.providers, report_ids={self._id(payload)}, budget=budget,
+              before_send=(lambda: self._check(payload, effective_calendar(self.operating), self.observe_candidate, budget=budget))
               if self.observe_candidate is not None else None)
-        return self.observe_review_delivery(payload)
+        return self.observe_review_delivery(payload, budget=budget)
 
-    def observe_review_delivery(self, payload):
+    def observe_review_delivery(self, payload, *, budget=None):
         # This port cannot send, even when terminal absence admits a retry.
+        budget = budget or self.delivery_budget or DeliveryBudget()
         drain(self.store, self.operating, self.binding, self.providers,
-              report_ids={self._id(payload)}, allow_send=False, budget=self.delivery_budget)
+              report_ids={self._id(payload)}, allow_send=False, budget=budget)
         status = reporting_status(self.store, self.operating, self.binding, report_ids={self._id(payload)})
         reports = [r for r in status['reports'] if r['report_id'] == self._id(payload)]
         if not reports:
@@ -400,6 +429,7 @@ class ReviewReportingPort:
         """Controller-only retry: repeat lane C's pre-send check for this batch."""
         from ..review_batching import ReviewBatchStore
         pending = ReviewBatchStore(self.store)
+        budget = self.delivery_budget or DeliveryBudget()
         with self.store.connection() as db:
             payloads = [pending._payload(row) for row in db.execute(
                 "SELECT * FROM review_presentation_outbox_v1 WHERE state='CLAIMED' ORDER BY batch_id LIMIT ?",
@@ -410,6 +440,6 @@ class ReviewReportingPort:
             states = [s for s in status['deliveries'] if s['report_id'] == report_id]
             if not any(s['status'] in {'PENDING', 'ABSENT', 'THROTTLED'} for s in states):
                 continue
-            self._check(payload, calendar, observe_candidate)
-            drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id}, budget=self.delivery_budget,
-                  before_send=lambda: self._check(payload, calendar, observe_candidate))
+            self._check(payload, calendar, observe_candidate, budget=budget)
+            drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id}, budget=budget,
+                  before_send=lambda: self._check(payload, calendar, observe_candidate, budget=budget))

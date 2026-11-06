@@ -15,6 +15,7 @@ import uuid
 from .. import ValidationError
 from ..canonical import canonical, fingerprint, loads, timestamp
 from .safety import safe_report
+from .bounded import send_guard, delivery_timeout
 
 
 def require(condition, reason):
@@ -100,17 +101,27 @@ class DeliveryOutbox:
     def __init__(self, controller_store):
         self.controller = controller_store
 
-    def enqueue(self, intent):
-        expected = delivery_intent(intent['report_id'], intent['binding'], intent['payload'], thread_id=intent.get('thread_id'))
+    @staticmethod
+    def _admit_persistence(intent, resolve_secret):
+        binding = validate_binding(intent['binding'])
+        require(safe_report(intent, trusted_keys=True) == intent, 'REPORT_CREDENTIAL_WITHHELD')
+        # Resolve only the structurally admitted binding. Inspect every member
+        # before constructing any content hashes or handing bytes to SQLite.
+        # safe_report owns the transient value; neither caller retains it.
+        require(safe_report(intent, trusted_keys=True, secret_refs=(binding['secret_ref'],),
+                            resolve_secret=resolve_secret) == intent, 'REPORT_CREDENTIAL_WITHHELD')
+        expected = delivery_intent(intent['report_id'], binding, intent['payload'], thread_id=intent.get('thread_id'))
         require(intent == expected, 'REPORT_INTENT_MISMATCH')
+
+    def enqueue(self, intent, *, resolve_secret=None):
+        self._admit_persistence(intent, resolve_secret)
         with self.controller.transaction() as db:
-            self.enqueue_in_transaction(db, intent)
+            self.enqueue_in_transaction(db, intent, resolve_secret=resolve_secret)
         return intent['delivery_id']
 
     @staticmethod
-    def enqueue_in_transaction(db, intent):
-        require(intent == delivery_intent(intent['report_id'], intent['binding'], intent['payload'], thread_id=intent.get('thread_id')),
-                'REPORT_INTENT_MISMATCH')
+    def enqueue_in_transaction(db, intent, *, resolve_secret=None):
+        DeliveryOutbox._admit_persistence(intent, resolve_secret)
         encoded = canonical(intent).decode()
         row = db.execute('SELECT intent_json FROM controller_report_delivery WHERE delivery_id=?',
                          (intent['delivery_id'],)).fetchone()
@@ -238,7 +249,8 @@ class DeliveryOutbox:
                 require(not reserved, 'REPORT_SEND_ALREADY_STARTED')
                 if before_send is not None:
                     before_send()
-                with self.controller.transaction() as db:
+                with send_guard(), self.controller.transaction() as db:
+                    delivery_timeout()
                     _, current = self._load(db, delivery_id)
                     require(current == state, 'REPORT_SEND_STATE_CHANGED')
                     current['attempts'].append(attempt_id)
@@ -257,7 +269,8 @@ class DeliveryOutbox:
                     raw = provider.send_reserved(deepcopy(intent), attempt_id, reserve)
                 else:
                     reserve()
-                    raw = provider.send(deepcopy(intent), attempt_id)
+                    with send_guard():
+                        raw = provider.send(deepcopy(intent), attempt_id)
                 rejection = self._rejection(raw, intent, attempt_id) if reserved else None
                 throttle = self._throttle(raw, intent, attempt_id)
             except Exception:

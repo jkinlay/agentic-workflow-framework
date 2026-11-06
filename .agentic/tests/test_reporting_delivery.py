@@ -32,7 +32,7 @@ class Database:
 
 def binding(platform='slack'):
     return dict(project='fixture-project', repository='fixture-repository', scope_revision='scope-1',
-                platform=platform, destination='fixture-channel', revision='binding-1', secret_ref='sender-ref')
+                platform=platform, destination='fixture-channel', revision='binding-1', secret_ref='env:AWF_DELIVERY_TEST')
 
 
 class Provider:
