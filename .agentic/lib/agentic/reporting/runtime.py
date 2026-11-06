@@ -18,7 +18,7 @@ from .bodies import prepare_body, render_body
 from .bounded import DeliveryBudget, MAX_ADVANCES
 from .compose import compose_report, describe
 from .delivery import DeliveryOutbox, delivery_intent, require
-from .events import due_periods, owner_events, readiness_events, utc
+from .events import approval_event, due_periods, owner_events, readiness_events, utc
 from .settings import effective_reporting
 from .safety import safe_report
 
@@ -385,6 +385,18 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                                      senders=(providers or {}).values()))
             if period['kind'] == 'eod':
                 state['daily_end'] = period['end']
+        notice = context.get('baseline_approval')
+        if notice is not None:
+            require(notice == approval_event(binding['scope_revision'], notice['record']['revision'],
+                                            notice['record']['approval']), 'REPORT_APPROVAL_SCOPE_MISMATCH')
+            report_id = fingerprint('report-approved-baseline-1', [binding, notice['id']])
+            # Retain intent and delivery identities in this transaction. A
+            # repeated observation never rebuilds a body with a newer time,
+            # even after intervening approvals or controller restarts.
+            if not db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (report_id,)).fetchone():
+                generated.append(_retain(db, report_id, 'jira-review',
+                    _body('jira-review', binding, now, calendar, context), binding, destinations, now,
+                    extra={'baseline_approval': notice}, senders=(providers or {}).values()))
         if context.get('owner_actions') is not None:
             events, state['owner'] = owner_events(fingerprint('reporting-scope', binding), context['owner_actions'], state['owner'])
             for action in events:

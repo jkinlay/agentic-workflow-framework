@@ -25,12 +25,24 @@ class ThreadNetwork(e3.Network):
         self.reply_pages = []
         self.landed_at = {}
         self.invalid_roots = []
+        self.prove_overlap = False
+        self.teams_read_entered = threading.Event()
+        self.slack_read_complete = threading.Event()
+        self.overlap_order = []
 
     def __call__(self, method, url, headers, payload):
         platform = 'slack' if 'slack.com' in url else 'teams'
         path = unquote(urlsplit(url).path)
         reply = platform == 'teams' and path.endswith('/replies')
         root = path.split('/messages/', 1)[1].split('/')[0] if reply else None
+        if platform == 'teams' and method == 'GET' and self.prove_overlap and not self.teams_read_entered.is_set():
+            self.overlap_order.append('teams-blocked')
+            self.teams_read_entered.set()
+            # The documented HTTP maximum is only a deadlock failure guard.
+            # Success requires Slack readback while this read remains blocked.
+            if not self.slack_read_complete.wait(15):
+                raise TimeoutError('Slack readback serialized behind Teams')
+            self.overlap_order.append('teams-released')
         if platform == 'teams' and self.slow_teams:
             time.sleep(2 - self.latency)
         if reply:
@@ -63,6 +75,11 @@ class ThreadNetwork(e3.Network):
                         if self.graph_threads.get(i) == root]
             result = dict(value=self.message_filter('teams', messages))
         if 'conversations.replies' in url or reply:
+            if platform == 'slack' and self.prove_overlap and not self.slack_read_complete.is_set():
+                if not self.teams_read_entered.wait(15):
+                    raise TimeoutError('Teams read did not enter overlap probe')
+                self.overlap_order.append('slack-readback')
+                self.slack_read_complete.set()
             self.landed_at[platform] = time.monotonic()
         return result
 
@@ -110,6 +127,7 @@ class E11Tests(unittest.TestCase):
     def concurrent_probe(self, case, run):
         E11Tests.seed(self, case, run)
         case.network.slow_teams = True
+        case.network.prove_overlap = True
         for second in (2, 3):
             e6.ControllerTests.restart(case)
             started = time.monotonic()
@@ -121,7 +139,8 @@ class E11Tests(unittest.TestCase):
             self.assertEqual(slack['status'], 'DELIVERED')
             self.assertEqual(len(slack['attempts']), 1)
             if second == 2:
-                self.assertLess(case.network.landed_at['slack'] - started, 3)
+                self.assertEqual(case.network.overlap_order, ['teams-blocked', 'slack-readback', 'teams-released'])
+                self.assertTrue(case.network.slack_read_complete.is_set())
             teams = next(d for d in restored if d['platform'] == 'teams')
             self.assertEqual(teams['status'], 'UNKNOWN')
             self.assertEqual(len(teams['attempts']), 1)

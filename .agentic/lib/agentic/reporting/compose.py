@@ -13,6 +13,7 @@ from .analysis import (scope_metrics, elapsed_cohorts, milestone_forecast,
                        token_metrics, token_rollup, daily_metrics, estimated_time)
 from .bodies import prepare_body
 from .delivery import require
+from .metrics import required_leaves
 
 
 def describe(value):
@@ -78,12 +79,12 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
         data['freshness'] = 'PARTIAL'
         sections['Sources and freshness'] = 'PARTIAL: PR observations unavailable\n' + describe(sources)
     metrics = scope_metrics(tickets)
-    completed = [t['key'] for t in tickets if t.get('state') == 'DONE']
+    implementation = required_leaves(tickets)
+    completed = [t['key'] for t in implementation if t.get('state') == 'DONE']
     accounting = values.get('accounting', {})
     usage = token_metrics(accounting.get('mode', 'off'), accounting.get('observations', []), accounting.get('enrolled', []),
                          completed=completed, complete_tickets=accounting.get('complete_tickets', []),
                          forecasts=accounting.get('forecasts'))
-    implementation = [t for t in tickets if t.get('kind') == 'implementation']
     elapsed = elapsed_cohorts(implementation)
     if implementation and all(t.get('state') in {'BACKLOG', 'READY'} and not t.get('first_started_at') for t in implementation):
         data['summary'] += ' Implementation has not started.'

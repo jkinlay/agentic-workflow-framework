@@ -419,8 +419,8 @@ def token_rollup(usage, ticket_epics, components):
 
 
 def reconciliation_coverage(tickets):
-    from .metrics import delivered
-    implementation = [t for t in tickets if t.get('kind') == 'implementation']
+    from .metrics import delivered, required_leaves
+    implementation = required_leaves(tickets)
     known_states = {'BACKLOG', 'READY', 'WORKING', 'REVIEWING', 'MERGED', 'OWNER_WAITING',
                     'CANCELLED', 'SUPERSEDED'}
     observed = sum(t.get('state') in known_states or delivered(t) for t in implementation)
@@ -435,8 +435,12 @@ def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name, *, obser
     required merges and reconciliation. A merged PR never supplies ticket Done.
     """
     from .events import daily_views
-    from .metrics import delivered
+    from .metrics import delivered, required_leaves
     views = daily_views(end, previous_daily_end, timezone_name)
+    # Match the declared scope denominator for counts, coverage and every
+    # elapsed view. Filter before splitting periods so parents stay excluded
+    # even when their children completed outside the selected interval.
+    tickets = required_leaves(tickets)
     unique = {}
     require(prs is None or isinstance(prs, list), 'REPORT_PR_INPUT_INVALID')
     for pr in prs or []:

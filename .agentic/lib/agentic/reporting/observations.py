@@ -7,7 +7,7 @@ import sqlite3
 from .. import ValidationError
 from ..budgeting import resolve_settings
 from ..budget_enrollment import validate_binding
-from ..canonical import loads
+from ..canonical import loads, timestamp
 from ..controller_state import protected_state_path
 from .delivery import require
 
@@ -92,6 +92,22 @@ def collect_sources(binding, now, observe, verify):
     require(verify(deepcopy(auth), deepcopy(request)) == dict(status='VERIFIED', evidence_id=auth['evidence_id'],
                                                             snapshot=snapshot), 'REPORT_SOURCE_VERIFIER_MISMATCH')
     result = dict(records=deepcopy(value['records']), owner_actions=deepcopy(value['owner_actions']))
+    # Only the independently verified envelope can supply baseline events.
+    # The event must bind this exact scope and approved revision, with the
+    # same approval evidence in both the source record and event projection.
+    records = value['records']
+    if isinstance(records, dict) and records.get('binding') == binding and records.get('created_at') == now:
+        from .events import approval_event
+        revision, approval = records.get('baseline_revision'), records.get('owner_approval')
+        sources = records.get('sources', [])
+        if (isinstance(revision, str) and revision and isinstance(approval, dict)
+                and approval.get('verified') is True and approval.get('revision') == revision
+                and approval.get('evidence_id') and any(s.get('field') == 'tickets' for s in sources)
+                and all(s.get('stale') is False and s.get('observed_at') is not None
+                        and timestamp(s['observed_at']) <= timestamp(now) for s in sources)):
+            notice = approval_event(binding['scope_revision'], revision, approval)
+            if records.get('review') == notice:
+                result['baseline_approval'] = notice
     if isinstance(value['records'], dict) and 'source_coverage' in value['records']:
         result['source_coverage'] = deepcopy(value['records']['source_coverage'])
     if isinstance(value['records'], dict) and 'readiness_candidates' in value['records']:
