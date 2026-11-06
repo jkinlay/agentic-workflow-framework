@@ -1204,6 +1204,8 @@ def _verify_installed(root, expected_version):
         version = loads(tree.read(PROVENANCE).decode())
         if version["template"]["version"] != expected_version or version["installation"]["source_manifest_sha256"] != manifest["source_manifest_sha256"]:
             raise ValidationError("Installed provenance is inconsistent")
+        from .adoption_config import verify_import_membership
+        verify_import_membership(root, source_manifest)
         return manifest["source_manifest_sha256"]
 
 
@@ -1946,11 +1948,16 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
     def configure_plan(existing_config=None, existing_receipt=None):
         nonlocal configuration_report, governance_proposal
         from .adoption_config import (prepare_config, operating_capacity_proposal,
-                                      repository_name, unresolved)
+                                      project_uuid, repository_name, unresolved)
         from .contracts import Contracts
         from .policy import inspect_config
         existing = load_yaml(existing_config) if existing_config is not None else None
         if mode == "upgrade" and isinstance(existing, dict):
+            project_section = existing.get('project')
+            saved_id = project_uuid(project_section.get('id')) if isinstance(project_section, dict) else None
+            receipt_id = (existing_receipt or {}).get('project_id')
+            if receipt_id is not None and (not project_uuid(receipt_id) or receipt_id != saved_id):
+                raise ValidationError("Configuration project UUID disagrees with the persisted installation receipt")
             github = existing.get("github", {})
             for key in ("repository", "repository_id", "base_branch"):
                 if key not in (overrides or {}) or not isinstance(github, dict):
@@ -1963,6 +1970,27 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     raise ValidationError(
                         "Explicit " + key + " conflicts with the established upgrade identity; "
                         "reconcile reviewed PROJECT_CONFIG.yaml before upgrading; no files changed")
+            # Upgrade is a migration, not adoption/discovery. Keep the migrated
+            # text verbatim, including comments, formatting and rejected choices.
+            inspection = inspect_config(existing, load_yaml(content[".agentic/workflow.yaml"]), Contracts(source / ".agentic/schemas"))
+            # Older policy can lack newly required settings. Retain its REJECTED
+            # result rather than filling those settings. Missing validation
+            # commands or project identity require owner repair before upgrading.
+            if not saved_id or any(item['path'].startswith('$.validation.commands')
+                                   for item in inspection.get('unresolved', [])):
+                residue = "; ".join(item['path'] + " (" + item['reason'] + ")"
+                                    for item in inspection.get('unresolved', []))
+                raise ValidationError("Upgrade configuration rejected: " + CONFIG + ": " + residue +
+                    "; resolve these choices in the reviewed project configuration before retrying; no files changed")
+            cfg, governance_proposal = operating_capacity_proposal(existing, existing=True,
+                requested=propose_operating_capacity, dry_run=dry_run)
+            planned[CONFIG] = existing_config if cfg == existing else json_bytes(cfg)
+            if cfg != existing:
+                inspection = inspect_config(cfg, load_yaml(content['.agentic/workflow.yaml']), Contracts(source / '.agentic/schemas'))
+            configuration_report = {**inspection, 'discovery': {
+                'project_id': existing['project']['id'], 'warnings': [], 'observations': [],
+                'test_commands_executed': False, 'execution_authority': False}}
+            return
         result = prepare_config(load_yaml(planned[CONFIG]), existing=existing,
             receipt_project_id=(existing_receipt or {}).get("project_id"), project_root=destination,
             overrides=overrides, codeowner=codeowner, discover=discover)
@@ -2038,9 +2066,23 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             installed_version = existing_receipt.get("template_version") if isinstance(existing_receipt, dict) else None
             # The managed runtime may legitimately contain venv-internal links
             # (POSIX ``lib64 -> lib``); it is not project state, so never walk it.
-            state = {path: dst.read(path) for path in dst.file_list(exclude_root_git=True,
-                                                                     exclude_prefixes=(RUNTIME + "/",))
-                     if path.startswith(".agentic-state/")}
+            state = {}
+            # Only retained state is migrated/archived. Product trees are not
+            # inputs and must not be traversed merely to select this prefix.
+            state_root = destination / '.agentic-state'
+            if state_root.exists() or state_root.is_symlink():
+                try:
+                    state_paths = dst.file_list(subtree='.agentic-state')
+                except (ValidationError, OSError) as exc:
+                    raise ValidationError("Upgrade state refusal: .agentic-state/ (" + str(exc) +
+                        "); preserve and move unsafe state outside the project, reconcile its references, then rerun the plan; no files changed") from exc
+                for path in state_paths:
+                    try:
+                        state[path] = dst.read(path)
+                    except (ValidationError, OSError) as exc:
+                        raise ValidationError("Upgrade state refusal: " + path +
+                            "; bounded regular unlinked state is required (64 MiB per file); preserve and move this file "
+                            "outside the project, reconcile its references, then rerun the plan; no files changed") from exc
             operating = _exists_read(dst, OPERATING)
             provenance_raw = _exists_read(dst, PROVENANCE)
             if provenance_raw is None:
@@ -2057,6 +2099,10 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 if known_versions is None:
                     raise ValidationError("Release is missing the known-versions table required for a historical upgrade")
                 identity = identify_installation(dst, known_versions, existing_config, receipt_raw)
+                from .adoption_config import verify_import_membership
+                # Registered legacy receipts lack an embedded source manifest;
+                # identify_installation already authenticated this exact set.
+                verify_import_membership(destination, {'files': identity['immutable_files']})
                 target_entry = {"source_manifest_sha256": digest,
                                 "_source_manifest_json": source_manifest_json,
                                 "_immutable_files": {path: sha256(data) for path, data in release_immutable.items()}}
@@ -2112,6 +2158,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 upgrade_report['budgeting'] = disposition
         if configure:
             configure_plan(planned[CONFIG] if mode == "upgrade" else existing_config, existing_receipt)
+        if upgrade_report is not None:
+            upgrade_report['configuration_diff_total'] = config_diff(
+                existing_config, planned[CONFIG], identity['version'], VERSION)
         from .operating import inspect_operating, operating_applicability, plan_initialize_operating
         governance = load_yaml(planned[CONFIG])
         applicability = operating_applicability(governance)

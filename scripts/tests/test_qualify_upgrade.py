@@ -263,7 +263,7 @@ class PreservationReportTests(unittest.TestCase):
         self.assertNotIn('S-1-', rendered)
         self.assertNotIn(str(self.root), rendered)
 
-    def qualification_with_unit_children(self, mutation, *, omit_checks=False, budget_preserved=True):
+    def qualification_with_unit_children(self, mutation, *, omit_checks=False, budget_preserved=True, omit_ledger=False):
         # Mocked child receipts exercise orchestration only, never installed evidence.
         from types import SimpleNamespace
         sys.path.insert(0, str(ROOT / '.agentic/tests'))
@@ -288,15 +288,25 @@ class PreservationReportTests(unittest.TestCase):
             if not omit_checks:
                 result['checks'] = {name: 'PASS' for name in
                     ('source_managed_membership', 'historical_state_continuity', 'named_streams')}
+            if not omit_ledger:
+                result['migration'] = {'state_migrations': [{'path': '.agentic-state/routing/ledger.sqlite',
+                    'action': 'migrated_schema'}], 'historical_continuity': {
+                    'sqlite_paths': ['.agentic-state/routing/ledger.sqlite']}}
             return result
 
-        with patch('build_release.release_paths', return_value=[]), \
+        import hashlib
+        with patch('qualify_upgrade.source_identity', return_value={'commit': 'a' * 40, 'tree': 'b' * 40,
+                'manifest_sha256': hashlib.sha256(b'unit candidate manifest').hexdigest()}), \
+                patch('build_release.release_paths', return_value=['MANIFEST.json']), \
+                patch('build_release.release_bytes', return_value=b'unit candidate manifest'), \
                 patch('build_release.SOURCE_CONFIGS', {}), \
+                patch('qualify_upgrade.verify_release'), \
                 patch.object(upgrade_195_fixtures, 'materialize_published', return_value=ROOT), \
                 patch('qualify_upgrade.run_bounded', side_effect=child), \
                 patch('qualify_upgrade.prepare_upgrade', return_value='unit policy') as prepare, \
                 patch('qualify_upgrade.compare_upgrade', side_effect=comparison) as preservation, \
                 patch('qualify_upgrade._prepare_qualification_budget', return_value='unit budget baseline', create=True), \
+                patch('qualify_upgrade._seed_qualification_state'), \
                 patch('qualify_upgrade._qualify_budget_import', return_value={'preserved': budget_preserved}, create=True), \
                 patch('qualify_upgrade.checked_bootstrap', return_value={'status': 'CONFIGURED'}):
             result = qualify(ROOT, work)
@@ -328,6 +338,11 @@ class PreservationReportTests(unittest.TestCase):
         self.assertEqual('NOT_QUALIFIED', result['status'])
         self.assertEqual('budget_import', result['failed_stage'])
 
+    def test_qualification_cannot_pass_unexercised_ledger_migration(self):
+        result = self.qualification_with_unit_children(lambda project: None, omit_ledger=True)
+        self.assertEqual('NOT_QUALIFIED', result['status'])
+        self.assertEqual('ledger_migration_coverage', result['failed_stage'])
+
     def test_qualification_cannot_pass_unverified_permissions(self):
         with patch('qualify_upgrade._permissions', return_value={
                 'verified': False, 'method': 'windows-owner-group-dacl-sddl'}):
@@ -348,6 +363,10 @@ class PreservationReportTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 write_report(path, {}, project=self.root)
             self.assertFalse(path.exists())
+        other_source = Path(self.temporary.name) / 'other-source'
+        other_source.mkdir()
+        with self.assertRaises(ValueError):
+            write_report(other_source / 'report.json', {}, project=self.root, source=other_source)
         output = Path(self.temporary.name) / 'external.json'
         write_report(output, {'status': 'NOT_QUALIFIED'}, project=self.root)
         with self.assertRaises(FileExistsError):

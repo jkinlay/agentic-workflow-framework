@@ -11,14 +11,12 @@ Retain PR #271 recognition/migration. Published
 Git proves no hosted provenance. Published assets/tags/pins/receipts stay immutable;
 fixtures use published-installer receipts.
 
-Qualify six tickets: AWF-236/238/241/242/243/244. Owner-deferred AWF-247 moves
-to 1.9.7; chat stays OFF. Inventory implementation/repairs/generated
-artifacts/deferrals; retain failures/causes/dispositions/affected reruns. Changes invalidate passes. Deferrals require demonstrated failure/owner decision.
+Scope follows the current owner contract. Retain failures/dispositions; changes invalidate passes.
 
 ## Disposable preservation
 
-Synthetic customization proves no CMC preservation. CMC stays untouched; cancelled
-personal Quant Foundry/forbidden HFT targets stay excluded. Adopter copies require accepted
+Synthetic customization proves no adopter preservation. Forbidden/cancelled targets
+stay excluded. Adopter copies require accepted
 baselines, exclusive ownership, quiescence, approved external storage and separate
 authorization. Record repository/ID/default-branch/releases/permissions,
 owner files/settings/instructions/CODEOWNERS, routes/pins/opt-outs/Jira scope/budgets,
@@ -31,15 +29,21 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Preserve defa
   `.git`/`.agentic/.venv`; nested archive Git/runtime/cache names remain evidence.
   Refuse links, incomplete identity and unreadable enumeration.
 - `plan --source RELEASE --project DISPOSABLE --expected-manifest-sha256 PIN
+  --github-repo OWNER/REPO --repository-id ID --default-branch BRANCH
   --output PLAN`: require identical inventories; test main/master/trunk and wrong
   repository/ID/branch refusals.
-- After bootstrap, snapshot again. `compare --project DISPOSABLE --before BEFORE
-  --after AFTER --allowed-delta DELTA --output COMPARISON` requires exact reviewed
-  records, including modes/sizes. Directories end `/`; reject wildcards, unused
-  exceptions and identity changes.
+- Keep an untouched disposable baseline matching BEFORE. After bootstrap, snapshot
+  again. `compare --project DISPOSABLE --before BEFORE --after AFTER --source RELEASE
+  --expected-manifest-sha256 PIN --baseline-project BASELINE --output COMPARISON`
+  runs real preservation checks and generates `approved_delta` from verified release
+  identity; owners inspect `remaining_changes`. Optional `--allowed-delta` only
+  constrains this policy. Without baseline/release inputs checks are NOT_RUN and
+  preservation fails. Owner/history loss cannot be waived.
 - `installed --source CHECKOUT --work-dir NEW_DISPOSABLE --wheelhouse WHEELS
-  --output REPORT`: project source/disposable manifests; bootstrap authentic baseline,
-  seed synthetic instructions, snapshot/derive policy/upgrade/compare after installed
+  --output REPORT`: require clean committed source and a current manifest; bind
+  commit/tree/pin without regenerating candidate manifests. Bootstrap authentic baseline,
+  seed instructions, populated legacy ledger and published-API accounting history;
+  snapshot/derive policy/upgrade/compare after installed
   checks. Verify downloads against each lock; require network/complete wheel seeds.
   Retain external stdout/stderr/hashes. Optional `--allowed-delta` cannot widen policy.
   Never reuse approvals. Failures retain inventories/comparison
@@ -48,15 +52,14 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Preserve defa
   integrity true, ACCEPTED configuration, bound source/policy/receipt hashes and
   preservation. All `checks` must execute/PASS: `source_managed_membership`,
   `historical_state_continuity`, `named_streams`.
+  Report exercised state migrations and continuity paths; a missing legacy-ledger
+  migration/SQL continuity check refuses qualification.
 
-Exclusively create external reports; emit permission digests only (Windows
-owner/group/DACL SDDL; POSIX owner/group/mode), never SIDs/descriptors/owner contents.
-Digest named-stream names/contents/sizes on files/directories/root; unreadable,
-incomplete, unsupported or missing stream evidence refuses preservation. POSIX
-records explicit absence. Unverified permissions fail. Comparison proves neither
-installed integrity nor adopter qualification: `evidence_scope:
-PRESERVATION_COMPARISON_ONLY` replaces its fixed nested `qualification_status:
-NOT_QUALIFIED`. Plans stay NOT_QUALIFIED; only installed reports qualify.
+Exclusively create external reports; emit permission/stream digests, never owner
+contents or SIDs. Missing/unverified permission or stream evidence fails; POSIX
+records explicit stream absence. Comparison has `evidence_scope:
+PRESERVATION_COMPARISON_ONLY`; it proves neither installed integrity nor
+qualification. Plans stay NOT_QUALIFIED; only installed reports qualify.
 
 ### Derived migration policy
 
@@ -99,34 +102,30 @@ charges/UNKNOWN values and deduplication proofs. Test published API-generated
 history, lost-row injection, interruption/replay and concurrency. Installed
 qualification requires this import/check/replay. Follow
 [owner adoption](../../MIGRATION-v1.9.5-to-v1.9.6.md), including Jira identity.
-Orchestrator owns installed qualification/review.
 
 ## Recovery and final gates
 
-Interrupt staging/writes/receipts/provenance/runtime staging/swap/cleanup; recover in
-fresh invocations. Tampered/missing objects refuse diagnostically. Remove only
-authenticated installer-created empty directories; refuse replacements/external
-contents. Retain unproved runtimes. Windows handles authenticate identity; POSIX
-mkdir/rmdir cannot: refuse cleanup, retain directories/journal, report unresolved
-restoration. Never relax assertions; preserve archives without recursion.
-Failed/unknown stages prove no CONFIGURED/ACTIVE.
+Interrupt staging/writes/receipts/provenance/runtime swaps/cleanup; recover in fresh
+invocations. Missing/tampered objects refuse. Remove only authenticated installer
+empty directories; retain replacements, external contents and unproved runtimes.
+POSIX cleanup without authenticated identity retains directories/journal and reports
+unresolved restoration. Preserve archives without recursion. Failed/unknown stages
+prove no CONFIGURED/ACTIVE.
 
-Freeze commit/tree/manifests/version/reviews/body/archive/catalog/trust hashes/base-head-body
-scan. Generate supported artifacts; rebind changes. Retain one heavy reservation/host,
-exactly-once allocation, limits/timeouts/caps. Require focused/source/archive/installed
-cohorts, Windows Python 3.12 and commands/platform/interpreter/timings/counts/skips/reasons/failures/receipt hashes.
+Freeze candidate/artifact/review/trust/publication bindings; rebind changes. Retain
+one heavy reservation/host, exactly-once allocation and approved limits. Record
+focused/source/archive/installed cohorts, Windows Python 3.12, commands/platform/
+interpreter/timings/counts/skips/failures/receipt hashes.
 
 ```text
 ABS_CANONICAL_RUNTIME -B -I ABS_INSTALLED_SCRIPT --root ABS_PROJECT verify-installation
 ABS_CANONICAL_RUNTIME -B -I ABS_INSTALLED_SCRIPT --root ABS_PROJECT validate-config
 ```
 
-Require exits zero/integrity true/ACCEPTED configuration/bound hashes; ambient/library
-checks cannot substitute. CONFIGURED proves consistency, not provenance; status
-proves no historical execution. Require current-head independent/specialist review,
-hosted checks/trust/publication scan/review barrier/owner acceptance. CI grants no
-publication/merge authority. Rollout requires target authorization/disposable proof.
-ACTIVE additionally requires independent trust, observed receipt-changing adoption
-merge/accepted raw default-branch bytes; enables no adapters. Report lanes/usable
-identities/capacity/concurrency separately. Close R2 A1-A7/R3 A1-A8/R4 A1-A7 individually:
-evidence or NOT MET.
+Require exits zero/integrity true/ACCEPTED configuration/bound hashes. CONFIGURED
+proves consistency; status proves no historical execution. Require independent/
+specialist review, hosted checks/trust/publication scan/review barrier/owner acceptance.
+Rollout requires target authorization/disposable proof. ACTIVE additionally needs
+independent trust and observed receipt-changing adoption merge with accepted raw
+default-branch bytes; enables no adapters. Report lanes/capacity/concurrency separately.
+Close each acceptance criterion: evidence or NOT MET.

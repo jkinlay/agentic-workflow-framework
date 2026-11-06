@@ -866,9 +866,10 @@ def post_install_checks(destination, installation):
                 for action in ("verify-installation", "validate-config")]
     try:
         _verify_import_surface(root, installation["source_manifest_sha256"])
-    except (ValidationError, OSError, ValueError, KeyError, TypeError):
+    except (ValidationError, OSError, ValueError, KeyError, TypeError) as exc:
         checks = [{"command": command, "exit_code": None, "output": None, "execution_status": "NOT_RUN",
-                   "diagnostic": "Trusted preflight rejected installed runtime bytes/import surfaces; preserve unexpected files and reconcile before executing installed code"}
+                   "diagnostic": "Trusted preflight rejected installed runtime bytes/import surfaces: " + str(exc) +
+                   "; preserve unexpected files and reconcile before executing installed code"}
                   for command in commands]
     else:
         checks = [_post_command(command, root) for command in commands]
@@ -935,6 +936,27 @@ def _pinned_cpython_cache(path, expected):
     return source in expected
 
 
+def verify_import_membership(root, manifest):
+    """Check pinned import membership without executing target code."""
+    for prefix in (".agentic/lib/", ".agentic/scripts/"):
+        expected = {path.removeprefix(prefix): digest for path, digest in manifest["files"].items()
+                    if path.startswith(prefix)}
+        with Tree(Path(root) / prefix) as runtime:
+            actual = set(runtime.file_list())
+            caches = {path for path in actual - set(expected) if _pinned_cpython_cache(path, expected)}
+            unexpected = actual - caches - set(expected)
+            missing = set(expected) - actual
+            if unexpected or missing:
+                raise ValidationError("Unexpected installed runtime import files: " +
+                    ", ".join(prefix + path for path in sorted(unexpected | missing)) +
+                    "; preserve and move unexpected files outside .agentic/lib and .agentic/scripts, "
+                    "or restore missing files from the verified release; rerun the non-writing upgrade plan")
+            for path, digest in expected.items():
+                if sha256(runtime.read(path)) != digest:
+                    raise ValidationError("Installed runtime import file differs from source: " + prefix + path +
+                                          "; restore verified release bytes before retrying")
+
+
 def _verify_import_surface(root, expected_digest):
     """Use trusted release code to reject target import shadows before execution.
 
@@ -953,14 +975,4 @@ def _verify_import_surface(root, expected_digest):
         if not isinstance(source_raw, str) or sha256(source_raw.encode("utf-8")) != expected_digest:
             raise ValidationError("Installed import inventory requires the pinned source manifest")
         manifest = loads(source_raw)
-        for prefix in (".agentic/lib/", ".agentic/scripts/"):
-            expected = {path.removeprefix(prefix): digest for path, digest in manifest["files"].items() if path.startswith(prefix)}
-            with Tree(Path(root) / prefix) as runtime:
-                actual = set(runtime.file_list())
-                caches = {path for path in actual - set(expected)
-                          if _pinned_cpython_cache(path, expected)}
-                if actual - caches != set(expected):
-                    raise ValidationError("Unexpected installed runtime import files")
-                for path, digest in expected.items():
-                    if sha256(runtime.read(path)) != digest:
-                        raise ValidationError("Installed runtime import file differs from source")
+        verify_import_membership(root, manifest)

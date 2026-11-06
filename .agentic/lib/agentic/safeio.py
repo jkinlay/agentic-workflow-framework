@@ -1077,7 +1077,7 @@ class Tree:
             os.unlink(name, dir_fd=handle)
             os.fsync(handle)
 
-    def file_list(self, *, exclude_root_git=False, reject_root_git=False, exclude_prefixes=()):
+    def file_list(self, *, exclude_root_git=False, reject_root_git=False, exclude_prefixes=(), subtree=None):
         if exclude_root_git and reject_root_git:
             raise ValueError("Root Git metadata cannot be both excluded and rejected")
         result = []
@@ -1087,7 +1087,10 @@ class Tree:
             entries = list(os.scandir(directory if os.name == "nt" else handle))
             for entry in entries:
                 relative = (directory / entry.name).relative_to(self.root).as_posix()
-                relative_parts(relative)
+                try:
+                    relative_parts(relative)
+                except ValidationError as exc:
+                    raise ValidationError(f"Unsupported source path: {relative}") from exc
                 # Windows scandir caches FindFirstFile metadata, whose link count
                 # can be zero. Request full metadata before enforcing one link.
                 info = os.lstat(directory / entry.name) if os.name == "nt" else entry.stat(follow_symlinks=False)
@@ -1110,7 +1113,8 @@ class Tree:
                     result.append(relative)
                 else:
                     raise ValidationError(f"Unsupported source file: {relative}")
-        walk(self.root)
+        start = self.root.joinpath(*relative_parts(subtree)) if subtree is not None else self.root
+        walk(start)
         return sorted(result)
 
     def close(self):

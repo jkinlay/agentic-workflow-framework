@@ -25,11 +25,38 @@ from agentic.canonical import load_yaml, loads
 from agentic.installer import (install, CONFIG, INSTALLED, PROVENANCE, CODEOWNERS,
                                managed, verify_release)
 from agentic.safeio import Tree, run_bounded
-from agentic.child_process import child_env
+from agentic.child_process import child_env, isolated_git_env
 
 FORMAT = 'awf-upgrade-preservation-1'
 EXCLUDED = {'.git', '.agentic/.venv'}
 REQUIRED_CHECKS = ('source_managed_membership', 'historical_state_continuity', 'named_streams')
+QUALIFICATION_LEDGER = '.agentic-state/routing/ledger.sqlite'
+
+
+def source_identity(source):
+    """Bind a clean checkout and its existing manifest; never repair the candidate."""
+    import build_release
+    source = Path(source).resolve(strict=True)
+
+    def git(*arguments):
+        result = run_bounded(['git', '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
+                             '-c', 'safe.directory=' + source.as_posix(), '-C', str(source),
+                              *arguments], cwd=source, env=isolated_git_env(), timeout=30,
+                             stdout_limit=4 * 1024 * 1024, stderr_limit=1024 * 1024)
+        if result.returncode:
+            raise ValueError('Source Git identity unavailable; use a clean committed candidate')
+        return result.stdout.decode('utf-8').strip()
+
+    if git('status', '--porcelain', '--untracked-files=normal'):
+        raise ValueError('Source is dirty; commit the reviewed candidate and regenerate its manifest before qualification')
+    commit, tree_id = git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}')
+    try:
+        with Tree(source) as tree:
+            raw = tree.read('MANIFEST.json')
+            build_release.verify_virtual_release(tree, raw)
+    except (ValueError, OSError) as exc:
+        raise ValueError('Source manifest is stale or invalid; regenerate and commit the candidate manifest before qualification') from exc
+    return {'commit': commit, 'tree': tree_id, 'manifest_sha256': hashlib.sha256(raw).hexdigest()}
 
 
 def _permissions(path):
@@ -554,7 +581,8 @@ def prepare_upgrade(source, project, pin, before):
         (project / PROVENANCE).read_bytes(), state,
         {'source_manifest_sha256': verified_pin, '_source_manifest_json': manifest_raw.decode('utf-8'),
          '_immutable_files': immutable})
-    migrations = [action for step in steps for action in step['state_migrations']
+    exercised = [action for step in steps for action in step['state_migrations']]
+    migrations = [action for action in exercised
                   if action['action'] == 'migrated_schema']
     archives, archive_actions = state_archive_plan(bundle.state, target_version=target)
     files = {path: {'sha256': digest, 'size': len(content[path]), 'rule': 'target-manifest',
@@ -623,9 +651,11 @@ def prepare_upgrade(source, project, pin, before):
             'files': files, 'immutable': immutable, 'directories': directories,
             'removed': set(identity['immutable_files']) - set(immutable),
             'old_immutable': identity['immutable_files'], 'config': load_yaml(config_raw),
+            'expected_config_sha256': hashlib.sha256(bundle.project_config).hexdigest(),
             'receipt': receipt, 'creation': creation, 'started_at': time.time(),
             'historical_state': historical_state,
-            'archive_actions': archive_actions, 'state_migrations': migrations}
+            'archive_actions': archive_actions, 'state_migrations': migrations,
+            'exercised_state_paths': exercised}
 
 
 def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
@@ -705,6 +735,7 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
         expected_config = json.loads(_json_identity(policy['config']))
         expected_config['template']['expected_workflow_version'] = policy['target_version']
         config_valid = (_json_identity(config) == _json_identity(expected_config)
+                        and after['files'][CONFIG]['sha256'] == policy['expected_config_sha256']
                         and expected_state(CONFIG, preserve=True))
     except (ValueError, KeyError, TypeError, OSError):
         pass
@@ -772,13 +803,18 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
     result['violations'].extend(failures)
     result['preserved'] = not result['violations']
     result['approved_changes'] = approved
+    result['approved_delta'] = delta
+    result['remaining_changes'] = {path: record for path, record in result['changes'].items() if path not in delta}
     result['checks'] = checks
     result['migration'] = {'source_version': policy['source_version'], 'target_version': policy['target_version'],
                            'manifest_sha256': policy['manifest_sha256'],
                            'baseline_sha256': policy['baseline_sha256'],
                            'agents_ownership': 'managed: exact target manifest bytes',
                            'state_migrations': policy['state_migrations'],
+                           'exercised_state_paths': policy.get('exercised_state_paths', []),
                            'historical_continuity': {'paths_checked': len(expected_paths),
+                               'paths': sorted(expected_paths),
+                               'sqlite_paths': sorted(path for path, record in (historical or {}).items() if 'tables' in record),
                                'existing_field_exceptions': [],
                                'new_sql_columns_and_tables_outside_historical_projection': True,
                                'baseline_state_sha256': hashlib.sha256(_json_identity(historical).encode()).hexdigest()},
@@ -787,9 +823,12 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
     return result
 
 
-def write_report(output, report, *, project):
+def write_report(output, report, *, project, source=None):
     output = Path(output).resolve()
-    for excluded in (ROOT.resolve(), Path(project).resolve()):
+    excluded_roots = {ROOT.resolve(), Path(project).resolve()}
+    if source is not None:
+        excluded_roots.add(Path(source).resolve())
+    for excluded in excluded_roots:
         if output == excluded or excluded in output.parents:
             raise ValueError('Report output must be outside source and disposable project')
     # Exclusive creation retains prior evidence; never overwrite a report.
@@ -799,10 +838,10 @@ def write_report(output, report, *, project):
         stream.write('\n')
 
 
-def plan(source, project, expected_manifest_sha256):
+def plan(source, project, expected_manifest_sha256, *, overrides=None):
     before = inventory(project)
     result = install(Path(source), Path(project), expected_manifest_sha256,
-                     mode='upgrade', configure=True, discover=False, dry_run=True)
+                     mode='upgrade', configure=True, discover=False, dry_run=True, overrides=overrides)
     after = inventory(project)
     preservation = compare(before, after, {})
     if not preservation['preserved']:
@@ -855,6 +894,13 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
     sys.path.insert(0, str(ROOT / '.agentic/tests'))
     from upgrade_195_fixtures import materialize_published, PUBLISHED_PIN
     source = Path(source).resolve(strict=True)
+    report = {'status': 'NOT_QUALIFIED', 'execution_authority': False,
+              'evidence_kind': 'SYNTHETIC_OWNER_CUSTOMIZATION', 'stages': []}
+    try:
+        report['source_identity'] = source_identity(source)
+    except ValueError as error:
+        report.update(failed_stage='source_identity', diagnostic=str(error))
+        return report
     work_dir = Path(work_dir).resolve()
     if work_dir == source or source in work_dir.parents:
         raise ValueError('Qualification work directory must be outside source')
@@ -870,8 +916,6 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             template = candidate / relative
             template.parent.mkdir(parents=True, exist_ok=True)
             template.write_bytes(tree.read(relative))
-    report = {'status': 'NOT_QUALIFIED', 'execution_authority': False,
-              'evidence_kind': 'SYNTHETIC_OWNER_CUSTOMIZATION', 'stages': []}
 
     def execute(stage, command, timeout=600):
         started = time.monotonic()
@@ -886,12 +930,14 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
         (work_dir / (stage + '.stderr')).write_bytes(child.stderr)
         return child
 
-    built = execute('candidate_manifest', [sys.executable, '-B',
-                    str(candidate / 'scripts/build_release.py'), '--manifest-only'])
-    if built.returncode != 0:
+    # Preserve the committed manifest pin. A generated projection cannot qualify
+    # different bytes under the source checkout's name.
+    target_pin = hashlib.sha256((candidate / 'MANIFEST.json').read_bytes()).hexdigest()
+    if target_pin != report['source_identity']['manifest_sha256']:
         report['failed_stage'] = 'candidate_manifest'
         return report
-    target_pin = hashlib.sha256((candidate / 'MANIFEST.json').read_bytes()).hexdigest()
+    with Tree(candidate) as tree:
+        verify_release(tree, target_pin)
     report['source_manifest_sha256'] = target_pin
     historical = materialize_published(source, work_dir / 'published')
     project = work_dir / 'project'
@@ -936,6 +982,9 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             except (ValueError, AssertionError, OSError):
                 report['failed_stage'] = 'budget_baseline'
                 return report
+            # Both genuinely reserved/settled published API history and a legacy
+            # schema ledger must enter the upgrade, not only a later import.
+            _seed_qualification_state(historical, project, budget_baseline)
             report['before'] = inventory(project)
             try:
                 migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
@@ -947,6 +996,9 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             report['after'] = inventory(project)
             report['preservation'] = compare_upgrade(report['before'], report['after'],
                 migration_policy, project, allowed_delta=allowed_delta)
+            if not exercised_ledger_migration(report['preservation']):
+                report['failed_stage'] = 'ledger_migration_coverage'
+                return report
             if (report['preservation']['preserved'] is not True or
                     any(report['preservation'].get('checks', {}).get(name) != 'PASS'
                         for name in REQUIRED_CHECKS)):
@@ -956,9 +1008,30 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
     if report['budget_import'].get('preserved') is not True:
         report['failed_stage'] = 'budget_import'
         return report
+    try:
+        if source_identity(source) != report['source_identity']:
+            raise ValueError('Source identity changed during qualification')
+    except ValueError as error:
+        report.update(failed_stage='source_identity', diagnostic=str(error))
+        return report
     report['status'] = 'QUALIFIED_DISPOSABLE_UPGRADE'
     report['active'] = False
     return report
+
+
+def exercised_ledger_migration(preservation):
+    migration = preservation.get('migration', {})
+    continuity = migration.get('historical_continuity', {})
+    return (QUALIFICATION_LEDGER in continuity.get('sqlite_paths', []) and
+            any(action.get('path') == QUALIFICATION_LEDGER and action.get('action') == 'migrated_schema'
+                for action in migration.get('state_migrations', [])))
+
+
+def _seed_qualification_state(historical, project, budget_baseline):
+    from upgrade_195_fixtures import seed_legacy_accounting
+    seed_legacy_accounting(historical, project)
+    host = project / '.agentic-state/routing/published-host.sqlite'
+    host.write_bytes(budget_baseline['sources']['host']['path'].read_bytes())
 
 
 def _prepare_qualification_budget(historical, project, work_dir):
@@ -1021,11 +1094,17 @@ def main(argv=None):
     planner.add_argument('--source', type=Path, required=True)
     planner.add_argument('--expected-manifest-sha256', required=True)
     planner.add_argument('--output', type=Path, required=True)
+    planner.add_argument('--github-repo')
+    planner.add_argument('--repository-id', type=int)
+    planner.add_argument('--default-branch')
     diff = sub.add_parser('compare')
     diff.add_argument('--project', type=Path, required=True, help='disposable project, for output isolation')
     diff.add_argument('--before', type=Path, required=True)
     diff.add_argument('--after', type=Path, required=True)
-    diff.add_argument('--allowed-delta', type=Path, required=True)
+    diff.add_argument('--allowed-delta', type=Path, help='optional constraints; cannot waive preservation')
+    diff.add_argument('--source', type=Path, help='verified target release')
+    diff.add_argument('--expected-manifest-sha256')
+    diff.add_argument('--baseline-project', type=Path, help='retained untouched disposable baseline matching BEFORE')
     diff.add_argument('--output', type=Path, required=True)
     runtime = sub.add_parser('installed')
     runtime.add_argument('--source', type=Path, required=True)
@@ -1038,17 +1117,32 @@ def main(argv=None):
     if args.command == 'installed':
         delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
         report = qualify(args.source, args.work_dir, args.wheelhouse, allowed_delta=delta)
-        write_report(args.output, report, project=args.work_dir)
+        write_report(args.output, report, project=args.work_dir, source=args.source)
         print(json.dumps(report, sort_keys=True))
         return 0 if report['status'] == 'QUALIFIED_DISPOSABLE_UPGRADE' else 1
     if args.command == 'snapshot':
         report = inventory(args.project)
     elif args.command == 'plan':
-        report = plan(args.source, args.project, args.expected_manifest_sha256)
+        overrides = {key: value for key, value in (
+            ('repository', args.github_repo), ('repository_id', args.repository_id),
+            ('base_branch', args.default_branch)) if value is not None}
+        report = plan(args.source, args.project, args.expected_manifest_sha256, overrides=overrides)
     else:
-        report = compare(*(json.loads(path.read_bytes()) for path in
-                           (args.before, args.after, args.allowed_delta)))
-    write_report(args.output, report, project=args.project)
+        before, after = (json.loads(path.read_bytes()) for path in (args.before, args.after))
+        delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
+        if not all((args.source, args.expected_manifest_sha256, args.baseline_project)):
+            report = compare(before, after, {})
+            report['violations'].append('Preservation checks NOT_RUN: supply --source, --expected-manifest-sha256 and '
+                '--baseline-project (untouched disposable baseline); allowed deltas cannot waive owner or history checks')
+            report['preserved'] = False
+            report['checks'] = {name: 'NOT_RUN' for name in REQUIRED_CHECKS}
+        else:
+            policy = prepare_upgrade(args.source, args.baseline_project, args.expected_manifest_sha256, before)
+            # This post-hoc comparison proves preservation only. Its unchanged
+            # baseline predates the operation, but it cannot attest cohort time.
+            policy['started_at'] = 0
+            report = compare_upgrade(before, after, policy, args.project, allowed_delta=delta)
+    write_report(args.output, report, project=args.project, source=getattr(args, 'source', None))
     return 1 if report.get('preserved') is False else 0
 
 

@@ -1,6 +1,9 @@
 ### Upgrade commands
 
-**[Unmerged d2-006d branch for the registered 1.9.4 predecessor; 1.9.5 publication UNVERIFIED.]**
+For the verified 1.9.6 candidate, rehearse on disposable copies of authentic
+published 1.9.5. Live rollout requires separate target authorization. Retain an
+untouched baseline and external preservation reports; see the
+[migration guide](../../MIGRATION-v1.9.5-to-v1.9.6.md).
 
 Windows:
 
@@ -16,13 +19,25 @@ macOS/Linux:
 '<install-dir>/bootstrap-venv/bin/python' -B '<install-dir>/release-cache/source/scripts/bootstrap_project.py' --dest '<repo-path>' --expected-manifest-sha256 '<release-manifest-sha256>' --runtime-wheelhouse '<install-dir>/wheelhouse' --mode upgrade --on-conflict backup
 ```
 
-Command interface: `7fcaeece:scripts/bootstrap_project.py:141`. Historical upgrade planning: `7fcaeece:.agentic/lib/agentic/installer.py:1738`.
+Add `--github-repo OWNER/REPO --repository-id ID --default-branch BRANCH` with the
+established identity to both commands. Wheels must match the target lock. Backups
+require `--on-conflict backup`; the default creates none.
 
-**Preview acceptance:** inspect `detected_version`, `target_version`, each migration step, total configuration diff, added/changed/removed managed files, state actions, and new required settings. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1803`.
+**Preview acceptance:** inspect detected/target versions, steps, complete configuration
+diff, managed additions/changes/removals, state actions and required settings.
+Unresolved validation commands refuse; other rejected settings remain REJECTED
+pending review. No test commands are invented. Accepted YAML
+retains its comments/format. Unexpected import files must be preserved and moved
+outside `.agentic/lib`/`.agentic/scripts`. Unsafe retained state names its path:
+preserve it externally and reconcile references before repeating the plan. Product
+directories outside upgrade inputs are not traversed. Managed containment remains
+mandatory.
 
-**Application acceptance:** CONFIGURED requires the same actual installed subprocess evidence and digest matches as fresh installation. `UPGRADED` alone is only the underlying transaction result. Sources: `7fcaeece:.agentic/lib/agentic/installer.py:1971`; `7fcaeece:.agentic/lib/agentic/adoption_config.py:893`.
+**Application acceptance:** CONFIGURED requires actual isolated installed subprocess
+checks and matching digests. `UPGRADED` alone is only the transaction result.
 
-**Failure:** retain diagnostics, original state, and recovery material. An immutable-file mismatch reports expected/actual hashes and refuses the historical upgrade. Do not rehash modified files into an apparently valid receipt. Sources: `7fcaeece:.agentic/lib/agentic/upgrade.py:198`; `9f44c2a1:.agentic/tests/test_upgrade_195_path.py:270`.
+**Failure:** retain diagnostics, original state and recovery material. Immutable-file
+mismatches refuse; never rehash modified files into a valid-looking receipt.
 
 **Related guidance:** [Starting-installation checks](15-runbook-supported-starting-installations.md); [migration behavior](18-runbook-migration-behavior.md); [journal recovery](19-runbook-journal-recovery.md); [post-upgrade verification](20-runbook-post-upgrade-verification-and-reactivation.md).
 
