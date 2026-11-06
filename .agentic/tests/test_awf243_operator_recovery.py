@@ -332,6 +332,8 @@ class OwnerClosureIdentityTests(unittest.TestCase):
         return case
 
     def drift(self, case, kind):
+        original_site = case.config['jira']['site']
+        original_gateway = 'https://api.atlassian.com/ex/jira/' + case.config['jira']['cloud_id']
         if kind == 'project':
             case.policy['project']['id'] = '10000000-0000-0000-0000-000000000099'
             case.binding['project_id'] = case.config['github']['project_id'] = case.policy['project']['id']
@@ -347,13 +349,27 @@ class OwnerClosureIdentityTests(unittest.TestCase):
         # Change only HTTP inputs, accepted config and CLI arguments, never production seams.
         original = case.http.request
         def request(method, url, **kwargs):
-            code, body = original(method, url, **kwargs)
+            # The shared wire fixture validates its original destinations. Route
+            # the changed tenant through that fixture, then return the changed
+            # observed identity, including OAuth's separate resource binding.
+            site = case.policy['jira']['site']
+            gateway = 'https://api.atlassian.com/ex/jira/' + case.policy['jira']['cloud_id']
+            if url.startswith(site + '/'):
+                fixture_url = original_site + url[len(site):]
+            elif url.startswith(gateway + '/'):
+                fixture_url = original_gateway + url[len(gateway):]
+            else:
+                self.assertEqual('https://api.atlassian.com/oauth/token/accessible-resources', url)
+                fixture_url = url
+            code, body = original(method, fixture_url, **kwargs)
             if method == 'GET':
                 value = json.loads(body)
-                if url.endswith('/myself'):
+                if url.endswith('/oauth/token/accessible-resources'):
+                    value = [{'id': case.policy['jira']['cloud_id'], 'url': site}]
+                elif url.endswith('/myself'):
                     value['accountId'] = case.policy['jira']['controller_actor_id']
                 elif url.endswith('/_edge/tenant_info'):
-                    value.update(cloudId=case.policy['jira']['cloud_id'], siteUrl=case.policy['jira']['site'])
+                    value = {'cloudId': case.policy['jira']['cloud_id']}
                 elif '/project/EX' in url:
                     value['id'] = case.policy['jira']['provider_project_id']
                 elif '/issue/' in url and 'project' in value.get('fields', {}):
@@ -377,6 +393,18 @@ class OwnerClosureIdentityTests(unittest.TestCase):
             return original_cli(arguments)
         case.run_cli = run_cli
         case.edit_config()
+        # Auth/tenant failures must not hide identity drift from the history
+        # guard: prove the real adapter observes every changed provider field.
+        with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
+            calls = runpy.run_path(str(case.adapter))['build_adapters']({**case.config,
+                '_http_transport': case.http, '_clock': case.clock, '_runner': FakeRunner()})
+            self.assertEqual({
+                'cloud_id': case.policy['jira']['cloud_id'], 'site': case.policy['jira']['site'],
+                'project_id': case.policy['jira']['provider_project_id'],
+                'project_key': case.policy['jira']['project_key'],
+                'controller_actor_id': case.policy['jira']['controller_actor_id'],
+            }, calls['observe_provider_identity']())
+        self.assertEqual([], case.posted)
 
     def refused_lifecycle(self, case, event):
         with self.assertRaisesRegex(ValidationError,
