@@ -64,7 +64,7 @@ Limits enable neither switch; enforcement requires accounting; accounting OFF
 disables enforcement. Preserve upgrades; installed 1.9.5 stays unchanged/enabled.
 Recommend versioned preservation, never in-place integrity-managed bytes/receipts.
 
-Echo the budget request; run `operating set` with exact instruction/assignments.
+Echo budgeting/calendar requests; run `operating set` with exact instruction/assignments.
 Exit 3 `PENDING_OWNER_CONFIRMATION` changes nothing. Give the exact returned
 `workflow.py operating confirm --digest D` command with verified interpreter,
 script/root for the owner's terminal. Never run confirm yourself. After the

@@ -18,7 +18,7 @@ import sys
 import uuid
 
 from . import ValidationError
-from .budget_enrollment import EnrollmentRegistry, ProtectedDatabase, require
+from .budget_enrollment import ProtectedDatabase, require
 from .budgeting import project_ledger_path
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
 
@@ -44,6 +44,8 @@ class ProposalStore(ProtectedDatabase):
     """Durable proposals and single-use admissions, independent of budget usage."""
     @classmethod
     def for_project(cls, root, project_id):
+        # Strict, read-only location resolution; this does not open a ledger or
+        # enable accounting. Only this store's owner-admission tables are created.
         path = project_ledger_path(project_id, accounting_enabled=True, worktree_roots=(root,))
         return cls(path.with_name('owner-admission.sqlite3'), (root,))
 
@@ -78,7 +80,7 @@ class ProposalStore(ProtectedDatabase):
         return record
 
     def consume(self, digest, audit, db):
-        # Same transaction as the registry observation: no partial consumption.
+        # One confirmation per complete operating transaction, across domains.
         require(db.execute('SELECT 1 FROM owner_confirmations WHERE digest=?', (digest,)).fetchone() is None,
                 'PROPOSAL_ALREADY_CONSUMED: create a new request')
         row = db.execute('SELECT record FROM owner_proposals WHERE digest=?', (digest,)).fetchone()
@@ -204,15 +206,16 @@ def observe_github_owner(governance, root):
 
 
 class _ConfirmedOwner:
-    """Trusted-process host implementing EnrollmentRegistry's unchanged protocol."""
+    """Trusted-process admission, constructed only by interactive confirm."""
     def __init__(self, root, store, digest, record, identity):
         self.root, self.store, self.digest = root, store, digest
         self.record, self.identity = deepcopy(record), deepcopy(identity)
-        self.audit = None
-        self._validated = None
 
-    def validate_operating_change(self, governance, snapshot, instruction, intent, changes,
-                                 prior_settings_hash, requested_changes):
+    def admit_operating_change(self, root, governance, snapshot, instruction, intent, changes,
+                               *, validate_admission):
+        """Rebind under operating's lock; validate full bytes before consumption."""
+        require(Path(root).resolve() == Path(self.root).resolve(),
+                'PROPOSAL_BINDING_MISMATCH: project location differs')
         record = self.store.load(self.digest)
         require(record == self.record, 'PROPOSAL_BINDING_MISMATCH: protected proposal differs')
         _check_time(record)
@@ -222,26 +225,12 @@ class _ConfirmedOwner:
                 'PROPOSAL_BINDING_MISMATCH: project, repository, governance, prior settings or exact changes differ')
         require(self.identity['type'] == 'User' and self.identity['id'] in governance['merge_gate']['trusted_owner_ids'],
                 'OWNER_IDENTITY_REFUSED: owner is no longer trusted')
-        self._validated = (governance['project']['id'], prior_settings_hash, deepcopy(requested_changes))
-
-    def observe_owner_direction(self, project_id, prior_settings_hash, changes):
-        require(self._validated is not None and self._validated[:2] == (project_id, prior_settings_hash)
-                and canonical(self._validated[2]) == canonical(changes),
-                'PROPOSAL_BINDING_MISMATCH: owner observation requires the exact validated change')
-        _check_time(self.record)
         audit = dict(actor_id=self.identity['id'], login=self.identity['login'], type=self.identity['type'],
                      digest=self.digest, request_id=self.record['request_id'], confirmed_at=now_text())
-        self.audit = audit
-        self._observation = dict(observation_id='github-terminal:' + self.record['request_id'] + ':' + self.digest,
-                    actor_id=str(self.identity['id']), project_id=project_id,
-                    prior_settings_hash=prior_settings_hash, changes=deepcopy(changes))
-        return deepcopy(self._observation)
-
-    def consume_owner_direction(self, observed, db):
-        require(self._validated is not None and observed == self._observation,
-                'PROPOSAL_BINDING_MISMATCH: consumption differs from owner observation')
-        self.store.consume(self.digest, self.audit, db)
-        self._validated = None
+        validate_admission(deepcopy(audit))
+        with self.store.transaction() as db:
+            self.store.consume(self.digest, audit, db)
+        return audit
 
 
 def confirm(root, governance, digest, *, stdin=None, stdout=None):
@@ -265,5 +254,4 @@ def confirm(root, governance, digest, *, stdin=None, stdout=None):
     require(stdin.readline(128).rstrip('\r\n') == digest[:8],
             'DIGEST_CONFIRMATION_REFUSED: settings unchanged; type the exact first 8 digest characters')
     host = _ConfirmedOwner(root, store, digest, record, identity)
-    registry = EnrollmentRegistry(store.path, host, (root,))
-    return set_operating(root, governance, record['instruction'], budget_registry=registry, **record['intent'])
+    return set_operating(root, governance, record['instruction'], owner_admission=host, **record['intent'])

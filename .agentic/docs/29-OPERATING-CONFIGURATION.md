@@ -78,7 +78,7 @@ neither switch; accounting OFF disables enforcement. No Epic budget overrides.
 
 Supported paths: `budgeting.accounting_enabled`,
 `budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` and
-`budgeting.max_tokens_per_project`. `set` validates/stores a protected proposal,
+`budgeting.max_tokens_per_project`. Budgeting/calendar `set` validates/stores a protected proposal,
 prints exact changes/digest, exits 3 `PENDING_OWNER_CONFIRMATION`; settings stay
 unchanged. Owner runs `workflow.py operating confirm --digest D` in their
 terminal within 15 minutes, typing its first eight characters. Skills never run
@@ -90,7 +90,7 @@ environment variables, foreign GH_HOST and noninteractive stdin/stdout refuse.
 Project/repository/governance/prior-settings/exact-change mismatches/replay
 refuse. Under lock: validate, consume, journal, audit, readback.
 Stored GitHub login/terminal cannot defend against processes with the owner's
-full rights and their own terminal. Other settings retain behavior.
+full rights and their own terminal. OFF/unchanged assignments require confirmation.
 See [budgeting](39-BUDGETING.md) for host integration, UNKNOWN attribution,
 canonical totals, preserved reservations and versioned upgrade decision.
 
@@ -100,4 +100,4 @@ Optional `operating_calendar` defaults preserve legacy bytes/hashes: `continuous
 
 Dotted paths: `timezone`, `work_mode`, `review_batching.enabled`, `.weekdays`, `.presentation_time`, `.cutoff_time`, `eod.time`, `eod.weekdays`, prefixed `operating_calendar.`. Weekdays: JSON lists. Unknown/null fields, invalid IANA zones/times/days, presentation >= cutoff refuse atomically. No Epic overrides. Show: effective/persisted settings.
 
-Trusted infrastructure injects `CalendarSettingsRegistry` through `calendar_registry`; words authenticate nobody. Validate fully, consume admissions together under lock; journal/audit/pinned recovery applies. Calendar enables no reporting/budgeting/chat/adapters. Shared confirmation deferred. See [calendar](operating-calendar.md).
+Calendar uses shared `set`/`confirm` admission: one digest consumes once. Pure validators check transitions before proposal/consumption. Historical observations/recovery remain supported. Calendar creates no budget/enrollment state. See [calendar](operating-calendar.md).

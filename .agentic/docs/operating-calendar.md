@@ -89,15 +89,14 @@ cannot mean NOT_DELIVERED. Never multiply retry allowances.
 
 ## Settings and controller ports
 
-Operating validation/set/show uses existing lock/journal/audit/recovery. Dotted
-paths use JSON weekday lists. Generated defaults/schema include the calendar;
-legacy files omit it unchanged.
-`CalendarSettingsRegistry` reuses budgeting's protected registry and trusted-host
-`observe_owner_direction` pattern, with separate immutable replay records.
-Infrastructure injects `calendar_registry` into `set_operating`/`main`; standalone
-CLI instructions refuse calendar mutations. Host observations bind the project,
-effective prior-calendar hash and exact changes, consumed after mixed-root
-validation under the operating lock. Recovery retains that observation.
+Validation/set/show retains lock/journal/audit/recovery. Weekdays use JSON lists.
+Generated defaults/schema include calendars; legacy bytes remain unchanged.
+`operating set`: exit 3 `PENDING_OWNER_CONFIRMATION`, unchanged settings. Owner runs
+`operating confirm --digest D` within 15 minutes, typing eight digest characters.
+Terminal/stored GitHub User identity must match reviewed numeric owners.
+OFF/unchanged assignments require admission. Under lock: revalidate domains/governance/bytes,
+consume once across mixed changes, journal/audit/readback. Calendar creates no
+budget/enrollment state. Historical `CalendarSettingsRegistry` observations/pinned recovery remain supported.
 
 `production_controller_cycle` resolves the validated snapshot's effective calendar
 each cycle, returning `operating_calendar` for AWF-241's separate EoD/hourly
