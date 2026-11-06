@@ -46,7 +46,7 @@ class OwnerAdmissionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='awf-owner-')
         self.addCleanup(temporary.cleanup)
-        base = Path(temporary.name)
+        base = Path(temporary.name).resolve()
         self.fixture = SimpleNamespace(base=base, dest=base / 'project')
         self.root = self.fixture.dest
         shutil.copytree(self.template, self.root)
