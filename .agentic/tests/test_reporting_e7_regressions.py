@@ -150,8 +150,14 @@ class E7ControllerTests(unittest.TestCase):
         self.assertEqual(sleeps, [], 'Retry-After must persist and defer, never sleep in the controller')
         attempts = {d['delivery_id']: list(d['attempts']) for d in states}
         self.restart()
-        self.owner_alert('Another report during cooldown')
+        # Keep the first request open and add a distinct one: replacing it
+        # would correctly withdraw the obsolete queued presentation.
+        from test_reference_controller_adapter import _issue
+        second = json.loads(self.runner.inventory[0]['body'])
+        second.update(ticket='AWF-33', reason='Another report during cooldown')
+        self.runner.inventory.append(_issue(second, number=33))
         self.cycle('2026-11-10T10:00:59Z')
+        self.assertEqual(len([r for r in self.status()['reports'] if r.get('owner_action_event')]), 2)
         self.assertEqual([c for c in self.network.calls if matches(*c)], initial)
         for d in self.status()['deliveries']:
             if d['delivery_id'] in attempts:

@@ -131,12 +131,13 @@ class ReportingRuntimeTests(unittest.TestCase):
         self.binding = dict(project='p', repository='101', scope_revision='s')
         self.root = dict(reporting=dict(mode='both', bindings=[binding('teams'), binding()]))
         self.sent = []
+        self.visible_platforms = {'slack'}
         owner = self
         class Provider:
             def send(self, intent, attempt):
                 owner.sent.append((intent, attempt))
             def reconcile(self, intent, attempts):
-                return dict(status='VISIBLE' if intent['binding']['platform'] == 'slack' else 'UNKNOWN',
+                return dict(status='VISIBLE' if intent['binding']['platform'] in owner.visible_platforms else 'UNKNOWN',
                     evidence_kind='CHANNEL_READBACK', delivery_id=intent['delivery_id'],
                     destination=intent['binding']['destination'], platform=intent['binding']['platform'],
                     payload_sha256=intent['payload_sha256'], attempt_ids=attempts,
@@ -195,6 +196,13 @@ class ReportingRuntimeTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
         self.cycle('2026-11-07T18:31:00Z', context=context)
         self.cycle('2026-11-07T18:32:00Z')
+        self.assertEqual(len(self.sent), 2)
+        # Establish the delivered-request precondition on both platforms;
+        # an ambiguous original must reconcile before its resolution posts.
+        self.visible_platforms.add('teams')
+        self.cycle('2026-11-07T18:32:30Z', context=context)
+        from agentic.reporting.runtime import reporting_status
+        self.assertEqual({d['status'] for d in reporting_status(self.store, self.root, self.binding)['deliveries']}, {'DELIVERED'})
         self.assertEqual(len(self.sent), 2)
         self.cycle('2026-11-07T18:33:00Z', context=dict(owner_actions=[]))
         self.assertEqual(len(self.sent), 4)

@@ -155,8 +155,9 @@ def collect_review_corrections(store, binding, now, observe):
         rows = [r for r in rows if r[0] > cursor] + [r for r in rows if r[0] <= cursor]
         for row in rows:
             report = loads(row[1])
-            if report['binding'] != binding or 'review_batch' not in report:
+            if any(report['binding'][k] != binding[k] for k in ('project', 'repository')) or 'review_batch' not in report:
                 continue
+            scope_changed = report['binding'] != binding
             for delivery_id in report['delivery_ids']:
                 intent, state = DeliveryOutbox._load(db, delivery_id)
                 correction_id = fingerprint('report-review-correction-1', delivery_id)
@@ -167,20 +168,23 @@ def collect_review_corrections(store, binding, now, observe):
                 restoring = correction is not None
                 restoration_id = fingerprint('report-review-restoration-1', correction_id)
                 if restoring:
+                    if scope_changed:
+                        continue  # Old-scope readiness cannot be restored.
                     correction = loads(correction[0])
                     if db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (restoration_id,)).fetchone():
                         continue
                     if not all(DeliveryOutbox._load(db, d)[1]['status'] == 'DELIVERED'
                                for d in correction['delivery_ids']):
                         continue
-                require(callable(observe), 'REPORT_REVIEW_OBSERVER_UNAVAILABLE')
+                require(scope_changed or callable(observe), 'REPORT_REVIEW_OBSERVER_UNAVAILABLE')
                 # Rotate one delivered batch per cycle; a growing archive must
                 # not exhaust source collection or starve new presentations.
                 if selected is not None and selected != row[0]:
                     continue
                 selected = row[0]
-                invalid = []
-                for member in report['review_batch']['members']:
+                invalid = ([dict(reason='SCOPE_CHANGED', withdrawn=report['binding'], current=deepcopy(binding))]
+                           if scope_changed else [])
+                for member in ([] if scope_changed else report['review_batch']['members']):
                     source_timeout()
                     prior = _candidate(member['candidate'])
                     candidate_id = fingerprint('report-review-observation', prior)

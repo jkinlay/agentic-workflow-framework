@@ -18,6 +18,56 @@ from .metrics import ratio, median
 SCENARIOS = ('optimistic', 'base', 'conservative')
 
 
+def reconciled_forecast(forecast, tickets, observed_capacity, as_of):
+    """Admit supplied estimates against required work and controller capacity."""
+    from .metrics import delivered, required_leaves
+    remaining = {t['key']: t for t in required_leaves(tickets) if not delivered(t)}
+    graph = {n['key']: n for n in forecast['nodes']}
+    require(set(remaining) <= set(graph), 'REPORT_FORECAST_REMAINING_COVERAGE')
+    ticket_keys = {t['key'] for t in tickets}
+    require(set(graph) & ticket_keys == set(remaining), 'REPORT_FORECAST_NONREMAINING_WORK')
+    for key, ticket in remaining.items():
+        dependencies = set(ticket.get('dependencies', []))
+        completed = {t['key'] for t in tickets if delivered(t)}
+        require(dependencies - completed <= set(graph[key]['dependencies']), 'REPORT_FORECAST_DEPENDENCY_MISMATCH')
+        if ticket.get('remaining_seconds') is not None:
+            require(ticket['remaining_seconds'] == graph[key]['remaining_seconds'], 'REPORT_FORECAST_ESTIMATE_MISMATCH')
+    capacity = dict(forecast['capacity'])
+    require(capacity and all(type(n) is int and n > 0 for n in capacity.values()), 'REPORT_CAPACITY_UNAVAILABLE')
+    reasons = []
+    if any(t.get('state', 'UNKNOWN') == 'UNKNOWN' for t in remaining.values()):
+        reasons.append('REMAINING_CLASSIFICATION_UNAVAILABLE')
+    observed = observed_capacity or {}
+    if 'host_capacity' in observed:
+        limits = [observed['host_capacity']] + [r['capacity'] for r in observed.get('resources', [])]
+        require(all(type(n) is int and n >= 0 for n in limits), 'REPORT_CAPACITY_UNAVAILABLE')
+        safe = min(limits)
+        # These host resources jointly constrain worker concurrency. They do
+        # not establish independent reviewer/provider pools.
+        require(set(capacity) <= {'workers'}, 'REPORT_FORECAST_RESOURCE_UNOBSERVED')
+        capacity = {pool: min(n, safe) for pool, n in capacity.items()}
+    elif observed and all(type(n) is int and n >= 0 for n in observed.values()):
+        require(set(capacity) <= set(observed), 'REPORT_FORECAST_RESOURCE_UNOBSERVED')
+        capacity = {pool: min(n, observed[pool]) for pool, n in capacity.items()}
+    else:
+        reasons.append('OBSERVED_CAPACITY_UNAVAILABLE')
+    result = milestone_forecast(forecast['nodes'], forecast['milestones'], capacity, as_of,
+        reservations=forecast.get('reservations'), previous=forecast.get('previous'))
+    scheduled = {n['key'] for n in result['schedule']['base']}
+    require(set(remaining) <= scheduled, 'REPORT_FORECAST_MILESTONE_COVERAGE')
+    # Accepted graph nodes may include shared overhead, but none may silently
+    # disappear from every milestone and thereby shorten the scope forecast.
+    require(set(graph) == scheduled, 'REPORT_FORECAST_GRAPH_COVERAGE')
+    if reasons:
+        result.update(status='CONDITIONAL', reasons=reasons)
+        for rows in result['milestones'].values():
+            for row in rows.values():
+                row.update(status='CONDITIONAL', conditional_eta=row.get('eta') or row.get('conditional_eta'), eta=None)
+                row['external_waits'] += reasons
+                row['basis'] = 'Conditional supplied remaining work/capacity: ' + ', '.join(reasons)
+    return result
+
+
 def planning_defects(tickets):
     by_key = {t['key']: t for t in tickets}
     require(len(by_key) == len(tickets), 'REPORT_DUPLICATE_TICKET')

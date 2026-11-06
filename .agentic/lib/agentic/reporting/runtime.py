@@ -5,7 +5,7 @@ One serialized controller cycle collects them before this atomic projection.
 No usage write, Jira client or dispatch lives here. Admission resolves sender
 references transiently through the shared credential filter.
 """
-from copy import deepcopy
+from copy import copy, deepcopy
 from datetime import timedelta
 import threading
 import uuid
@@ -17,7 +17,7 @@ from ..operating_calendar import effective_calendar, next_review_presentation
 from .bodies import prepare_body, render_body
 from .bounded import DeliveryBudget, MAX_ADVANCES
 from .compose import compose_report, describe, number
-from .delivery import DeliveryOutbox, delivery_intent, require
+from .delivery import DeliveryOutbox, delivery_intent, require, same_destination
 from .events import approval_event, withdrawal_event, due_periods, owner_events, readiness_events, utc
 from .settings import effective_reporting
 from .safety import safe_report
@@ -191,11 +191,21 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                 FROM controller_reports r JOIN controller_report_delivery d
                   ON json_extract(d.intent_json,'$.report_id')=r.report_id
                 WHERE json_extract(d.intent_json,'$.binding.platform')=?
-                  AND json_extract(d.intent_json,'$.binding')=json(?)
+                  AND (json_extract(d.intent_json,'$.binding')=json(?) OR
+                    (json_remove(json_extract(d.intent_json,'$.binding'),'$.scope_revision')=json(?) AND
+                     (json_type(r.payload_json,'$.review_correction') IS NOT NULL OR
+                      json_type(r.payload_json,'$.baseline_correction') IS NOT NULL OR
+                      json_type(d.state_json,'$.basis_withdrawal') IS NOT NULL OR
+                      json_type(d.state_json,'$.approval_withdrawal') IS NOT NULL OR
+                      json_extract(r.payload_json,'$.owner_action_event.kind')='owner-action-resolved')))
                   AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED','WITHDRAWN')
-                  AND (? OR r.kind<>'final-human-review')
+                  AND (? OR r.kind<>'final-human-review' OR json_type(d.state_json,'$.basis_withdrawal') IS NOT NULL)
                   AND (? OR json_extract(d.state_json,'$.status') NOT IN ('PENDING','ABSENT','THROTTLED')
                        OR json_extract(d.state_json,'$.retry_action')='RECONCILE')
+                  AND NOT EXISTS (SELECT 1 FROM controller_report_delivery dep
+                    WHERE dep.delivery_id IN (SELECT value FROM json_each(r.payload_json,'$.after_deliveries'))
+                      AND json_extract(dep.intent_json,'$.binding.platform')=json_extract(d.intent_json,'$.binding.platform')
+                      AND json_extract(dep.state_json,'$.status') NOT IN ('DELIVERED','WITHDRAWN','FAILED'))
                   AND (? IS NULL OR r.report_id IN (SELECT value FROM json_each(?))))
                 SELECT * FROM (SELECT *,row_number() OVER (
                     PARTITION BY CASE WHEN fresh THEN kind ELSE 'history' END
@@ -203,7 +213,8 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                     FROM actionable)
                 WHERE position<=? ORDER BY fresh DESC,
                     CASE kind WHEN 'owner-action' THEN 0 WHEN 'hourly' THEN 1 ELSE 2 END,position""",
-                (platform, canonical(destination).decode(), report_ids is not None, allow_send, ids, ids,
+                (platform, canonical(destination).decode(), canonical({k: v for k, v in destination.items()
+                    if k != 'scope_revision'}).decode(), report_ids is not None, allow_send, ids, ids,
                  MAX_ADVANCES)).fetchall()
         fresh = [r for r in rows if r['fresh']]
         history = sorted([r for r in rows if not r['fresh']],
@@ -256,14 +267,25 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
         with budget.destination(platform):
             for row in work:
                 record = loads(row[0])
+                delivery_provider = provider
                 if record['binding'] != binding:
-                    continue
+                    # Only retained corrections/resolutions or withdrawn
+                    # attempts can cross a scope revision. No retargeting,
+                    # credential change, readiness or new request is admitted.
+                    with store.connection() as db:
+                        intent, retained = DeliveryOutbox._load(db, row[1])
+                    from .platform import PlatformReportingAdapter
+                    if not (same_destination(intent['binding'], destination)
+                            and isinstance(provider, PlatformReportingAdapter)):
+                        continue
+                    delivery_provider = copy(provider)
+                    delivery_provider.binding = deepcopy(intent['binding'])
                 if not budget.admit(platform, reconciliation=not row['fresh']):
                     if monotonic() >= budget.deadline:
                         remember(category(row))
                     continue
                 try:
-                    state = outbox.advance(row[1], provider, allow_send=allow_send,
+                    state = outbox.advance(row[1], delivery_provider, allow_send=allow_send,
                                            before_send=before_send, clock=getattr(provider, 'clock', None))
                 except Exception:
                     state = dict(status='UNKNOWN', reason='REPORT_PROVIDER_UNAVAILABLE')
@@ -434,14 +456,19 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
         for row in db.execute("SELECT payload_json FROM controller_reports WHERE kind='jira-review'").fetchall():
             prior = loads(row[0])
             approval = prior.get('baseline_approval')
-            if prior['binding'] != binding or not approval:
+            if any(prior['binding'][k] != binding[k] for k in ('project', 'repository')) or not approval:
                 continue
+            scope_changed = prior['binding'] != binding
             for delivery_id in prior['delivery_ids']:
-                if withdrawal and approval['record']['revision'] == withdrawal['record']['revision']:
+                if scope_changed:
+                    DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
+                        dict(reason='SCOPE_CHANGED', prior=prior['binding'], current=binding))
+                elif withdrawal and approval['record']['revision'] == withdrawal['record']['revision']:
                     DeliveryOutbox.withdraw_in_transaction(db, delivery_id, withdrawal)
                 intent, delivery = DeliveryOutbox._load(db, delivery_id)
                 invalidated = delivery.get('approval_withdrawal')
-                if not invalidated or delivery['status'] != 'DELIVERED' or intent['binding'] not in destinations:
+                destination = next((d for d in destinations if same_destination(d, intent['binding'])), None)
+                if not invalidated or delivery['status'] != 'DELIVERED' or destination is None:
                     continue
                 correction_id = fingerprint('report-baseline-correction-1', delivery_id)
                 if db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (correction_id,)).fetchone():
@@ -453,15 +480,75 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                     summary='Correction: prior backlog approval withdrawn', sections={
                         'Evidence': describe(notice),
                         'Owner action': 'Do not rely on prior backlog approval; await current owner approval'}))
-                generated.append(_retain(db, correction_id, 'owner-action', body, binding, [intent['binding']], now,
+                generated.append(_retain(db, correction_id, 'owner-action', body, binding, [destination], now,
                     extra={'baseline_correction': notice},
                     threads={intent['binding']['platform']: intent.get('thread_id') or readback['message_id']},
                     senders=(providers or {}).values()))
+        # A prior scope's readiness may already have landed without readback.
+        # Fence new sends, but keep reconciling its immutable attempts so a
+        # later visible receipt can seed the original-thread correction.
+        for row in db.execute("SELECT payload_json FROM controller_reports WHERE kind='final-human-review'").fetchall():
+            prior = loads(row[0])
+            if prior['binding'] == binding or any(prior['binding'][k] != binding[k] for k in ('project', 'repository')):
+                continue
+            for delivery_id in prior['delivery_ids']:
+                DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
+                    dict(reason='SCOPE_CHANGED', prior=prior['binding'], current=binding), basis=True)
         if context.get('owner_actions') is not None:
             events, state['owner'] = owner_events(fingerprint('reporting-scope', binding), context['owner_actions'], state['owner'])
+            current = {a['id']: a for a in context['owner_actions']}
+            predecessors = {}
+            for row in db.execute("SELECT payload_json FROM controller_reports WHERE kind='owner-action'").fetchall():
+                prior = loads(row[0])
+                event = prior.get('owner_action_event')
+                if any(
+                        prior['binding'][k] != binding[k] for k in ('project', 'repository')):
+                    continue
+                if not event:
+                    # Pre-metadata immutable intents carry the original action
+                    # fields in the body. Preserve a still-current request;
+                    # otherwise fence it without rewriting historical bytes.
+                    data = prior['body']['data']
+                    if data.get('action_resolved'):
+                        reopened = [a for a in current.values() if data.get('sections', {}).get('Evidence') ==
+                            'Resolution observed for action ' + a['id'] + '; event: ' + prior['report_id']]
+                        for action in reopened:
+                            predecessors.setdefault(action['id'], []).extend(prior['delivery_ids'])
+                            for delivery_id in prior['delivery_ids']:
+                                DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
+                                    dict(reason='OWNER_ACTION_REOPENED', observed_at=now, action_id=action['id']), basis=True)
+                        continue
+                    if data.get('summary') not in {'owner-action', 'owner-action-updated'}:
+                        continue
+                    def matches(action):
+                        return all(data.get(field) == action.get(key, 'Unknown' if key == 'recommendation' else None)
+                            for field, key in (
+                            ('decision', 'decision'), ('decision_owner', 'owner'), ('requested_response', 'due'),
+                            ('delay_consequence', 'reason'), ('options', 'options'), ('resume', 'resume'),
+                            ('recommendation', 'recommendation')))
+                    if prior['binding'] == binding and any(matches(a) for a in current.values()):
+                        continue
+                    for notice in events:
+                        if matches(notice['record']['action']):
+                            predecessors.setdefault(notice['record']['action']['id'], []).extend(prior['delivery_ids'])
+                    for delivery_id in prior['delivery_ids']:
+                        DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
+                            dict(reason='OWNER_ACTION_BASIS_CHANGED', observed_at=now, prior_report=prior['report_id']), basis=True)
+                    continue
+                action = event['record']['action']
+                resolved = event['kind'] == 'owner-action-resolved'
+                if (resolved and action['id'] not in current or not resolved
+                        and prior['binding'] == binding and current.get(action['id']) == action):
+                    continue
+                predecessors.setdefault(action['id'], []).extend(prior['delivery_ids'])
+                for delivery_id in prior['delivery_ids']:
+                    DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
+                        dict(reason='OWNER_ACTION_BASIS_CHANGED', observed_at=now, action_id=action['id']), basis=True)
             for action in events:
                 generated.append(_retain(db, action['id'], 'owner-action',
                     _body('owner-action', binding, now, calendar, context, action=action), binding, destinations, now,
+                    extra={'owner_action_event': action,
+                           'after_deliveries': predecessors.get(action['record']['action']['id'], [])},
                     senders=(providers or {}).values()))
         for notice in context['delivery_attention']:
             # Failures of an owner-action alert remain in periodic diagnostics;
@@ -480,8 +567,8 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
             generated.append(_retain(db, notice_id, 'owner-action', body, binding, destinations, now,
                                      senders=(providers or {}).values()))
         for notice in context.get('review_corrections', []):
-            destination = notice['binding']
-            if destination not in destinations:
+            destination = next((d for d in destinations if same_destination(d, notice['binding'])), None)
+            if destination is None:
                 continue  # Never retarget a correction after channel rotation.
             if notice.get('restored'):
                 body = prepare_body('final-human-review', dict(project=binding['project'], observed_at=now,

@@ -10,11 +10,11 @@ from fractions import Fraction
 
 from .. import ValidationError
 from ..canonical import fingerprint, timestamp
-from .analysis import (scope_metrics, elapsed_cohorts, milestone_forecast,
+from .analysis import (scope_metrics, elapsed_cohorts, reconciled_forecast,
                        token_metrics, token_rollup, daily_metrics, estimated_time)
 from .bodies import prepare_body
 from .delivery import require
-from .metrics import required_leaves, elapsed_seconds
+from .metrics import required_leaves, elapsed_seconds, delivered
 
 
 def number(value):
@@ -171,7 +171,7 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
         sections['Sources and freshness'] += '\nUNAVAILABLE actuals: ' + describe(unavailable)
     metrics = scope_metrics(tickets)
     implementation = required_leaves(tickets)
-    completed = [t['key'] for t in implementation if t.get('state') == 'DONE']
+    completed = [t['key'] for t in implementation if delivered(t)]
     accounting = values.get('accounting', {})
     usage = token_metrics(accounting.get('mode', 'off'), accounting.get('observations', []), accounting.get('enrolled', []),
                          completed=completed, complete_tickets=accounting.get('complete_tickets', []),
@@ -183,8 +183,7 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
     f = values.get('forecast')
     if f is not None:
         try:
-            forecast = milestone_forecast(f['nodes'], f['milestones'], f['capacity'], observed,
-                                          reservations=f.get('reservations'), previous=f.get('previous'))
+            forecast = reconciled_forecast(f, tickets, values.get('capacity'), observed)
         except ValidationError as exc:
             forecast = dict(status='UNAVAILABLE', reason=str(exc))
             data['freshness'] = 'PARTIAL'

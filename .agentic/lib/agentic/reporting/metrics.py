@@ -19,7 +19,7 @@ def median(values):
 
 def delivered(ticket):
     prs = ticket.get('required_prs')
-    complete = (ticket['state'] == 'DONE' and bool(prs) and bool(ticket.get('reconciled_at'))
+    complete = (ticket.get('state') == 'DONE' and bool(prs) and bool(ticket.get('reconciled_at'))
                 and all(pr.get('merged_at') for pr in prs))
     if complete:
         require(max(timestamp(pr['merged_at']) for pr in prs) <= timestamp(ticket['reconciled_at']),
