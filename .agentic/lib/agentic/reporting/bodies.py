@@ -160,7 +160,7 @@ def render_body(body, platform, *, max_bytes=None):
                 text = link(data['detail_url'], 'Detailed report') + '\n\n' + text
         blocks.append(bold + title + bold + '\n\n' + text)
     blocks.append('REPORT ONLY — no merge, release, dispatch, chat or accounting authority')
-    text = '\n\n'.join(blocks)
+    text = '\n\n'.join(blocks).replace('AWF delivery:', 'AWF delivery (quoted):')
     require(len(text.encode('utf-8')) <= limit, 'REPORT_RENDER_TOO_LARGE')
     return text
 

@@ -44,6 +44,7 @@ def delivery_intent(report_id, binding, payload, *, thread_id=None):
     require(isinstance(payload, str) and 0 < len(payload.encode('utf-8')) <= 65536, 'REPORT_PAYLOAD_SIZE')
     require(safe_report(report_id) == report_id, 'REPORT_CREDENTIAL_WITHHELD')
     require(safe_report(payload) == payload, 'REPORT_CREDENTIAL_WITHHELD')
+    require('AWF delivery:' not in payload, 'REPORT_RESERVED_MARKER')
     require(thread_id is None or valid_message_id(binding['platform'], thread_id), 'REPORT_THREAD_ID_INVALID')
     # Destination/configuration changes cannot reset the report/platform ceiling.
     identity = [binding['project'], binding['repository'], report_id, binding['platform']]
@@ -57,6 +58,8 @@ def delivery_intent(report_id, binding, payload, *, thread_id=None):
 
 def install_delivery_schema(db):
     """Called only by the controller's accepted migration, in its transaction."""
+    db.execute('''CREATE TABLE IF NOT EXISTS controller_report_cooldown(
+        scope TEXT PRIMARY KEY, retry_not_before TEXT NOT NULL)''')
     db.execute('''CREATE TABLE IF NOT EXISTS controller_reports(
         report_id TEXT PRIMARY KEY, kind TEXT NOT NULL, observed_at TEXT NOT NULL, payload_json TEXT NOT NULL)''')
     # Additive relocation of pre-release reporting rows. The old status outbox
@@ -217,12 +220,15 @@ class DeliveryOutbox:
                 now = clock() if clock is not None else datetime.now(timezone.utc).isoformat()
                 if timestamp(now) < timestamp(state['retry_not_before']):
                     return state
-            if not allow_send and state['status'] in {'PENDING', 'ABSENT', 'THROTTLED'}:
+            read_retry = state.get('retry_action') == 'RECONCILE'
+            if not allow_send and state['status'] in {'PENDING', 'ABSENT', 'THROTTLED'} and not read_retry:
                 return state
-            send = allow_send and state['status'] in {'PENDING', 'ABSENT', 'THROTTLED'} and len(state['attempts']) < 2
+            send = allow_send and not read_retry and state['status'] in {'PENDING', 'ABSENT', 'THROTTLED'} and len(state['attempts']) < 2
             if not send and not state['attempts']:
                 return state
             fence, attempts = state['fence'], list(state['attempts'])
+        if callable(getattr(provider, 'bind_controller', None)):
+            provider.bind_controller(self.controller)
         if send:
             attempt_id = str(uuid.uuid4())
             reserved = False
@@ -239,6 +245,7 @@ class DeliveryOutbox:
                     current['history'].append(dict(kind='ATTEMPT_RESERVED', attempt_id=attempt_id))
                     current.pop('retry_not_before', None)
                     current.pop('reason', None)
+                    current.pop('retry_action', None)
                     current.update(status='IN_FLIGHT', fence=str(uuid.uuid4()))
                     self._save(db, delivery_id, current)
                     fence, attempts = current['fence'], list(current['attempts'])
@@ -252,12 +259,18 @@ class DeliveryOutbox:
                     reserve()
                     raw = provider.send(deepcopy(intent), attempt_id)
                 rejection = self._rejection(raw, intent, attempt_id) if reserved else None
-                throttle = self._throttle(raw, intent, attempt_id) if reserved else None
+                throttle = self._throttle(raw, intent, attempt_id)
             except Exception:
                 pass
             if not reserved:
                 with self.controller.transaction() as db:
-                    return self._load(db, delivery_id)[1]
+                    _, current = self._load(db, delivery_id)
+                    if throttle and current == state:
+                        current.update(status='THROTTLED', retry_action='SEND',
+                            retry_not_before=throttle['retry_not_before'], reason='PROVIDER_THROTTLED', fence=str(uuid.uuid4()))
+                        current['history'].append(dict(kind='REQUEST_DEFERRED', **throttle))
+                        self._save(db, delivery_id, current)
+                    return current
             if throttle:
                 with self.controller.transaction() as db:
                     _, current = self._load(db, delivery_id)
@@ -282,7 +295,8 @@ class DeliveryOutbox:
                     return current
         try:
             raw = provider.reconcile(deepcopy(intent), list(attempts))
-            observation = self._observation(raw, intent, attempts)
+            throttle = self._throttle(raw, intent, None) if isinstance(raw, dict) and raw.get('attempt_ids') == attempts else None
+            observation = throttle or self._observation(raw, intent, attempts)
         except Exception:
             observation = dict(status='UNKNOWN', reason='CHANNEL_EVIDENCE_UNAVAILABLE')
         with self.controller.transaction() as db:
@@ -291,6 +305,12 @@ class DeliveryOutbox:
                 return current
             current['history'].append(dict(kind='READBACK', **observation))
             current['status'] = observation['status']
+            if current['status'] == 'THROTTLED':
+                current.update(retry_action='RECONCILE', retry_not_before=observation['retry_not_before'],
+                               reason='PROVIDER_THROTTLED')
+            else:
+                for key in ('retry_action', 'retry_not_before', 'reason'):
+                    current.pop(key, None)
             if current['status'] == 'ABSENT' and len(attempts) == 2:
                 current['status'] = 'FAILED'
             # Changing fence also fences a late return from a previous observer.

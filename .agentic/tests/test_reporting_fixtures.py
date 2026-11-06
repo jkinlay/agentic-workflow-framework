@@ -4,7 +4,7 @@ import io
 import json
 import threading
 from urllib.error import HTTPError
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 TEAM_ID = 'fbe2bf47-16c8-47cf-b4a5-4b9b187c508b'
 CHANNEL_ID = '19:4a95f7d8db4c4e7fae857bcebe0623e6@thread.tacv2'
@@ -17,8 +17,11 @@ def slack_text(value):
 
 
 def slack_message(payload, index=0):
-    return dict(type='message', text=slack_text(payload['text']), user='sender',
-                ts=str(1793902283 + index) + '.424109')
+    message = dict(type='message', text=slack_text(payload['text']), user='sender',
+                   ts=str(1793902283 + index) + '.424109')
+    if payload.get('thread_ts'):
+        message['thread_ts'] = payload['thread_ts']
+    return message
 
 
 def graph_message(payload, index=0):
@@ -55,6 +58,9 @@ class ReportingNetwork:
         self.membership_paged = False
         self.messages_paged = False
         self.throttled = set()
+        self.read_throttled = set()
+        self.timeout_post = lambda platform, payload: False
+        self.slack_page_size = 100
         self.retry_after = '60'
         self.calls = []
         self.message_filter = lambda platform, messages: messages
@@ -72,11 +78,16 @@ class ReportingNetwork:
         platform = 'slack' if 'slack.com' in url else 'teams'
         path = unquote(urlsplit(url).path)
         second = '$skiptoken=' in url
+        if method == 'GET' and any(part in url for part in self.read_throttled):
+            headers = {} if self.retry_after is None else {'Retry-After': self.retry_after}
+            raise HTTPError(url, 429, 'Too Many Requests', headers, io.BytesIO(b'{}'))
         if method == 'POST':
             self.posts.append((platform, deepcopy(payload)))
             if platform in self.throttled:
                 headers = {} if self.retry_after is None else {'Retry-After': self.retry_after}
                 raise HTTPError(url, 429, 'Too Many Requests', headers, io.BytesIO(b'{}'))
+            if self.timeout_post(platform, payload):
+                raise TimeoutError('synthetic undelivered POST timeout')
             if platform == 'teams' and self.slow:
                 self.entered.set()
                 if not self.block.wait(5):
@@ -94,7 +105,7 @@ class ReportingNetwork:
         if 'auth.test' in url:
             return dict(ok=True, team_id='workspace', user_id='sender')
         if 'conversations.info' in url:
-            return dict(ok=True, channel=dict(id='CAPPROVED', is_member=True))
+            return dict(ok=True, channel=dict(id=parse_qs(urlsplit(url).query)['channel'][0], is_member=True))
         if 'conversations.history' in url or 'conversations.replies' in url:
             self.history_reads += 1
             if self.slow_readback:
@@ -102,7 +113,18 @@ class ReportingNetwork:
                 if not self.block.wait(5):
                     raise TimeoutError('synthetic delayed readback timeout')
             messages = [slack_message(m, i) for i, m in enumerate(self.messages['slack'])]
-            return dict(ok=True, messages=self.message_filter('slack', messages))
+            query = parse_qs(urlsplit(url).query)
+            if 'conversations.replies' in url:
+                thread = query['ts'][0]
+                messages = [m for m in messages if m.get('thread_ts', m['ts']) == thread]
+            else:
+                messages = [m for m in reversed(messages) if 'thread_ts' not in m]
+            offset = int(query.get('cursor', ['0'])[0])
+            size = min(int(query.get('limit', ['100'])[0]), self.slack_page_size)
+            page = messages[offset:offset + size]
+            cursor = str(offset + size) if offset + size < len(messages) else ''
+            return dict(ok=True, messages=self.message_filter('slack', page),
+                        response_metadata=dict(next_cursor=cursor), has_more=bool(cursor))
         if '/me?' in url:
             return dict(id='sender')
         if '/organization?' in url:

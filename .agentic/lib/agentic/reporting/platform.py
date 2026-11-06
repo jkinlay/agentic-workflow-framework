@@ -50,6 +50,9 @@ class PlatformReportingAdapter:
         # Same trusted host clock that timestamps the transport observations.
         return self.transport.clock()
 
+    def bind_controller(self, store):
+        self.transport.cooldown_store = store
+
     def send_reserved(self, intent, attempt_id, start):
         secret = self._admit(intent)
         try:
@@ -68,7 +71,10 @@ class PlatformReportingAdapter:
                 safe.update(delivery_id=intent['delivery_id'], destination=self.binding['destination'],
                             platform=self.platform, payload_sha256=intent['payload_sha256'])
                 return safe
-        except Exception:
+        except Exception as error:
+            from .http_transport import Throttled
+            if isinstance(error, Throttled):
+                return self.transport.throttle(intent, attempt_id, error)
             raise ValidationError('REPORT_PROVIDER_UNAVAILABLE') from None
         return dict(status='ACCEPTED_UNVERIFIED')
 
@@ -89,7 +95,10 @@ class PlatformReportingAdapter:
             safe.update(delivery_id=intent['delivery_id'], destination=self.binding['destination'],
                         platform=self.platform, payload_sha256=intent['payload_sha256'], attempt_ids=list(attempts))
             return safe
-        except Exception:
+        except Exception as error:
+            from .http_transport import Throttled
+            if isinstance(error, Throttled):
+                return dict(self.transport.throttle(intent, None, error), attempt_ids=list(attempts))
             return dict(status='UNKNOWN')
 
 

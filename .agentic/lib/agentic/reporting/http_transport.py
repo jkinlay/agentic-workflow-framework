@@ -46,6 +46,14 @@ class Throttled(ValidationError):
         self.seconds = 60
         if isinstance(value, str) and re.fullmatch(r'[0-9]+', value):
             self.seconds = max(1, int(value)) if len(value) <= 12 else 10**12
+        self.deadline = None
+
+
+def throttle_deadline(observed, seconds):
+    now = timestamp(observed)
+    maximum = datetime(9999, 12, 31, tzinfo=timezone.utc)
+    delay = min(seconds, int((maximum - now).total_seconds()))
+    return (now + timedelta(seconds=delay)).isoformat().replace('+00:00', 'Z')
 
 
 def graph_next_link(url, resource):
@@ -130,6 +138,38 @@ def content_identity(value):
     return (' '.join(''.join(parser.parts).split()), parser.links)
 
 
+def graph_matches(actual, expected, marker):
+    parser = _Text()
+    parser.feed(actual)
+    lines = [line.strip() for line in ''.join(parser.parts).splitlines() if line.strip()]
+    return (bool(lines) and lines[-1] == marker
+            and fingerprint('report-graph-content-1', list(content_identity(actual)))
+            == fingerprint('report-graph-content-1', list(content_identity(expected))))
+
+
+# Explicit aliases only: never discard arbitrary emoji or colon-delimited text.
+# Unknown conversions fail closed instead of allowing different content to match.
+SLACK_EMOJI = {
+    '\U0001f389': 'tada', '\U0001f600': 'grinning', '\U0001f603': 'smiley',
+    '\U0001f604': 'smile', '\U0001f601': 'grin', '\U0001f602': 'joy',
+    '\U0001f605': 'sweat_smile', '\U0001f606': 'laughing', '\U0001f609': 'wink',
+    '\U0001f60a': 'blush', '\U0001f60d': 'heart_eyes', '\U0001f622': 'cry',
+    '\U0001f62d': 'sob', '\U0001f680': 'rocket', '\U0001f525': 'fire',
+    '\U0001f44d': '+1', '\U0001f44e': '-1', '\U0001f44f': 'clap',
+    '\U0001f440': 'eyes', '\U0001f4a1': 'bulb', '\U0001f4cc': 'pushpin',
+    '\u2705': 'white_check_mark', '\u274c': 'x', '\u26a0': 'warning',
+    '\u2764': 'heart', '\u2139': 'information_source', '\u23f3': 'hourglass_flowing_sand',
+}
+
+
+def slack_identity(value):
+    # Slack's three documented escaping entities, once (not arbitrary HTML).
+    value = value.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+    for emoji, alias in SLACK_EMOJI.items():
+        value = value.replace(emoji + '\ufe0f', ':' + alias + ':').replace(emoji, ':' + alias + ':')
+    return hashlib.sha256(value.replace('\r\n', '\n').encode('utf-8')).hexdigest()
+
+
 def teams_html(value):
     # Only our renderer's constrained bold and HTTPS Markdown links become HTML.
     # Escape all supplied HTML first; Graph text messages do not render Markdown.
@@ -147,6 +187,38 @@ class BaseTransport:
         self.context, self.sender, self.http = context, sender, http
         self.clock = clock or (lambda: datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
         self.pause = pause
+        self.cooldown_store = None
+        self.cooldowns = {}
+
+    def cooldown_key(self, url):
+        # Slack: every destination/app in this workspace shares a method limit.
+        # Graph: conservatively group ALL resources/methods within the tenant.
+        # Neither credential rotation, sender, thread nor binding revision resets it.
+        method = urlsplit(url).path.rsplit('/', 1)[-1] if self.platform == 'slack' else 'tenant'
+        return 'report-cooldown:' + fingerprint('report-cooldown-1', [self.platform, self.context, method])
+
+    def cooldown(self, url, error=None):
+        key, observed = self.cooldown_key(url), self.clock()
+        if self.cooldown_store is None:
+            retained = self.cooldowns.get(key)
+            if error is not None:
+                deadline = throttle_deadline(observed, error.seconds)
+                self.cooldowns[key] = max(retained or deadline, deadline, key=timestamp)
+                error.deadline = self.cooldowns[key]
+        else:
+            with self.cooldown_store.transaction() as db:
+                row = db.execute('SELECT retry_not_before FROM controller_report_cooldown WHERE scope=?', (key,)).fetchone()
+                retained = row[0] if row else None
+                if error is not None:
+                    deadline = throttle_deadline(observed, error.seconds)
+                    deadline = max(retained or deadline, deadline, key=timestamp)
+                    db.execute('INSERT INTO controller_report_cooldown VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET retry_not_before=excluded.retry_not_before',
+                               (key, deadline))
+                    error.deadline = deadline
+        if error is None and retained and timestamp(observed) < timestamp(retained):
+            deferred = Throttled()
+            deferred.deadline = retained
+            raise deferred
 
     def call(self, method, url, secret, payload=None):
         if method == 'POST':
@@ -154,6 +226,7 @@ class BaseTransport:
                     'REPORT_CREDENTIAL_WITHHELD')
         try:
             require(isinstance(secret, str) and secret and not any(ord(c) < 32 for c in secret), 'REPORT_SECRET_INVALID')
+            self.cooldown(url)
             from .bounded import admit_http
             timeout = admit_http(method)
             options = {'timeout': timeout} if self.http is http_json else {}
@@ -162,11 +235,15 @@ class BaseTransport:
             return raw
         except TerminalRejection:
             raise TerminalRejection() from None
-        except Throttled:
+        except Throttled as error:
+            if error.deadline is None:
+                self.cooldown(url, error)
             raise
         except HTTPError as error:
             if error.code == 429:
-                raise Throttled(error.headers) from None
+                throttle = Throttled(error.headers)
+                self.cooldown(url, throttle)
+                raise throttle from None
             if method == 'POST' and error.code in REJECTED_HTTP:
                 raise TerminalRejection() from None
             raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
@@ -177,6 +254,7 @@ class BaseTransport:
         # Inspect raw members before Teams HTML conversion can split a detected
         # credential across markup. Direct transport callers get the same guard.
         require(safe_report(intent, trusted_keys=True) == intent, 'REPORT_CREDENTIAL_WITHHELD')
+        require('AWF delivery:' not in intent['payload'], 'REPORT_RESERVED_MARKER')
         value = intent['payload'] + '\n\n' + self.marker(intent)
         return teams_html(value) if self.platform == 'teams' else value
 
@@ -186,12 +264,9 @@ class BaseTransport:
 
     def throttle(self, intent, attempt_id, error):
         observed = self.clock()
-        now = timestamp(observed)
         # Saturate at the last representable year, rather than retrying early
         # on an overflowing provider value. Only canonical timestamps persist.
-        maximum = datetime(9999, 12, 31, tzinfo=timezone.utc)
-        delay = min(error.seconds, int((maximum - now).total_seconds()))
-        deadline = (now + timedelta(seconds=delay)).isoformat().replace('+00:00', 'Z')
+        deadline = error.deadline or throttle_deadline(observed, error.seconds)
         return dict(status='THROTTLED', evidence_kind='PROVIDER_THROTTLE',
                     delivery_id=intent['delivery_id'], platform=self.platform,
                     destination=intent['binding']['destination'], payload_sha256=intent['payload_sha256'],
@@ -236,7 +311,9 @@ class SlackTransport(BaseTransport):
         url = self.origin + path + ('?' + urlencode(query) if query else '')
         result = self.call(method, url, secret, payload)
         if result.get('ok') is False and result.get('error') == 'ratelimited':
-            raise Throttled()
+            error = Throttled()
+            self.cooldown(url, error)
+            raise error
         if method == 'POST' and result.get('ok') is False and result.get('error') in REJECTED_SLACK:
             raise TerminalRejection()
         require(result.get('ok') is True, 'REPORT_SLACK_UNAVAILABLE')
@@ -275,9 +352,12 @@ class SlackTransport(BaseTransport):
             result = self.api('GET', 'conversations.replies' if intent.get('thread_id') else 'conversations.history', secret, **query)
             for message in result.get('messages', []):
                 if (isinstance(message.get('text'), str)
-                        and self.marker(intent) in message['text'].splitlines()
+                        and message['text'].replace('\r\n', '\n').endswith('\n\n' + self.marker(intent))
+                        and slack_identity(message['text']) == slack_identity(self.wire_text(intent))
                         and message.get('user') == self.sender
                         and message.get('channel', intent['binding']['destination']) == intent['binding']['destination']
+                        and (message.get('thread_ts') == intent['thread_id'] if intent.get('thread_id') else
+                             message.get('thread_ts') in {None, message.get('ts')})
                         and isinstance(message.get('ts'), str) and message['ts']):
                     return self.evidence(intent, attempts, message['ts'])
             cursor = result.get('response_metadata', {}).get('next_cursor')
@@ -350,7 +430,7 @@ class TeamsTransport(BaseTransport):
             result = self.call('GET', url, secret)
             for message in result.get('value', []):
                 body = message.get('body', {})
-                if (content_identity(body.get('content', '')) == content_identity(self.wire_text(intent))
+                if (graph_matches(body.get('content', ''), self.wire_text(intent), self.marker(intent))
                         and message.get('from', {}).get('user', {}).get('id') == self.sender
                         and not message.get('deletedDateTime') and isinstance(message.get('id'), str) and message['id']):
                     return self.evidence(intent, attempts, message['id'])

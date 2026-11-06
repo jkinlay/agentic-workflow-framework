@@ -152,7 +152,8 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                 SELECT r.payload_json,d.delivery_id,r.kind,r.rowid AS sequence,
                     json_extract(d.state_json,'$.status') AS status,
                     json_array_length(json_extract(d.state_json,'$.history')) AS observations,
-                    json_extract(d.state_json,'$.status') IN ('PENDING','ABSENT','THROTTLED') AS fresh
+                    (json_extract(d.state_json,'$.status') IN ('PENDING','ABSENT','THROTTLED')
+                     AND coalesce(json_extract(d.state_json,'$.retry_action'),'SEND')<>'RECONCILE') AS fresh
                 FROM controller_reports r JOIN controller_report_delivery d
                   ON json_extract(d.intent_json,'$.report_id')=r.report_id
                 WHERE json_extract(d.intent_json,'$.binding.platform')=?
@@ -184,7 +185,7 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                 record = loads(row[0])
                 if record['binding'] != binding:
                     continue
-                if not budget.admit(platform, reconciliation=row['status'] not in {'PENDING', 'ABSENT', 'THROTTLED'}):
+                if not budget.admit(platform, reconciliation=not row['fresh']):
                     continue
                 try:
                     state = outbox.advance(row[1], provider, allow_send=allow_send,
