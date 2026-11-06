@@ -613,7 +613,6 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf/scripts/awf.py` | `19a1e8d72a0f3ebf1043303e1ce57f410ecac48ab348c17d22cb0cce5cbf0ef0` |
 | `global/awf/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
 | `global/awf/tests/test_discovery_codeowners.py` | `d65c343881ce106030637bad0006bd594cebd113e03c1efdce3cf15e6f211a2f` |
-| `presentation/AWF-1.9.5-Showcase-Presentation.html` | `a4586b58a00e8f64729f604a4b9f21230873daa01a10f7fba899065d29b0597e` |
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
 | `scripts/ac42_e2e.py` | `625b0ba9769d82de2300d593041e0afc3a757de022954d51389800c201cf0710` |
 | `scripts/bootstrap_project.py` | `6358d4d9fbc1b00b46391ec9429de2fc4ead1e8736ccb50aeac5a924a3bedfb5` |
