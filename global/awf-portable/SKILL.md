@@ -53,9 +53,11 @@ Recommendations require acceptance; governance changes require review. Use exact
 Follow `.agentic/docs/23-TICKET-LIFECYCLE.md`: COMPLETE publishes draft PR;
 Git-denied workers return `tested_tree`, `changes`, `ignored_untracked` for
 unchanged publication; publisher requires `HEAD^{tree}` equality. Validation/CI
-never permit mark-ready alone. Require candidate-bound authenticated owner/manager authorization, pre-issued request/expiry,
-accepted configuration/time and observed `draft_cleared`; otherwise retain draft/
-refusal. Critic/specialists/final gate precede owner-ready, never merge authority.
+never permit mark-ready alone. Require an explicit owner/manager authorization
+record bound to the candidate, a pre-issued request/expiry, and an authenticated
+immutable provider observation binding accepted configuration and trusted current
+time. Observe `draft_cleared`; otherwise retain draft/refusal. Critic/specialists/
+final gate precede owner-ready, never merge authority.
 Retain every publication gate.
 
 Read verified `.agentic/docs/39-BUDGETING.md`. Fresh accounting/enforcement OFF;
@@ -81,8 +83,8 @@ reservation identities; never reset totals/invent zero usage. OFF needs no new
 ledger/telemetry/reservations/quotas/warnings/overrun quarantine. Independent
 security/permissions/review/merge/host-capacity/bounded-recovery controls remain.
 
-Only controller writes Jira: started=In Progress, PR-ready=In Review,
-owner/head changes=In Progress, observed merge/reconciliation=Done with closing
+Only controller writes Jira: WORKER_STARTED=In Progress, PR_READY=In Review,
+owner/head changes=In Progress, observed merge/JIRA_RECONCILED=Done with closing
 comment. BLOCK/PARK/Epics never transition; owner-closure tickets wait. Read
 before/after; mismatch/unknown stops that ticket without retry, retaining actor/
 time or unknown and reporting external-automation conflict. Others continue.

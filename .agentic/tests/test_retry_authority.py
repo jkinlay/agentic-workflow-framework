@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import sqlite3
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -25,6 +26,9 @@ class RetryAuthorityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-retry-ceiling-")
         self.addCleanup(self.temp.cleanup)
+        environment = patch.dict(os.environ, {"AWF_STATE_HOME": self.temp.name})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.path = Path(self.temp.name) / "routing.sqlite"
         self.ledger = RoutingLedger(self.path)
         self.policy = fixture_policy()

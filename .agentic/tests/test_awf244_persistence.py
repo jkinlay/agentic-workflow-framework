@@ -2,6 +2,8 @@
 from copy import deepcopy
 from contextlib import closing, contextmanager
 import json
+import io
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -140,21 +142,52 @@ class CalendarPersistenceTests(unittest.TestCase):
             self.set_calendar('operating_calendar.eod.time=19:00')
         self.assertEqual(effective_calendar(op.read_operating(self.root, self.gov).config)['eod']['time'], '18:00')
 
+    @contextmanager
+    def common_owner_confirmation(self):
+        from agentic import owner_admission as admission
+        self.gov['merge_gate']['trusted_owner_ids'] = [1001]
+        (self.root / op.GOVERNANCE).write_bytes(op._json(self.gov))
+        def binding(root, governance, snapshot):
+            return dict(project_id=governance['project']['id'],
+                        project_location_hash=sha256(str(root).encode()),
+                        governance_digest=fingerprint('operating-governance', governance),
+                        prior_settings_hash=snapshot.operating_hash)
+        identity = dict(id=1001, login='owner', type='User', executable_path='fixture-gh',
+                        executable_sha256=sha256(b'fixture-gh'))
+        def observe(*args):
+            self.host.calls.append('identity')
+            return identity
+        # Unit fixtures supply runtime/terminal identity only; proposal storage,
+        # validation, single consumption and recovery remain production code.
+        with patch.dict(os.environ, {'AWF_STATE_HOME': str(Path(self.temp.name) / 'protected')}, clear=True), \
+                patch.object(admission, 'accepted_binding', side_effect=binding), \
+                patch.object(admission, 'require_terminal'), \
+                patch.object(admission, 'observe_github_owner', side_effect=observe):
+            def confirm(*assignments):
+                with self.assertRaises(admission.PendingOwnerConfirmation) as pending:
+                    op.set_operating(self.root, self.gov, 'fixture owner direction', assignments)
+                digest = pending.exception.report['digest']
+                return admission.confirm(self.root, self.gov, digest,
+                    stdin=io.StringIO(digest[:8] + '\n'), stdout=io.StringIO())
+            yield confirm
+
     def test_interrupted_update_uses_existing_pinned_recovery(self):
         original = op._new
         def interrupt(tree, name, raw):
             if name.startswith(op.STATE + '/changes/'):
                 raise OSError('fixture interruption')
             return original(tree, name, raw)
-        with patch.object(op, '_new', side_effect=interrupt), self.assertRaises(OSError):
-            self.set_calendar('operating_calendar.review_batching.enabled=false')
-        with self.assertRaises(ValidationError):
-            op.read_operating(self.root, self.gov)
-        pin = sha256((self.root / op.JOURNAL).read_bytes())
-        recovered = op.recover_operating(self.root, self.gov, pin)
-        self.assertFalse(effective_calendar(recovered.config)['review_batching']['enabled'])
-        self.assertEqual(recovered, op.read_operating(self.root, self.gov))
-        self.assertEqual(len(self.host.calls), 1)
+        with self.common_owner_confirmation() as confirm:
+            with patch.object(op, '_new', side_effect=interrupt), self.assertRaises(OSError):
+                confirm('operating_calendar.review_batching.enabled=false')
+            with self.assertRaises(ValidationError):
+                op.read_operating(self.root, self.gov)
+            pin = sha256((self.root / op.JOURNAL).read_bytes())
+            recovered = op.recover_operating(self.root, self.gov, pin)
+            self.assertFalse(effective_calendar(recovered.config)['review_batching']['enabled'])
+            self.assertEqual(recovered, op.read_operating(self.root, self.gov))
+            self.assertEqual(len(self.host.calls), 1)
+            self.assertEqual((1, 1), self.common_counts())
 
     def test_calendar_cannot_be_epic_scoped(self):
         with self.assertRaises(ValidationError):
@@ -200,38 +233,42 @@ class CalendarPersistenceTests(unittest.TestCase):
         self.assertEqual(self.host.calls, [])
         self.assertEqual(op.read_operating(self.root, self.gov).config, self.value)
 
+    def common_counts(self):
+        from agentic.owner_admission import ProposalStore
+        database = ProposalStore.for_project(self.root, self.gov['project']['id']).path
+        with closing(sqlite3.connect(database)) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertEqual({'owner_proposals', 'owner_confirmations'}, tables)
+            return tuple(db.execute('SELECT count(*) FROM ' + table).fetchone()[0]
+                         for table in ('owner_proposals', 'owner_confirmations'))
+
     def test_mixed_admissions_share_one_recoverable_operating_event(self):
-        from agentic.budget_enrollment import EnrollmentRegistry
-        budget_registry = EnrollmentRegistry(Path(self.temp.name) / 'budget.sqlite', FixtureHost(), (self.root,))
-        budget_registry.host.audit = dict(actor_id=7, login='fixture-owner', type='User', digest='a' * 64,
-            request_id='12345678-1234-4234-8234-123456789012', confirmed_at='2026-11-06T10:00:00Z')
         original = op._new
         def interrupt(tree, name, raw):
             if name.startswith(op.STATE + '/changes/'):
                 raise OSError('fixture mixed interruption')
             return original(tree, name, raw)
-        with patch.object(op, '_new', side_effect=interrupt), self.assertRaises(OSError):
-            op.set_operating(self.root, self.gov, 'fixture mixed direction',
-                ['budgeting.max_tokens_per_ticket=5000000', 'operating_calendar.eod.time=18:00'],
-                budget_registry=budget_registry, calendar_registry=self.registry())
-        pin = sha256((self.root / op.JOURNAL).read_bytes())
-        self.assertEqual([budget_registry.host.identity],
-                         self.consumed(budget_registry, 'budget_owner_observations'))
-        self.assertEqual([self.host.identity], self.consumed(self.registry(), 'calendar_owner_observations'))
-        recovered = op.recover_operating(self.root, self.gov, pin)
-        self.assertEqual(recovered, op.read_operating(self.root, self.gov))
-        self.assertEqual(recovered.config['budgeting']['max_tokens_per_ticket'], 5000000)
-        self.assertFalse(recovered.config['budgeting']['accounting_enabled'])
-        self.assertEqual(effective_calendar(recovered.config)['eod']['time'], '18:00')
-        events = list((self.root / op.STATE / 'changes').glob('*.json'))
-        self.assertEqual(len(events), 1)
-        event = json.loads(events[0].read_text())
-        self.assertIn('budget_owner_observation', event)
-        self.assertIn('calendar_owner_observation', event)
-        self.assertEqual(budget_registry.host.audit, event['owner_admission'])
-        self.assertEqual({'budgeting.max_tokens_per_ticket', 'operating_calendar.eod.time', 'source'},
-                         {change['path'] for change in event['changes']})
-        self.assertEqual(len(self.host.calls), 1)
+        with self.common_owner_confirmation() as confirm:
+            with patch.object(op, '_new', side_effect=interrupt), self.assertRaises(OSError):
+                confirm('budgeting.max_tokens_per_ticket=5000000', 'operating_calendar.eod.time=18:00')
+            journal = (self.root / op.JOURNAL).read_bytes()
+            pin = sha256(journal)
+            self.assertEqual((1, 1), self.common_counts())
+            recovered = op.recover_operating(self.root, self.gov, pin)
+            self.assertEqual(recovered, op.read_operating(self.root, self.gov))
+            self.assertEqual(recovered.config['budgeting']['max_tokens_per_ticket'], 5000000)
+            self.assertFalse(recovered.config['budgeting']['accounting_enabled'])
+            self.assertEqual(effective_calendar(recovered.config)['eod']['time'], '18:00')
+            events = list((self.root / op.STATE / 'changes').glob('*.json'))
+            self.assertEqual(len(events), 1)
+            event = json.loads(events[0].read_text())
+            self.assertIn('budget_owner_observation', event)
+            self.assertNotIn('calendar_owner_observation', event)
+            self.assertEqual(json.loads(journal)['event']['owner_admission'], event['owner_admission'])
+            self.assertEqual({'budgeting.max_tokens_per_ticket', 'operating_calendar.eod.time', 'source'},
+                             {change['path'] for change in event['changes']})
+            self.assertEqual(len(self.host.calls), 1)
+            self.assertEqual((1, 1), self.common_counts())
 
     def budget_registry(self, path=None):
         from agentic.budget_enrollment import EnrollmentRegistry

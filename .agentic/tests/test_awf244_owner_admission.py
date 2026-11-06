@@ -1,6 +1,7 @@
 """Calendar admission through disposable installed workflow subprocesses."""
 from contextlib import closing
 import json
+from copy import deepcopy
 import sqlite3
 import unittest
 
@@ -18,6 +19,7 @@ class CalendarOwnerAdmissionTests(unittest.TestCase):
     confirm = fixture.OwnerAdmissionTests.confirm
     unchanged = fixture.OwnerAdmissionTests.unchanged
     refused = fixture.OwnerAdmissionTests.refused
+    recover = fixture.OwnerAdmissionTests.recover
 
     def proposal(self, *extra, **kwargs):
         return self.pending('operating_calendar.eod.time=18:00', *extra, **kwargs)
@@ -56,6 +58,49 @@ class CalendarOwnerAdmissionTests(unittest.TestCase):
         self.assertNotIn('calendar_owner_observation', audit)
         self.before, self.audit_before = (self.root / op.CONFIG).read_bytes(), self.events()
         self.refused(digest, 'PROPOSAL_ALREADY_CONSUMED')
+
+    def test_unconfirmed_calendar_journal_changes_nothing(self):
+        journal = fixture.OwnerAdmissionTests.forged_journal(self)
+        before = json.loads(self.before)
+        after = deepcopy(before)
+        after['operating_calendar'] = op.effective_calendar(before)
+        after['operating_calendar']['eod']['time'] = '18:00'
+        journal['after'] = op._json(after).decode()
+        journal['event'].update(
+            after_hash=op.fingerprint('operating', after),
+            changes=[dict(path='operating_calendar', before=None, after=after['operating_calendar'])])
+        raw = op._json(journal)
+        (self.root / op.JOURNAL).write_bytes(raw)
+        result = self.cli('recover', '--expected-journal-sha256', op.sha256(raw), '--json')
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertIn('OWNER_RECOVERY_REFUSED', result.stdout)
+        self.assertEqual(self.before, (self.root / op.CONFIG).read_bytes())
+        self.assertEqual(self.audit_before, self.events())
+        self.assertEqual(raw, (self.root / op.JOURNAL).read_bytes())
+        self.assertFalse(self.calls.exists())
+        self.assertFalse((self.fixture.base / 'protected').exists())
+
+    def test_confirmed_calendar_crash_recovers_once_without_budget_state(self):
+        for index, phase in enumerate(('after_journal', 'after_config', 'after_event')):
+            with self.subTest(phase=phase):
+                digest = self.pending('operating_calendar.eod.time=' + str(18 + index) + ':00')
+                result = self.confirm(digest, crash=phase)
+                self.assertEqual(71, result.returncode, result.stdout + result.stderr)
+                journal = json.loads((self.root / op.JOURNAL).read_bytes())
+                calls = self.calls.read_bytes()
+                result = self.recover(journal)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(calls, self.calls.read_bytes())
+                shown = self.cli('show', '--json')
+                self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
+                self.assertEqual(json.loads(journal['after']), json.loads(shown.stdout)['configuration'])
+                self.assertEqual((index + 1, index + 1), self.counts())
+                self.assertEqual(['owner-admission.sqlite3'],
+                                 [p.name for p in (self.fixture.base / 'protected').rglob('*.sqlite3')])
+                self.before, self.audit_before = (self.root / op.CONFIG).read_bytes(), self.events()
+                self.refused(digest, 'PROPOSAL_ALREADY_CONSUMED')
+                self.assertEqual(0, self.recover(journal).returncode)
+                self.unchanged()
 
     def test_empty_owners_refuse_calendar(self):
         self.gov['merge_gate']['trusted_owner_ids'] = []

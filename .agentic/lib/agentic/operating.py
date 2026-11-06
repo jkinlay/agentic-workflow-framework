@@ -745,6 +745,20 @@ def recover_operating(project_root, governance, expected_journal_sha256):
         if checked.operating_hash != event["after_hash"] or checked.governance_hash != event["governance_hash"] or (
                 (fingerprint("operating", load_yaml(before)) if before is not None else None) != event["before_hash"]):
             fail("$", "Journal content/hash/governance binding differs")
+        prior_value = load_yaml(before) if before is not None else None
+        after_value = load_yaml(after)
+        # Fresh initialization may publish dormant defaults without admission.
+        # Existing settings and every registered domain retain the same boundary.
+        baseline = prior_value if prior_value is not None else default_operating(_routing_policy(governance))
+        admitted_change = any(baseline.get(domain) != after_value.get(domain)
+                              for domain in OWNER_SETTING_VALIDATORS
+                              if prior_value is not None or domain in after_value)
+        if (admitted_change or 'owner_admission' in event
+                or 'budget_owner_observation' in event or 'calendar_owner_observation' in event
+                or any(c['path'] == domain or c['path'].startswith(domain + '.')
+                       for c in event['changes'] for domain in OWNER_SETTING_VALIDATORS)):
+            from .owner_admission import validate_recovery
+            validate_recovery(project_root, governance, prior_value, after_value, event)
         current = _read(tree, CONFIG)
         if current not in (before, after):
             fail("$", "Operating bytes contain an unmatched external edit; preserve the journal")
@@ -1021,8 +1035,17 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
 
             def validate_admission(audit):
                 nonlocal prepared
+                observation = None
+                if budget_changes:
+                    from .budgeting import settings_hash
+                    observation = dict(
+                        observation_id='github-terminal:' + audit['request_id'] + ':' + audit['digest'],
+                        actor_id=str(audit['actor_id']), project_id=governance['project']['id'],
+                        prior_settings_hash=settings_hash(snapshot.config['budgeting']),
+                        changes=deepcopy(budget_changes))
                 prepared = _prepare_commit(tree, governance, before, value, instruction, changes,
-                    'chat', created_at=change_time, owner_admission=audit)
+                    'chat', created_at=change_time, owner_admission=audit,
+                    budget_owner_observation=observation)
 
             owner_admission.admit_operating_change(project_root, governance, snapshot,
                 instruction, intent, changes, validate_admission=validate_admission)
