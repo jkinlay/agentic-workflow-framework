@@ -36,7 +36,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/24-STREAM-STARTUP.md` | `2b6555b25742a0036502f5c6812197153e08d19e7dfef46a31746983b3b1db43` |
 | `.agentic/docs/27-MODEL-ROUTING.md` | `883d68c537b1a3d426ba9d9dd77d48f586b51b66b1c111ad9a2c4b2183367792` |
 | `.agentic/docs/28-EXTERNAL-REVIEW.md` | `d4ac3884ea24f40153cf87690edbc495b975ffc4510ba3c64cdcf38830d78b42` |
-| `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `d4155c6e6f77382a43ec07c94364e08528797c4d00d8b9001a628ed32ff0f1d1` |
+| `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `a2e2c714541f990f56ae777958ffcf625e9c0fe93f55e014b7ba20bdaf632d86` |
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `9ba85f949aceeb0b6276a897d2ba7426f2a74719d9680697ef85348c49711e65` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `501389c7d706862d0501f8b00b465d153190f2a68e19508a23c425e90e94ca0d` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `44cf0fed1a4ba1c31f8ec6ccc9924391f170aeced98efcd41ce89835a73a3d54` |
@@ -51,7 +51,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/37-PUBLICATION-READINESS.md` | `071448f174bd530c79c1b54a266d414607c3dc5a2cc763ca749ff43a8471b249` |
 | `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `b0319c6c7d8aef9e31c8b2c8ef48d865829e940925c18e061cc476956ca3e062` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `29249f73d2e2cb8c43eb19dba39a7db580fd0c687da19d98d977f0131b7115e1` |
-| `.agentic/docs/39-BUDGETING.md` | `a74811ca2755f5d8caee43c5bbe58b9c0286afc667fb7aaf40964ae40d44746a` |
+| `.agentic/docs/39-BUDGETING.md` | `4f59a4376874ca20e29cad14564e94550d29984ef6fbb06812281be2960ecfe9` |
 | `.agentic/docs/40-EXTERNAL-RESOURCES.md` | `7b648bc302fa826832162af193a14a6dfd793f8624b5c7cb1990581cb40f866e` |
 | `.agentic/docs/41-WRITER-CRITIC-PROVENANCE.md` | `bbaa1bfb2d3613ed28da29dbca16e20c8ab4f01231d055f7d3c5d3a82d1426cc` |
 | `.agentic/docs/42-PR-INTEGRATION-QUEUE.md` | `6645b3bc1b5568bcd2539562292f86ef40975e635fae6eb1971c0fded53933e7` |
@@ -89,7 +89,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/adoption_config.py` | `4b896d02757b481bc6d7b8b42366d8eabdc2722bf389266ff085785c201ed516` |
 | `.agentic/lib/agentic/adoption_status.py` | `31c682fc4062a57e5d9392ba11a2dcf5431ea8a90b1195efe1be3f4b02ae4118` |
 | `.agentic/lib/agentic/authorization.py` | `722f081ea4ff1df882519594ecb43d407f884456d8c8e6831615cbf6b113282b` |
-| `.agentic/lib/agentic/budget_enrollment.py` | `4697d100e27f0baadecd90d05abc2ca95d84b6bbb8c17b97ab703a95daa07d53` |
+| `.agentic/lib/agentic/budget_enrollment.py` | `d0f2cf740e73ca412e5cd7675d2b23aa9cefc0efcdf76c9bc2099462bcaccb5e` |
 | `.agentic/lib/agentic/budgeting.py` | `2c815275b2f876eb1e44e4c2d5b99727e43fdfd5c01d39dd9d2aa6b706ee5dfd` |
 | `.agentic/lib/agentic/canonical.py` | `7904e88f0b78cbb0aca973c85e73e36a5d33d6eb8ae311799cd0b61ca1bff567` |
 | `.agentic/lib/agentic/child_process.py` | `4a16ebd8a4348608b21b9b687c4de28bae0755f2a03c7df10733338b59fbd199` |
@@ -123,9 +123,10 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/lifecycle.py` | `f01f9eb7862f8f87eb41a94329263e130b31b0f0e7e5aeebd71e962d62608e45` |
 | `.agentic/lib/agentic/merge_train.py` | `9586b01daca94606fb0f97c608e9e667baac4a68b86af5142d54dbe6ad4e85b7` |
 | `.agentic/lib/agentic/model_routing.py` | `5f4dc8fefa9f88351dc7cf0cd4306f6d3451865549d43dd57c644d71afb08cf1` |
-| `.agentic/lib/agentic/operating.py` | `28a762231bfd00b9653b03693d3afaff76bfcf3b8c7376c88e8e4942c7dcc7c2` |
+| `.agentic/lib/agentic/operating.py` | `2b12d42d84b901c34c50ddd8bba6b06fb74fabff893f512fe3464523f0c2c03a` |
 | `.agentic/lib/agentic/operating_status.py` | `e852cfe7fc5cc556ef7a1998571fe66d21d50f8ee572136c502473818501fc0f` |
 | `.agentic/lib/agentic/output.py` | `f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b` |
+| `.agentic/lib/agentic/owner_admission.py` | `8a758c04ee0fbf7a1930e938b369f5710b6fbaec58a01603c76e7a40d0908b2c` |
 | `.agentic/lib/agentic/owner_publication.py` | `ce282e1ad9f98ab2a0b6b6dca65bc885a46e0e5c5fcfc847ed0585c5e507e49f` |
 | `.agentic/lib/agentic/path_containment.py` | `4be54130cfcca72bf384faa56d14d39f365ba5ff4d84fc69d97d7a6816609c15` |
 | `.agentic/lib/agentic/planning.py` | `be009b12137ba906045bc4049de64de7ca9b2b07bf380fbff1d10dd2e9ba5443` |
@@ -204,7 +205,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/jira-transition.schema.json` | `821ee7838dbb33cdec5f4bd40afad420f61f69383195e14fb2a4d954ce163f1d` |
 | `.agentic/schemas/merge-attempt.schema.json` | `a3aa129652b705649fdb6c5e50f1915854017e89c180f7716acadb24e9fa36ba` |
 | `.agentic/schemas/merge-result.schema.json` | `b36d8ce3bcab84525ab0d63f685280c92d53b83262de23a5da4267435eb2aabd` |
-| `.agentic/schemas/operating-change.schema.json` | `c34d498ad5bdcf60068158f2e8c6f88398b5d2d484eaa3af7684c7ffb94b4cf6` |
+| `.agentic/schemas/operating-change.schema.json` | `250dd51f0486d8ab86f70334bfbf791d1b63fb1d6b9822d22003173629a33029` |
 | `.agentic/schemas/operating-config.schema.json` | `6025466aaccf080a341a00dc827da1c8a40a686e97920af25c596c5e0c6eeacc` |
 | `.agentic/schemas/operating-epics.schema.json` | `64b87be3760a1c31fa2656682052896cbd3897ec19a53dde6fbc4ff6f03dc3db` |
 | `.agentic/schemas/operating-recommendation.schema.json` | `2ce179328ab6996c745829165147872652631fe1e36d8189684be9a7d6661e24` |
@@ -339,6 +340,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/fixtures/routing/valid.yaml` | `912e0bb2adc7d2800d2a674f229e109009a9bd7aec06ee9eda55349c206b50e2` |
 | `.agentic/tests/review_admission_fixture.py` | `4ece32c0f91c1f1c7b4a6ec6f5789c046121ae59dc720075477925acea22389f` |
 | `.agentic/tests/routing_fixtures.py` | `6856f82ca5887958fbfcb9578fbaf1f78e6c3ed936c3c2abe13a41c269beef47` |
+| `.agentic/tests/run_awf242_validation.py` | `3226c7357cea3d3366e173437ccb240973fcb4da9aedc78ae0e7ff3aa8de118b` |
 | `.agentic/tests/source_only.py` | `7880bf7dde397f8cc71e2ee9b6b0183a904a130c6caf6fea98e1e2cb9f4e4e3c` |
 | `.agentic/tests/test_adoption_status.py` | `78d613d4b60f5d1405200edf87f6ab7972e1115a7cb86a57372b10ff8246b847` |
 | `.agentic/tests/test_adoption_validation.py` | `eb5e578ddf1367c46aca02cc3c091af8a1e36d50653cd36f8435d6603d84c01d` |
@@ -356,6 +358,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf242_budgeting.py` | `b1cbebe6816f0187494ee563e5e7e2e90de62011af602e6e0c9bc63c6b9d03f5` |
 | `.agentic/tests/test_awf242_controller_wiring.py` | `78dca1623ab6d93acd692217d15106dd917a22d164f862ddb1a3d07e6d1fbe36` |
 | `.agentic/tests/test_awf242_integration.py` | `d69b2e9fb47b1dc987d823ba59f255390483bdaa746ffd6250a6a9009e4a6fac` |
+| `.agentic/tests/test_awf242_owner_admission.py` | `ccfe7a1a32abc0488795e4e86cb11b5a772f5a41f4b1ec565bdcc0c2a02a98e2` |
 | `.agentic/tests/test_awf242_pre_a10.py` | `84f90619d42fe3bf489212b6326e19611a4423efdef1bb80112eed3b327f6e4c` |
 | `.agentic/tests/test_awf242_pre_a11.py` | `752f24f0087e94aeeaa2f3f45e1bcc1340cd6c9b41d76191c218ef1765961277` |
 | `.agentic/tests/test_awf242_pre_a2.py` | `4607fe38982386061bc4ca3915a2c8846b11b420e0d3e2c92c1849a3711fbfa4` |
@@ -608,7 +611,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/HOST_BROKER_CONFIG.yaml` | `c090b939cef6f9823a5fd75581f95b7bc34bcef3b608481cf5e2c4d6db3e017b` |
 | `global/awf-portable/LICENSE` | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 | `global/awf-portable/NOTICE` | `fe352296163579d49a575f19d2a1a8f6a9870a740601da1c2e15c264423d4e6d` |
-| `global/awf-portable/SKILL.md` | `a5d3ed321b1b7c3ddc22caccc0ef45a26cdd4d58e74471c5c2d246574bc671f5` |
+| `global/awf-portable/SKILL.md` | `5f6bdeb2f49290d4e4dce92fb978a554f5b62823e5c7b4694d56962c77e0a8e8` |
 | `global/awf-portable/references/model-routing.md` | `eb128a24decff50812c2a3173c0b82c8ed2a06740949277dd5d86996086a954b` |
 | `global/awf-portable/references/skill-installation.md` | `897ce9bc0c0df43f47f0a543964830ae22b0e75a62548a0479a39a422527bca6` |
 | `global/awf-portable/references/update-channel.example.json` | `bf98973fda46023e0346de0c049e7e8141b7e64feb4b19308f7a44c1d9066198` |
@@ -624,7 +627,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf-portable/tests/test_install_skill.py` | `a58053ca1e91118a6ac0f07049cc94f7fcdbb580c7b9fd730e14d8a7544c1586` |
 | `global/awf-portable/tests/test_prepare_release.py` | `95ee6f8f4366195b4acfd6f9f45c9dfd83a553a33f4f0669a80016be491e8e63` |
 | `global/awf-portable/tests/test_updates.py` | `f185a236ec1ff32184bb27590dfc4aa42e3c65249f4178585d9ccd570ea66686` |
-| `global/awf/SKILL.md` | `2b4eebbda7fb07fb3610d26646c8a92f734ea63ecc622580ad7aa8d18ef54040` |
+| `global/awf/SKILL.md` | `87b4488b2a1cf114207635ce655f9a9079229b79c09d7e65c0c320125b41f166` |
 | `global/awf/catalog-location.example.json` | `705051f90507da2a983ae675ce0899615c3fa341ae02471dd5bc60563b89875a` |
 | `global/awf/references/model-routing.md` | `575a92600429dd92bf4436b775a5f7b25a4a3ed1bbe817a059b4f2644fecd965` |
 | `global/awf/references/workflow.md` | `592c2f9eff9c5753c3bf94e0b561108ad423a3543d2e919331ca39a8142b485b` |
@@ -637,7 +640,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/bootstrap_project.py` | `d5fd55e8b33c0f203f9d498f0d3f3fdf7baf41a318f3951506aceb54e3a0289e` |
 | `scripts/build_release.py` | `a3e2265cfc66506305fca098c8148db0e9297e458fa9f05602d2b76da5fa6ce6` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
-| `scripts/generate_contracts.py` | `c5ab6e72f8accb71e3b0016f8badbcb16ed2a41600ff89cdc4ab2fce78141831` |
+| `scripts/generate_contracts.py` | `4ff7aa4cbb6876708e6a71b885e484f3af90612b9ce5a7bcefd41fad11e05b87` |
 | `scripts/generate_examples.py` | `a18346e72f88055d224a2edd17131e7eebb69c383ffd5b6af8dfd22124036429` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
