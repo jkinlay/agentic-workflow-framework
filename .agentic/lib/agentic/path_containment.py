@@ -5,6 +5,15 @@ import os
 from pathlib import Path
 
 
+def is_reparse_point(path):
+    """Reject Windows junctions too on Python 3.11, without following them."""
+    try:
+        info = Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    return Path(path).is_symlink() or bool(getattr(info, 'st_file_attributes', 0) & 0x400)
+
+
 def _identity_long_path(path):
     return Path(path)
 

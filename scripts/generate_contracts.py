@@ -407,6 +407,11 @@ def catalog(*, include_ticket_plan=True):
             }}}},
         })
     schemas["operating-config"] = obj({
+        "budgeting": obj({"accounting_enabled": BOOL, "enforcement_enabled": BOOL,
+                          "max_tokens_per_ticket": integer(1),
+                          "max_tokens_per_project": integer(1)},
+                         allOf=[{"if": {"properties": {"enforcement_enabled": const(True)}},
+                                 "then": {"properties": {"accounting_enabled": const(True)}}}]),
         "version": const(1),
         "source": {"type": "string", "pattern": "^(default|user|recommendation:R-[0-9a-f]{24})$"},
         "epic_overrides": {
@@ -446,6 +451,17 @@ def catalog(*, include_ticket_plan=True):
         "then": {"properties": {"instruction": text()}},
         "else": {"properties": {"instruction": {"type": "null"}}},
     }])
+    schemas['operating-change']['properties']['budget_owner_observation'] = obj({
+        'observation_id': text(maxLength=256), 'actor_id': text(maxLength=256),
+        'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
+        'changes': {'type': 'object', 'minProperties': 1, 'additionalProperties': False,
+                    'properties': schemas['operating-config']['properties']['budgeting']['properties']},
+    })
+    schemas['operating-change']['properties']['owner_admission'] = obj({
+        'actor_id': integer(1), 'login': text(maxLength=39), 'type': const('User'),
+        'digest': DIGEST, 'request_id': UUID, 'confirmed_at': TIME,
+        'executable_path': text(maxLength=32768), 'executable_sha256': DIGEST,
+    })
     schemas["operating-epics"] = obj({
         "schema_version": const(1),
         "epics": {"type": "array", "maxItems": 1000, "items": obj({

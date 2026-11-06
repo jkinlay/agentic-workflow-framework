@@ -907,6 +907,58 @@ def initialize_routing_ledger(connection, *, legacy_only=False):
     connection.execute("CREATE INDEX IF NOT EXISTS model_runs_status ON model_runs(project_id,status)")
     connection.execute("CREATE INDEX IF NOT EXISTS model_runs_day ON model_runs(project_id,day)")
     connection.execute("CREATE INDEX IF NOT EXISTS model_runs_closed ON model_runs(project_id,closed_day)")
+    from .budgeting import bridge_stage_one
+    bridge_stage_one(connection)
+
+
+def recovery_admission(connection, project_id, policy, request, capabilities, retry_limit, *,
+                       operating=None, governance=None, enforcing=False):
+    """Shared operational guards, independent of token accounting or quotas."""
+    incidents = connection.execute("SELECT outcome FROM model_runs WHERE project_id=? AND status='quarantined'", (project_id,)).fetchall()
+    budget_violations = {'host token ceiling overrun', 'host cost ceiling overrun'}
+    _require(not any(enforcing or not json.loads(row['outcome'] or '{}').get('violations') or
+                     not set(json.loads(row['outcome']).get('violations', [])) <= budget_violations for row in incidents),
+             "project has a quarantined host mismatch or budget overrun; reconcile with authorized operator evidence")
+    ticket_rows = list(connection.execute("SELECT * FROM model_runs WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, request["ticket_id"])))
+    if operating is not None and request.get("stream") in STREAM_LABELS and STREAM_LABELS.index(request["stream"]) >= operating.count:
+        retained = [row for row in ticket_rows if row["operating_hash"] is not None
+                    and json.loads(row["request"]).get("stream") == request["stream"]]
+        _require(retained, "Operating stream is draining: no previously admitted ticket exists in this stream; no new ticket admission")
+        implementers = [row for row in retained if row["role"] in ("worker", "fix")]
+        _require(request["role"] not in ("worker", "fix") or implementers and implementers[-1]["agent_id"] == request["agent_id"],
+                 "Draining work must retain its previously admitted implementation identity; reconcile ownership before replacement")
+    # This allowance gates admission, never safe incident closure.
+    # Keep the count ticket-wide and independent of policy hash, role or
+    # phase so renaming a retry cannot reset a repeated-hang budget.
+    reconciled_incidents = sum(row["status"] == "reconciled" for row in ticket_rows)
+    if reconciled_incidents > retry_limit:
+        return ({"status": "blocked", "code": "RECONCILED_INCIDENT_RETRY_LIMIT",
+                "reason": "ticket reconciled-incident retry allowance exhausted; closure is permitted but further runs require explicit human direction",
+                "project_id": project_id, "ticket_id": request["ticket_id"],
+                "reconciled_incidents": reconciled_incidents, "retry_limit": retry_limit,
+                "policy_sha256": _fingerprint(policy), "dispatch_performed": False}, request, ticket_rows)
+    phase_rows = [row for row in ticket_rows if row["role"] == request["role"] and row["phase"] == request["phase"]]
+    _require(not any(row["status"] == "reserved" for row in phase_rows), "a run is still outstanding for this ticket/role/phase")
+    enriched = deepcopy(request)
+    for key in ("previous_route", "last_failure_kind", "reasoning_failures", "resolved_failure_route"):
+        enriched.pop(key, None)
+    enriched["reasoning_failures"] = sum(json.loads(row["outcome"] or "{}").get("failure_kind") in REASONING_FAILURES for row in phase_rows)
+    if phase_rows:
+        previous = phase_rows[-1]
+        outcome = json.loads(previous["outcome"] or "{}")
+        if not outcome.get("success", False):
+            enriched["previous_route"] = {k: json.loads(previous["route"])[k] for k in ("model", "reasoning_effort")}
+            enriched["last_failure_kind"] = outcome.get("failure_kind", "unknown")
+            resolution = connection.execute("SELECT run_id FROM model_failure_resolutions WHERE run_id=?", (previous["run_id"],)).fetchone()
+            if resolution and enriched["last_failure_kind"] in NON_REASONING_FAILURES:
+                enriched["resolved_failure_route"] = enriched.pop("previous_route")
+                enriched.pop("last_failure_kind")
+    route = select_route(policy, enriched, capabilities, operating=operating, governance=governance)
+    if route["status"] != "ready":
+        return route, enriched, ticket_rows
+    if route["escalated"]:
+        _require(sum(row["escalated"] for row in ticket_rows) < policy["escalation"]["max_escalations_per_ticket"], "ticket automatic escalation limit reached")
+    return route, enriched, ticket_rows
 
 
 class RoutingLedger:
@@ -915,7 +967,9 @@ class RoutingLedger:
     BEGIN IMMEDIATE serializes admission across connections. Outstanding runs stay
     charged indefinitely until observed completion; timeout never refunds a run.
     """
-    def __init__(self, path):
+    def __init__(self, path, *, worktree_roots=()):
+        from .budgeting import protected_state_roots
+        self.worktree_roots = protected_state_roots(*worktree_roots)
         self.path = Path(path).absolute()
         _require(str(path) != ":memory:", "routing ledger must be durable")
         _require(self.path.parent.is_dir(), "create a trusted ledger directory before use")
@@ -1015,7 +1069,7 @@ class RoutingLedger:
         return require_routing_switch_provenance(
             self, policy, prior_route, new_route, record)
 
-    def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None):
+    def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None, budget_registry=None, budget_binding=None):
         """Persist a validated policy observation, then atomically admit a run.
 
         The savepoint rolls back failed admission work while the enclosing write
@@ -1025,10 +1079,40 @@ class RoutingLedger:
         validate_policy(policy)
         _, operating_binding = _operating_binding(operating, governance, policy)
         _request(request)
-        _integer(request.get("reservation_tokens"), "reservation_tokens", 1)
-        _integer(request.get("reservation_cost_microusd"), "reservation_cost_microusd", nullable=True)
+        from .budgeting import resolve_settings
+        settings = resolve_settings(operating.config if operating is not None else {})
+        explicit = 'legacy_behavior' not in settings
+        enrolled = bool(explicit and settings['accounting_enabled'] and budget_registry is not None
+                        and budget_registry.enrolled(budget_binding))
+        if enrolled:
+            _require(budget_binding['project_id'] == project_id
+                     and budget_binding['ticket_id'] == request['ticket_id']
+                     and budget_binding['role'] == request['role'], 'Enrollment differs from routing request')
+        accounting = not explicit or enrolled
+        request = deepcopy(request)
+        # This metadata is derived at the trusted API boundary, never accepted
+        # from a request document. model_runs remains the sole usage ledger.
+        request.pop('_budgeting', None)
+        request.pop('_budget_binding', None)
+        request.pop('_reservation_unknown', None)
+        if explicit:
+            request['_budgeting'] = {**settings, 'attributable': enrolled}
+            if enrolled:
+                request['_budget_binding'] = deepcopy(budget_binding)
+        if accounting:
+            if explicit and not settings['enforcement_enabled'] and request.get('reservation_tokens') is None:
+                request['_reservation_unknown'] = True
+                request['reservation_tokens'] = 0  # storage sentinel; not measured/estimated zero usage
+            else:
+                _integer(request.get("reservation_tokens"), "reservation_tokens", 1)
+            _integer(request.get("reservation_cost_microusd"), "reservation_cost_microusd", nullable=True)
+        else:
+            request['reservation_tokens'] = 0
+            request['reservation_cost_microusd'] = None
+        if explicit:
+            request['reservation_cost_microusd'] = None
         validate_value(capabilities)
-        run_id = str(uuid.uuid4())
+        run_id = budget_binding['run_id'] if enrolled else str(uuid.uuid4())
         request_hash = _raw_fingerprint({"project_id": project_id, "policy_sha256": _fingerprint(policy),
                                          "request": request, "capabilities": capabilities,
                                          "operating_hash": operating_binding["operating_hash"]})
@@ -1039,9 +1123,11 @@ class RoutingLedger:
         error = None
         with self._transaction() as connection:
             retry_limit = policy.get("reconciliation", {}).get("max_reconciled_incident_retries_per_ticket", 2)
-            ceiling_state = self._retry_ceiling(connection, project_id, retry_limit, policy)
+            ceiling_state = self._retry_ceiling(connection, project_id, retry_limit, policy,
+                worktree_roots=self.worktree_roots)
             ceiling = ceiling_state["retry_limit"]
-            if retry_limit > ceiling:
+            from .budget_enrollment import recovery_ceiling, OperationalRegistry
+            if recovery_ceiling(retry_limit, ceiling)['code']:
                 return {"status": "blocked", "code": "RETRY_LIMIT_INCREASE_REQUIRES_AUTHORIZATION",
                         "reason": "configured retry cap exceeds the protected ledger ceiling; a trusted host must record explicit human direction",
                         "project_id": project_id, "configured_retry_limit": retry_limit,
@@ -1056,6 +1142,8 @@ class RoutingLedger:
                     "attempted_run_id": run_id, "request_sha256": request_hash,
                     "run_binding": "admission attempt only; a model_runs row with this ID establishes reservation",
                     "provenance": "validated configuration observed before admission; caller identity is a host assertion"})
+                # Keep the mode-independent ceiling even when admission refuses.
+                OperationalRegistry.for_project(project_id, self.worktree_roots).retain_retry_ceiling(project_id, retry_limit)
             connection.execute("SAVEPOINT model_admission")
             try:
                 result = self._admit(connection, project_id, policy, request, capabilities, retry_limit, now, day, run_id,
@@ -1073,50 +1161,15 @@ class RoutingLedger:
         return {**result, **attempt, "admitted": result["status"] == "reserved"}
 
     def _admit(self, connection, project_id, policy, request, capabilities, retry_limit, now, day, run_id, *, operating=None, governance=None):
-        costs_required = any(value is not None for key, value in policy["budgets"].items() if "cost" in key)
+        mode = request.get('_budgeting')
+        enforcing = mode is None or (mode['enforcement_enabled'] and mode['attributable'])
+        costs_required = mode is None and any(value is not None for key, value in policy["budgets"].items() if "cost" in key)
         _require(not costs_required or request.get("reservation_cost_microusd") is not None,
                  "cost ceiling is configured but a verified hard cost reservation is unavailable")
-        _require(connection.execute("SELECT 1 FROM model_runs WHERE project_id=? AND status='quarantined' LIMIT 1", (project_id,)).fetchone() is None,
-                 "project has a quarantined host mismatch or budget overrun; reconcile with authorized operator evidence")
-        ticket_rows = list(connection.execute("SELECT * FROM model_runs WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, request["ticket_id"])))
-        if operating is not None and request.get("stream") in STREAM_LABELS and STREAM_LABELS.index(request["stream"]) >= operating.count:
-            retained = [row for row in ticket_rows if row["operating_hash"] is not None
-                        and json.loads(row["request"]).get("stream") == request["stream"]]
-            _require(retained, "Operating stream is draining: no previously admitted ticket exists in this stream; no new ticket admission")
-            implementers = [row for row in retained if row["role"] in ("worker", "fix")]
-            _require(request["role"] not in ("worker", "fix") or implementers and implementers[-1]["agent_id"] == request["agent_id"],
-                     "Draining work must retain its previously admitted implementation identity; reconcile ownership before replacement")
-        # This allowance gates admission, never safe incident closure.
-        # Keep the count ticket-wide and independent of policy hash, role or
-        # phase so renaming a retry cannot reset a repeated-hang budget.
-        reconciled_incidents = sum(row["status"] == "reconciled" for row in ticket_rows)
-        if reconciled_incidents > retry_limit:
-            return {"status": "blocked", "code": "RECONCILED_INCIDENT_RETRY_LIMIT",
-                    "reason": "ticket reconciled-incident retry allowance exhausted; closure is permitted but further runs require explicit human direction",
-                    "project_id": project_id, "ticket_id": request["ticket_id"],
-                    "reconciled_incidents": reconciled_incidents, "retry_limit": retry_limit,
-                    "policy_sha256": _fingerprint(policy), "dispatch_performed": False}
-        phase_rows = [row for row in ticket_rows if row["role"] == request["role"] and row["phase"] == request["phase"]]
-        _require(not any(row["status"] == "reserved" for row in phase_rows), "a run is still outstanding for this ticket/role/phase")
-        enriched = deepcopy(request)
-        for key in ("previous_route", "last_failure_kind", "reasoning_failures", "resolved_failure_route"):
-            enriched.pop(key, None)
-        enriched["reasoning_failures"] = sum(json.loads(row["outcome"] or "{}").get("failure_kind") in REASONING_FAILURES for row in phase_rows)
-        if phase_rows:
-            previous = phase_rows[-1]
-            outcome = json.loads(previous["outcome"] or "{}")
-            if not outcome.get("success", False):
-                enriched["previous_route"] = {k: json.loads(previous["route"])[k] for k in ("model", "reasoning_effort")}
-                enriched["last_failure_kind"] = outcome.get("failure_kind", "unknown")
-                resolution = connection.execute("SELECT run_id FROM model_failure_resolutions WHERE run_id=?", (previous["run_id"],)).fetchone()
-                if resolution and enriched["last_failure_kind"] in NON_REASONING_FAILURES:
-                    enriched["resolved_failure_route"] = enriched.pop("previous_route")
-                    enriched.pop("last_failure_kind")
-        route = select_route(policy, enriched, capabilities, operating=operating, governance=governance)
-        if route["status"] != "ready":
+        route, enriched, ticket_rows = recovery_admission(connection, project_id, policy, request,
+            capabilities, retry_limit, operating=operating, governance=governance, enforcing=enforcing)
+        if route['status'] != 'ready':
             return route
-        if route["escalated"]:
-            _require(sum(row["escalated"] for row in ticket_rows) < policy["escalation"]["max_escalations_per_ticket"], "ticket automatic escalation limit reached")
         # Outstanding reservations from previous days count on each admission
         # day as well: crossing midnight must not make running work disappear.
         # UNION avoids double counting and uses the indexed day/status lookups.
@@ -1126,8 +1179,18 @@ class RoutingLedger:
           SELECT rowid FROM model_runs WHERE project_id=? AND closed_day=?)""",
           (project_id, day, project_id, project_id, day)))
         ticket_cap = policy["budgets"]["max_runs_per_ticket"]
-        ticket_used = len(ticket_rows) + 1
-        for scope, history in (("ticket", ticket_rows), ("project_day", daily_rows)):
+        # Operational history above remains ticket-wide for security, recovery,
+        # ownership and escalation. Explicit budgeting counts only enrolled runs
+        # for budget warnings/dispositions; legacy installations retain all rows.
+        budget_history = ticket_rows if mode is None else [row for row in ticket_rows
+            if (prior_mode := json.loads(row['request']).get('_budgeting')) is not None
+            and prior_mode['accounting_enabled'] and prior_mode['attributable']]
+        ticket_used = len(budget_history) + int(mode is None or
+            (mode['accounting_enabled'] and mode['attributable']))
+        if mode is not None and enforcing:
+            from .budgeting import admit_totals
+            admit_totals(connection, project_id, request['ticket_id'], mode, request['reservation_tokens'])
+        for scope, history in (("ticket", ticket_rows), ("project_day", daily_rows)) if mode is None else ():
             budgets = policy["budgets"]
             _require(len(history) + 1 <= budgets["max_runs_per_" + scope], scope + " run budget exhausted")
             used_tokens = sum(row["actual_tokens"] if row["actual_tokens"] is not None else row["reserved_tokens"] for row in history)
@@ -1147,16 +1210,20 @@ class RoutingLedger:
                             None, None, int(route["escalated"]), json.dumps(enriched), json.dumps(route), None, route["operating_hash"]))
         warn_at = (3 * ticket_cap + 3) // 4
         disposition_at = (9 * ticket_cap + 9) // 10
-        signal = ("NEEDS_DISPOSITION" if ticket_used >= disposition_at else
+        signal = ("OFF" if not enforcing else "NEEDS_DISPOSITION" if ticket_used >= disposition_at else
                   "WARN" if ticket_used >= warn_at else "OK")
         disposition = None
         prior_dispositions = []
-        if ticket_used >= disposition_at:
+        if enforcing and ticket_used >= disposition_at:
             prior_dispositions = connection.execute(
                 "SELECT observation FROM model_disposition_requests "
                 "WHERE project_id=? AND ticket_id=? ORDER BY rowid",
                 (project_id, request["ticket_id"])).fetchall()
-        if ticket_used >= disposition_at and not any(
+            if mode is not None:
+                enrolled_ids = {row['run_id'] for row in budget_history}
+                prior_dispositions = [row for row in prior_dispositions
+                    if json.loads(row['observation']).get('run_id') in enrolled_ids]
+        if enforcing and ticket_used >= disposition_at and not any(
                 json.loads(row["observation"]).get("run_cap") == ticket_cap
                 for row in prior_dispositions):
             open_findings = request.get("open_findings", [])
@@ -1181,7 +1248,9 @@ class RoutingLedger:
                 "reservation_cost_microusd": request.get("reservation_cost_microusd"),
                 "ticket_runs_used": ticket_used, "ticket_run_cap": ticket_cap,
                 "run_cap_signal": signal, "disposition_request": disposition,
-                "requires_host_limit_enforcement": True}
+                "budget_required": mode is None or bool(mode['accounting_enabled'] and mode['attributable']),
+                "budgeting": mode,
+                "requires_host_limit_enforcement": enforcing}
 
     def summary(self, project_id, ticket_id):
         """Return ticket-wide run and token accounting grouped by recorded role."""
@@ -1193,7 +1262,7 @@ class RoutingLedger:
             # disposition request without exposing the corresponding run.
             connection.execute("BEGIN")
             rows = connection.execute(
-                "SELECT role,status,reserved_tokens,actual_tokens FROM model_runs "
+                "SELECT role,status,reserved_tokens,actual_tokens,request FROM model_runs "
                 "WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, ticket_id)).fetchall()
             requests = connection.execute(
                 "SELECT observation FROM model_disposition_requests "
@@ -1201,18 +1270,23 @@ class RoutingLedger:
         by_role = {}
         for row in rows:
             group = by_role.setdefault(row["role"], {"runs": 0, "tokens": 0, "reserved_tokens": 0,
-                                                      "actual_tokens": 0, "unsettled_runs": 0})
+                                                      "actual_tokens": 0, "unsettled_runs": 0,
+                                                      "closed_runs": 0, "unknown_runs": 0})
             group["runs"] += 1
-            group["reserved_tokens"] += row["reserved_tokens"]
-            if row["actual_tokens"] is None:
-                group["unsettled_runs"] += 1
-                group["tokens"] += row["reserved_tokens"]
-            else:
-                group["actual_tokens"] += row["actual_tokens"]
-                group["tokens"] += row["actual_tokens"]
+            reserved = None if json.loads(row['request']).get('_reservation_unknown') else row['reserved_tokens']
+            open_run = row['status'] == 'reserved'
+            group['unsettled_runs'] += int(open_run)
+            group['closed_runs'] += int(not open_run)
+            group['unknown_runs'] += int(row['actual_tokens'] is None and (not open_run or reserved is None))
+            # Only a still-open reservation supplies an estimate. Closed UNKNOWN
+            # usage stays unknown even when its original estimate was known.
+            tokens = reserved if open_run else row['actual_tokens']
+            for field, value in (('reserved_tokens', reserved), ('actual_tokens', row['actual_tokens']),
+                                 ('tokens', tokens)):
+                group[field] = None if group[field] is None or value is None else group[field] + value
         return {"status": "summary", "project_id": project_id, "ticket_id": ticket_id,
-                "runs": len(rows), "tokens": sum(row["actual_tokens"] if row["actual_tokens"] is not None
-                                                    else row["reserved_tokens"] for row in rows),
+                "runs": len(rows), "tokens": None if any(group['tokens'] is None for group in by_role.values())
+                    else sum(group['tokens'] for group in by_role.values()),
                 "by_role": {role: by_role[role] for role in sorted(by_role)},
                 "disposition_requests": [json.loads(row["observation"]) for row in requests]}
 
@@ -1226,17 +1300,67 @@ class RoutingLedger:
                                      observation)
 
     @staticmethod
-    def _retry_ceiling(connection, project_id, configured_limit, policy):
+    def _retry_ceiling(connection, project_id, configured_limit, policy, *, worktree_roots=()):
+        from .budget_enrollment import OperationalRegistry, recovery_ceiling
         row = RoutingLedger._current_retry_ceiling(connection, project_id)
         if row is None:
             # Neither an edited policy nor an old hash can bootstrap a raised cap.
             row = RoutingLedger._append_retry_ceiling(connection, project_id, None,
-                                                       min(2, configured_limit), "seed", {
+                                                       recovery_ceiling(configured_limit)['retry_limit'], "seed", {
                 "policy_sha256": _fingerprint(policy), "configured_retry_limit": configured_limit,
                 "provenance": "conservative initial admission ceiling"})
+        # Operational capacity is project-wide across all host/accounting modes.
+        # Reconcile by minimum; neither source may restore a retained reduction.
+        operations = OperationalRegistry.for_project(project_id, worktree_roots)
+        ceiling = operations.retain_retry_ceiling(project_id, row['retry_limit'])
+        if ceiling < row['retry_limit']:
+            row = RoutingLedger._append_retry_ceiling(connection, project_id, row, ceiling,
+                'operational_reduction', {'provenance': 'protected project operational ceiling'})
         return row
 
     def authorize_retry_limit(self, project_id, policy, observation):
+        """Commit trusted-host authority before changing operational capacity."""
+        result = self._authorize_retry_limit(project_id, policy, observation)
+        # Historical exact replays retain their original result bytes. They
+        # cannot manufacture a new operational authorization or restore a
+        # ceiling which has since been reduced.
+        if not {'project_id', 'status', 'operation_id', 'previous_limit', 'new_limit', 'new_revision'} <= set(result):
+            return result
+        with self._transaction() as connection:
+            current = _current_retry_ceiling(connection, project_id)
+            if (current is None or current['revision'] != result['new_revision']
+                    or current['retry_limit'] != result['new_limit']):
+                return result
+            from .budget_enrollment import OperationalRegistry
+            operations = OperationalRegistry.for_project(project_id, self.worktree_roots)
+            operations.apply_retry_authorization(project_id, result)
+            # Existing verified closures may have been refused a resolution at
+            # the old cap. Spend the new allowance on those exact failures.
+            self._migrate_operational_recovery(connection, project_id, operations)
+            pending = connection.execute('SELECT r.*,c.observation FROM model_runs r '
+                'JOIN model_reconciliations c ON c.run_id=r.run_id '
+                'LEFT JOIN model_failure_resolutions f ON f.run_id=r.run_id '
+                'WHERE r.project_id=? AND f.run_id IS NULL ORDER BY r.rowid', (project_id,)).fetchall()
+            for row in pending:
+                outcome = json.loads(row['outcome'] or '{}')
+                if outcome.get('success', True) or outcome.get('failure_kind') not in NON_REASONING_FAILURES:
+                    continue
+                binding = json.loads(row['request']).get('_budget_binding') or dict(project_id=project_id,
+                    ticket_id=row['ticket_id'], run_id=row['run_id'], dispatch_id=row['run_id'],
+                    session_id=row['run_id'], role=row['role'])
+                try:
+                    operations.resolve(binding)
+                except ValidationError as exc:
+                    if str(exc) != 'Operational recovery retry limit exhausted':
+                        raise
+                    continue
+                closure = json.loads(row['observation'])
+                connection.execute('INSERT INTO model_failure_resolutions VALUES (?,?)', (row['run_id'], json.dumps(
+                    dict(verified=True, reason=closure['reason'], evidence_ref=closure['evidence_ref'],
+                         retry_authorization_id=result['operation_id'], recorded_at=datetime.now(timezone.utc).isoformat()))))
+        return result
+
+    def _authorize_retry_limit(self, project_id, policy, observation):
         """Trusted-host-only CAS operation; assertions do not authenticate humans.
 
         Do not expose this operation or direct ledger writes to workers. The host
@@ -1283,6 +1407,9 @@ class RoutingLedger:
             references = sorted({_approval_reference(observation[field]) for field in ("authorization_ref", "evidence_ref")})
             ceiling_state = self._current_retry_ceiling(connection, project_id)
             _require(ceiling_state is not None, "initialize the ceiling through admission before authorizing an increase")
+            ceiling_state = self._retry_ceiling(connection, project_id,
+                settings.get('max_reconciled_incident_retries_per_ticket', 2), policy,
+                worktree_roots=self.worktree_roots)
             ceiling = ceiling_state["retry_limit"]
             _require(ceiling == observation["expected_limit"] and ceiling_state["revision"] == observation["expected_revision"],
                      "retry-limit ceiling changed; obtain a current authorization")
@@ -1329,7 +1456,7 @@ class RoutingLedger:
             _name(outcome.get(field), field)
         for field in ("success", "validation_passed", "independent_review_passed", "escaped_defect"):
             _require(type(outcome.get(field)) is bool, field + " must be boolean")
-        _integer(outcome.get("actual_tokens"), "actual_tokens")
+        _integer(outcome.get("actual_tokens"), "actual_tokens", nullable=True)
         _integer(outcome.get("actual_cost_microusd"), "actual_cost_microusd", nullable=True)
         if not outcome["success"]:
             _require(outcome.get("failure_kind") in REASONING_FAILURES + NON_REASONING_FAILURES, "failed run requires a classified failure_kind")
@@ -1342,6 +1469,20 @@ class RoutingLedger:
             _require(row is not None, "unknown reservation")
             _require(row["status"] == "reserved", "reservation already settled; duplicate settlement denied")
             route, request = json.loads(row["route"]), json.loads(row["request"])
+            mode = request.get('_budgeting')
+            accounting = mode is None or (mode['accounting_enabled'] and mode['attributable'])
+            enforcing = mode is None or (mode['enforcement_enabled'] and mode['attributable'])
+            if mode is None:
+                _integer(outcome.get('actual_tokens'), 'actual_tokens')
+            if accounting and (mode is not None or 'observation_id' in outcome):
+                from .budgeting import require_unused_usage_observation
+                require_unused_usage_observation(connection, outcome.get('observation_id'))
+            outcome = deepcopy(outcome)
+            # OFF completion records operational security/recovery facts only.
+            # Absent/unknown enabled telemetry remains NULL, never zero.
+            outcome['actual_tokens'] = outcome.get('actual_tokens') if accounting else None
+            if not accounting:
+                outcome['actual_cost_microusd'] = None
             if request["role"] in ("critic", "specialist"):
                 _require(not outcome["independent_review_passed"],
                          "review runs cannot self-attest review independence; see .agentic/docs/27-MODEL-ROUTING.md#settlement-outcome-shapes")
@@ -1357,11 +1498,12 @@ class RoutingLedger:
                 violations.append("host model/effort mismatch")
             if request.get("context_id") is not None and outcome["actual_context_id"] != request["context_id"]:
                 violations.append("host context mismatch")
-            if request["role"] in ("critic", "specialist") and outcome["actual_context_id"] == request["worker_context_id"]:
+            if request["role"] in ("critic", "specialist") and outcome["actual_context_id"] in (
+                    request.get('worker_context_ids', []) + [request["worker_context_id"]]):
                 violations.append("host review context is not independent")
-            if outcome["actual_tokens"] > row["reserved_tokens"]:
+            if enforcing and outcome["actual_tokens"] is not None and outcome["actual_tokens"] > row["reserved_tokens"]:
                 violations.append("host token ceiling overrun")
-            if row["reserved_cost"] is not None and outcome["actual_cost_microusd"] > row["reserved_cost"]:
+            if enforcing and row["reserved_cost"] is not None and outcome["actual_cost_microusd"] > row["reserved_cost"]:
                 violations.append("host cost ceiling overrun")
             status = "quarantined" if violations else "settled"
             recorded = {**outcome, "operating_hash": row["operating_hash"],
@@ -1372,6 +1514,48 @@ class RoutingLedger:
             return {"status": status, "run_id": run_id, "accepted": not violations, "violations": violations,
                     "operating_hash": row["operating_hash"], "policy_sha256": row["policy_hash"],
                     "actual_model": outcome["actual_model"], "actual_reasoning_effort": outcome["actual_reasoning_effort"]}
+
+    @staticmethod
+    def _migrate_operational_recovery(connection, project_id, operations):
+        """Import a verified legacy snapshot; never used by OFF admission."""
+        from .budget_enrollment import validate_binding
+        ceiling = _current_retry_ceiling(connection, project_id)
+        retry_limit = 2 if ceiling is None else ceiling['retry_limit']
+        records = []
+        for row in connection.execute('SELECT r.*,f.run_id AS resolved_run FROM model_runs r '
+                'LEFT JOIN model_failure_resolutions f ON f.run_id=r.run_id WHERE r.project_id=?', (project_id,)):
+            outcome = json.loads(row['outcome'] or '{}')
+            security = [v for v in outcome.get('violations', []) if v not in
+                        ('host token ceiling overrun', 'host cost ceiling overrun')] if row['status'] == 'quarantined' else []
+            if row['status'] not in ('settled', 'quarantined', 'reconciled') or (outcome.get('success', True) and not security):
+                continue
+            request = json.loads(row['request'])
+            binding = request.get('_budget_binding') or dict(project_id=project_id, ticket_id=row['ticket_id'],
+                run_id=row['run_id'], dispatch_id=row['run_id'], session_id=row['run_id'], role=row['role'])
+            binding = validate_binding(binding)
+            _require(all(binding[key] == value for key, value in (
+                ('project_id', project_id), ('ticket_id', row['ticket_id']), ('run_id', row['run_id']), ('role', row['role']))),
+                'Recovery migration differs from retained execution identity')
+            records.append(dict(binding=binding, context_id=(outcome.get('actual_context_id')
+                if outcome.get('actual_context_observed', True) else None), resolved=row['resolved_run'] is not None,
+                quarantine_reasons=security))
+        operations.import_recovery(project_id, records, retry_limit)
+        return {'status': 'migrated', 'project_id': project_id, 'failures': len(records),
+                'resolutions': sum(record['resolved'] for record in records), 'budgets_refunded': False}
+
+    def migrate_operational_recovery(self, project_id, *, worktree_roots=()):
+        """Trusted explicit upgrade: quiesce, verify old ledger, then import once.
+
+        Replays retain exact identities, consumed resolutions and the minimum
+        historical retry ceiling. Source usage, charges and ledger bytes remain
+        unchanged. OFF hosts read only an available ceiling; importing legacy
+        failure/usage history remains an explicit quiescent migration.
+        """
+        from .budget_enrollment import OperationalRegistry
+        _name(project_id, 'project_id')
+        operations = OperationalRegistry.for_project(project_id, (*self.worktree_roots, *worktree_roots))
+        with self._transaction() as connection:
+            return self._migrate_operational_recovery(connection, project_id, operations)
 
     def resolve_failure(self, run_id, observation):
         """Trusted coordinator records a verified external recovery, never a refund."""
@@ -1389,6 +1573,16 @@ class RoutingLedger:
                      "only non-reasoning failures can be externally resolved")
             _require(connection.execute("SELECT run_id FROM model_failure_resolutions WHERE run_id=?", (run_id,)).fetchone() is None,
                      "failure resolution already recorded")
+            from .budget_enrollment import OperationalRegistry
+            operations = OperationalRegistry.for_project(row['project_id'], self.worktree_roots)
+            # Explicit recovery may import legacy-only evidence. Consumption is
+            # durable before the ledger receipt: a crash cannot grant a retry
+            # without spending the one shared, ticket-wide allowance.
+            self._migrate_operational_recovery(connection, row['project_id'], operations)
+            binding = json.loads(row['request']).get('_budget_binding') or dict(
+                project_id=row['project_id'], ticket_id=row['ticket_id'], run_id=run_id,
+                dispatch_id=run_id, session_id=run_id, role=row['role'])
+            operations.resolve(binding)
             recorded = {**observation, "recorded_at": datetime.now(timezone.utc).isoformat()}
             connection.execute("INSERT INTO model_failure_resolutions VALUES (?,?)", (run_id, json.dumps(recorded)))
             return {"status": "resolved", "run_id": run_id, "budgets_refunded": False}
@@ -1447,17 +1641,35 @@ class RoutingLedger:
                           "settled_at": now, "actual_usage_known": False, "operating_hash": row["operating_hash"]}
                 connection.execute("UPDATE model_runs SET status='reconciled',outcome=?,closed_day=? WHERE run_id=?",
                                    (json.dumps(closed), now[:10], run_id))
-                connection.execute("INSERT INTO model_failure_resolutions VALUES (?,?)",
-                                   (run_id, json.dumps({**observation, "verified": True, "recorded_at": now})))
             else:
                 # Preserve the original quarantine outcome, defects and every
                 # observed overrun byte; reconciliation is a separate audit event.
                 connection.execute("UPDATE model_runs SET status='reconciled' WHERE run_id=?", (run_id,))
-                previous_outcome = json.loads(row["outcome"])
-                if not previous_outcome["success"] and previous_outcome.get("failure_kind") in NON_REASONING_FAILURES:
+            recovery_resolved = False
+            terminal = json.loads(connection.execute('SELECT outcome FROM model_runs WHERE run_id=?',
+                (run_id,)).fetchone()['outcome'])
+            if not terminal['success'] and terminal.get('failure_kind') in NON_REASONING_FAILURES:
+                from .budget_enrollment import OperationalRegistry
+                operations = OperationalRegistry.for_project(project_id, self.worktree_roots,
+                    retry_limit=settings.get('max_reconciled_incident_retries_per_ticket', 2))
+                self._migrate_operational_recovery(connection, project_id, operations)
+                execution = json.loads(row['request']).get('_budget_binding') or dict(
+                    project_id=project_id, ticket_id=row['ticket_id'], run_id=run_id,
+                    dispatch_id=run_id, session_id=run_id, role=row['role'])
+                try:
+                    operations.resolve(execution)
+                    recovery_resolved = True
+                except ValidationError as exc:
+                    # Safe incident closure is always permitted. Exhaustion
+                    # refuses *resolution* and leaves the operational stop in
+                    # place, without granting capacity or refunding charges.
+                    if str(exc) != 'Operational recovery retry limit exhausted':
+                        raise
+                if recovery_resolved:
                     connection.execute("INSERT INTO model_failure_resolutions VALUES (?,?)",
                                        (run_id, json.dumps({**observation, "verified": True, "recorded_at": now})))
             result = {"status": "reconciled", "run_id": run_id, "project_id": project_id,
+                      "recovery_resolved": recovery_resolved,
                       "operating_hash": row["operating_hash"],
                       "reconciliation_id": observation["reconciliation_id"], "previous_status": row["status"],
                       "budgets_refunded": False, "positive_evidence_eligible": False,
