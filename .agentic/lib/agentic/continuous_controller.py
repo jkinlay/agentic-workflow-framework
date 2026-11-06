@@ -2345,7 +2345,7 @@ def retained_jira_owner_closure(store, config, request):
 		return None
 	value = loads(row['value'])
 	require_jira_binding_identity(store, config, request['binding'])
-	return value
+	return {key: item for key, item in value.items() if key != 'identity'}
 
 
 def _observe_owner_jira_closeout(store, config, *, binding, provider, producer_id, run_id, now,
@@ -2370,11 +2370,13 @@ def _observe_owner_jira_closeout(store, config, *, binding, provider, producer_i
 				'issue_id': binding['issue_id'], 'provider_identity': provider, 'expected_status_id': config['jira']['status_map']['done']}, now=proof['observed_at'])
 			with store.transaction() as db:
 				key = 'jira-owner-closure:' + record['record_id']
+				identity = _jira_operation_identity(config, record)
 				prior = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
 				if prior is None:
-					db.execute('INSERT INTO controller_meta VALUES(?,?)', (key, canonical(value).decode()))
+					db.execute('INSERT INTO controller_meta VALUES(?,?)', (key, canonical({**value, 'identity': identity}).decode()))
 				else:
 					old = loads(prior['value'])
+					_require(old.pop('identity', None) == identity, 'Owner closure invariant identity changed')
 					_require(all(old['owner_closure'][key] == proof[key] for key in proof if key != 'observed_at'), 'Owner closure observation changed; retain the original evidence')
 					value = old
 		return {'planned': False, **value, 'writes_stopped': False, 'execution_authority': False}
@@ -2589,7 +2591,7 @@ def _require_jira_history_binding(config, binding, incoming, old_binding, identi
 
 
 def require_jira_binding_identity(store, config, binding, observe_jira_operation_identity=None):
-	"""Admit incoming authority against configuration and both retained journals.
+	"""Admit incoming authority against configuration and all retained Jira history.
 
 	Candidate revisions cannot change project/repository/issue identity. Issue-only
 	adapter bindings obtain that identity from configuration; historical authority
@@ -2609,6 +2611,27 @@ def require_jira_binding_identity(store, config, binding, observe_jira_operation
 	from .intake_assignment import verify_assignment_record
 	from .provider_identity import expected_jira_identity
 	provider = expected_jira_identity(config)
+	with store.connection() as db:
+		closures = [loads(row['value']) for row in db.execute(
+			"SELECT value FROM controller_meta WHERE key LIKE 'jira-owner-closure:%'")]
+	for value in closures:
+		_require(isinstance(value, dict) and set(value) == {'identity', 'record', 'owner_closure'},
+			'Owner closure history lacks retained invariant identity')
+		record, identity = value['record'], value['identity']
+		_require(isinstance(identity, dict) and isinstance(record, dict) and isinstance(record.get('binding'), dict),
+			'Malformed owner closure identity history')
+		if record['binding'].get('issue_id') != issue and identity.get('issue_id') != issue:
+			continue
+		_require(identity == {'connector': 'jira', **expected, 'jira_provider': {
+			key: provider[source] for key, source in (('cloud_id', 'cloud_id'), ('site', 'site'),
+			('project_id', 'project_id'), ('project_key', 'project_key'), ('controller_actor_id', 'account_id'))}}
+			and identity == _jira_operation_identity(config, record),
+			'Owner closure history belongs to a different project/repository/issue binding or provider/controller actor')
+		validate_jira_owner_closure({key: item for key, item in value.items() if key != 'identity'},
+			{'transition_record_id': record['record_id'], 'binding': record['binding'], 'issue_id': issue,
+				'provider_identity': identity['jira_provider'], 'expected_status_id': record['to_status_id']},
+			now=value['owner_closure']['observed_at'])
+		_require_jira_history_binding(config, binding, incoming, record['binding'], identity, retain_form=True)
 	for record in jira_assignment_state(store).get('tier_assignment_history', {}).get(issue, []):
 		verify_assignment_record(record)
 		identity = record.get('jira_identity')
