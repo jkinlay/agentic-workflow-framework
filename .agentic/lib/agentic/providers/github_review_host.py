@@ -419,7 +419,7 @@ class HostDriver:
         heads. Incomplete ancestry cannot establish independence, so contexts
         on the ticket remain excluded across all its amendments and restarts.
         """
-        contexts = []
+        contexts = self.budgeting.operations.worker_contexts(binding)
         roots = {path.parent for name in ('budget-intent.json', 'codex-identity.json')
                  for pattern in ('*/' + name, '*/attempt-*/' + name)
                  for path in (self.state / 'runs').glob(pattern)}
@@ -1636,7 +1636,7 @@ class HostDriver:
                 if prior['budgeted']:
                     with Tree(path.parent) as tree:
                         saved_admission = loads(tree.read('budget-admission.json', maximum=1024 * 1024).decode('utf-8'))
-                require(budgeting.operational_failure_resolved(saved_admission),
+                require(budgeting.operational_failure_resolved(saved_admission, binding),
                         'resolve non-reasoning failure before retry: ' + prior['failure_kind'])
         execution_id = run.name if run.parent.name == 'runs' else str(uuid.uuid5(
             uuid.NAMESPACE_URL, 'awf:review-execution:' + run.parent.name + ':' + run.name))
@@ -1662,6 +1662,8 @@ class HostDriver:
         identity_missing = success and binding is not None and session is None
         if identity_missing:
             success, failure_kind = False, 'unknown'
+        if binding is not None:
+            self.budgeting.operations.finish(binding, session, success)
         try:
             if admission is not None:
                 settled = self.budgeting.complete(admission,
@@ -1684,6 +1686,10 @@ class HostDriver:
 
     def _launch_agent(self, role, run, args, prompt, *, enrolled=True):
         admission, binding = self._agent_admission(role, run, enrolled=enrolled)
+        if binding is not None:
+            if role in ('critic', 'specialist'):
+                self.budgeting.operations.worker_contexts(binding)
+            self.budgeting.start_execution(binding)
         with Tree(run) as tree:
             tree.write('execution-started.json', canonical(dict(binding=binding)))
         try:

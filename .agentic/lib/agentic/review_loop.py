@@ -524,6 +524,18 @@ def resume(store, config, snapshot, reconciled_run, disposition=None):
         if disposition is None:
             require(not at_cap and not str(state.get('reason', '')).startswith((CAP_REASON, PARKED_REASON)),
                     'Amendment budget exhausted; resume cannot reset it. Record an owner cap disposition (MERGE_WITH_NOTES, PARK, RESCOPE or EXTEND_ONE_CYCLE)')
+            if state['inflight']:
+                from .safeio import Tree
+                from .budget_enrollment import OperationalRegistry, validate_binding
+                run = store.directory / 'runs' / expected
+                if run.is_dir():
+                    with Tree(run) as tree:
+                        if tree.inspect('execution-outcome.json') is not None:
+                            outcome = json.loads(tree.read('execution-outcome.json', maximum=16384))
+                            if not outcome['success'] and not outcome['budgeted'] and outcome.get('binding'):
+                                binding = validate_binding(outcome['binding'])
+                                require(binding['run_id'] == expected, 'Operational resume differs from inflight execution')
+                                OperationalRegistry.for_project(binding['project_id']).resolve(binding)
             state.update(phase='REVIEW', candidate=snapshot, inflight=None, last_review=None,
                          wait_ticks=0, reason='Operator reconciled and resumed', generation=state['generation'] + 1)
             store.save(state)

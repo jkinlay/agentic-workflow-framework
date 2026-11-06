@@ -154,3 +154,107 @@ class EnrollmentRegistry(ProtectedDatabase):
             db.execute('INSERT INTO budget_owner_observations VALUES (?,?)',
                        (observed['observation_id'], encoded(observed)))
         return {'settings': result, 'observation': deepcopy(observed)}
+
+
+OPERATIONAL_DDL = '''
+CREATE TABLE IF NOT EXISTS execution_intents(run_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_contexts(run_id TEXT PRIMARY KEY, context_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_outcomes(run_id TEXT PRIMARY KEY, success INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_resolutions(run_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_retry_limits(project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL);
+'''
+for _table in ('execution_intents', 'execution_contexts', 'execution_outcomes', 'execution_resolutions'):
+    for _action in ('UPDATE', 'DELETE'):
+        OPERATIONAL_DDL += (f'CREATE TRIGGER IF NOT EXISTS {_table}_no_{_action} BEFORE {_action} ON {_table} '
+                            "BEGIN SELECT RAISE(ABORT,'immutable execution evidence'); END;")
+
+
+class OperationalRegistry(ProtectedDatabase):
+    """Shared host execution identity/recovery, with no enrollment or usage.
+
+    Both subprocess hosts use the canonical project state home even when a
+    budget ledger has an explicit migration path or accounting is OFF. Hosts
+    must register before launch, so lost/unknown worker identity fails closed.
+    Only trusted operational resume/reconciliation calls may resolve failures.
+    """
+    @classmethod
+    def for_project(cls, project_id, worktree_roots=()):
+        from .budgeting import project_ledger_path
+        path = project_ledger_path(project_id, accounting_enabled=True, worktree_roots=worktree_roots)
+        return cls(path.with_name('executions.sqlite3'), worktree_roots)
+
+    @contextmanager
+    def transaction(self, ddl):
+        try:
+            with super().transaction(ddl) as db:
+                yield db
+        except (OSError, sqlite3.Error) as exc:
+            raise ValidationError('Worker independence unknown: protected shared execution evidence unavailable') from exc
+
+    def _binding(self, db, binding):
+        binding = validate_binding(binding)
+        row = db.execute('SELECT binding FROM execution_intents WHERE run_id=?', (binding['run_id'],)).fetchone()
+        require(row is not None and row['binding'] == encoded(binding), 'Operational execution identity differs')
+        return binding
+
+    def begin(self, binding, retry_limit):
+        binding = validate_binding(binding)
+        require(type(retry_limit) is int and retry_limit >= 0, 'Operational retry limit is invalid')
+        with self.transaction(OPERATIONAL_DDL) as db:
+            row = db.execute('SELECT binding FROM execution_intents WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(row is None or row['binding'] == encoded(binding), 'Operational execution cannot be rebound')
+            db.execute('INSERT OR IGNORE INTO execution_intents VALUES (?,?)', (binding['run_id'], encoded(binding)))
+            db.execute('INSERT INTO execution_retry_limits VALUES (?,?) ON CONFLICT(project_id) DO UPDATE '
+                       'SET retry_limit=min(retry_limit,excluded.retry_limit)', (binding['project_id'], retry_limit))
+
+    def context(self, binding, context_id):
+        require(text_id(context_id), 'Worker independence unknown: observed context unavailable')
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._binding(db, binding)
+            row = db.execute('SELECT context_id FROM execution_contexts WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(row is None or row['context_id'] == context_id, 'Operational context identity changed')
+            db.execute('INSERT OR IGNORE INTO execution_contexts VALUES (?,?)', (binding['run_id'], context_id))
+
+    def finish(self, binding, context_id, success):
+        require(type(success) is bool, 'Operational terminal outcome must be observed')
+        if context_id is not None:
+            self.context(binding, context_id)
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._binding(db, binding)
+            row = db.execute('SELECT success FROM execution_outcomes WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(row is None or bool(row['success']) == success, 'Operational terminal outcome changed')
+            db.execute('INSERT OR IGNORE INTO execution_outcomes VALUES (?,?)', (binding['run_id'], int(success)))
+
+    def worker_contexts(self, binding):
+        validate_binding(binding)
+        with self.transaction(OPERATIONAL_DDL) as db:
+            contexts = []
+            for row in db.execute('SELECT i.run_id,i.binding,c.context_id FROM execution_intents i '
+                                  'LEFT JOIN execution_contexts c ON c.run_id=i.run_id'):
+                prior = validate_binding(json.loads(row['binding']))
+                if (all(prior[key] == binding[key] for key in ('project_id', 'ticket_id'))
+                        and prior['role'] in ('worker', 'fix')):
+                    require(row['context_id'] is not None, 'Worker independence unknown: shared execution context unavailable')
+                    contexts.append(dict(run_id=row['run_id'], context_id=row['context_id']))
+            return contexts
+
+    def resolved(self, binding):
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._binding(db, binding)
+            row = db.execute('SELECT binding FROM execution_resolutions WHERE run_id=?', (binding['run_id'],)).fetchone()
+            return row is not None and row['binding'] == encoded(binding)
+
+    def resolve(self, binding):
+        """Consume one bounded, exact-run operational reconciliation."""
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._binding(db, binding)
+            row = db.execute('SELECT success FROM execution_outcomes WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(row is not None and not row['success'], 'Operational recovery requires observed terminal failure')
+            if db.execute('SELECT 1 FROM execution_resolutions WHERE run_id=?', (binding['run_id'],)).fetchone():
+                return  # Exact resume replay never resets/consumes another retry.
+            limit = db.execute('SELECT retry_limit FROM execution_retry_limits WHERE project_id=?',
+                               (binding['project_id'],)).fetchone()
+            count = sum(all(json.loads(row['binding'])[key] == binding[key] for key in ('project_id', 'ticket_id'))
+                        for row in db.execute('SELECT binding FROM execution_resolutions'))
+            require(limit is not None and count < limit['retry_limit'], 'Operational recovery retry limit exhausted')
+            db.execute('INSERT INTO execution_resolutions VALUES (?,?)', (binding['run_id'], encoded(binding)))

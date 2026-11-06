@@ -670,6 +670,8 @@ def _build(config):
 	def complete_run(record, result, *, failed=False):
 		"""One terminal outcome boundary, independent of the accounting mode."""
 		admission = record.get('budget_admission')
+		if budgeting is not None and record.get('operational_binding'):
+			budgeting.operations.finish(record['operational_binding'], result.get('session_id'), not failed)
 		try:
 			if admission is not None:
 				_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
@@ -698,12 +700,16 @@ def _build(config):
 				except _TerminalRunFailure:
 					prior = _read_record(path)
 			if (prior.get('status') == 'FAILED' and not (budgeting is not None
-					and budgeting.operational_failure_resolved(prior.get('budget_admission')))):
+					and budgeting.operational_failure_resolved(prior.get('budget_admission'), prior.get('operational_binding')))):
 				raise ValidationError('resolve non-reasoning failure before retry: unknown')
 		if budgeting is not None and record['role'] in {'writer', 'critic'}:
 			binding = {'project_id': budgeting.governance['project']['id'], 'ticket_id': record['ticket'],
 				'run_id': record['launch_nonce'], 'dispatch_id': record['dispatch_id'],
 				'session_id': record['launch_nonce'], 'role': 'worker' if record['role'] == 'writer' else 'critic'}
+			record['operational_binding'] = binding
+			_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
+			if binding['role'] == 'critic':
+				budgeting.operations.worker_contexts(binding)
 			admission = budgeting.admit(binding, selected, stream=record['stream'])
 			if admission is not None:
 				record['budget_admission'] = admission
@@ -711,12 +717,23 @@ def _build(config):
 
 	def observe_run(method, record, **kwargs):
 		try:
-			return _invoke(runner, method, record, **kwargs)
+			result = _invoke(runner, method, record, **kwargs)
 		except _TerminalRunFailure as exc:
 			# Failure remains an error to dispatch/recovery, but terminal usage is
 			# settled exactly once and the failed outcome survives a host restart.
 			complete_run(record, exc.observation, failed=True)
 			raise
+		binding = record.get('operational_binding')
+		if binding is not None and result.get('session_id') is not None:
+			_require(budgeting is not None, 'Operational identity requires its protected project context')
+			budgeting.operations.context(binding, result['session_id'])
+			if binding['role'] == 'critic':
+				contexts = budgeting.operations.worker_contexts(binding)
+				if result['session_id'] in {row['context_id'] for row in contexts}:
+					if result.get('terminal') is True:
+						complete_run(record, result)
+					raise ValidationError('Dispatch context is not independent of project worker contexts')
+		return result
 
 	def observation_evidence():
 		value = config.get('observations')
@@ -1329,6 +1346,8 @@ def _build(config):
 		launch_env = _safe_env(token_env)
 		launch_env['CODEX_HOME'] = str(isolated_home)
 		launch_env['AWF_DISPATCH_NONCE'] = launch_nonce
+		if record.get('operational_binding'):
+			budgeting.start_execution(record['operational_binding'])
 		try:
 			launched = _invoke(runner, 'launch', [str(codex_executable['path']), *argv], cwd=worktree, env=launch_env, timeout=timeout, stdin=prompt, handoff_path=str(handoff_path), terminal_proof_path=str(terminal_proof_path), launch_nonce=launch_nonce)
 		except ValidationError as exc:
@@ -1391,7 +1410,17 @@ def _build(config):
 		_require(record.get('role') == payload.get('role') and record.get('lifecycle_stage') == payload.get('lifecycle_stage'), 'Dispatch observation role or lifecycle stage differs from durable record')
 		_require(record.get('exact_tuple') == payload.get('exact_tuple') and record.get('lane_start_waivers') == payload.get('lane_start_waivers'), 'Dispatch observation tuple or waiver evidence differs from durable record')
 		if record.get('status') == 'FAILED':
-			observe_run('observe', record, timeout=timeout)
+			try:
+				observe_run('observe', record, timeout=timeout)
+			except _TerminalRunFailure:
+				if 'reconcile_nonce' not in payload:
+					raise
+				_require(budgeting is not None and record.get('operational_binding')
+					and record.get('budget_admission') is None,
+					'Budgeted failure requires its existing authenticated ledger resolution')
+				budgeting.operations.resolve(record['operational_binding'])
+				return dict(status='RECONCILED', dispatch_state='FAILED', terminal=True,
+					dispatch_id=record['dispatch_id'], reconcile_nonce=payload['reconcile_nonce'])
 			raise ValidationError('Failed dispatch cannot produce a successful receipt')
 		reconcile = 'reconcile_nonce' in payload
 		if reconcile:

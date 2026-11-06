@@ -191,10 +191,20 @@ class ControllerBudgeting:
         self.operating = operating
         self.settings = resolve_settings(operating.config)
         self.host = host
+        self.worktree_roots = tuple(worktree_roots)
         require(path is not None or not self.settings['accounting_enabled'],
                 'Enabled budgeting requires the canonical project ledger')
         self.database = None if path is None else ProtectedDatabase(path, worktree_roots)
         self.registry = None if path is None else EnrollmentRegistry(self.database.path.with_suffix('.enrollment.sqlite'), host, worktree_roots)
+
+    @property
+    def operations(self):
+        from .budget_enrollment import OperationalRegistry
+        return OperationalRegistry.for_project(self.governance['project']['id'], self.worktree_roots)
+
+    def start_execution(self, binding):
+        limit = self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket']
+        self.operations.begin(binding, limit)
 
     def advance(self, store, *args, **kwargs):
         """Advance local lifecycle with the validated, effective mode."""
@@ -237,6 +247,10 @@ class ControllerBudgeting:
         require(not self.settings['enforcement_enabled'] or observed['limits_enforced'],
                 'Budget enforcement requires observed host token limits')
         request = deepcopy(observed['request'])
+        if binding['role'] in ('critic', 'specialist'):
+            contexts = self.operations.worker_contexts(binding)
+            request['worker_context_ids'] = sorted(set(request.get('worker_context_ids', [])) |
+                                                    {row['context_id'] for row in contexts})
         require(request.get('ticket_id') == binding['ticket_id'] and request.get('role') == binding['role'],
                 'Budget request differs from admission identity')
         # Verify the launch pair before creating a reservation, including floors.
@@ -271,7 +285,7 @@ class ControllerBudgeting:
         db.row_factory = sqlite3.Row
         return db
 
-    def operational_failure_resolved(self, admission):
+    def operational_failure_resolved(self, admission, binding=None):
         """Only retained authenticated resolution can clear a host failure.
 
         Operational failure records live with host executions in every mode.
@@ -279,7 +293,7 @@ class ControllerBudgeting:
         a missing ledger or admission never supplies evidence of resolution.
         """
         if admission is None:
-            return False
+            return binding is not None and self.operations.resolved(binding)
         db = self._recovery_database()
         if db is None:
             return False

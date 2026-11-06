@@ -226,8 +226,15 @@ class ProductionPreA3Tests(unittest.TestCase):
                 self.review()
             self.value['budgeting']['accounting_enabled'] = False
             driver = self.review()
-            self.agent(driver, 'critic')
+            with self.assertRaisesRegex(ValidationError, 'canonical project ledger.*AWF_STATE_HOME'):
+                self.agent(driver, 'critic')
+            # OFF needs no budget location; independent review still needs
+            # readable protected operational identity evidence (pre-A6).
+            with patch.dict(os.environ, {'AWF_STATE_HOME': str(self.root / 'identity-state')}):
+                self.agent(driver, 'critic')
             self.assertIsNone(driver.budgeting.database)
+        self.assertTrue(list((self.root / 'identity-state').rglob('executions.sqlite3')))
+        self.assertFalse(list((self.root / 'identity-state').rglob('routing.sqlite3')))
         self.assertFalse((self.root / 'host-state').exists())
 
     def test_canonical_location_rejects_worktrees_and_distinguishes_projects(self):
@@ -243,12 +250,17 @@ class ProductionPreA3Tests(unittest.TestCase):
     def test_existing_per_host_history_requires_explicit_migration(self):
         prior = self.root / 'review/routing.sqlite3'
         driver = self.review(ledger_path=prior)
-        self.agent(driver, 'worker')
+        # Keep independent execution state separate from the budget migration
+        # location whose non-creation this regression has always asserted.
+        with patch.dict(os.environ, {'AWF_STATE_HOME': str(self.root / 'identity-state')}):
+            self.agent(driver, 'worker')
         self.assertEqual(self.summary(driver)['known_tokens'], 100)
         with self.assertRaisesRegex(ValidationError, 'existing per-host budget history'):
             self.review()
         self.assertEqual(self.summary(driver)['known_tokens'], 100)
         self.assertFalse((self.root / 'host-state').exists())
+        self.assertTrue(list((self.root / 'identity-state').rglob('executions.sqlite3')))
+        self.assertFalse(list((self.root / 'identity-state').rglob('routing.sqlite3')))
 
     def test_controller_and_review_default_construction_sum_to_200(self):
         config, runner, adapters = self.adapter()
