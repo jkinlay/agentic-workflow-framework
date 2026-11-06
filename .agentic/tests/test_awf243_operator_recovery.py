@@ -316,6 +316,123 @@ class OperatorRecoveryTests(unittest.TestCase):
         self.assertEqual(1, len(self.posted))
 
 
+class OwnerClosureIdentityTests(unittest.TestCase):
+    """R1: owner-only history must bind every later write and count admission."""
+    identities = ('project', 'repository', 'cloud', 'site', 'provider_project', 'controller_actor')
+
+    def held(self):
+        case = OperatorRecoveryTests().fixture()
+        self.addCleanup(case.doCleanups)
+        case.labels = ['awf-fixture', 'release-1.9.6']
+        case.owner = 'fixture-owner'
+        case.clock.value = '2026-10-09T08:00:03Z'
+        case.record = case.lifecycle('JIRA_RECONCILED')['record']
+        self.assertEqual([], case.rows())
+        self.assertEqual([], case.posted)
+        return case
+
+    def drift(self, case, kind):
+        if kind == 'project':
+            case.policy['project']['id'] = '10000000-0000-0000-0000-000000000099'
+            case.binding['project_id'] = case.config['github']['project_id'] = case.policy['project']['id']
+        elif kind == 'repository':
+            case.policy['github']['repository_id'] += 1
+            case.binding['repository_id'] = case.config['github']['repository_id'] = case.policy['github']['repository_id']
+        else:
+            field, value = {'cloud': ('cloud_id', 'cloud-two'),
+                'site': ('site', 'https://second.example.invalid'),
+                'provider_project': ('provider_project_id', 'project-two'),
+                'controller_actor': ('controller_actor_id', 'controller-two')}[kind]
+            case.policy['jira'][field] = case.config['jira'][field] = value
+        # Change only HTTP inputs, accepted config and CLI arguments, never production seams.
+        original = case.http.request
+        def request(method, url, **kwargs):
+            code, body = original(method, url, **kwargs)
+            if method == 'GET':
+                value = json.loads(body)
+                if url.endswith('/myself'):
+                    value['accountId'] = case.policy['jira']['controller_actor_id']
+                elif url.endswith('/_edge/tenant_info'):
+                    value.update(cloudId=case.policy['jira']['cloud_id'], siteUrl=case.policy['jira']['site'])
+                elif '/project/EX' in url:
+                    value['id'] = case.policy['jira']['provider_project_id']
+                elif '/issue/' in url and 'project' in value.get('fields', {}):
+                    value['fields']['project']['id'] = case.policy['jira']['provider_project_id']
+                body = json.dumps(value)
+            return code, body
+        case.http.request = request
+        original_cli = case.run_cli
+        def run_cli(arguments):
+            arguments = list(arguments)
+            if '--producer-id' in arguments:
+                arguments[arguments.index('--producer-id') + 1] = case.policy['jira']['controller_actor_id']
+            if arguments[0] == 'merge-observed':
+                from pathlib import Path
+                path = Path(arguments[arguments.index('--jira-progress') + 1])
+                value = json.loads(path.read_text())
+                value['jira_binding'].update(cloud_id=case.policy['jira']['cloud_id'],
+                    project_id=case.policy['jira']['provider_project_id'],
+                    actor_id=case.policy['jira']['controller_actor_id'])
+                path.write_text(json.dumps(value), encoding='utf-8')
+            return original_cli(arguments)
+        case.run_cli = run_cli
+        case.edit_config()
+
+    def refused_lifecycle(self, case, event):
+        with self.assertRaisesRegex(ValidationError,
+                'Owner closure history belongs to a different project/repository/issue binding or provider/controller actor'):
+            case.lifecycle(event)
+        self.assertEqual([], case.posted)
+
+    def test_r1_owner_only_history_refuses_another_closure_after_identity_drift(self):
+        for kind in self.identities:
+            with self.subTest(identity=kind):
+                case = self.held()
+                self.drift(case, kind)
+                self.refused_lifecycle(case, 'JIRA_RECONCILED')
+
+    def test_r1_owner_only_history_refuses_reopened_worker_write_after_identity_drift(self):
+        for kind in self.identities:
+            with self.subTest(identity=kind):
+                case = self.held()
+                self.drift(case, kind)
+                case.owner = None
+                # Reopened to Ready with an observed external status transition.
+                case.histories.append(case.history('101', '2026-10-09T08:00:02.195+0000',
+                    'fixture-owner', '10120', '10118'))
+                self.refused_lifecycle(case, 'WORKER_STARTED')
+
+    def test_r1_owner_only_history_refuses_count_after_identity_drift(self):
+        for kind in self.identities:
+            with self.subTest(identity=kind):
+                case = self.held()
+                self.drift(case, kind)
+                # Reproduce the second accepted closure, then try a fresh closeout.
+                # A fixed controller refuses observation and retains the first record.
+                try:
+                    result = case.lifecycle('JIRA_RECONCILED')
+                except ValidationError as exc:
+                    self.assertIn('Owner closure history belongs to a different', str(exc))
+                else:
+                    case.record = result['record']
+                case.prepare_closeout()
+                result = case.merge()['jira_progress']
+                self.assertEqual('UNOBSERVED', result['jira_state'], result)
+                self.assertIn('Owner closure history belongs to a different project/repository/issue binding or provider/controller actor', result['reason'])
+                self.assertEqual([], case.posted)
+
+    def test_r1_reviewed_policy_edit_and_repeat_owner_observations_remain_idempotent(self):
+        case = self.held()
+        case.edit_config()
+        for _ in range(3):
+            case.record = case.lifecycle('JIRA_RECONCILED')['record']
+        case.prepare_closeout()
+        for _ in range(3):
+            self.assertEqual('COUNTED', case.merge()['jira_progress']['jira_state'])
+        self.assertEqual([], case.rows())
+        self.assertEqual([], case.posted)
+
+
 class BatchOperatorDiagnosticsTests(unittest.TestCase):
     def fixture(self):
         case = regressions.BatchRecoveryRegressions()
