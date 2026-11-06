@@ -2860,7 +2860,7 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 
 def production_review_batching_cycle(store, *, calendar, binding, clock,
         observe_owner_ready=None, observe_review_candidate=None,
-        deliver_review_batch=None, observe_review_delivery=None):
+        deliver_review_batch=None, observe_review_delivery=None, candidate_limit=None):
 	"""Routine presentation only, through trusted injected ports; never transport.
 
 	Discovery returns {binding, observed_at, candidates}; candidates are locators.
@@ -2895,7 +2895,10 @@ def production_review_batching_cycle(store, *, calendar, binding, clock,
 				and isinstance(ready['candidates'], list), 'Owner-ready discovery is foreign, stale or malformed')
 			canonical(ready)
 			result['state'] = 'PENDING'
-			for candidate in ready['candidates']:
+			candidates = ready['candidates']
+			if candidate_limit is not None:
+				candidates, result['deferred'] = batch_store.discovery_candidates(candidates, candidate_limit)
+			for candidate in candidates:
 				try:
 					_require(isinstance(candidate, dict) and str(candidate.get('repository_id')) == binding['repository_id'],
 						'Review candidate repository differs from the controller binding')
@@ -2936,7 +2939,7 @@ def production_review_batching_cycle(store, *, calendar, binding, clock,
 				reconcile(pending, receipt)
 		now = clock()
 		batch = batch_store.claim(now, calendar,
-			lambda candidate: observe_review_candidate(candidate, now))
+			lambda candidate: observe_review_candidate(candidate, now), max_members=candidate_limit)
 		if batch is not None:
 			now = clock()
 			checked = []
@@ -3378,7 +3381,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	streams = store.snapshot()
 	from .reporting.settings import effective_reporting
 	from .reporting.runtime import reporting_cycle, ReviewReportingPort
-	from .reporting.bounded import DeliveryBudget, SourceBudget
+	from .reporting.bounded import DeliveryBudget, SourceBudget, BoundedObserver, MAX_REVIEW_CANDIDATES
 	from .reporting.observations import attributed_accounting, collect_sources, collect_review_corrections
 	report_binding = dict(project=inventory_binding['project_id'], repository=inventory_binding['repository_id'],
 		scope_revision=inventory_binding['scope_sha256'])
@@ -3393,6 +3396,13 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE', 'capacity': 'OBSERVED',
 				'graph': 'OBSERVED' if plan is not None else 'UNAVAILABLE', 'gates': 'RETAINED; current provider gates unavailable'})
 		if report_settings['mode'] != 'off':
+			# One observer spans both stages. Source collection has its own
+			# bounded allowance; presentation switches to the shared send budget.
+			source_review_budget = DeliveryBudget()
+			if callable(observe_review_candidate):
+				observe_review_candidate = BoundedObserver(observe_review_candidate, source_review_budget)
+			if callable(observe_owner_ready):
+				observe_owner_ready = source_review_budget.observer(observe_owner_ready)
 			if callable(configure_reporting):
 				reporting_providers = configure_reporting(operating_root, report_binding)
 			selected = {'teams', 'slack'} if report_settings['mode'] == 'both' else {report_settings['mode']}
@@ -3422,8 +3432,13 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		context['accounting'] = {'mode': 'off' if not budget_settings['accounting_enabled'] else 'unknown'}
 		# Source observation cannot spend the shared delivery/review allowance.
 		report_delivery_budget = DeliveryBudget()
+		if report_settings['mode'] != 'off':
+			if callable(observe_review_candidate):
+				observe_review_candidate.budget = report_delivery_budget
+			if callable(observe_owner_ready):
+				observe_owner_ready.budget = report_delivery_budget
 		reporting = reporting_cycle(store, operating=operating_root, binding=report_binding, now=now,
-			providers=reporting_providers, context=context, delivery_budget=report_delivery_budget)
+			providers=reporting_providers, context=context, delivery_budget=report_delivery_budget, defer_delivery=True)
 		if reporting_providers is not None:
 			# Explicit reporting ownership replaces legacy review delivery ports.
 			# OFF collects without claiming/sending; it resolves no credentials.
@@ -3451,11 +3466,19 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		review_batching = production_review_batching_cycle(store, calendar=calendar,
 			binding=inventory_binding, clock=post_provider_time,
 			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
-			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery)
+			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery,
+			candidate_limit=MAX_REVIEW_CANDIDATES if report_settings['mode'] != 'off' else None)
 		errors.extend(review_batching['errors'])
 	except Exception as exc:
 		review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
 		errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
+	if reporting.get('state') == 'ENABLED':
+		try:
+			from .reporting.runtime import drain
+			reporting['deliveries'] = drain(store, operating_root, report_binding, reporting_providers or {},
+				budget=report_delivery_budget)
+		except Exception as exc:
+			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
 	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'operating_calendar': calendar, 'reporting': reporting, 'review_batching': review_batching, 'errors': errors, 'execution_authority': False}
 
 def _observe_jira_write_policy(config, issue, observer, now):

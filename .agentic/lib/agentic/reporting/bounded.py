@@ -7,7 +7,7 @@ Thus the network stage bound is 45 seconds, with both destinations concurrent.
 Trusted network/observation ports must honour their timeout contract. A port
 violating it is durably reported and its worker can never enter another send.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 import threading
 from time import monotonic
@@ -19,6 +19,7 @@ HTTP_TIMEOUT_SECONDS = 15
 MAX_HTTP_CALLS = 32
 MAX_ADVANCES = 4
 MAX_RECONCILIATIONS = 1
+MAX_REVIEW_CANDIDATES = 1
 SOURCE_SECONDS = 30
 _source = ContextVar('report_source_budget', default=None)
 _current = ContextVar('report_destination_budget', default=None)
@@ -56,6 +57,19 @@ def source_timeout():
     return min(remaining, delivery.remaining()) if delivery is not None else remaining
 
 
+class BoundedObserver:
+    """One candidate port across source collection and the shared send stage."""
+    def __init__(self, observe, budget=None):
+        self.observe, self.budget = observe, budget
+
+    def __call__(self, *args, **kwargs):
+        with self.budget.checking() if self.budget is not None else nullcontext():
+            source_timeout()
+            value = self.observe(*args, **kwargs)
+            source_timeout()
+            return value
+
+
 class DeliveryBudget:
     def __init__(self):
         self.deadline = monotonic() + DESTINATION_SECONDS
@@ -75,6 +89,10 @@ class DeliveryBudget:
             if self.cancelled or remaining <= 0:
                 raise ValidationError('REPORT_DESTINATION_BUDGET')
             return min(HTTP_TIMEOUT_SECONDS, remaining)
+
+    def observer(self, observe):
+        """One wrapper for discovery, claim, recovery and every pre-send read."""
+        return BoundedObserver(observe, self)
 
     def admit(self, platform, *, reconciliation=False):
         with self.lock:

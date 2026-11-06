@@ -104,31 +104,56 @@ def collect_review_corrections(store, binding, now, observe):
 
     Durable review records and channel evidence seed this set, including partial
     batch delivery. Unavailable observations never mean readiness withdrawal.
-    A correction identity closes each prior delivery once, across restarts.
+    Each delivered correction can seed one restoration occurrence. Subsequent
+    withdrawals follow that restoration's delivery, leaving all attempts intact.
     """
     from ..canonical import loads, fingerprint, timestamp
     from ..review_batching import _candidate, _OBSERVATION_KEYS, _observation_valid
     from .bounded import source_timeout
     from .delivery import DeliveryOutbox
     notices = []
+    checked = {}
+    cursor_key = 'report-review-correction-cursor:' + fingerprint('reporting-scope', binding)
+    selected = None
     with store.connection() as db:
-        rows = db.execute("SELECT payload_json FROM controller_reports WHERE kind='final-human-review'").fetchall()
+        cursor = db.execute('SELECT value FROM controller_meta WHERE key=?', (cursor_key,)).fetchone()
+        cursor = int(cursor[0]) if cursor else 0
+        rows = db.execute("SELECT rowid,payload_json FROM controller_reports WHERE kind='final-human-review' ORDER BY rowid").fetchall()
+        rows = [r for r in rows if r[0] > cursor] + [r for r in rows if r[0] <= cursor]
         for row in rows:
-            report = loads(row[0])
+            report = loads(row[1])
             if report['binding'] != binding or 'review_batch' not in report:
                 continue
             for delivery_id in report['delivery_ids']:
                 intent, state = DeliveryOutbox._load(db, delivery_id)
                 correction_id = fingerprint('report-review-correction-1', delivery_id)
-                if state['status'] != 'DELIVERED' or db.execute(
-                        'SELECT 1 FROM controller_reports WHERE report_id=?', (correction_id,)).fetchone():
+                if state['status'] != 'DELIVERED':
                     continue
+                correction = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                                        (correction_id,)).fetchone()
+                restoring = correction is not None
+                restoration_id = fingerprint('report-review-restoration-1', correction_id)
+                if restoring:
+                    correction = loads(correction[0])
+                    if db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (restoration_id,)).fetchone():
+                        continue
+                    if not all(DeliveryOutbox._load(db, d)[1]['status'] == 'DELIVERED'
+                               for d in correction['delivery_ids']):
+                        continue
                 require(callable(observe), 'REPORT_REVIEW_OBSERVER_UNAVAILABLE')
+                # Rotate one delivered batch per cycle; a growing archive must
+                # not exhaust source collection or starve new presentations.
+                if selected is not None and selected != row[0]:
+                    continue
+                selected = row[0]
                 invalid = []
                 for member in report['review_batch']['members']:
                     source_timeout()
                     prior = _candidate(member['candidate'])
-                    current = observe(deepcopy(prior), now)
+                    candidate_id = fingerprint('report-review-observation', prior)
+                    if candidate_id not in checked:
+                        checked[candidate_id] = observe(deepcopy(prior), now)
+                    current = checked[candidate_id]
                     source_timeout()
                     require(isinstance(current, dict) and set(current) == _OBSERVATION_KEYS,
                             'REPORT_REVIEW_OBSERVATION_UNAVAILABLE')
@@ -139,11 +164,21 @@ def collect_review_corrections(store, binding, now, observe):
                             'REPORT_REVIEW_OBSERVATION_UNAVAILABLE')
                     if not _observation_valid(current, prior, timestamp(now)):
                         invalid.append(dict(withdrawn=prior, current=current))
-                if invalid:
+                if restoring and not invalid:
+                    readback = next(h for h in reversed(state['history']) if h.get('status') == 'DELIVERED')
+                    notices.append(dict(id=restoration_id, prior_report=report['report_id'],
+                        correction_id=correction_id, delivery_id=delivery_id, binding=intent['binding'],
+                        thread_id=readback['message_id'], restored=True,
+                        review_batch=deepcopy(report['review_batch'])))
+                elif invalid and not restoring:
                     readback = next(h for h in reversed(state['history']) if h.get('status') == 'DELIVERED')
                     notices.append(dict(id=correction_id, prior_report=report['report_id'],
                         delivery_id=delivery_id, binding=intent['binding'],
                         thread_id=readback['message_id'], invalidated=invalid))
+    if selected is not None:
+        with store.transaction() as db:
+            db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                       (cursor_key, str(selected)))
     return notices
 
 

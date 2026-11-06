@@ -237,7 +237,8 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
     return results
 
 
-def reporting_cycle(store, *, operating, binding, now, providers=None, context=None, delivery_budget=None):
+def reporting_cycle(store, *, operating, binding, now, providers=None, context=None, delivery_budget=None,
+                    defer_delivery=False):
     settings, destinations = _bindings(operating, binding)
     if settings['mode'] == 'off' and not settings['bindings']:
         return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
@@ -316,6 +317,17 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
             destination = notice['binding']
             if destination not in destinations:
                 continue  # Never retarget a correction after channel rotation.
+            if notice.get('restored'):
+                body = prepare_body('final-human-review', dict(project=binding['project'], observed_at=now,
+                    timezone=calendar['timezone'], scope=binding['scope_revision'],
+                    candidate=describe([m['candidate'] for m in notice['review_batch']['members']]),
+                    summary='Readiness restored: current candidate ready for final human review',
+                    sections={'Evidence': describe(notice),
+                              'Owner action': 'Review the current candidates; merge remains an owner decision'}))
+                generated.append(_retain(db, notice['id'], 'final-human-review', body, binding, [destination], now,
+                    extra={'review_restoration': notice, 'review_batch': notice['review_batch']},
+                    threads={destination['platform']: notice['thread_id']}, senders=(providers or {}).values()))
+                continue
             body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
                 timezone=calendar['timezone'], scope=binding['scope_revision'],
                 candidate=describe(notice['invalidated']), summary='Correction: prior readiness withdrawn',
@@ -340,7 +352,7 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
         state['cursor'] = end
         db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                    (key, canonical(state).decode()))
-    deliveries = drain(store, operating, binding, providers or {}, budget=delivery_budget)
+    deliveries = [] if defer_delivery else drain(store, operating, binding, providers or {}, budget=delivery_budget)
     return dict(state='ENABLED', generated=len(generated), reports=generated, deliveries=deliveries,
                 coverage=deepcopy(context.get('coverage', {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})))
 
@@ -360,7 +372,7 @@ class ReviewReportingPort:
     def _id(self, payload):
         return 'review-' + payload['batch_id']
 
-    def _check(self, payload, calendar, observe_candidate, *, budget=None):
+    def _check(self, payload, calendar, observe_candidate, *, budget=None, restoration=False):
         from ..review_batching import ReviewBatchStore
         require(all(str(m['candidate']['repository_id']) == self.binding['repository'] for m in payload['members']),
                 'REPORT_SCOPE_BINDING_MISMATCH')
@@ -376,9 +388,14 @@ class ReviewReportingPort:
                 value = observe_candidate(deepcopy(candidate), now)
                 source_timeout()
                 checked[fingerprint('review-candidate', candidate)] = value
-            checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar,
-                lambda candidate: checked[fingerprint('review-candidate', candidate)])
-            require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
+            if restoration:
+                from ..review_batching import _observation_valid
+                require(all(_observation_valid(checked[fingerprint('review-candidate', m['candidate'])],
+                    m['candidate'], timestamp(now)) for m in payload['members']), 'REPORT_REVIEW_CHECK_EXPIRED')
+            else:
+                checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar,
+                    lambda candidate: checked[fingerprint('review-candidate', candidate)])
+                require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
             send_at = self.clock()
             require(not next_review_presentation(send_at, calendar)['held'] and
                     all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked.values()),
@@ -430,6 +447,17 @@ class ReviewReportingPort:
         from ..review_batching import ReviewBatchStore
         pending = ReviewBatchStore(self.store)
         budget = self.delivery_budget or DeliveryBudget()
+        # Restoration is a new presentation occurrence, never a reopened batch
+        # or a reset of its previous per-platform delivery attempts.
+        status = reporting_status(self.store, self.operating, self.binding)
+        restorations = [r for r in status['reports'] if r.get('review_restoration') and any(
+            d['report_id'] == r['report_id'] and d['status'] not in {'DELIVERED', 'FAILED'}
+            for d in status['deliveries'])][:MAX_ADVANCES]
+        for report in restorations:
+            payload = report['review_batch']
+            self._check(payload, calendar, observe_candidate, budget=budget, restoration=True)
+            drain(self.store, self.operating, self.binding, self.providers, report_ids={report['report_id']}, budget=budget,
+                  before_send=lambda: self._check(payload, calendar, observe_candidate, budget=budget, restoration=True))
         with self.store.connection() as db:
             payloads = [pending._payload(row) for row in db.execute(
                 "SELECT * FROM review_presentation_outbox_v1 WHERE state='CLAIMED' ORDER BY batch_id LIMIT ?",

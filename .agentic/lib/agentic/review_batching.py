@@ -130,7 +130,32 @@ class ReviewBatchStore:
             return None
         return self.enqueue(candidate, now, calendar)
 
-    def claim(self, now, calendar, observer):
+    def discovery_candidates(self, candidates, limit):
+        """Bound fresh admissions, rotating deferred locators across restarts.
+
+        Delivered/claimed/exhausted identities need no discovery observation;
+        reporting owns delivered-notice withdrawal/restoration occurrences.
+        """
+        with self.controller.transaction() as db:
+            eligible = []
+            for candidate in candidates:
+                identity = _identity(candidate)
+                row = db.execute('SELECT state FROM review_presentation_intent_v1 WHERE intent_id=?',
+                                 (identity,)).fetchone()
+                if row is None or row[0] == 'PENDING':
+                    eligible.append((identity, candidate))
+            eligible.sort(key=lambda item: item[0])
+            key = 'report-review-discovery-cursor'
+            row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+            cursor = row[0] if row else ''
+            ordered = [v for v in eligible if v[0] > cursor] + [v for v in eligible if v[0] <= cursor]
+            selected = ordered[:limit]
+            if selected:
+                db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                           (key, selected[-1][0]))
+            return [deepcopy(v[1]) for v in selected], len(eligible) - len(selected)
+
+    def claim(self, now, calendar, observer, *, max_members=None):
         """Recompute pending eligibility and atomically claim one due digest.
 
         The trusted observer runs inside the serialized transaction. An exception
@@ -150,7 +175,9 @@ class ReviewBatchStore:
                 return None
             members = []
             rows = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE state='PENDING' ORDER BY intent_id").fetchall()
-            for row in rows:
+            for index, row in enumerate(rows):
+                if max_members is not None and index >= max_members:
+                    break
                 candidate = _candidate(loads(row["candidate_json"]))
                 _require(_identity(candidate) == row["intent_id"], "Stored review intent identity mismatch")
                 try:

@@ -42,7 +42,27 @@ class E8ControllerTests(unittest.TestCase):
                 open=True, merged=False, readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True)
 
         self.helper.observe_candidate = observe
-        self.assertEqual(self.cycle('2026-11-10T10:00:00Z')['errors'], [])
+        # Retain the five-member historical-batch regression. New reporting
+        # batches are now capped, but restart must still safely handle a batch
+        # formed by the preceding runtime. Seed it through the actual store and
+        # reporting port; every assertion below is unchanged.
+        from agentic.review_batching import ReviewBatchStore
+        from agentic.reporting.runtime import ReviewReportingPort
+        batches = ReviewBatchStore(self.helper.store)
+        now = '2026-11-10T10:00:00Z'
+        self.clock.value = now
+        mode = self.settings['mode']
+        self.settings['mode'] = 'off'
+        with patch.object(self.helper, 'deliver', None), patch.object(self.helper, 'readback', None):
+            self.assertEqual(self.cycle('2026-11-10T10:00:00Z')['errors'], [])
+        self.settings['mode'] = mode
+        for candidate in self.helper.listed:
+            batches.enqueue_observed(candidate, observe(candidate, now), now, {}, repository_id='101')
+        payload = batches.claim(now, {}, lambda candidate: observe(candidate, now))
+        providers = self.adapters['configure_reporting']({'reporting': self.settings}, self.binding)
+        port = ReviewReportingPort(self.helper.store, {'reporting': self.settings}, self.binding,
+                                   providers, lambda: now, observe_candidate=observe)
+        self.assertIsNone(port.deliver_review_batch(payload))
         review = next(r for r in self.status()['reports'] if r['kind'] == 'final-human-review')
         initial = [d for d in self.status()['deliveries'] if d['report_id'] == review['report_id']]
         self.assertEqual(len(review['review_batch']['members']), 5)

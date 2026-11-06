@@ -44,14 +44,18 @@ Reports never enter the status outbox. Dispatch precedes collection/delivery.
 Sources have 30 seconds; trusted ports use source_timeout(), including pagination.
 Expiry retains verified inventory/PARTIAL coverage; PR totals remain unavailable.
 Failure reports STALE_OR_UNAVAILABLE. Sources do not spend delivery admission.
-Previously delivered reviews are reobserved; withdrawal corrects each original thread once.
+One delivered batch/cycle is reobserved with a durable rotating cursor. Withdrawal
+corrects each delivery once; delivered corrections seed fresh restoration notices
+through the review port, preserving prior attempts and rechecking before each POST.
 
 Independent non-daemon destination threads prioritize alerts, then newest hourly,
 then history rotating by observation count. A budget shared with review delivery
 allows four advances, one historical reconciliation and 32 HTTP calls/platform.
-Admission ends after 30 seconds. Candidate rechecks consume this same deadline:
-observation ports use the remaining timeout, capped at 15 seconds; checks run
-before/after each observation, outside SQLite write transactions.
+Admission ends after 30 seconds. Discovery, claim, recovery and every pre-send
+observation use one wrapped candidate port and the shared deadline. New reporting
+batches process one candidate/cycle; deferred locators rotate across restarts.
+Review delivery precedes periodic HTTP. Observation timeouts cap at 15 seconds;
+checks surround each observation. Port rechecks run outside SQLite write transactions.
 
 Each HTTP request has a monotonic 15-second maximum covering DNS through body;
 expiry closes sockets. Direct TLS ignores ambient proxies; redirects/retries are
