@@ -350,7 +350,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf134_recovery_lifecycle.py` | `5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a` |
 | `.agentic/tests/test_awf140_marker_validation.py` | `0bf5131678c191b2fc2313db23105656aac8f73e86bb57d8ee034d1f238aea61` |
 | `.agentic/tests/test_awf154_large_file_allowances.py` | `f1633d7a2a3d7ffd339cfb7c0ce60b50b9cc18ca879bfd66af2aa7573f54c546` |
-| `.agentic/tests/test_awf243_review_regressions.py` | `32e5efca80d55a307a8cc931705e66cf4ed4b3151b81ee30ca1f59afe2e4d80f` |
+| `.agentic/tests/test_awf243_review_regressions.py` | `e4372af19b8aa360a5a67923db2c9fb804b477bf52cc4f4238478d35379072e3` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `04fd2dea1cb378607dd8a317210f8cb35e0ea3bd132f7239f10a643e53745fc8` |
 | `.agentic/tests/test_awf36_controller_automation.py` | `5284c37e0a30eb346bf64b1ca1978a354aef4275267382be63667be9ee109d6d` |
@@ -389,7 +389,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_intake_assignment.py` | `b7a9c7c78d024fadc6aa9ac61d831048cfa63ecdc60dd63b3429d524e507104e` |
 | `.agentic/tests/test_integration_build.py` | `eef506016c4f0bc1a88bf615ea19d41409e0306861a1090f00921eba440d4de2` |
 | `.agentic/tests/test_integration_queue.py` | `1fdc35e95c56f6542c80ff2e2033b7beff40c929537fe272c6e9ec605a3160c7` |
-| `.agentic/tests/test_integration_queue_closeout.py` | `8977a6af02e4b7dbd6554b0ad80c540fc1fd008f83b7c4bced40581cec98fa31` |
+| `.agentic/tests/test_integration_queue_closeout.py` | `e877fc8ea0b93c36c01e9ee384f2bf178f153c3d2620128b2ccfa66819a3c193` |
 | `.agentic/tests/test_integration_queue_round6_regressions.py` | `35d2aff1bb3de932e2f9107dcd7b19d209d2d951cac8a82497e16f80a299734d` |
 | `.agentic/tests/test_integration_queue_round7_regressions.py` | `f8f9ad923023ebebb82d371d50fb485a5973816bf1b93972f06a526aa72c5eff` |
 | `.agentic/tests/test_integration_queue_round8_regressions.py` | `1bdfe881b98c5438952b74d8d0911768f7c3bc3c4b3441d1499911ab991aae5b` |
@@ -638,7 +638,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/release_hygiene.py` | `d2c1c97c1b2699ebf38cf2d9521bcdbcef5cb45bf29a65c44f1952c98d21a886` |
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
 | `scripts/release_review.py` | `e2b452f19c52a4f61671bd6b47342d3385f98e109e5663a1d4162f577d95e089` |
-| `scripts/run_publication_pre_controller.py` | `1ad6f7c6c06c59aef73bf90ab072c1a62c3e4d2eca4f33cbb52bff7a82de562c` |
+| `scripts/run_publication_pre_controller.py` | `be610a36aecce455cb0c321fa52353ef567f4a1c1272873df957aed54a7a6f53` |
 | `scripts/run_windows_unittests.py` | `6e534d149e1d016a938c91625d9a13898e4991dc18fe78bc8038292cdce0081f` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |

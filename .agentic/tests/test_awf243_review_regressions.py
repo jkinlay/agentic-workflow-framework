@@ -19,6 +19,37 @@ def adopt_history(store, config):
         operator='fixture-owner', now=NOW)
 
 
+class CloseoutGateRegressions(unittest.TestCase):
+    def test_durable_done_receipt_cannot_bypass_invalid_closeout_gate(self):
+        import test_integration_queue_closeout as closeout_fixture
+        from agentic.continuous_controller import production_merge_observed
+
+        fixture = closeout_fixture.IntegrationQueueCloseoutTests()
+        fixture.setUpClass()
+        self.addCleanup(fixture.tearDownClass)
+        self.addCleanup(fixture.doCleanups)
+        mutations = {
+            "unauthenticated closeout": lambda gate: gate.update(closeout_observer_registry={}),
+            "missing Git object": lambda gate: gate["closeout_record"].update(merge_commit_sha="f" * 40),
+            "missing reconciliation": lambda gate: gate["closeout_record"].update(jira_transition_record_id=None),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(evidence=name):
+                args = fixture.production_progress_fixture()
+                mutate(args["count_gate"])
+                pages = []
+                args["fetch_scope_page"] = lambda scope, cursor: pages.append((scope, cursor))
+                result = production_merge_observed(
+                    lifecycle_state="MERGING",
+                    lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
+                    jira_progress=args)["jira_progress"]
+                self.assertEqual("UNOBSERVED", result["jira_state"])
+                self.assertEqual("UNOBSERVED", result["closed"])
+                self.assertEqual("UNOBSERVED", result["remaining_open"])
+                self.assertEqual([], pages)
+                self.assertEqual("SUCCEEDED", args["store"].jira_operations("AWF-17")[0]["status"])
+
+
 class AssignmentRegressions(unittest.TestCase):
     setUp = scope_fixture.JiraMutationScopeTests.setUp
     policy = scope_fixture.JiraMutationScopeTests.policy
