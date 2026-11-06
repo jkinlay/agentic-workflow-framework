@@ -112,7 +112,7 @@ Reviewed CLI adapters may inject four optional ports:
   PR/head/base/tree, open/merged state, lifecycle and current final-gate bytes.
   Its closed observation above must pass `enqueue_observed`; only
   `READY_FOR_OWNER_AUTHORIZATION` enqueues. Claim/pre-send recheck repeat observation;
-  post-read trusted time guards cutoff/expiry; stale pending members withdraw.
+  post-read trusted time guards cutoff/expiry; changed members withdraw; expired evidence stays pending.
 - `deliver_review_batch(payload)` conditionally sends once using immutable
   `batch_id` as idempotency key; returns verified terminal receipt or `None`.
 - `observe_review_delivery(payload)` reads receipts only. Unknown returns `None`.
