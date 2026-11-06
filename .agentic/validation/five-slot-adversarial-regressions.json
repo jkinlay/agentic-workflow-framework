@@ -48,81 +48,81 @@
       "test_id": "ReviewCompletionTests.test_fabricated_removal_authority_observation_and_replay_fail_closed"
     },
     {
+      "category": "race",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Default topology has one controller, one dedicated adversarial handler, and three workers",
-      "category": "race",
       "permanent": true,
       "regression_id": "FIVE-SLOT-001",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_default_topology_and_complete_gate_chain_pass"
     },
     {
+      "category": "race",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Capacity below five fails without explicit degraded-mode authorization",
-      "category": "race",
       "permanent": true,
       "regression_id": "FIVE-SLOT-002",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_capacity_shortfall_requires_explicit_authorized_degraded_mode"
     },
     {
+      "category": "receipt-replay",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Pre-controller adversarial inventory is exact and precedes the full suite",
-      "category": "receipt-replay",
       "permanent": true,
       "regression_id": "FIVE-SLOT-003",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_gate_inventory_and_sequence_fail_closed"
     },
     {
+      "category": "provider-identity",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Provider PR body is UTF-8 LF canonical and byte-exact on readback",
-      "category": "provider-identity",
       "permanent": true,
       "regression_id": "FIVE-SLOT-004",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_provider_body_canonicalization_and_exact_readback"
     },
     {
+      "category": "receipt-replay",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Every accepted critic finding has one permanent named regression with evidence",
-      "category": "receipt-replay",
       "permanent": true,
       "regression_id": "FIVE-SLOT-005",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_accepted_finding_requires_permanent_inventory_member"
     },
     {
+      "category": "race",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Heavy tests use deterministic bounded shards and an exact aggregate receipt",
-      "category": "race",
       "permanent": true,
       "regression_id": "FIVE-SLOT-006",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_shards_are_deterministic_bounded_and_exact"
     },
     {
+      "category": "alias",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Each worker has one dependency-ordered active deliverable and explicit inactive Jira state",
-      "category": "alias",
       "permanent": true,
       "regression_id": "FIVE-SLOT-007",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_worker_delivery_invariants_fail_closed"
     },
     {
+      "category": "replacement-object",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Candidate freeze permits exactly one full-suite run on the exact tuple",
-      "category": "replacement-object",
       "permanent": true,
       "regression_id": "FIVE-SLOT-008",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_candidate_freeze_and_single_full_suite_are_exact"
     },
     {
+      "category": "provider-identity",
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Controller tuple, frozen review completion, both scans, and final independent review remain mandatory",
-      "category": "provider-identity",
       "permanent": true,
       "regression_id": "FIVE-SLOT-009",
       "source_finding_id": null,
@@ -1117,6 +1117,231 @@
       "regression_id": "AWF243-AUX7-ASSIGNMENT-BINDING",
       "source_finding_id": "AWF243-AUX7-3",
       "test_id": "AssignmentSharedAdmissionRegressions.test_pre7_assignment_and_ordinary_history_retain_full_binding"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Healthy legacy success adopts identity once and refuses later drift",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-ADOPTION",
+      "source_finding_id": null,
+      "test_id": "SecondLookUpgradeRegressions.test_second_look_healthy_legacy_adopts_once_then_refuses_drift"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Unresolved legacy rows never adopt current authority",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-LEGACY-STOP",
+      "source_finding_id": null,
+      "test_id": "SecondLookUpgradeRegressions.test_second_look_unhealthy_legacy_never_adopts"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Corrupt legacy success cannot adopt an identity",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-CORRUPT-SUCCESS",
+      "source_finding_id": null,
+      "test_id": "SecondLookUpgradeRegressions.test_second_look_corrupt_success_cannot_adopt"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Disabled Jira accepts legacy custom adapters without Jira operations",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-DISABLED",
+      "source_finding_id": null,
+      "test_id": "SecondLookUpgradeRegressions.test_second_look_disabled_cli_accepts_legacy_adapter_without_jira_calls"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Owner reassignment restores protected current assignment before command authentication",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-STALE-TIER",
+      "source_finding_id": null,
+      "test_id": "SecondLookAssignmentRegressions.test_second_look_owner_change_restores_current_before_authentication"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Production batch forwards historical identity observation and admits healthy legacy adoption",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-BATCH-OBSERVER",
+      "source_finding_id": null,
+      "test_id": "SecondLookAssignmentRegressions.test_second_look_batch_accepts_historical_observer_and_adopts_legacy_success"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Production recovery abandons interrupted claims only for its owned issue",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-INTERRUPTED",
+      "source_finding_id": null,
+      "test_id": "SecondLookAssignmentRegressions.test_second_look_interrupted_claim_uses_issue_scoped_production_recovery"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Reference adapter distinguishes adopted authority from retained historical evidence",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-REFERENCE-IDENTITY",
+      "source_finding_id": null,
+      "test_id": "SecondLookReferenceRegressions.test_second_look_reference_adopts_healthy_and_reads_historical_identity"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Shipped assignment observer recovers a lost comment response without another mutation",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-REFERENCE-ASSIGNMENT",
+      "source_finding_id": null,
+      "test_id": "SecondLookReferenceRegressions.test_second_look_reference_assignment_recovery"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Provider ordering tolerates both clock-skew directions and rejects earlier transitions across restart",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-CLOCK",
+      "source_finding_id": null,
+      "test_id": "SecondLookReferenceRegressions.test_second_look_clock_skew_and_earlier_transition"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Post-merge closeout uses the original Jira ordering boundary and rejects older same-actor history",
+      "permanent": true,
+      "regression_id": "AWF243-SECOND-LOOK-CLOCK-CLOSEOUT",
+      "source_finding_id": null,
+      "test_id": "SecondLookReferenceRegressions.test_second_look_closeout_observer_uses_the_original_provider_boundary"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Invalidated own claim never invokes the Jira write callback",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-CLAIM-VALIDITY",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_invalidated_own_claim_never_writes"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Recovery cannot take over a live waiting writer",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-LIVE-CLAIM",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_live_waiting_writer_blocks_recovery_without_claim_change"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Legacy history requires separate adoption even after foreign configuration changes",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-EXPLICIT-IDENTITY",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_legacy_requires_explicit_adoption_even_after_foreign_config_change"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Explicit adoption is idempotent, durable and never rewrites history",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-ADOPTION-COMMAND",
+      "source_finding_id": null,
+      "test_id": "PreEightClaimRegressions.test_pre8_explicit_cli_adoption_is_durable_idempotent_and_never_rewrites_history"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Later external transitions cannot be hidden by from-status filters",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-LATEST-HISTORY",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_later_external_transition_refuses"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Jira clock rollback cannot replay an older transition",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-CLOCK-ROLLBACK",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_clock_rollback_refuses"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Missing updated and mismatched status or identity never POST",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-PREWRITE-BOUNDARY",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_missing_updated_or_foreign_prewrite_identity_never_posts"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Historical fallback excludes attempts created after the upgrade",
+      "permanent": true,
+      "regression_id": "AWF243-PRE8-HISTORICAL-FALLBACK",
+      "source_finding_id": null,
+      "test_id": "PreEightHistoryRegressions.test_pre8_fallback_only_for_attempts_durable_before_upgrade"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Historical UNKNOWN cannot hide later external transitions in either changelog response order",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-CHANGELOG-ORDER",
+      "source_finding_id": "AWF243-PRE9-F01",
+      "test_id": "PreNineCliRegressions.test_pre9_historical_unknown_never_hides_external_transitions_in_either_order"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Healthy new transition with prior status history succeeds in both response orders through the CLI",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-HEALTHY-ORDER",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_healthy_multistatus_history_succeeds_in_both_response_orders"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Missing duplicate nonnumeric inconsistent or explicitly truncated changelog remains UNKNOWN",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-AMBIGUOUS-HISTORY",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_ambiguous_or_truncated_history_stays_unknown_in_both_orders"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Genuine f71ee70f successful Done reconciles after explicit adoption without another write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-ADOPTED-SUCCESS",
+      "source_finding_id": "AWF243-PRE9-F02",
+      "test_id": "PreNineCliRegressions.test_pre9_genuine_f71_success_reconciles_after_explicit_adoption_without_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Adoption refuses unsuccessful legacy rows and corrupt retained success receipts",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-ADOPTION-REFUSAL",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_adoption_never_clears_unsuccessful_or_corrupt_legacy_success"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Adopted success still requires unchanged healthy protected receipts and current provider history",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-ADOPTED-REVALIDATION",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_adopted_success_revalidates_retained_and_live_evidence"
     }
   ]
 }

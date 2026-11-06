@@ -138,8 +138,14 @@ class FakeHttp:
 		if '/rest/api/3/issue/' in url and method == 'GET':
 			self.issue_reads += 1
 			if 'expand=changelog' in url:
-				status = 'Done' if '/issue/EX-100?' in url else 'In Progress'
-				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}}, 'changelog': {'histories': [{'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'to': status, 'toString': status}]}]}}))
+				posted = bool(getattr(self, 'transition_bodies', [])) or not any('?fields=project,parent,labels,components,issuetype,summary' in call[1] for call in self.calls)
+				from_status = 'In Review' if '/issue/EX-100?' in url else 'Ready'
+				status = ('Done' if '/issue/EX-100?' in url else 'In Progress') if posted else from_status
+				previous = {'id': '1', 'created': '2026-10-09T07:59:59Z', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': 'Backlog', 'to': from_status}]}
+				histories = [previous]
+				if posted:
+					histories = [{'id': '2', 'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'to': status, 'toString': status}]}, previous]
+				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}, 'updated': NOW if posted else previous['created']}, 'changelog': {'histories': histories}}))
 			status = 'Ready' if self.issue_reads == 1 else 'In Progress'
 			return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status}}}))
 		if method == 'POST' and '/transitions' in url:
@@ -379,7 +385,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		config_path = self.root / 'config.json'
 		config_path.write_text(json.dumps(self.config), encoding='utf-8')
 		adapters, loader = _load_real(self.adapter, config_path)
-		self.assertEqual(set(adapters), {'observe_issue_identity', 'observe_issue_policy', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'})
+		self.assertEqual(set(adapters), {'read_assignment', 'observe_jira_operation_identity', 'observe_issue_identity', 'observe_issue_policy', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'})
 		loader._require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'})
 		with self.assertRaisesRegex(ValidationError, 'SHA-256 pin'):
 			loader._load_reviewed_adapters(self.adapter, '0' * 64, config_path)
@@ -1314,7 +1320,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=key')), next(i for i, url in enumerate(urls) if url.endswith('?fields=status')))
 					post = next(i for i, call in enumerate(http.calls) if call[0] == 'POST')
 					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=status')), post)
-					self.assertGreater(next(i for i, url in enumerate(urls) if 'expand=changelog' in url), post)
+					# Changelog reads bind the pre-write boundary and verify the post-write readback.
+					self.assertTrue(any(i < post for i, url in enumerate(urls) if 'expand=changelog' in url))
+					self.assertTrue(any(i > post for i, url in enumerate(urls) if 'expand=changelog' in url))
 				else:
 					self.assertEqual([], http.calls)
 					self.assertEqual([], operations)
