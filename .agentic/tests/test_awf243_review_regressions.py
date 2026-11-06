@@ -907,6 +907,27 @@ class BatchRecoveryRegressions(unittest.TestCase):
             self.assertEqual('SUCCEEDED', self.row()['status'])
             self.counts(1, 2, 1)
 
+    def test_operator_abandoned_closeout_never_replays_or_counts_in_batch(self):
+        from agentic.continuous_controller import resolve_jira_operation
+        def lost(record):
+            self.spy.write_transition(record)
+            raise TimeoutError('response lost after POST')
+        self.assertFalse(self.batch(write_transition=lost)['complete'])
+        row = self.row()
+        config = self.args['config']
+        resolved = resolve_jira_operation(self.fixture.store, config, issue=row['issue_id'],
+            operation_id=row['operation_id'], expected_intent_sha256=row['intent_sha256'],
+            expected_project_id=config['project']['id'], expected_repository_id=config['github']['repository_id'],
+            operator='fixture-owner', now=self.args['now'], disposition='ABANDON_NO_REPLAY',
+            reason='Operator retires closeout without original transition evidence',
+            provenance='urn:awf:fixture:legacy-closeout-investigation')
+        self.assertEqual(row, resolved['resolution']['original_row'])
+        calls = list(self.spy.calls)
+        with self.assertRaisesRegex(ValidationError, 'abandoned'):
+            self.batch()
+        self.assertEqual(calls, self.spy.calls)
+        self.assertEqual(dict(row, status='HELD'), self.row())
+
     def test_pre4_batch_prewrite_read_failure_retries_without_transition_recovery(self):
         def timeout(binding):
             self.spy.read_current_status(binding)
@@ -2144,7 +2165,17 @@ class PreEightHistoryRegressions(unittest.TestCase):
                 ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy',
                  'read_current_status', 'write_transition', 'read_transition')})
         self.assertNotEqual('SUCCEEDED', result.get('record', {}).get('status'))
-        self.assertTrue(result.get('writes_stopped', False))
+        if scenario in ('external', 'rollback'):
+            self.assertTrue(result['writes_stopped'])
+            self.assertEqual('UNKNOWN', store.jira_operations(KEY)[0]['status'])
+        else:
+            self.assertEqual('NOT_ATTEMPTED', result['status'])
+            self.assertFalse(result['planned'])
+            self.assertFalse(result['writes_stopped'])
+            row = store.jira_operations(KEY)[0]
+            self.assertEqual('PENDING', row['status'])
+            self.assertIsNone(row['operation_json'])
+            self.assertIsNone(row['readback_json'])
         self.assertEqual(1 if scenario in ('external', 'rollback') else 0, len(posts))
 
 
@@ -2436,8 +2467,17 @@ class PreNineCliRegressions(unittest.TestCase):
                         field = 'readback_json' if problem == 'readback' else 'operation_json'
                         db.execute('UPDATE controller_jira_operation SET ' + field + "='{}'")
                 before = self.rows()[0]
-                with self.assertRaises(ValidationError):
-                    self.adopt()
+                if problem in ('UNKNOWN', 'FAILED'):
+                    result = self.adopt()
+                    self.assertEqual([], result['adopted_operations'])
+                    self.assertEqual([(KEY, row['operation_id'], problem)],
+                        [(item['issue_id'], item['operation_id'], item['status']) for item in result['skipped_operations']])
+                    with store.connection() as db:
+                        self.assertIsNone(db.execute('SELECT value FROM controller_meta WHERE key=?',
+                            ('jira-identity:' + row['operation_id'],)).fetchone())
+                else:
+                    with self.assertRaises(ValidationError):
+                        self.adopt()
                 with self.assertRaises(ValidationError):
                     self.reconcile()
                 self.assertEqual(before, self.rows()[0])
@@ -2471,6 +2511,284 @@ class PreNineCliRegressions(unittest.TestCase):
                 self.assertEqual('UNOBSERVED', self.merge()['jira_progress']['jira_state'])
                 self.assertEqual(before, self.rows()[0])
                 self.assertEqual(1, len(self.posted))
+
+
+class RealJiraCliRegressions(unittest.TestCase):
+    """Real observed Jira wire shape; only HTTP is fake, CLI/adapter are real."""
+    adapter_fixture = SecondLookReferenceRegressions.adapter_fixture
+    history = staticmethod(PreNineCliRegressions.history)
+    dump = PreNineCliRegressions.dump
+    def run_cli(self, arguments, **kwargs):
+        arguments = list(arguments)
+        if arguments[0] == 'jira-lifecycle':
+            event = arguments[arguments.index('--event') + 1]
+            arguments[arguments.index('--transition-id') + 1] = '31' if event == 'JIRA_RECONCILED' else '21'
+        return PreNineCliRegressions.run_cli(self, arguments, **kwargs)
+
+    lifecycle = PreNineCliRegressions.lifecycle
+    adopt = PreNineCliRegressions.adopt
+    rows = PreNineCliRegressions.rows
+
+    def fixture(self, count=3):
+        import json
+        from datetime import datetime, timedelta, timezone
+        PreNineCliRegressions.fixture(self, newest_first=True)
+        from pathlib import Path
+        from agentic.canonical import sha256
+        from agentic.lifecycle import definition
+        from agentic.policy import policy_hash
+        self.policy['jira']['status_map'].update(backlog='10118', ready='10118',
+            in_progress='10119', in_review='10119', done='10120')
+        accepted = self.config['observations']['accepted_project_config']
+        Path(accepted['path']).write_text(json.dumps(self.policy), encoding='utf-8')
+        accepted['sha256'] = sha256(Path(accepted['path']).read_bytes())
+        self.binding['policy_hash'] = policy_hash(self.policy, definition())
+        self.before_status, self.after_status = '10118', '10119'
+        self.histories = [self.history(str(i), '2026-10-09T07:59:58Z', 'other', '10119', '10118')
+            for i in range(1, count + 1)]
+        for entry in self.histories[1:]:
+            entry['items'] = [{'field': 'labels', 'from': None, 'to': None}]
+        self.pre_timeout, self.total_override, self.post_timeout = False, None, False
+        self.post_total_override = None
+        original = self.http.request
+        def request(method, url, **kwargs):
+            expanded = method == 'GET' and 'expand=changelog' in url
+            if expanded and self.pre_timeout and not self.posted:
+                raise TimeoutError('pre-POST read timeout')
+            if method == 'POST' and self.post_timeout:
+                original(method, url, **kwargs)
+                raise TimeoutError('response lost after POST')
+            code, body = original(method, url, **kwargs)
+            if expanded:
+                value = json.loads(body)
+                for index, entry in enumerate(value['changelog']['histories']):
+                    if self.posted and entry['author']['accountId'] == 'controller':
+                        entry['id'] = str(count + 1)
+                    entry['items'].insert(0, {'field': 'resolution', 'fieldtype': 'jira',
+                        'fieldId': 'resolution', 'from': None, 'to': '10000', 'toString': 'Done'})
+                    entry['created'] = datetime.fromisoformat(entry['created'].replace('Z', '+00:00')).astimezone(
+                        timezone(timedelta(minutes=(0, 60, -330)[int(entry['id']) % 3]))).strftime('%Y-%m-%dT%H:%M:%S.000%z')
+                value['fields']['updated'] = ('2026-10-09T08:00:02.195+0000' if self.posted
+                    else '2026-10-09T08:59:59.195+0100')
+                page = value['changelog']
+                page['maxResults'] = min(100, len(page['histories']))
+                if self.total_override is not None:
+                    page['total'] = self.total_override
+                    page['histories'] = page['histories'][:100]
+                if self.posted and self.post_total_override is not None:
+                    page['total'] = self.post_total_override
+                    page['histories'] = page['histories'][:100]
+                body = json.dumps(value)
+            return code, body
+        self.http.request = request
+
+    def test_real_shape_full_lifecycle_and_recovery(self):
+        import json
+        self.fixture()
+        for event, old, new in [('WORKER_STARTED', '10118', '10119'),
+                ('PR_READY', '10118', '10119'), ('JIRA_RECONCILED', '10119', '10120')]:
+            with self.subTest(event=event):
+                # Each operation gets independent protected state and its own real-shape history.
+                self.fixture()
+                self.before_status, self.after_status = old, new
+                self.histories[0]['items'][0]['to'] = old
+                self.fail_readback = True
+                self.assertEqual('UNKNOWN', self.lifecycle(event)['record']['status'])
+                self.assertEqual(1, len(self.posted))
+                self.fail_readback = False
+                self.clock.value = '2026-10-09T08:00:03Z'
+                self.assertFalse(self.lifecycle('BLOCK')['writes_stopped'])
+                self.assertEqual('SUCCEEDED', self.rows()[0]['status'])
+                self.assertFalse(self.lifecycle(event)['planned'])
+                self.assertEqual(1, len(self.posted))
+
+    def test_pre_post_timeout_is_unattempted_and_retryable(self):
+        self.fixture()
+        self.pre_timeout = True
+        result = self.lifecycle()
+        self.assertFalse(result['planned'])
+        self.assertEqual('NOT_ATTEMPTED', result['status'])
+        self.assertFalse(result['writes_stopped'])
+        self.assertEqual([], self.posted)
+        self.assertNotEqual('UNKNOWN', self.rows()[0]['status'])
+        self.pre_timeout = False
+        self.assertEqual('SUCCEEDED', self.lifecycle()['record']['status'])
+        self.assertEqual(1, len(self.posted))
+
+    def test_changelog_limit_reserves_space_before_post(self):
+        for count, total in [(100, 100), (100, 150)]:
+            with self.subTest(count=count, total=total):
+                self.fixture(count)
+                self.total_override = total
+                result = self.lifecycle()
+                self.assertEqual('NOT_ATTEMPTED', result['status'])
+                self.assertIn('AWF-175', result['reason'])
+                self.assertFalse(result['writes_stopped'])
+                self.assertEqual([], self.posted)
+                self.assertNotEqual('UNKNOWN', self.rows()[0]['status'])
+        self.fixture(99)
+        self.assertEqual('SUCCEEDED', self.lifecycle()['record']['status'])
+        self.assertEqual(1, len(self.posted))
+
+    def test_initial_status_read_timeout_is_unattempted_without_a_claim(self):
+        self.fixture()
+        original = self.http.request
+        def request(method, url, **kwargs):
+            if method == 'GET' and url.endswith('?fields=status'):
+                raise TimeoutError('initial status read timeout')
+            return original(method, url, **kwargs)
+        self.http.request = request
+        result = self.lifecycle()
+        self.assertEqual('NOT_ATTEMPTED', result['status'])
+        self.assertFalse(result['planned'])
+        self.assertFalse(result['writes_stopped'])
+        self.assertEqual([], self.rows())
+        self.assertEqual([], self.posted)
+        self.http.request = original
+        self.assertEqual('SUCCEEDED', self.lifecycle()['record']['status'])
+        self.assertEqual(1, len(self.posted))
+
+    def test_after_post_timeout_remains_unknown(self):
+        self.fixture()
+        self.post_timeout = True
+        self.assertEqual('UNKNOWN', self.lifecycle()['record']['status'])
+        self.assertEqual(1, len(self.posted))
+        self.post_timeout = False
+        self.assertFalse(self.lifecycle('BLOCK')['writes_stopped'])
+        self.assertEqual('SUCCEEDED', self.rows()[0]['status'])
+        self.assertEqual(1, len(self.posted))
+
+    def test_concurrent_changelog_growth_after_post_remains_unknown(self):
+        self.fixture(99)
+        self.post_total_override = 101
+        result = self.lifecycle()
+        self.assertEqual('UNKNOWN', result['record']['status'])
+        self.assertTrue(result['writes_stopped'])
+        self.assertEqual(1, len(self.posted))
+        self.assertTrue(self.lifecycle('BLOCK')['writes_stopped'])
+        self.assertEqual('UNKNOWN', self.rows()[0]['status'])
+        self.assertEqual(1, len(self.posted))
+
+    def test_issue_lock_oserror_releases_unattempted_claim(self):
+        from contextlib import contextmanager
+        from agentic import continuous_controller as controller
+        self.fixture()
+        original = controller._batch_jira_ownership
+        calls = []
+        @contextmanager
+        def ownership(*args, **kwargs):
+            calls.append(True)
+            if len(calls) == 1:
+                raise OSError('cannot open issue lock')
+            with original(*args, **kwargs) as owned:
+                yield owned
+        with patch.object(controller, '_batch_jira_ownership', ownership):
+            result = self.lifecycle()
+        self.assertEqual('NOT_ATTEMPTED', result['status'])
+        self.assertEqual([], self.posted)
+        self.assertNotEqual('IN_FLIGHT', self.rows()[0]['status'])
+        self.assertEqual('SUCCEEDED', self.lifecycle()['record']['status'])
+
+    def test_adoption_skips_only_unresolved_rows_with_ticket_and_operation(self):
+        import json
+        self.fixture()
+        # Seed a healthy row through the real production path, then simulate upgrade provenance loss.
+        self.assertEqual('SUCCEEDED', self.lifecycle()['record']['status'])
+        store = ContinuousControllerStore(self.state, ['A'])
+        healthy = self.rows()[0]
+        skipped = []
+        with store.transaction() as db:
+            db.execute("DELETE FROM controller_meta WHERE key LIKE 'jira-identity:%'")
+            for index, status in enumerate(('UNKNOWN', 'FAILED', 'IN_FLIGHT'), 1):
+                row = dict(healthy)
+                row.pop('record')
+                row['operation_id'] = '10000000-0000-0000-0000-00000000000' + str(index)
+                row['issue_id'] = 'EX-' + str(100 + index)
+                row['status'] = status
+                record = json.loads(row['record_json'])
+                record['operation_id'], record['binding']['issue_id'] = row['operation_id'], row['issue_id']
+                row['record_json'] = json.dumps(record)
+                row['intent_sha256'] = fingerprint('controller-jira-operation',
+                    {key: value for key, value in record.items() if key != 'created_at'})
+                columns = list(row)
+                db.execute('INSERT INTO controller_jira_operation (' + ','.join(columns) + ') VALUES ('
+                    + ','.join('?' for _ in columns) + ')', [row[key] for key in columns])
+                skipped.append((row['issue_id'], row['operation_id']))
+        result = self.adopt()
+        self.assertEqual([healthy['operation_id']], result['adopted_operations'])
+        self.assertEqual(skipped, [(row['issue_id'], row['operation_id']) for row in result['skipped_operations']])
+        with store.connection() as db:
+            self.assertEqual(1, db.execute("SELECT count(*) FROM controller_meta WHERE key LIKE 'jira-identity:%'").fetchone()[0])
+        self.assertEqual(1, len(self.posted))
+        self.assertFalse(self.lifecycle()['planned'])
+
+    def test_missing_stream_cli_refuses_without_traceback(self):
+        import subprocess
+        self.fixture()
+        result = subprocess.run([scope_fixture.sys.executable, '-B', str(scope_fixture.ROOT /
+            '.agentic/scripts/continuous_controller.py'), '--state', str(self.state),
+            '--worktree-root', str(scope_fixture.ROOT), 'snapshot'], capture_output=True, text=True, timeout=30)
+        self.assertEqual(2, result.returncode)
+        self.assertIn('--stream', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
+    def test_legacy_operator_resolution_retains_uncertainty_without_replay_or_success(self):
+        import json
+        self.fixture()
+        self.fail_readback = True
+        self.assertEqual('UNKNOWN', self.lifecycle()['record']['status'])
+        store = ContinuousControllerStore(self.state, ['A'])
+        original = self.rows()[0]
+        with store.transaction() as db:
+            db.execute("DELETE FROM controller_meta WHERE key LIKE 'jira-identity:%'")
+        result = self.adopt()
+        self.assertEqual([original['operation_id']], [row['operation_id'] for row in result['skipped_operations']])
+        arguments = ['jira-operation-resolve', '--issue', KEY, '--operation-id', original['operation_id'],
+            '--expected-intent-sha256', original['intent_sha256'],
+            '--expected-project-id', self.policy['project']['id'],
+            '--expected-repository-id', str(self.policy['github']['repository_id']),
+            '--operator', 'fixture-owner', '--now', self.now, '--disposition', 'ABANDON_NO_REPLAY',
+            '--reason', 'Historical envelope unavailable; operator retires this lifecycle event',
+            '--provenance', 'urn:awf:fixture:operator-investigation']
+        resolved = self.run_cli(arguments)
+        self.assertEqual('ABANDON_NO_REPLAY', resolved['resolution']['disposition'])
+        self.assertEqual('OPERATOR_SUPPLIED_NOT_OBSERVED', resolved['resolution']['provenance']['source'])
+        self.assertEqual({key: value for key, value in original.items() if key != 'record'}, resolved['resolution']['original_row'])
+        held = dict(original, status='HELD')
+        self.assertEqual(held, self.rows()[0])
+        self.assertEqual(resolved, self.run_cli(arguments))
+        from agentic.continuous_controller import adopted_jira_reconciliation
+        self.assertIsNone(adopted_jira_reconciliation(store, self.policy,
+            {'issue_id': KEY, 'transition_record_id': original['record']['record_id']}))
+        # No readback/evidence exists: explicit resolution still cannot count as success or replay this event.
+        self.assertFalse(self.lifecycle()['planned'])
+        self.assertEqual(held, self.rows()[0])
+        self.assertEqual(1, len(self.posted))
+        self.fail_readback = False
+        first_posts = list(self.posted)
+        self.posted.clear()
+        self.before_status, self.after_status = '10119', '10120'
+        self.histories[0]['items'][0]['to'] = self.before_status
+        self.assertEqual('SUCCEEDED', self.lifecycle('JIRA_RECONCILED')['record']['status'])
+        self.assertEqual(2, len(first_posts + self.posted))
+        changed = copy.deepcopy(self.policy)
+        changed['github']['repository_id'] = 99999
+        self.policy = changed
+        with self.assertRaises(ValidationError):
+            self.run_cli(arguments)
+
+    def test_jira_timestamp_boundary_does_not_relax_canonical_records(self):
+        from agentic.canonical import jira_timestamp, timestamp
+        for value, canonical_value in [('2026-11-05T16:56:31.195+0000', '2026-11-05T16:56:31.195Z'),
+                ('2026-10-21T09:57:04.721+0100', '2026-10-21T08:57:04.721Z'),
+                ('2026-11-05T11:26:31.195-0530', '2026-11-05T16:56:31.195Z')]:
+            self.assertEqual(timestamp(canonical_value), jira_timestamp(value))
+            with self.assertRaises(ValidationError):
+                timestamp(value)
+        for value in ('2026-11-05T16:56:31', '2026-11-05T16:56:31.195+2460',
+                '2026-02-30T00:00:00+0000', '2026-11-05 16:56:31+0000'):
+            with self.assertRaises(ValidationError):
+                jira_timestamp(value)
 
 
 if __name__ == "__main__":

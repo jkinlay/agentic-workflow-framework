@@ -16,8 +16,8 @@ import uuid
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from agentic import ValidationError
-from agentic.canonical import canonical, fingerprint, load_yaml, now_text, sha256, timestamp
-from agentic.continuous_controller import validate_ticket_record
+from agentic.canonical import canonical, fingerprint, load_yaml, now_text, sha256, timestamp, jira_timestamp
+from agentic.continuous_controller import validate_ticket_record, JiraTransitionNotAttempted
 from agentic.safeio import require_record_bytes
 MAX_OUTPUT = 1024 * 1024
 MAX_PAGES = 20
@@ -792,8 +792,8 @@ def _build(config):
 			history = jira_status_history(issue)
 			_require(history, 'Adopted reconciliation has no provider status history')
 			latest = history[-1]
-			_require(timestamp(record['created_at']) <= timestamp(operation['observed_at']) <= timestamp(latest['created'])
-				<= timestamp(read_back['observed_at']) <= timestamp(issue.get('fields', {}).get('updated'))
+			_require(timestamp(record['created_at']) <= timestamp(operation['observed_at']) <= jira_timestamp(latest['created'])
+				<= timestamp(read_back['observed_at']) <= jira_timestamp(issue.get('fields', {}).get('updated'))
 				and latest['from'] == record['from_status_id'] and latest['to'] == current_status
 				and latest['actor'] == provider['controller_actor_id'],
 				'Provider history does not prove the adopted successful reconciliation')
@@ -1667,7 +1667,12 @@ def _build(config):
 
 	def read_current_status(binding):
 		_require(isinstance(binding, dict) and isinstance(binding.get('issue_id'), str), 'Jira status read needs an issue identity')
-		value = jira_json('GET', '/rest/api/3/issue/' + quote(binding['issue_id'], safe='') + '?fields=status')
+		try:
+			value = jira_json('GET', '/rest/api/3/issue/' + quote(binding['issue_id'], safe='') + '?fields=status')
+		except ValidationError as exc:
+			if isinstance(exc.__cause__, TimeoutError):
+				raise JiraTransitionNotAttempted('Jira status read timed out before any POST') from exc
+			raise
 		status_id = value.get('fields', {}).get('status', {}).get('id')
 		observed_at = _clock_text(clock)
 		provider = binding.get('jira_provider') or provider_identity()
@@ -1683,11 +1688,11 @@ def _build(config):
 			identity = int(history['id'])
 			_require(identity not in identities, 'Jira history contains duplicate entry identities')
 			identities.add(identity)
-			timestamp(history.get('created'))
+			jira_timestamp(history.get('created'))
 		ordered = sorted(histories, key=lambda item: int(item['id']))
 		latest_time = None
 		for history in ordered:
-			created = timestamp(history['created'])
+			created = jira_timestamp(history['created'])
 			_require(latest_time is None or created >= latest_time - timedelta(seconds=300),
 				'Jira history identities disagree with created ordering beyond the 300-second tolerance')
 			latest_time = max(latest_time, created) if latest_time is not None else created
@@ -1697,6 +1702,8 @@ def _build(config):
 		page = value.get('changelog', {})
 		histories = page.get('histories')
 		_require(isinstance(histories, list), 'Jira transition history is unavailable')
+		_require(len(histories) <= MAX_JIRA_PAGE and (type(page.get('total')) is not int or page['total'] <= MAX_JIRA_PAGE),
+			'AWF-175 limitation: Jira changelog exceeds the 100-entry completeness limit')
 		_require(('startAt' not in page or type(page['startAt']) is int and page['startAt'] == 0)
 			and ('total' not in page or type(page['total']) is int and page['total'] == len(histories))
 			and ('isLast' not in page or page['isLast'] is True), 'Jira transition history is truncated or malformed')
@@ -1708,7 +1715,7 @@ def _build(config):
 			for item in history['items']:
 				if not isinstance(item, dict) or item.get('field') != 'status':
 					continue
-				timestamp(history.get('created'))
+				jira_timestamp(history.get('created'))
 				actor = history.get('author', {}).get('accountId')
 				_require(isinstance(actor, str) and actor and isinstance(item.get('to'), str), 'Jira status history is incomplete')
 				result.append({'id': history.get('id'), 'created': history['created'],
@@ -1727,12 +1734,12 @@ def _build(config):
 		history = jira_status_history(value)
 		_require(history, 'Jira transition history does not prove the current transition')
 		latest = history[-1]
-		created = timestamp(latest['created'])
+		created = jira_timestamp(latest['created'])
 		if attempt.get('version') == 2:
 			before = jira_history_order(attempt['jira_history'])
 			_require(isinstance(before, list) and history[:len(before)] == before and len(history) == len(before) + 1,
 				'Jira history changed or has ambiguous/later transitions after the original state')
-			_require(timestamp(attempt['jira_updated']) < created <= timestamp(value.get('fields', {}).get('updated')),
+			_require(jira_timestamp(attempt['jira_updated']) < created <= jira_timestamp(value.get('fields', {}).get('updated')),
 				'Jira transition is outside its provider window')
 			# Explicit host tolerance bounds the window only; Jira order proves
 			# which transition is latest and the retained prefix proves novelty.
@@ -1747,7 +1754,7 @@ def _build(config):
 			'Latest Jira transition belongs to another actor; suspected external automation conflict')
 		return latest['actor']
 
-	def write_transition(record):
+	def prepare_transition(record):
 		_require(isinstance(record, dict) and isinstance(record.get('binding'), dict), 'Jira transition record is missing its binding')
 		issue_id = record['binding']['issue_id']
 		_require(isinstance(record.get('transition_id'), str) and record['transition_id'], 'Jira transition identity is missing')
@@ -1762,14 +1769,25 @@ def _build(config):
 			'Jira identity or status moved before the transition')
 		updated = before.get('fields', {}).get('updated')
 		_require(isinstance(updated, str) and updated, 'New Jira pre-write observation is missing updated; stop without POST')
-		timestamp(updated)
+		jira_timestamp(updated)
 		history = jira_status_history(before)
+		_require(len(before['changelog']['histories']) < MAX_JIRA_PAGE,
+			'AWF-175 limitation: pre-write refusal at 100 changelog entries; reserve one readback entry within the 100-entry cap')
 
 		record_dir.mkdir(parents=True, exist_ok=True)
 		attempt_path = jira_attempt_path(record)
 		_require(not attempt_path.exists(), 'Jira transition attempt already exists; reconcile without reissuing')
 		_write_record(attempt_path, {'record': record, 'jira_updated': updated, 'jira_history': history, 'version': 2})
-		attempted_at = _clock_text(clock)
+		return issue_id
+
+	def write_transition(record):
+		# An existing boundary may represent a prior POST; never call it unattempted.
+		_require(not jira_attempt_path(record).exists(), 'Jira transition attempt already exists; reconcile without reissuing')
+		try:
+			attempted_at = _clock_text(clock)
+			issue_id = prepare_transition(record)
+		except Exception as exc:
+			raise JiraTransitionNotAttempted('No POST attempted: ' + str(exc)) from exc
 		jira_json('POST', '/rest/api/3/issue/' + quote(issue_id, safe='') + '/transitions', {'transition': {'id': record['transition_id']}})
 		return {'operation_id': record['operation_id'], 'issue_id': issue_id, 'status': 'ATTEMPTED', 'observed_at': attempted_at, 'jira_provider': record['jira_provider']}
 

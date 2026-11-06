@@ -17,7 +17,7 @@ Protect state outside worktrees; never reissue mutations.
 ## Planning recovery
 
 `controller_meta['production_planning']`: state; `.planning.sqlite3`: plans.
-Format 2: `cycle_sequence`, `seen` digest/last-cycle pairs; legacy ages zero; repeats refresh. Above 4096 evict oldest `(last_cycle, source_id)`; preserve pending sources; never duplicate plans.
+Format 2: `cycle_sequence`, `seen` digest/last-cycle pairs; legacy ages zero. Above 4096 evict oldest `(last_cycle, source_id)`; preserve pending sources.
 Canonical UTF-8 saves cap at 4 MiB; ordinary reads cap at 8 MiB;
 cycles at 4,000 events including repeats. Oversize staged state refuses before
 events, state/history writes or dispatch, preserving prior saves/history.
@@ -25,12 +25,11 @@ events, state/history writes or dispatch, preserving prior saves/history.
 Stop **all cycles using state** before recovery:
 
 ```text
-python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB --worktree-root ABSOLUTE_WORKTREE planning-state prune
+python .agentic/scripts/continuous_controller.py --state ABSOLUTE_CONTROLLER_DB --stream A --worktree-root ABSOLUTE_WORKTREE planning-state prune
 ```
 
 Recovery: 16 MiB; trim only `seen`, preserving other state/history; report bytes/counts. Unshrinkable state refuses: reduce event windows before they accumulate.
-Provider-owner confirmation permits `--forget-source SOURCE_ID` for changed bytes;
-pending identities cannot be forgotten. Never delete the planning key; restart only after repair.
+`--forget-source SOURCE_ID` needs provider-owner confirmation; pending identities cannot be forgotten. Never delete the planning key.
 
 ## Dispatch state and round boundaries
 
@@ -72,50 +71,20 @@ and sorted, hash-matched, at-most-512-KiB critic diffs.
 `EXECUTED` binds fresh post-read UTC, provider Date/ETag heads and matching
 inventory; `UNKNOWN` reads only its retained `COMPLETED` receipt.
 
-Disabled Jira performs no access/observations. Reconcile merges through `jira-lifecycle`
-`JIRA_RECONCILED`; protected transition/readback records precede `merge-observed`.
-Closeout binds record/binding; never call legacy
-`reconcile_merged_ticket`: an inert 1.9.5 compatibility keyword;
-provider/canonical-issue/scope/owner-hold/status observers
-are mandatory. Missing/mismatched evidence refuses counts. Owner-closure keywords
-hold In Review. Complete, stable, bounded pagination precedes counts;
-final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
+Disabled Jira performs no access/observations. Reconcile through `jira-lifecycle JIRA_RECONCILED` before `merge-observed`; require protected records, provider/canonical-issue/scope/owner-hold/status observers and complete stable pagination. Missing/mismatched evidence refuses counts. Owner-closure tickets hold In Review. `reconcile_merged_ticket` is inert. Require the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
-Unknown/failed operations stop writes. Assignment shares admission/locking; all routes require protected `store` outside worktrees. `controller_meta['intake_assignment_state']` retains receipts/stops/identity.
-Recover via `jira-lifecycle BLOCK` and shipped `read_assignment(record)`, binding original
-ID/digest, issue/provider, labels, controller comment and fresh time. Never rewrite;
-preserve rejected receipts; synchronize intake recovery.
-`jira-lifecycle` calls issue-scoped `recover_jira_operations` under exclusive ownership.
-`read_transition` validates original operation/actor/provider/target; status alone never resolves uncertainty.
-Never repeat writes. Batch closeout accepts actor-bound recovery without write
-receipts. Resolutions survive legacy stops.
-Failed reads preserve evidence; conflicts retain success and require transition evidence.
+Unknown/failed attempts stop only their ticket. Assignment shares admission/locking and protected `store` outside worktrees; `intake_assignment_state` retains receipts/stops/identity. `jira-lifecycle BLOCK` uses `read_assignment(record)` bound to original ID/digest/issue/provider/labels/controller comment/fresh time. Preserve rejected receipts; synchronize intake. Issue-scoped `recover_jira_operations` requires exclusive ownership; `read_transition` validates operation/actor/provider/target. Never repeat writes or infer resolution from status. Batch closeout accepts actor-bound recovery without write receipts. Preserve success and conflict evidence.
 
-`jira-not-attempted:<operation_id>` atomically distinguishes batch pre-write failures.
-Retry closeout after failed reads; malformed observations require `jira-lifecycle BLOCK`,
-without mutation. Proven unattempted/deferred claims resume.
-Legacy FAILED/no-receipt rows need uniquely copied predecessor readback (including JSON null); otherwise restore independent receipts. Never invent evidence.
+`jira-not-attempted:<operation_id>` proves batch pre-write failures; unattempted/deferred claims resume. Malformed observations require BLOCK without mutation. Legacy FAILED/no-receipt rows require uniquely copied predecessor readback (including JSON null), otherwise independent receipts.
 
-`controller_meta['jira-identity:<operation_id>']` pins provider/project/repository/issue.
-Legacy SUCCEEDED rows remain history; writes require operator adoption.
-Stop controller writers, run `.agentic/scripts/continuous_controller.py --state DB --worktree-root WORKTREE --project-config CONFIG jira-identity-adopt --expected-project-id PROJECT_ID --expected-repository-id REPOSITORY_ID --operator OPERATOR --now TIME`.
-IDs must match accepted configuration. Idempotent adoption refuses changed values,
-and never rewrites rows, receipts or hashes. `ADOPTED_LEGACY_SUCCEEDED` provenance
-records operator/time/configuration digest as `OPERATOR_SUPPLIED_NOT_OBSERVED`;
-it cannot authenticate original authority or detect pre-adoption drift.
-UNKNOWN/FAILED/IN_FLIGHT never adopt. Fresh projects are unaffected.
-`observe_jira_operation_identity(record)` reads historical envelopes only.
+`jira-identity:<operation_id>` pins provider/project/repository/issue. Stop writers; run `.agentic/scripts/continuous_controller.py --state DB --stream A --worktree-root WORKTREE --project-config CONFIG jira-identity-adopt --expected-project-id PROJECT_ID --expected-repository-id REPOSITORY_ID --operator OPERATOR --now TIME`.
+IDs match accepted configuration; idempotent adoption preserves rows/receipts/hashes. ADOPTED_LEGACY_SUCCEEDED records operator/time/configuration digest as OPERATOR_SUPPLIED_NOT_OBSERVED, proving no historical authority or pre-adoption drift. Adopt healthy rows; report skipped UNKNOWN/FAILED/IN_FLIGHT by ticket/operation, retaining their stops. `observe_jira_operation_identity(record)` reads historical envelopes only.
 
-Writers retain an OS claim lock before IN_FLIGHT through completion; recovery refuses
-live owners. Under issue ownership, immediately before writing, recheck the writer's
-own live IN_FLIGHT claim; invalidated claims never write.
+Without envelopes, stop writers; reuse global arguments with `jira-operation-resolve --issue KEY --operation-id UUID --expected-intent-sha256 DIGEST --expected-project-id PROJECT_ID --expected-repository-id REPOSITORY_ID --operator OPERATOR --now TIME --disposition ABANDON_NO_REPLAY --reason REASON --provenance REFERENCE`.
+Retain original row/receipts plus operator/time/reason/reference/configuration digest as OPERATOR_SUPPLIED_NOT_OBSERVED; mark HELD. Never replay that lifecycle event or claim success/closeout/provider authority. Later events retain normal admission; no automatic clearing. Missing `--stream` refuses clearly.
 
-Persist pre-write identity/status, required Jira `updated` and ordered changelog.
-Only one new final target transition matching actor/from-status qualifies;
-no later transition by anyone is hidden. Jira order proves novelty, including clock
-rollback; host time only bounds a 300-second tolerance. Equal timestamps refuse.
-Historical fallback requires attempt bytes durably inventoried before upgrade;
-incomplete observations stop. AWF-175 owns changelog pagination/completeness.
+Retain OS claim lock before IN_FLIGHT through completion; recovery refuses live owners. Recheck own live claim under issue ownership before writing. Persist pre-write identity/status/updated/history. Require exactly one new final actor/from/target transition; hide no later transitions. Numeric Jira order proves novelty; host tolerance stays 300 seconds; equal timestamps refuse. Historical fallback requires pre-upgrade attempt inventory. AWF-175 owns changelog pagination/completeness.
+Jira observation timestamps accept milliseconds/colonless offsets; canonical records stay strict. At 100 entries refuse before POST, reserving one readback entry: 99 plus one succeeds. Over-limit refusals name AWF-175; concurrent growth beyond 100 after POST stays UNKNOWN. Proven pre-POST failures, including lock OSError, return retryable NOT_ATTEMPTED/PENDING without a stop.
 
 ## Reference adapter (AWF-32)
 
@@ -176,7 +145,7 @@ the reference adapter lacks owner-publication and batch operations.
 `controller` booleans ship `false`: master `dispatch_enabled`; `auto_dispatch`,
 `auto_request_critic`, `auto_resume_amendments`. Each path needs master and own switch. Disabled paths record
 `CONTROLLER_AUTOMATION_DISABLED` before publication observation/dispatch.
-Missing/non-boolean switches refuse before recovery/provider calls. Preserve reviewed `controller`; disabling cancels unstarted work. Observe uncertain launches; never relaunch.
+Invalid switches refuse before recovery/provider calls. Preserve reviewed `controller`; disabling cancels unstarted work. Never relaunch uncertain launches.
 
 Install/upgrade require five switches, including `auto_transition_jira`, false. Enable dispatch under project governance; upgrades preserve values without migration.
 Switches grant no publication, review, merge or adapter qualification.
