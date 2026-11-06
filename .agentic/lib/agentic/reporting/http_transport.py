@@ -39,14 +39,15 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def http_json(method, url, headers, payload):
+def http_json(method, url, headers, payload, *, timeout=15):
     """One request, finite timeout/response. Never retain provider diagnostics."""
+    require(type(timeout) in {int, float} and 0 < timeout <= 15, 'REPORT_HTTP_TIMEOUT')
     require(urlsplit(url).scheme == 'https' and urlsplit(url).hostname in {'slack.com', 'graph.microsoft.com'},
             'REPORT_HTTP_ORIGIN')
     try:
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
         request = Request(url, data=data, method=method, headers=headers)
-        with build_opener(NoRedirect()).open(request, timeout=15) as response:
+        with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
             require(200 <= response.status < 300, 'REPORT_HTTP_FAILURE')
             raw = response.read(MAX_RESPONSE + 1)
         require(len(raw) <= MAX_RESPONSE, 'REPORT_HTTP_RESPONSE_SIZE')
@@ -114,7 +115,10 @@ class BaseTransport:
     def call(self, method, url, secret, payload=None):
         try:
             require(isinstance(secret, str) and secret and not any(ord(c) < 32 for c in secret), 'REPORT_SECRET_INVALID')
-            raw = self.http(method, url, {'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/json; charset=utf-8'}, payload)
+            from .bounded import admit_http
+            timeout = admit_http(method)
+            options = {'timeout': timeout} if self.http is http_json else {}
+            raw = self.http(method, url, {'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/json; charset=utf-8'}, payload, **options)
             require(isinstance(raw, dict), 'REPORT_HTTP_RESPONSE_SHAPE')
             return raw
         except TerminalRejection:

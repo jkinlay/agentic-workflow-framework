@@ -34,16 +34,24 @@ class ReportingNetwork:
         self.slow = False
         self.slow_readback = False
         self.history_reads = 0
+        self.remote_pending = []
 
     def __call__(self, method, url, headers, payload):
         platform = 'slack' if 'slack.com' in url else 'teams'
         if method == 'POST':
+            if platform == 'slack' and self.slow:
+                self.entered.wait(.3)
             self.posts.append((platform, deepcopy(payload)))
             if platform == 'teams' and self.slow:
                 self.entered.set()
-                self.block.wait(5)
+                if not self.block.wait(.3):
+                    self.remote_pending.append(deepcopy(payload))
+                    raise TimeoutError('synthetic ambiguous POST timeout')
             self.messages[platform].append(deepcopy(payload))
             return {'ok': True}
+        if self.block.is_set() and self.remote_pending:
+            self.messages['teams'].extend(self.remote_pending)
+            self.remote_pending.clear()
         if 'auth.test' in url:
             return dict(ok=True, team_id='workspace', user_id='sender')
         if 'conversations.info' in url:
@@ -51,10 +59,9 @@ class ReportingNetwork:
         if 'conversations.history' in url:
             self.history_reads += 1
             if self.slow_readback:
-                if self.history_reads > 1:
-                    raise TimeoutError('synthetic network outage after delayed readback')
                 self.entered.set()
-                self.block.wait(5)
+                if not self.block.wait(.3):
+                    raise TimeoutError('synthetic delayed readback timeout')
             return dict(ok=True, messages=[dict(text=m['text'], user='sender', ts=str(i+1))
                                           for i, m in enumerate(self.messages['slack'])])
         if '/me?' in url:
@@ -211,23 +218,16 @@ class ReportingE2Regressions(unittest.TestCase):
         self.prs = [dict(id=99, number=99, html_url='https://github.com/example/project/pull/99',
                          merged_at=merged_at, merge_commit_sha='b'*40, head={'sha': 'c'*40})]
 
-    def test_late_verified_readback_is_consumed_without_reposting(self):
+    def test_timed_out_readback_reconciles_after_recovery_without_reposting(self):
         self.settings['mode'] = 'slack'
         self.network.slow_readback = True
         self.cycle('2026-11-07T18:00:00Z')
         self.assertTrue(self.network.entered.is_set())
         self.assertEqual(self.status()['deliveries'][0]['status'], 'UNKNOWN')
         self.network.block.set()
-        # Let the already-started HTTP request return channel evidence. No new
-        # network read can succeed, so the late evidence must be retained.
-        from agentic.reporting import bounded
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            with bounded._lock:
-                active = list(bounded._active.values())
-            if not active or all((a['done'] if isinstance(a, dict) else a).is_set() for a in active):
-                break
-            time.sleep(.01)
+        # A completed timeout leaves no local worker. Restore the remote
+        # readback and reconcile the immutable attempt without posting again.
+        self.assertFalse(any(t.name.startswith('awf-report-') for t in threading.enumerate()))
         self.cycle('2026-11-07T18:00:01Z')
         self.assertEqual(self.status()['deliveries'][0]['status'], 'DELIVERED')
         self.assertEqual(len(self.network.posts), 1)

@@ -418,6 +418,16 @@ def token_rollup(usage, ticket_epics, components):
                            if consumed is not None and components is not None else None))
 
 
+def reconciliation_coverage(tickets):
+    from .metrics import delivered
+    implementation = [t for t in tickets if t.get('kind') == 'implementation']
+    known_states = {'BACKLOG', 'READY', 'WORKING', 'REVIEWING', 'MERGED', 'OWNER_WAITING',
+                    'CANCELLED', 'SUPERSEDED'}
+    observed = sum(t.get('state') in known_states or delivered(t) for t in implementation)
+    return dict(status='KNOWN' if observed == len(implementation) else 'UNAVAILABLE',
+                observed=observed, total=len(implementation))
+
+
 def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name, *, observed_at=None):
     """Independent overlapping daily views and project-to-date elapsed cohorts.
 
@@ -440,7 +450,10 @@ def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name, *, obser
             # filter the view below; later valid observations remain available.
             require(merged <= timestamp(observed_at or end), 'REPORT_FUTURE_MERGE')
         unique[pr['id']] = pr
-    result = dict(additive=False, label=views['label'], project_to_date=elapsed_cohorts(tickets))
+    coverage = reconciliation_coverage(tickets)
+    available = coverage['status'] == 'KNOWN'
+    result = dict(additive=False, label=views['label'], project_to_date=elapsed_cohorts(tickets),
+                  reconciliation_coverage=coverage)
     for name in ('today', 'since_previous'):
         if views[name] is None:
             result[name] = dict(period=None, status='UNAVAILABLE', reason='NO_PREVIOUS_DAILY_REPORT')
@@ -451,7 +464,9 @@ def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name, *, obser
         result[name] = dict(period=views[name], merged_pr_count=len(merged) if prs is not None else None,
                             merged_prs=merged if prs is not None else None,
                             pr_status='KNOWN' if prs is not None else 'UNAVAILABLE',
-                            reconciled_ticket_count=len(completed), reconciled_tickets=[t['key'] for t in completed],
+                            reconciled_ticket_count=len(completed) if available else None,
+                            reconciliation_coverage=coverage,
+                            reconciled_tickets=[t['key'] for t in completed],
                             elapsed=elapsed_cohorts(completed))
     result['merged_pending_reconciliation'] = [t['key'] for t in tickets if t.get('state') in {'MERGED', 'OWNER_WAITING'}
                                               and not delivered(t)]

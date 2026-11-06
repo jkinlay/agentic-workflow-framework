@@ -159,7 +159,9 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
             data['detail_metrics']['daily'] = daily
             data['today'] = describe(daily['today']['period'])
             data['since_previous'] = describe(daily['since_previous']['period'])
-            data['delivered'] = str(daily['today']['reconciled_ticket_count']) + ' reconciled today'
+            count = daily['today']['reconciled_ticket_count']
+            data['delivered'] = (str(count) + ' reconciled today' if count is not None
+                                 else 'UNAVAILABLE: Jira reconciliation coverage incomplete')
             if daily['today']['merged_prs'] is not None:
                 data['prs'] = daily['today']['merged_prs']
             data['sections']['PRs merged and Jira delivery'] = ('Since previous daily report: '

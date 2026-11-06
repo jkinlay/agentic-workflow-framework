@@ -167,7 +167,7 @@ class DeliveryOutbox:
                         observed_at=raw['observed_at'], attempt_ids=attempts, observation_id=observation_id)
         return unknown
 
-    def advance(self, delivery_id, provider, *, allow_send=True):
+    def advance(self, delivery_id, provider, *, allow_send=True, before_send=None):
         """One bounded step; retries require a prior terminal-absence observation.
 
         A crashed IN_FLIGHT reservation is reconciled, never repeated. There is
@@ -182,22 +182,39 @@ class DeliveryOutbox:
             send = allow_send and state['status'] in {'PENDING', 'ABSENT'} and len(state['attempts']) < 2
             if not send and not state['attempts']:
                 return state
-            if send:
-                attempt_id = str(uuid.uuid4())
-                state['attempts'].append(attempt_id)
-                state['history'].append(dict(kind='ATTEMPT_RESERVED', attempt_id=attempt_id))
-                state.update(status='IN_FLIGHT', fence=str(uuid.uuid4()))
-                self._save(db, delivery_id, state)
             fence, attempts = state['fence'], list(state['attempts'])
         if send:
+            attempt_id = str(uuid.uuid4())
+            reserved = False
+
+            def reserve():
+                nonlocal reserved, fence, attempts
+                require(not reserved, 'REPORT_SEND_ALREADY_STARTED')
+                if before_send is not None:
+                    before_send()
+                with self.controller.transaction() as db:
+                    _, current = self._load(db, delivery_id)
+                    require(current == state, 'REPORT_SEND_STATE_CHANGED')
+                    current['attempts'].append(attempt_id)
+                    current['history'].append(dict(kind='ATTEMPT_RESERVED', attempt_id=attempt_id))
+                    current.update(status='IN_FLIGHT', fence=str(uuid.uuid4()))
+                    self._save(db, delivery_id, current)
+                    fence, attempts = current['fence'], list(current['attempts'])
+                reserved = True
+
             rejection = None
             try:
-                # Acceptance/local receipts prove nothing. Definite rejection
-                # alone can establish this reserved attempt's non-delivery.
-                raw = provider.send(deepcopy(intent), attempt_id)
-                rejection = self._rejection(raw, intent, attempt_id)
+                if callable(getattr(provider, 'send_reserved', None)):
+                    raw = provider.send_reserved(deepcopy(intent), attempt_id, reserve)
+                else:
+                    reserve()
+                    raw = provider.send(deepcopy(intent), attempt_id)
+                rejection = self._rejection(raw, intent, attempt_id) if reserved else None
             except Exception:
                 pass
+            if not reserved:
+                with self.controller.transaction() as db:
+                    return self._load(db, delivery_id)[1]
             if rejection:
                 with self.controller.transaction() as db:
                     _, current = self._load(db, delivery_id)

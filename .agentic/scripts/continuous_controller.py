@@ -234,7 +234,7 @@ def main(argv=None, default_root=ROOT):
 		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence', 'observe_owner_ready', 'observe_review_candidate', 'deliver_review_batch', 'observe_review_delivery'):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
-		for name in ('configure_reporting', 'observe_reporting_sources', 'verify_reporting_sources', 'verify_reporting_link'):
+		for name in ('controller_clock', 'configure_reporting', 'observe_reporting_sources', 'verify_reporting_sources', 'verify_reporting_link'):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
 		# Reviewed code registers the reporting port; configuration cannot supply

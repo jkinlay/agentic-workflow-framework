@@ -41,12 +41,18 @@ class PlatformReportingAdapter:
         return secret
 
     def send(self, intent, attempt_id):
+        return self.send_reserved(intent, attempt_id, lambda: None)
+
+    def send_reserved(self, intent, attempt_id, start):
         secret = self._admit(intent)
         try:
             require(self.transport.verify_destination(deepcopy(self.binding), secret) is True,
                     'REPORT_DESTINATION_UNVERIFIED')
-            # No response bodies, tokens or credentials escape this boundary.
-            raw = self.transport.send(deepcopy(intent), attempt_id, secret)
+            from .bounded import sending
+            # The transport calls start after payload and HTTP-budget admission,
+            # immediately before POST. Verification consumes no attempt.
+            with sending(start):
+                raw = self.transport.send(deepcopy(intent), attempt_id, secret)
             from .delivery import DeliveryOutbox
             safe = DeliveryOutbox._rejection(raw, intent, attempt_id)
             if safe is not None and secret not in str(safe):
