@@ -346,7 +346,7 @@
     ".agentic/tests/test_awf140_marker_validation.py": "0bf5131678c191b2fc2313db23105656aac8f73e86bb57d8ee034d1f238aea61",
     ".agentic/tests/test_awf154_large_file_allowances.py": "f1633d7a2a3d7ffd339cfb7c0ce60b50b9cc18ca879bfd66af2aa7573f54c546",
     ".agentic/tests/test_awf243_jira_protocol.py": "7f0be1cd78e68f2543a42b585cf20239e2a8eb23e2c72d094da71faa153768ab",
-    ".agentic/tests/test_awf243_operator_recovery.py": "ecf537827547a71b8f91e916bcc3ec8312bf19ae7f5c54679b5f222d1f66581e",
+    ".agentic/tests/test_awf243_operator_recovery.py": "83bf70e54ff0cbba305bce050ef0e31fc38a07d6b1ee9ba9d69fc216225ebfd8",
     ".agentic/tests/test_awf243_owner_closure_http.py": "0966c51ef69f7f0d085b5c199f94ffbb72feeb1492d2361079753df7cc22ebbb",
     ".agentic/tests/test_awf243_review_regressions.py": "f5301edc0c6e244ff1633e86e8ceb61ceb9302acf788a68e1d12db48ed99cdba",
     ".agentic/tests/test_awf34_configured_allowance_closure.py": "0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5",
