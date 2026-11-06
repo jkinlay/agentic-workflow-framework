@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 import json
+import re
 from pathlib import Path
 import sqlite3
 import uuid
@@ -496,6 +497,50 @@ def resume_first_draft(store, config, reconciled_run, *, publication_status=None
         else:
             require(publication_status in {'PUSHED', 'RETRY_PUSH'},
                     'Prepared first-draft publication requires exact remote-ref reconciliation')
+        # Recover the exact host attempt, not just the loop reservation UUID:
+        # retries retain that UUID but have distinct operational bindings.
+        from .safeio import Tree
+        from .budget_enrollment import OperationalRegistry, validate_binding
+        run = store.directory / 'runs' / reconciled_run
+        if run.is_dir():
+            with Tree(run) as tree:
+                attempt = None
+                if tree.inspect('first-draft-attempt.json') is not None:
+                    attempt = json.loads(tree.read('first-draft-attempt.json', maximum=16384))
+                else:
+                    # Earlier hosts used the loop's durably charged attempt
+                    # number, without a pointer. Recover only that exact path.
+                    number = state['inflight'].get('attempt', 1)
+                    require(type(number) is int and 1 <= number < 1000,
+                            'Operational first-draft attempt number is invalid')
+                    directory = '.' if number == 1 else f'attempt-{number}'
+                    relative = '' if number == 1 else directory + '/'
+                    if tree.inspect(relative + 'execution-outcome.json') is not None:
+                        outcome = json.loads(tree.read(relative + 'execution-outcome.json', maximum=16384))
+                        if outcome.get('binding'):
+                            attempt = dict(controller_run_id=reconciled_run, directory=directory,
+                                           binding=outcome['binding'])
+                if attempt is not None:
+                    require(attempt['controller_run_id'] == reconciled_run,
+                            'Operational first-draft resume differs from retained reservation')
+                    directory = attempt['directory']
+                    require(directory == '.' or (re.fullmatch(r'attempt-[1-9][0-9]{0,2}', directory)
+                            and int(directory.split('-')[1]) >= 2),
+                            'Operational first-draft attempt path is invalid')
+                    outcome_path = 'execution-outcome.json' if directory == '.' else directory + '/execution-outcome.json'
+                    outcome = json.loads(tree.read(outcome_path, maximum=16384))
+                    binding = validate_binding(attempt['binding'])
+                    intent_path = 'budget-intent.json' if directory == '.' else directory + '/budget-intent.json'
+                    intent = json.loads(tree.read(intent_path, maximum=16384))
+                    expected = reconciled_run if directory == '.' else str(uuid.uuid5(
+                        uuid.NAMESPACE_URL, 'awf:review-execution:' + reconciled_run + ':' + directory))
+                    require(binding['run_id'] == expected and binding['dispatch_id'] == expected
+                            and binding['session_id'] == expected and binding['role'] == 'worker'
+                            and outcome['binding'] == binding and intent == binding,
+                            'Operational first-draft resume differs from retained execution')
+                    if not outcome['success'] and not outcome['budgeted']:
+                        roots = tuple(config[key] for key in ('worker_checkout', 'critic_checkout') if key in config)
+                        OperationalRegistry.for_project(binding['project_id'], roots).resolve(binding)
         state.update(phase='FIRST_DRAFT', resume_ready=True,
                      first_draft_publication_status=publication_status,
                      reason='Operator reconciled first-draft local and provider state; one retry is ready',

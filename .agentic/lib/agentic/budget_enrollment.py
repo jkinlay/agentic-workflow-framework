@@ -5,11 +5,13 @@ worker/configuration/CLI input. These interfaces do not authenticate a Codex UI.
 Protect this state outside *all* worker worktrees; repository/model/ancestry is
 never an enrollment signal. Enrollment is operational identity, not telemetry.
 """
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import sqlite3
+import uuid
 
 from . import ValidationError
 from .controller_state import restrict_state_permissions
@@ -51,14 +53,17 @@ class ProtectedDatabase:
         self.path = Path(path).absolute()
         self.worktree_roots = tuple(Path(root).resolve() for root in worktree_roots)
 
-    @contextmanager
-    def transaction(self, ddl):
+    def validate_path(self):
         for parent in (self.path, *self.path.parents):
             require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
                     'Protected state path traverses a link/reparse point')
         require(not self.path.exists() or self.path.stat().st_nlink == 1, 'Protected state has multiple hardlinks')
         require(not any(is_within(self.path, root) for root in self.worktree_roots),
                 'Protected state must be outside worker worktrees')
+
+    @contextmanager
+    def transaction(self, ddl):
+        self.validate_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         db.row_factory = sqlite3.Row
@@ -157,6 +162,7 @@ class EnrollmentRegistry(ProtectedDatabase):
 
 
 OPERATIONAL_DDL = '''
+CREATE TABLE IF NOT EXISTS execution_identity(identity TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS execution_intents(run_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_contexts(run_id TEXT PRIMARY KEY, context_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_outcomes(run_id TEXT PRIMARY KEY, success INTEGER NOT NULL);
@@ -186,10 +192,47 @@ class OperationalRegistry(ProtectedDatabase):
     @contextmanager
     def transaction(self, ddl):
         try:
+            # Publish a separate durable witness *before* initializing the DB.
+            # A crash or loss of either established identity is never fresh state.
+            self.validate_path()
+            marker = ProtectedDatabase(self.path.with_suffix('.initialized'), self.worktree_roots)
+            marker.validate_path()
+            marker.path.parent.mkdir(parents=True, exist_ok=True)
+            initialized = False
+            try:
+                with marker.path.open('x', encoding='ascii') as stream:
+                    identity = str(uuid.uuid4())
+                    stream.write(identity)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                restrict_state_permissions(marker.path)
+                initialized = True
+            except FileExistsError:
+                identity = marker.path.read_text(encoding='ascii')
+            require(len(identity) == 36 and str(uuid.UUID(identity)) == identity,
+                    'Worker independence unknown: protected shared execution evidence marker invalid; restore verified host state')
+            if not initialized:
+                require(self.path.is_file(),
+                        'Worker independence unknown: protected shared execution evidence lost; restore verified host state from backup before restarting')
+            if self.path.exists():
+                # Upgrade intact pre-marker evidence; never reconstruct missing
+                # evidence tables around a surviving database identity.
+                with closing(sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True)) as prior:
+                    tables = {row[0] for row in prior.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    required = {'execution_intents', 'execution_contexts', 'execution_outcomes',
+                                'execution_resolutions', 'execution_retry_limits'}
+                    require(required <= tables and (initialized or 'execution_identity' in tables),
+                            'Worker independence unknown: protected shared execution evidence incomplete; restore verified host state')
             with super().transaction(ddl) as db:
+                if initialized:
+                    db.execute('INSERT INTO execution_identity VALUES (?)', (identity,))
+                require([row['identity'] for row in db.execute('SELECT identity FROM execution_identity')] == [identity],
+                        'Worker independence unknown: protected shared execution evidence identity lost; restore verified host state')
                 yield db
-        except (OSError, sqlite3.Error) as exc:
-            raise ValidationError('Worker independence unknown: protected shared execution evidence unavailable') from exc
+        except ValidationError:
+            raise
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise ValidationError('Worker independence unknown: protected shared execution evidence unavailable; restore verified host state from backup before restarting') from exc
 
     def _binding(self, db, binding):
         binding = validate_binding(binding)
@@ -197,10 +240,26 @@ class OperationalRegistry(ProtectedDatabase):
         require(row is not None and row['binding'] == encoded(binding), 'Operational execution identity differs')
         return binding
 
-    def begin(self, binding, retry_limit):
+    def _admit(self, db, binding, failure_resolved):
+        for row in db.execute('SELECT i.binding FROM execution_intents i '
+                              'JOIN execution_outcomes o ON o.run_id=i.run_id '
+                              'LEFT JOIN execution_resolutions r ON r.run_id=i.run_id '
+                              'WHERE o.success=0 AND r.run_id IS NULL'):
+            prior = validate_binding(json.loads(row['binding']))
+            if all(prior[key] == binding[key] for key in ('project_id', 'ticket_id')):
+                require(failure_resolved is not None and failure_resolved(prior),
+                        'resolve non-reasoning failure before retry: shared execution ' + prior['run_id'])
+
+    def admit(self, binding, failure_resolved=None):
+        binding = validate_binding(binding)
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._admit(db, binding, failure_resolved)
+
+    def begin(self, binding, retry_limit, failure_resolved=None):
         binding = validate_binding(binding)
         require(type(retry_limit) is int and retry_limit >= 0, 'Operational retry limit is invalid')
         with self.transaction(OPERATIONAL_DDL) as db:
+            self._admit(db, binding, failure_resolved)
             row = db.execute('SELECT binding FROM execution_intents WHERE run_id=?', (binding['run_id'],)).fetchone()
             require(row is None or row['binding'] == encoded(binding), 'Operational execution cannot be rebound')
             db.execute('INSERT OR IGNORE INTO execution_intents VALUES (?,?)', (binding['run_id'], encoded(binding)))

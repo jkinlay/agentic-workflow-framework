@@ -824,7 +824,7 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         stdout, stderr = StringIO(), StringIO()
         with patch.object(module, 'verify_installed', return_value='f' * 64), \
                 patch.object(module, 'load_config', return_value=self.config), \
-                patch.object(module, 'HostDriver', return_value=self.driver), \
+                patch.object(module.HostDriver, 'from_project', return_value=self.driver), \
                 redirect_stdout(stdout), redirect_stderr(stderr):
             code = module.main(['--config', str(self.config_path), *args])
         return code, stdout.getvalue(), stderr.getvalue()
@@ -892,7 +892,7 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         stdout, stderr = StringIO(), StringIO()
         with patch.object(module, 'verify_installed', return_value='f' * 64), \
                 patch.object(module, 'load_config', return_value=self.config), \
-                patch.object(module, 'HostDriver', return_value=self.driver), \
+                patch.object(module.HostDriver, 'from_project', return_value=self.driver), \
                 patch.object(module, 'publish_tested_tree',
                              wraps=module.publish_tested_tree) as publish, \
                 patch.object(self.driver, 'create_draft_pr',

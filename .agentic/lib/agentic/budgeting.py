@@ -115,6 +115,11 @@ def subprocess_budget_outcome(binding, selected, *, session_id, actual_tokens, s
     return result
 
 
+def protected_state_roots(*roots):
+    """Canonical complete exclusions, shared by ledger and execution state."""
+    return tuple(dict.fromkeys(Path(root).resolve() for root in roots))
+
+
 def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_roots=(), previous_paths=()):
     """One host-owned lifetime ledger per project, independent of checkouts.
 
@@ -143,7 +148,7 @@ def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_r
             require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
                     'Project ledger path traverses a link/reparse point')
         candidate = candidate.resolve()
-        require(not any(is_within(candidate, Path(root).resolve()) for root in worktree_roots),
+        require(not any(is_within(candidate, root) for root in protected_state_roots(*worktree_roots)),
                 'Project ledger must be outside worker and reviewer worktrees')
         require(explicit or not any(Path(prior).exists() and Path(prior).resolve() != candidate
                                     for prior in previous_paths),
@@ -191,7 +196,7 @@ class ControllerBudgeting:
         self.operating = operating
         self.settings = resolve_settings(operating.config)
         self.host = host
-        self.worktree_roots = tuple(worktree_roots)
+        self.worktree_roots = worktree_roots = protected_state_roots(*worktree_roots)
         require(path is not None or not self.settings['accounting_enabled'],
                 'Enabled budgeting requires the canonical project ledger')
         self.database = None if path is None else ProtectedDatabase(path, worktree_roots)
@@ -204,7 +209,10 @@ class ControllerBudgeting:
 
     def start_execution(self, binding):
         limit = self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket']
-        self.operations.begin(binding, limit)
+        self.operations.begin(binding, limit, self._shared_failure_resolved)
+
+    def _shared_failure_resolved(self, binding):
+        return self.operational_failure_resolved({'binding': binding})
 
     def advance(self, store, *args, **kwargs):
         """Advance local lifecycle with the validated, effective mode."""
@@ -226,13 +234,20 @@ class ControllerBudgeting:
             pass
         return RoutingLedger(self.database.path)
 
-    def admit(self, binding, selected, *, stream=None):
+    def admit(self, binding, selected, *, stream=None, enrolled=True):
         from .budget_enrollment import validate_binding
         from .model_routing import policy_from_config
+        require(type(enrolled) is bool, 'Enrollment classification must be boolean')
+        if not enrolled:
+            self.operations.admit(binding, self._shared_failure_resolved)
+            return None  # Operational recovery applies without enrollment/usage.
         if binding.get('role') not in ('worker', 'fix', 'critic', 'specialist'):
             return None
         if 'legacy_behavior' in self.settings:
             return None  # Existing legacy host controls remain the host's responsibility.
+        if binding['role'] in ('critic', 'specialist'):
+            self.operations.worker_contexts(binding)
+        self.operations.admit(binding, self._shared_failure_resolved)
         if not self.settings['accounting_enabled']:
             self._retained_recovery(binding, selected, stream=stream)
             return None
@@ -301,7 +316,9 @@ class ControllerBudgeting:
             db.execute('BEGIN')
             binding = admission['binding']
             row = db.execute('SELECT request FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
-            require(row is not None and json.loads(row['request']).get('_budget_binding') == binding,
+            if row is None:
+                return False
+            require(json.loads(row['request']).get('_budget_binding') == binding,
                     'Operational resolution differs from retained execution identity')
             return db.execute('SELECT run_id FROM model_failure_resolutions WHERE run_id=?',
                               (binding['run_id'],)).fetchone() is not None

@@ -345,13 +345,14 @@ class HostDriver:
         Deployments share the canonical host-owned project budget ledger.
         This CLI reports usage but has no verified per-run token ceiling.
         """
-        from ..budgeting import ControllerBudgeting, project_ledger_path, resolve_settings
+        from ..budgeting import ControllerBudgeting, project_ledger_path, resolve_settings, protected_state_roots
         from ..canonical import load_yaml
         from ..operating import read_operating
         driver = cls(config, runtime_root)
         with Tree(driver.root) as tree:
-            governance = load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
             legacy = tree.inspect('OPERATING_CONFIG.yaml') is None
+            if not legacy:
+                governance = load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
         if legacy:
             # Absence never initializes fresh OFF settings over an old host.
             # Existing max_agent_runs/recovery/review controls still apply.
@@ -364,11 +365,12 @@ class HostDriver:
         pattern = pattern.replace(r'\{slug\}', r'[A-Za-z0-9_.-]+')
         matched = re.fullmatch(pattern, config['head_branch'])
         ticket = matched.groupdict().get('ticket') if matched else None
+        state_roots = protected_state_roots(driver.worker, driver.critic)
         path = project_ledger_path(governance['project']['id'], path=config.get('budget_ledger_path'),
             accounting_enabled=resolve_settings(snapshot.config)['accounting_enabled'],
-            worktree_roots=(driver.worker, driver.critic), previous_paths=(driver.state / 'routing.sqlite3',))
+            worktree_roots=state_roots, previous_paths=(driver.state / 'routing.sqlite3',))
         context = ControllerBudgeting(path,
-            governance, snapshot, driver, worktree_roots=(driver.worker, driver.critic))
+            governance, snapshot, driver, worktree_roots=state_roots)
         driver.configure_budgeting(context, ticket_id=ticket)
         return driver
 
@@ -474,7 +476,7 @@ class HostDriver:
         self.observe_enrollment(binding)
         run = self._budget_execution(binding)
         with Tree(run) as tree:
-            raw = tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT)
+            raw = tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT) if tree.inspect('codex.jsonl') is not None else b''
         events = [loads(line) for line in raw.decode('utf-8').splitlines() if line.strip()]
         success = observation.get('success', True)
         session = self._terminal_context(run / 'codex.jsonl')
@@ -1619,8 +1621,10 @@ class HostDriver:
     def _agent_admission(self, role, run, *, enrolled=True):
         """One admission boundary for every agent launch in this host."""
         budgeting = getattr(self, 'budgeting', None)
-        if not enrolled or budgeting is None or 'legacy_behavior' in budgeting.settings:
+        if budgeting is None or 'legacy_behavior' in budgeting.settings:
             return None, None
+        if not enrolled and not self.budget_ticket_id:
+            return None, None  # A standalone qualification probe has no ticket.
         require(isinstance(self.budget_ticket_id, str) and self.budget_ticket_id.strip(),
                 'Review budget admission requires a host-bound ticket identity')
         # Operational failures are retained in host run state in every mode.
@@ -1643,11 +1647,14 @@ class HostDriver:
         binding = {'project_id': budgeting.governance['project']['id'],
             'ticket_id': self.budget_ticket_id, 'run_id': execution_id,
             'dispatch_id': execution_id, 'session_id': execution_id, 'role': role}
-        (run / 'budget-intent.json').write_bytes(canonical(binding))
+        if enrolled:
+            (run / 'budget-intent.json').write_bytes(canonical(binding))
         template_role = 'critic' if role == 'specialist' else role
         admission = budgeting.admit(binding, {'model': self.c['models'][template_role],
             'reasoning_effort': (self.c.get('reasoning_effort') or {}).get(template_role)},
-            stream=self.c.get('budget_stream'))
+            stream=self.c.get('budget_stream'), enrolled=enrolled)
+        if not enrolled:
+            return None, None
         if admission is not None:
             (run / 'budget-admission.json').write_bytes(canonical(admission))
         return admission, binding
@@ -1655,9 +1662,6 @@ class HostDriver:
     def _agent_outcome(self, run, admission, binding, *, success, failure_kind='unknown'):
         """One terminal boundary; operational state never requires accounting."""
         log = run / 'codex.jsonl'
-        if not log.exists():
-            with Tree(run) as tree:
-                tree.write(log.name, b'')
         session = self._terminal_context(log)
         identity_missing = success and binding is not None and session is None
         if identity_missing:
@@ -1684,7 +1688,7 @@ class HostDriver:
         except (OSError, UnicodeError, ValidationError):
             return None
 
-    def _launch_agent(self, role, run, args, prompt, *, enrolled=True):
+    def _launch_agent(self, role, run, args, prompt, *, enrolled=True, first_draft_run=None):
         admission, binding = self._agent_admission(role, run, enrolled=enrolled)
         if binding is not None:
             if role in ('critic', 'specialist'):
@@ -1692,6 +1696,11 @@ class HostDriver:
             self.budgeting.start_execution(binding)
         with Tree(run) as tree:
             tree.write('execution-started.json', canonical(dict(binding=binding)))
+        if first_draft_run is not None and binding is not None:
+            with Tree(self.state / 'runs' / first_draft_run) as tree:
+                tree.write('first-draft-attempt.json', canonical(dict(
+                    controller_run_id=first_draft_run, binding=binding,
+                    directory='.' if run.name == first_draft_run else run.name)))
         try:
             self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
         except BaseException as exc:
@@ -1915,7 +1924,7 @@ class HostDriver:
         self.require_clean_first_draft_checkout()
         (run / 'input.json').write_bytes(canonical(dict(candidate=None,
             allowed_amendment_paths=self.c['allowed_paths'], contract=contract)))
-        self._launch_agent('worker', run, args, prompt)
+        self._launch_agent('worker', run, args, prompt, first_draft_run=run_id)
         self.require_first_draft_git_controls(git_controls)
         raw_result, value = self._bounded_result(output, run)
         self._record_codex_identity(run_id, run_root, run, output)

@@ -702,6 +702,10 @@ def _build(config):
 			if (prior.get('status') == 'FAILED' and not (budgeting is not None
 					and budgeting.operational_failure_resolved(prior.get('budget_admission'), prior.get('operational_binding')))):
 				raise ValidationError('resolve non-reasoning failure before retry: unknown')
+		if budgeting is not None and record['role'] == 'probe':
+			budgeting.admit(dict(project_id=budgeting.governance['project']['id'], ticket_id=record['ticket'],
+				run_id=record['launch_nonce'], dispatch_id=record['dispatch_id'],
+				session_id=record['launch_nonce'], role='critic'), selected, stream=record['stream'], enrolled=False)
 		if budgeting is not None and record['role'] in {'writer', 'critic'}:
 			binding = {'project_id': budgeting.governance['project']['id'], 'ticket_id': record['ticket'],
 				'run_id': record['launch_nonce'], 'dispatch_id': record['dispatch_id'],
