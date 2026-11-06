@@ -56,9 +56,10 @@ Await adoption/keep; apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.a
 
 Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`. Bootstrap preserves outside `.gitignore` bytes; `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries and `added_lines`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
 
-Publish flushed journal/audit without replacement; preserve conflicts. Recovery requires inspected journal SHA-256; budget recovery requires
-the latest consumed confirmation in protected storage. Unconfirmed/superseded journals
-refuse without writes; confirmed crash recovery completes once.
+Publish flushed journal/audit without replacement; preserve conflicts. Inspect/pin journal SHA-256.
+Budgets require latest consumed confirmation's registered transaction. Unconfirmed/superseded journals
+refuse without writes. Register before publication: published transactions recover once;
+otherwise `set`/`confirm` afresh. Preserve evidence.
 
 
 Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits

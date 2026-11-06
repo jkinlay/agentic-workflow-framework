@@ -265,7 +265,7 @@ def protected_diagnostic(root, governance, value):
 
 
 def register_transaction(root, governance, event, journal_raw):
-    """Bind a consumed confirmation to its one published WAL, before any apply."""
+    """Bind a consumed confirmation to its exact WAL before publication/apply."""
     store = ProposalStore.for_project(root, governance['project']['id'])
     digest = event['owner_admission']['digest']
     with store.transaction() as db:

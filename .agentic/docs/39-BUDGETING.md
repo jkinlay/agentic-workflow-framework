@@ -28,12 +28,13 @@ terminal within 15 minutes, typing its first eight characters. The skill never
 runs confirm; after owner-reported completion, run `operating show` for persistence.
 
 Proposals bind clone/project/repository/governance, prior settings, exact changes, request/expiry.
-Confirmation consumes direction, retaining protected digests. Audit: numeric owner ID/login/digest/time, never tokens. Before configuration changes, register the published
-journal's exact SHA-256/event ID once in protected storage within 15 minutes.
-Later confirmations supersede earlier unapplied transactions. Recovery only
-finishes the latest registered transaction extending its bound prior
+Confirmation consumes direction, retaining protected digests. Audit: numeric owner ID/login/digest/time, never tokens. Register journal SHA-256/event ID once
+in protected storage within 15 minutes, before publication/configuration changes.
+Later confirmations supersede unapplied transactions. Recovery
+finishes the latest registered transaction extending bound prior
 settings, or clears its terminal journal without reapplying; it never renews
-authority. Unregistered consumption needs reproposal; preserve evidence. Disabling accounting recovers
+authority. Before journal publication, unchanged settings permit fresh `set`/`confirm`;
+afterwards inspect/pin and recover first. Preserve evidence. Disabling accounting recovers
 derived enforcement OFF too.
 
 Owner storage uses the Windows current token's account SID and HKLM ProfileList

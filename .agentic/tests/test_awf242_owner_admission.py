@@ -257,18 +257,62 @@ class OwnerAdmissionTests(unittest.TestCase):
             if crash:
                 wrapper += ('import os,agentic.operating as op\n'
                     'original_new,original_write,original_unlink=op._new,op.Tree.write,op.Tree.unlink\n'
+                    'original_register=admission.register_transaction\n'
+                    'original_consume=admission.ProposalStore.consume\n'
+                    'original_admit=admission.EnrollmentRegistry.admit_owner_direction\n'
+                    'original_complete=admission.complete_transaction\n'
+                    'original_read=op._read\n'
                     f'phase={crash!r}\n'
+                    'audited=False\n'
+                    'def consume(*args,**kwargs):\n'
+                    ' if phase=="before_consume": os._exit(71)\n'
+                    ' result=original_consume(*args,**kwargs)\n'
+                    ' if phase=="after_consume_write": os._exit(71)\n'
+                    ' return result\n'
+                    'def admit(*args,**kwargs):\n'
+                    ' result=original_admit(*args,**kwargs)\n'
+                    ' if phase=="after_consume": os._exit(71)\n'
+                    ' return result\n'
+                    'def register(root,governance,event,raw):\n'
+                    f' if phase=="before_register": Path({str(self.fixture.base / "unjournalled.json")!r}).write_bytes(raw); os._exit(72)\n'
+                    ' result=original_register(root,governance,event,raw)\n'
+                    ' if phase=="after_register": os._exit(71)\n'
+                    ' return result\n'
                     'def new(tree,name,raw):\n'
+                    ' global audited\n'
                     f' if phase=="before_journal" and name==op.JOURNAL: Path({str(self.fixture.base / "unjournalled.json")!r}).write_bytes(raw); os._exit(71)\n'
                     ' if phase=="after_config" and "/changes/" in name: os._exit(71)\n'
-                    ' return original_new(tree,name,raw)\n'
+                    ' result=original_new(tree,name,raw)\n'
+                    ' if name==op.JOURNAL and phase=="journal_published": os._exit(71)\n'
+                    ' if "/changes/" in name:\n'
+                    '  audited=True\n'
+                    '  if phase=="after_audit": os._exit(71)\n'
+                    ' return result\n'
                     'def write(tree,name,raw):\n'
                     ' if phase=="after_journal" and name==op.CONFIG: os._exit(71)\n'
-                    ' return original_write(tree,name,raw)\n'
+                    ' result=original_write(tree,name,raw)\n'
+                    ' if phase=="config_published" and name==op.CONFIG: os._exit(71)\n'
+                    ' return result\n'
+                    'def read(tree,name):\n'
+                    ' if audited and name==op.CONFIG and phase=="before_readback": os._exit(71)\n'
+                    ' result=original_read(tree,name)\n'
+                    ' if audited and name==op.CONFIG and phase=="after_readback": os._exit(71)\n'
+                    ' return result\n'
+                    'def complete(*args,**kwargs):\n'
+                    ' if phase=="before_complete": os._exit(71)\n'
+                    ' result=original_complete(*args,**kwargs)\n'
+                    ' if phase=="after_complete": os._exit(71)\n'
+                    ' return result\n'
                     'def unlink(tree,name):\n'
                     ' if phase=="after_event" and name==op.JOURNAL: os._exit(71)\n'
-                    ' return original_unlink(tree,name)\n'
-                    'op._new,op.Tree.write,op.Tree.unlink=new,write,unlink\n')
+                    ' result=original_unlink(tree,name)\n'
+                    ' if phase=="after_unlink" and name==op.JOURNAL: os._exit(71)\n'
+                    ' return result\n'
+                    'admission.ProposalStore.consume=consume\n'
+                    'admission.EnrollmentRegistry.admit_owner_direction=admit\n'
+                    'admission.register_transaction=register\n'
+                    'admission.complete_transaction=complete\n'
+                    'op._new,op.Tree.write,op.Tree.unlink,op._read=new,write,unlink,read\n')
             if clock:
                 wrapper += f'import agentic.owner_admission as admission\nadmission.now_text=lambda: {clock!r}\n'
             wrapper += f'sys.argv={command[3:]!r}\nrunpy.run_path({str(entry)!r},run_name="__main__")\n'
@@ -387,7 +431,9 @@ class OwnerAdmissionTests(unittest.TestCase):
         self.assertFalse(self.calls.exists())
 
     def test_confirmed_crash_recovers_once_at_each_publication_phase(self):
-        for phase in ('after_journal', 'after_config', 'after_event'):
+        for phase in ('journal_published', 'after_journal', 'config_published', 'after_config',
+                      'after_audit', 'before_readback', 'after_readback', 'before_complete',
+                      'after_complete', 'after_event'):
             with self.subTest(phase=phase):
                 # Alternate limits so every iteration has a real budget change.
                 digest = self.pending('budgeting.max_tokens_per_ticket=' + str(123 + len(self.events())))
@@ -406,6 +452,49 @@ class OwnerAdmissionTests(unittest.TestCase):
                 # Replaying a terminal WAL may only clear it, never add an event.
                 self.assertEqual(0, self.recover(journal).returncode)
                 self.unchanged()
+
+    def test_crash_before_registration_allows_fresh_confirmation(self):
+        # F1: the exact pre-registration exit must never strand a published WAL.
+        digest = self.pending('budgeting.max_tokens_per_ticket=123')
+        result = self.confirm(digest, crash='before_register')
+        self.assertEqual(72, result.returncode, result.stdout + result.stderr)
+        self.unchanged()
+        self.refused(digest, 'PROPOSAL_ALREADY_CONSUMED')
+        self.apply('budgeting.max_tokens_per_ticket=123')
+        self.assertEqual(123, json.loads(self.before)['budgeting']['max_tokens_per_ticket'])
+
+    def test_unpublished_crash_boundaries_allow_fresh_confirmation(self):
+        for phase in ('before_consume', 'after_consume_write', 'after_consume',
+                      'after_register', 'before_journal'):
+            with self.subTest(phase=phase):
+                limit = 123 + len(self.events())
+                digest = self.pending('budgeting.max_tokens_per_ticket=' + str(limit))
+                result = self.confirm(digest, crash=phase)
+                self.assertEqual(71, result.returncode, result.stdout + result.stderr)
+                self.unchanged()
+                calls = self.calls.read_bytes()
+                self.apply('budgeting.max_tokens_per_ticket=' + str(limit))
+                self.assertEqual(limit, json.loads(self.before)['budgeting']['max_tokens_per_ticket'])
+                # Consumption is immutable, and later confirmation supersedes
+                # even an unconsumed proposal from the same prior disk state.
+                self.assertNotEqual(calls, self.calls.read_bytes())
+                result = self.confirm(digest)
+                self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                self.unchanged()
+
+    def test_crash_after_journal_cleanup_is_already_complete(self):
+        digest = self.pending('budgeting.max_tokens_per_ticket=123')
+        result = self.confirm(digest, crash='after_unlink')
+        self.assertEqual(71, result.returncode, result.stdout + result.stderr)
+        self.assertFalse((self.root / op.JOURNAL).exists())
+        self.assertEqual(len(self.audit_before) + 1, len(self.events()))
+        self.refresh()
+        shown = self.cli('show', '--json')
+        self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
+        self.assertEqual('ACCEPTED', json.loads(shown.stdout)['status'])
+        self.assertEqual(123, json.loads(shown.stdout)['configuration']['budgeting']['max_tokens_per_ticket'])
+        self.refused(digest, 'PROPOSAL_ALREADY_CONSUMED')
+        self.apply('budgeting.max_tokens_per_ticket=124')
 
     def test_recovery_refuses_mismatched_confirmed_transaction_without_writes(self):
         digest = self.pending('budgeting.accounting_enabled=true', 'budgeting.enforcement_enabled=true')
@@ -665,8 +754,8 @@ class OwnerAdmissionTests(unittest.TestCase):
 
     def test_consumption_without_published_journal_cannot_recover(self):
         digest = self.pending()
-        result = self.confirm(digest, crash='before_journal')
-        self.assertEqual(71, result.returncode, result.stdout + result.stderr)
+        result = self.confirm(digest, crash='before_register')
+        self.assertEqual(72, result.returncode, result.stdout + result.stderr)
         self.assertFalse((self.root / op.JOURNAL).exists())
         result = self.recover(json.loads((self.fixture.base / 'unjournalled.json').read_bytes()))
         self.assertEqual(2, result.returncode, result.stdout + result.stderr)

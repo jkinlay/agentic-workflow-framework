@@ -643,10 +643,13 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     event, raw, event_raw, journal_raw = _prepare_commit(
         tree, governance, before, value, instruction, changed, applied_from,
         created_at=created_at, budget_owner_observation=budget_owner_observation, owner_admission=owner_admission)
-    _new(tree, JOURNAL, journal_raw)
     if owner_admission is not None:
         from .owner_admission import register_transaction
         register_transaction(tree.root, governance, event, journal_raw)
+    # Register exact intent before exposing a WAL that blocks fresh proposals.
+    # Before WAL publication an interruption leaves unchanged bytes and permits
+    # reproposal; afterwards recovery has its protected transaction binding.
+    _new(tree, JOURNAL, journal_raw)
     # On any interruption retain the WAL. Never claim config/audit are a single rename.
     if _read(tree, CONFIG) != before:
         fail("$", "Operating bytes changed before commit; journal retained")
