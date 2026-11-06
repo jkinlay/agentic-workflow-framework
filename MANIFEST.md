@@ -44,7 +44,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `fe98eb7729184ad17697deee8fde4e996eb61d2de535e624aec767719b8d42d3` |
 | `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `1b2a8bf72aac20e78759b6a894d753149991352372bcb6ea3ab0f959fc973d42` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `eeb46dd15dbafdd209e9b4b745e617379f97d20ca0e2783d539849a345c14b16` |
-| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `218b79ee090e53f63f1e40f508f1281d1f15ed6c533b516f12e9eed6e40c533a` |
+| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `c5c104c209eec631265cab0851ff3f54210d837a786c9dec641c0a6876a56480` |
 | `.agentic/docs/35-RULES-ACTIVATION.md` | `522fdcf609974dad031038edb7c8bb3d8691a10d64d429a28c5014b52fc6b6b8` |
 | `.agentic/docs/36-FIVE-SLOT-ACCELERATION.md` | `5e4f105d562d7124b7844accf2cfbac79583634ff8b04ee2dc06bb55c1576402` |
 | `.agentic/docs/37-PRIVATE-DENY-SCAN.md` | `54aee43783e6bed3fa25a08f4e0e1d28553fed92d7b71c9e97d8f47ab9db0e6c` |
