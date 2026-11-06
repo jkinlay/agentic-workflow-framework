@@ -28,11 +28,7 @@
     ".agentic/docs/22-AUTOMATED-REVIEW-LOOP.md": "6a73c87729ff8489c8f9fe6c125e5ba31fcc31566ef78c205d3566c726c61d76",
     ".agentic/docs/23-TICKET-LIFECYCLE.md": "4b55b7a6da6164e2480bcd81f7f03639caac2bcaefc3477ba89888020701b3ef",
     ".agentic/docs/24-STREAM-STARTUP.md": "2b6555b25742a0036502f5c6812197153e08d19e7dfef46a31746983b3b1db43",
-<<<<<<< HEAD
-    ".agentic/docs/27-MODEL-ROUTING.md": "883d68c537b1a3d426ba9d9dd77d48f586b51b66b1c111ad9a2c4b2183367792",
-=======
-    ".agentic/docs/27-MODEL-ROUTING.md": "44da4fee94005e294cf9b92654e2bebb30dbd2e97cef07e931619f13878e203e",
->>>>>>> b23579ee
+    ".agentic/docs/27-MODEL-ROUTING.md": "089594a6ccd384a047cbb9a55f89d9518e050fd9d10e2ec7baa611ccafd51e50",
     ".agentic/docs/28-EXTERNAL-REVIEW.md": "d4ac3884ea24f40153cf87690edbc495b975ffc4510ba3c64cdcf38830d78b42",
     ".agentic/docs/29-OPERATING-CONFIGURATION.md": "3cb00bae0d0643b79321797cf928aa6c0ce1c07016e1b25bdf817c8ab02825c0",
     ".agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md": "9ba85f949aceeb0b6276a897d2ba7426f2a74719d9680697ef85348c49711e65",
@@ -121,16 +117,10 @@
     ".agentic/lib/agentic/launch_surfaces.py": "441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d",
     ".agentic/lib/agentic/lifecycle.py": "f01f9eb7862f8f87eb41a94329263e130b31b0f0e7e5aeebd71e962d62608e45",
     ".agentic/lib/agentic/merge_train.py": "9586b01daca94606fb0f97c608e9e667baac4a68b86af5142d54dbe6ad4e85b7",
-<<<<<<< HEAD
-    ".agentic/lib/agentic/model_routing.py": "eeb74223fabf763bf8d994d9d9066ac39fddbb8ef962e529d9882748265be53d",
+    ".agentic/lib/agentic/model_routing.py": "7e2dd0e30a472b26a576eaeeff83adfe68b623d1f9b039842721cd693188cd90",
     ".agentic/lib/agentic/operating.py": "81cea948fab99082d332f7eac49f4f144c925f462b668e5349146009f8fe7458",
     ".agentic/lib/agentic/operating_calendar.py": "51c9c1e3b746d2e8ff1337568a6aa575dc32ffb2c44a1fd2ac316a366e1cf5e6",
     ".agentic/lib/agentic/operating_status.py": "e852cfe7fc5cc556ef7a1998571fe66d21d50f8ee572136c502473818501fc0f",
-=======
-    ".agentic/lib/agentic/model_routing.py": "79bfc7b956713341bf46e996a2d8dca4de75bed71a2a7d69dd03f10ce7f8b573",
-    ".agentic/lib/agentic/operating.py": "7b75e02715bf4890ad050f2e9e357c9b28fbcc4672237380170d095aea024cce",
-    ".agentic/lib/agentic/operating_status.py": "d10c1289dd3172034adf6b5b52399e0f3dc590f9c601a6ebdfa71d8e703eb17d",
->>>>>>> b23579ee
     ".agentic/lib/agentic/output.py": "f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b",
     ".agentic/lib/agentic/owner_admission.py": "ab6193e26f6ffb7946f5911f9c79c9103c2e2acc30ee74a85b29321f319d78b3",
     ".agentic/lib/agentic/owner_publication.py": "ce282e1ad9f98ab2a0b6b6dca65bc885a46e0e5c5fcfc847ed0585c5e507e49f",
@@ -502,11 +492,7 @@
     ".agentic/tests/test_store_planning_history.py": "b56c97f44efc4928bfca884eef39e588363bd36eeb2712bd78632370e8dae5f1",
     ".agentic/tests/test_store_regressions.py": "340df570120f78d77ef33c3e9c8f315ec72b0a3e49bd7e053a5a5ef24679111f",
     ".agentic/tests/test_streams.py": "95c395c7609b7a5cddb9a3e3491d5939ec2c454a94efda1c0ca769c33b730c27",
-<<<<<<< HEAD
-    ".agentic/tests/test_twelve_streams.py": "d1cda3d230f35b7c641434767c712b16171016b3b907ea3204c41d746a300586",
-=======
-    ".agentic/tests/test_twelve_streams.py": "f51b6b7a5628a93e10123bf00f2d0d781467e468c233b927d04c34277fcb58ad",
->>>>>>> b23579ee
+    ".agentic/tests/test_twelve_streams.py": "e439228f318f1166db7af81e4e4c8fa90c97f6eed3a04edc5c3a7dc517a52c97",
     ".agentic/tests/test_upgrade_194.py": "9ed7a20ce999c7253c4c1f3db1121e7b4888b332afafcce452f0d01e6c4c7b7c",
     ".agentic/tests/test_upgrade_195.py": "2bfb845b86b60cc33e39d2a2492280e2c7986e54c116e9fa29e49599d0a52460",
     ".agentic/tests/test_upgrade_196.py": "13df96d0ca3f55125a718681068783e8258facd4363cb270cc3889fd5b529b81",
