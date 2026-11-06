@@ -124,6 +124,9 @@ class BaseTransport:
         self.pause = pause
 
     def call(self, method, url, secret, payload=None):
+        if method == 'POST':
+            require(safe_report(payload, trusted_keys=True, credentials=(secret,)) == payload,
+                    'REPORT_CREDENTIAL_WITHHELD')
         try:
             require(isinstance(secret, str) and secret and not any(ord(c) < 32 for c in secret), 'REPORT_SECRET_INVALID')
             from .bounded import admit_http
@@ -142,6 +145,9 @@ class BaseTransport:
             raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
 
     def wire_text(self, intent):
+        # Inspect raw members before Teams HTML conversion can split a detected
+        # credential across markup. Direct transport callers get the same guard.
+        require(safe_report(intent, trusted_keys=True) == intent, 'REPORT_CREDENTIAL_WITHHELD')
         marker = '\n\nAWF delivery: ' + intent['delivery_id'] + ' / ' + intent['payload_sha256']
         value = intent['payload'] + marker
         return teams_html(value) if self.platform == 'teams' else value
@@ -200,8 +206,11 @@ class SlackTransport(BaseTransport):
         text = self.wire_text(intent)
         require(len(text.encode('utf-8')) <= 12000, 'REPORT_PAYLOAD_TOO_LARGE')
         try:
-            self.api('POST', 'chat.postMessage', secret, dict(channel=intent['binding']['destination'], text=text,
-                     mrkdwn=True, parse='none', unfurl_links=False, unfurl_media=False, client_msg_id=attempt_id))
+            payload = dict(channel=intent['binding']['destination'], text=text,
+                     mrkdwn=True, parse='none', unfurl_links=False, unfurl_media=False, client_msg_id=attempt_id)
+            if intent.get('thread_id'):
+                payload['thread_ts'] = intent['thread_id']
+            self.api('POST', 'chat.postMessage', secret, payload)
         except TerminalRejection:
             return self.rejection(intent, attempt_id)
 
@@ -209,9 +218,11 @@ class SlackTransport(BaseTransport):
         cursor = None
         for _ in range(10):
             query = dict(channel=intent['binding']['destination'], limit=100)
+            if intent.get('thread_id'):
+                query['ts'] = intent['thread_id']
             if cursor:
                 query['cursor'] = cursor
-            result = self.api('GET', 'conversations.history', secret, **query)
+            result = self.api('GET', 'conversations.replies' if intent.get('thread_id') else 'conversations.history', secret, **query)
             for message in result.get('messages', []):
                 if (message.get('text') == self.wire_text(intent) and message.get('user') == self.sender
                         and isinstance(message.get('ts'), str) and message['ts']):
@@ -255,7 +266,10 @@ class TeamsTransport(BaseTransport):
         text = self.wire_text(intent)
         require(len(text.encode('utf-8')) <= 20000, 'REPORT_PAYLOAD_TOO_LARGE')
         try:
-            self.call('POST', team + '/channels/' + channel + '/messages', secret,
+            path = team + '/channels/' + channel + '/messages'
+            if intent.get('thread_id'):
+                path += '/' + quote(intent['thread_id'], safe='') + '/replies'
+            self.call('POST', path, secret,
                       dict(body=dict(contentType='html', content=text)))
         except TerminalRejection:
             return self.rejection(intent, attempt_id)
@@ -263,6 +277,8 @@ class TeamsTransport(BaseTransport):
     def _readback(self, intent, attempts, secret):
         team, channel = self.route(intent['binding'])
         path = team + '/channels/' + channel + '/messages'
+        if intent.get('thread_id'):
+            path += '/' + quote(intent['thread_id'], safe='') + '/replies'
         url = path + '?$top=50'
         for _ in range(10):
             result = self.call('GET', url, secret)

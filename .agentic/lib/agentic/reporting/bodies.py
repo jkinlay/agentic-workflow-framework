@@ -16,7 +16,7 @@ LAYOUTS = {
     'hourly': ('Summary', 'Current work', 'PRs and Jira tickets', 'Waiting and blockers', 'Next tickets',
                'Capacity and review queue', 'Changes since the previous report', 'Next action', 'Owner action', 'Sources and freshness'),
     'eod': ('Summary', 'PRs merged and Jira delivery', 'Remaining work', 'Critical paths', 'Time and estimate comparison',
-            'Token usage', 'Epic and project forecast', 'Blockers and risks', 'Next action', 'Owner action', 'Sources and freshness'),
+            'Usage (tokens)', 'Epic and project forecast', 'Blockers and risks', 'Next action', 'Owner action', 'Sources and freshness'),
     'jira-review': ('Summary', 'Scope and progress', 'PRs and Jira tickets', 'Critical path', 'Epic outlook',
                     'Time and review outcome', 'Blockers', 'Next action', 'Owner action', 'Sources and freshness'),
     'owner-action': ('Decision / readiness', 'Owner action', 'Impact and independent work', 'Evidence',
@@ -53,8 +53,14 @@ def prepare_body(kind, data, *, verify_link=None):
     require(kind in LAYOUTS and isinstance(data, dict), 'REPORT_BODY_TYPE')
     require({'project', 'observed_at', 'timezone', 'scope', 'candidate', 'summary', 'sections'} <= data.keys(), 'REPORT_BODY_REQUIRED')
     timestamp(data['observed_at'])
-    require(isinstance(data['sections'], dict) and set(data['sections']) <= set(LAYOUTS[kind]), 'REPORT_BODY_SECTION')
     values = deepcopy(data)
+    require(isinstance(values['sections'], dict), 'REPORT_BODY_SECTION')
+    # Accept legacy supplied metric keys while new bodies use a label outside
+    # the credential grammar. The detector itself retains every existing rule.
+    if 'Token usage' in values['sections']:
+        require('Usage (tokens)' not in values['sections'], 'REPORT_BODY_SECTION')
+        values['sections']['Usage (tokens)'] = values['sections'].pop('Token usage')
+    require(set(values['sections']) <= set(LAYOUTS[kind]), 'REPORT_BODY_SECTION')
     for pr in values.get('prs', []):
         verified_url(pr['url'], verify_link)
         for ticket in pr.get('tickets', []):
@@ -103,6 +109,9 @@ def render_body(body, platform, *, max_bytes=None):
                    + '\nStatus: ' + plain(pr.get('status', 'Unknown')) + ' | Reviewed head: ' + plain(pr.get('head', 'Unknown'))
                    + '\nMerged: ' + plain(pr.get('merged_at', 'Unknown')) + ' | Merge commit: ' + plain(pr.get('merge_commit', 'Unknown')))
     sections = dict(data['sections'])
+    # Render retained legacy bodies without rewriting their bytes or digest.
+    if 'Token usage' in sections and 'Usage (tokens)' not in sections:
+        sections['Usage (tokens)'] = sections.pop('Token usage')
     sections['Summary'] = data['summary']
     header = bold + plain(data['project']) + ' — ' + TITLES[kind] + bold
     header += '\n\nObserved: ' + plain(data['observed_at']) + ' | Timezone: ' + plain(data['timezone'])

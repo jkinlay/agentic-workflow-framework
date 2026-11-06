@@ -3378,9 +3378,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	streams = store.snapshot()
 	from .reporting.settings import effective_reporting
 	from .reporting.runtime import reporting_cycle, ReviewReportingPort
-	from .reporting.bounded import DeliveryBudget
-	report_delivery_budget = DeliveryBudget()
-	from .reporting.observations import attributed_accounting, collect_sources
+	from .reporting.bounded import DeliveryBudget, SourceBudget
+	from .reporting.observations import attributed_accounting, collect_sources, collect_review_corrections
 	report_binding = dict(project=inventory_binding['project_id'], repository=inventory_binding['repository_id'],
 		scope_revision=inventory_binding['scope_sha256'])
 	operating_root = planning_operating_snapshot.config
@@ -3398,19 +3397,31 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 				reporting_providers = configure_reporting(operating_root, report_binding)
 			selected = {'teams', 'slack'} if report_settings['mode'] == 'both' else {report_settings['mode']}
 			_require(isinstance(reporting_providers, dict) and selected <= reporting_providers.keys(), 'REPORT_PROVIDERS_REQUIRED')
-			try:
-				context.update(collect_sources(report_binding, now, observe_reporting_sources, verify_reporting_sources))
-				if context.get('records') is not None:
-					context['coverage']['sources'] = 'VERIFIED'
-				context['verify_link'] = verify_reporting_link
-			except Exception as exc:
-				errors.append({'operation': 'reporting_sources', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+			with SourceBudget():
+				try:
+					context['review_corrections'] = collect_review_corrections(store, report_binding, now, observe_review_candidate)
+					context['coverage']['review_corrections'] = 'OBSERVED'
+				except Exception as exc:
+					context['coverage']['review_corrections'] = 'UNAVAILABLE'
+					errors.append({'operation': 'reporting_corrections', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+				try:
+					context.update(collect_sources(report_binding, now, observe_reporting_sources, verify_reporting_sources))
+					if context.get('records') is not None:
+						context['coverage']['sources'] = context.get('source_coverage', {}).get('status', 'VERIFIED')
+					if context.get('source_coverage', {}).get('reason'):
+						context['coverage']['source_reason'] = context['source_coverage']['reason']
+					context['verify_link'] = verify_reporting_link
+				except Exception as exc:
+					context['coverage']['sources'] = 'STALE_OR_UNAVAILABLE'
+					errors.append({'operation': 'reporting_sources', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
 			context['accounting_summary'] = attributed_accounting(budget_ledger_path, operating_root,
 				report_binding['project'], worktree_roots=store.worktree_roots)
 			context['coverage']['accounting'] = context['accounting_summary']['status']
 		# Reporting does not admit source-supplied usage: the canonical read-only
 		# ledger is the accounting boundary; missing token components stay unknown.
 		context['accounting'] = {'mode': 'off' if not budget_settings['accounting_enabled'] else 'unknown'}
+		# Source observation cannot spend the shared delivery/review allowance.
+		report_delivery_budget = DeliveryBudget()
 		reporting = reporting_cycle(store, operating=operating_root, binding=report_binding, now=now,
 			providers=reporting_providers, context=context, delivery_budget=report_delivery_budget)
 		if reporting_providers is not None:

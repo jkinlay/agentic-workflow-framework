@@ -78,6 +78,8 @@ def collect_sources(binding, now, observe, verify):
     if observe is None and verify is None:
         return {}
     require(callable(observe) and callable(verify), 'REPORT_SOURCE_PORTS_REQUIRED')
+    from .bounded import source_timeout
+    source_timeout()
     request = dict(binding=deepcopy(binding), observed_at=now)
     value = observe(deepcopy(request))
     require(isinstance(value, dict) and set(value) == {
@@ -90,9 +92,59 @@ def collect_sources(binding, now, observe, verify):
     require(verify(deepcopy(auth), deepcopy(request)) == dict(status='VERIFIED', evidence_id=auth['evidence_id'],
                                                             snapshot=snapshot), 'REPORT_SOURCE_VERIFIER_MISMATCH')
     result = dict(records=deepcopy(value['records']), owner_actions=deepcopy(value['owner_actions']))
+    if isinstance(value['records'], dict) and 'source_coverage' in value['records']:
+        result['source_coverage'] = deepcopy(value['records']['source_coverage'])
     if isinstance(value['records'], dict) and 'readiness_candidates' in value['records']:
         result['readiness_candidates'] = deepcopy(value['records']['readiness_candidates'])
     return result
+
+
+def collect_review_corrections(store, binding, now, observe):
+    """Re-observe notices that actually landed, independently per destination.
+
+    Durable review records and channel evidence seed this set, including partial
+    batch delivery. Unavailable observations never mean readiness withdrawal.
+    A correction identity closes each prior delivery once, across restarts.
+    """
+    from ..canonical import loads, fingerprint, timestamp
+    from ..review_batching import _candidate, _OBSERVATION_KEYS, _observation_valid
+    from .bounded import source_timeout
+    from .delivery import DeliveryOutbox
+    notices = []
+    with store.connection() as db:
+        rows = db.execute("SELECT payload_json FROM controller_reports WHERE kind='final-human-review'").fetchall()
+        for row in rows:
+            report = loads(row[0])
+            if report['binding'] != binding or 'review_batch' not in report:
+                continue
+            for delivery_id in report['delivery_ids']:
+                intent, state = DeliveryOutbox._load(db, delivery_id)
+                correction_id = fingerprint('report-review-correction-1', delivery_id)
+                if state['status'] != 'DELIVERED' or db.execute(
+                        'SELECT 1 FROM controller_reports WHERE report_id=?', (correction_id,)).fetchone():
+                    continue
+                require(callable(observe), 'REPORT_REVIEW_OBSERVER_UNAVAILABLE')
+                invalid = []
+                for member in report['review_batch']['members']:
+                    source_timeout()
+                    prior = _candidate(member['candidate'])
+                    current = observe(deepcopy(prior), now)
+                    source_timeout()
+                    require(isinstance(current, dict) and set(current) == _OBSERVATION_KEYS,
+                            'REPORT_REVIEW_OBSERVATION_UNAVAILABLE')
+                    candidate = _candidate(current['candidate'])
+                    require((candidate['repository_id'], candidate['pull_request']) ==
+                            (prior['repository_id'], prior['pull_request']) and
+                            timestamp(current['observed_at']) == timestamp(now) < timestamp(current['expires_at']),
+                            'REPORT_REVIEW_OBSERVATION_UNAVAILABLE')
+                    if not _observation_valid(current, prior, timestamp(now)):
+                        invalid.append(dict(withdrawn=prior, current=current))
+                if invalid:
+                    readback = next(h for h in reversed(state['history']) if h.get('status') == 'DELIVERED')
+                    notices.append(dict(id=correction_id, prior_report=report['report_id'],
+                        delivery_id=delivery_id, binding=intent['binding'],
+                        thread_id=readback['message_id'], invalidated=invalid))
+    return notices
 
 
 def inspect_reporting(path, operating, binding, *, worktree_roots=()):

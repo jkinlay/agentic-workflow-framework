@@ -36,17 +36,22 @@ def validate_binding(binding):
     return deepcopy(binding)
 
 
-def delivery_intent(report_id, binding, payload):
+def delivery_intent(report_id, binding, payload, *, thread_id=None):
     binding = validate_binding(binding)
     require(safe_report(binding, trusted_keys=True) == binding, 'REPORT_CREDENTIAL_WITHHELD')
     require(isinstance(report_id, str) and 0 < len(report_id) <= 256, 'REPORT_ID_REQUIRED')
     require(isinstance(payload, str) and 0 < len(payload.encode('utf-8')) <= 65536, 'REPORT_PAYLOAD_SIZE')
     require(safe_report(report_id) == report_id, 'REPORT_CREDENTIAL_WITHHELD')
+    require(safe_report(payload) == payload, 'REPORT_CREDENTIAL_WITHHELD')
+    require(thread_id is None or valid_message_id(binding['platform'], thread_id), 'REPORT_THREAD_ID_INVALID')
     # Destination/configuration changes cannot reset the report/platform ceiling.
     identity = [binding['project'], binding['repository'], report_id, binding['platform']]
-    return dict(delivery_id=fingerprint('report-delivery-1', identity), report_id=report_id,
+    intent = dict(delivery_id=fingerprint('report-delivery-1', identity), report_id=report_id,
                 binding=binding, payload=payload,
                 payload_sha256=hashlib.sha256(payload.encode('utf-8')).hexdigest())
+    if thread_id is not None:
+        intent['thread_id'] = thread_id
+    return intent
 
 
 def install_delivery_schema(db):
@@ -92,7 +97,7 @@ class DeliveryOutbox:
         self.controller = controller_store
 
     def enqueue(self, intent):
-        expected = delivery_intent(intent['report_id'], intent['binding'], intent['payload'])
+        expected = delivery_intent(intent['report_id'], intent['binding'], intent['payload'], thread_id=intent.get('thread_id'))
         require(intent == expected, 'REPORT_INTENT_MISMATCH')
         with self.controller.transaction() as db:
             self.enqueue_in_transaction(db, intent)
@@ -100,7 +105,7 @@ class DeliveryOutbox:
 
     @staticmethod
     def enqueue_in_transaction(db, intent):
-        require(intent == delivery_intent(intent['report_id'], intent['binding'], intent['payload']),
+        require(intent == delivery_intent(intent['report_id'], intent['binding'], intent['payload'], thread_id=intent.get('thread_id')),
                 'REPORT_INTENT_MISMATCH')
         encoded = canonical(intent).decode()
         row = db.execute('SELECT intent_json FROM controller_report_delivery WHERE delivery_id=?',

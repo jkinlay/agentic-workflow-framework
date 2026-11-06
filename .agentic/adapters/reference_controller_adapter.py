@@ -1708,6 +1708,7 @@ def _build(config):
 		timestamp(request['observed_at'])
 
 	def observe_reporting_sources(request):
+		from agentic.reporting.bounded import source_timeout
 		reporting_request(request)
 		inventory = deepcopy(inventory_cache)
 		_require(inventory.get('observed_at') == request['observed_at'], 'REPORT_CURRENT_INVENTORY_REQUIRED')
@@ -1730,12 +1731,44 @@ def _build(config):
 			_require(isinstance(ids, list) and len(ids) <= 100 and len(set(ids)) == len(ids)
 				and all(type(n) is int and n > 0 for n in ids), 'REPORT_SOURCE_PR_SCOPE_REQUIRED')
 			prs = []
-		for pr in github_pages('repos/' + github['repository'] + '/pulls?state=closed', 'items') if source is not None else []:
+		def reporting_prs():
+			# Reporting owns this observation deadline, independently of dispatch
+			# and delivery. Bound the actual child, including automatic pagination.
+			values, page = [], 1
+			for _ in range(MAX_PAGES):
+				path = _append_page('repos/' + github['repository'] + '/pulls?state=closed', page, gh_page_size)
+				response = _json_output(command(gh_executable,
+					['api', '--hostname', 'github.com', '--method', 'GET', '--paginate', '--slurp', path],
+					timeout_override=min(MAX_SECONDS, source_timeout())))
+				source_timeout()
+				if isinstance(response, list):
+					_require(len(response) <= MAX_PAGES and all(isinstance(part, list) for part in response),
+						'REPORT_SOURCE_PAGINATION_INVALID')
+					values.extend(item for part in response for item in part)
+					complete = True
+				else:
+					items, complete, next_page = _page_items(response, key='items', page_size=gh_page_size)
+					values.extend(items)
+					page = next_page or page + 1
+				_require(len(values) <= 10000, 'REPORT_SOURCE_ITEM_BOUND')
+				if complete:
+					return values
+			raise ValidationError('REPORT_SOURCE_PAGE_BOUND')
+		source_coverage = dict(status='VERIFIED')
+		try:
+			observed_prs = reporting_prs() if source is not None else []
+		except Exception:
+			# Preserve verified inventory while refusing incomplete PR totals.
+			# Never retain provider errors, partial counts or credential excerpts.
+			prs, observed_prs = None, []
+			source_coverage = dict(status='PARTIAL', reason='REPORT_SOURCE_INCOMPLETE_OR_DEADLINE')
+		for pr in observed_prs:
 			if pr.get('merged_at') and pr.get('number') in ids:
 				prs.append(dict(id=str(pr['id']), number=pr['number'], url=pr['html_url'],
 					merged_at=pr['merged_at'], merge_commit=pr.get('merge_commit_sha'), head=pr.get('head', {}).get('sha')))
 		records = dict(binding=deepcopy(request['binding']), created_at=request['observed_at'],
 			included=[t['key'] for t in tickets], excluded=[], tickets=tickets, prs=prs,
+			source_coverage=source_coverage,
 			summary='Current controller inventory; project history, estimates and Jira reconciliation unavailable',
 			sources=[dict(field='tickets', observed_at=inventory['observed_at'], stale=False,
 				source='controller-inventory:' + inventory['inventory_sha256'])])

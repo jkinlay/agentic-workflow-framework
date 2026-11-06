@@ -18,8 +18,38 @@ HTTP_TIMEOUT_SECONDS = 15
 MAX_HTTP_CALLS = 32
 MAX_ADVANCES = 4
 MAX_RECONCILIATIONS = 1
+SOURCE_SECONDS = 30
+_source = ContextVar('report_source_budget', default=None)
 _current = ContextVar('report_destination_budget', default=None)
 _send_start = ContextVar('report_send_start', default=None)
+
+
+class SourceBudget:
+    """Separate cooperative deadline for trusted source collection ports.
+
+    Network ports must use remaining() as their operation timeout. No source
+    thread or late result can survive the synchronous collection stage.
+    """
+    def __init__(self):
+        self.deadline = monotonic() + SOURCE_SECONDS
+
+    def remaining(self):
+        remaining = self.deadline - monotonic()
+        if remaining <= 0:
+            raise ValidationError('REPORT_SOURCE_BUDGET')
+        return remaining
+
+    def __enter__(self):
+        self.token = _source.set(self)
+        return self
+
+    def __exit__(self, *args):
+        _source.reset(self.token)
+
+
+def source_timeout():
+    budget = _source.get()
+    return budget.remaining() if budget is not None else SOURCE_SECONDS
 
 
 class DeliveryBudget:

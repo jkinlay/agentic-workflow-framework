@@ -31,7 +31,7 @@ def _bindings(operating, binding):
     return settings, destinations
 
 
-def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None, senders=()):
+def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None, senders=(), threads=None):
     data = safe_report(body['data'], trusted_keys=True, senders=senders)
     if data != body['data']:
         body = prepare_body(kind, data)
@@ -40,7 +40,8 @@ def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None
     record = dict(report_id=report_id, kind=kind, binding=deepcopy(binding), body=body,
                   delivery_ids=[], **(extra or {}))
     for destination in destinations:
-        intent = delivery_intent(report_id, destination, render_body(body, destination['platform']))
+        intent = delivery_intent(report_id, destination, render_body(body, destination['platform']),
+                                 thread_id=(threads or {}).get(destination['platform']))
         DeliveryOutbox.enqueue_in_transaction(db, intent)
         record['delivery_ids'].append(intent['delivery_id'])
     raw = canonical(record).decode()
@@ -78,7 +79,7 @@ def _body(kind, binding, now, calendar, context, period=None, action=None):
         data['sections']['Current work'] = describe(context.get('streams'))
         data['sections']['Changes since the previous report'] = 'Gates: ' + describe(context.get('gates'))
     if kind == 'eod' and context.get('accounting_summary') is not None:
-        data['sections']['Token usage'] = describe(context['accounting_summary'])
+        data['sections']['Usage (tokens)'] = describe(context['accounting_summary'])
     if action is not None:
         record = action['record']['action']
         data.update(decision=record['decision'], decision_owner=record['owner'],
@@ -276,6 +277,18 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                 generated.append(_retain(db, action['id'], 'owner-action',
                     _body('owner-action', binding, now, calendar, context, action=action), binding, destinations, now,
                     senders=(providers or {}).values()))
+        for notice in context.get('review_corrections', []):
+            destination = notice['binding']
+            if destination not in destinations:
+                continue  # Never retarget a correction after channel rotation.
+            body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
+                timezone=calendar['timezone'], scope=binding['scope_revision'],
+                candidate=describe(notice['invalidated']), summary='Correction: prior readiness withdrawn',
+                sections={'Evidence': describe(notice),
+                          'Owner action': 'Do not rely on prior readiness; await current candidate review'}))
+            generated.append(_retain(db, notice['id'], 'owner-action', body, binding, [destination], now,
+                extra={'review_correction': notice}, threads={destination['platform']: notice['thread_id']},
+                senders=(providers or {}).values()))
         candidates = context.get('readiness_candidates')
         if candidates is not None:
             require(all(all(c.get(k) == binding[k] for k in binding) for c in candidates), 'REPORT_SCOPE_BINDING_MISMATCH')

@@ -29,7 +29,8 @@ class PlatformReportingAdapter:
     def _admit(self, intent):
         require(self.mode in {self.platform, 'both'}, 'REPORTING_OFF')
         require(isinstance(intent, dict) and intent.get('binding') == self.binding, 'REPORT_DESTINATION_MISMATCH')
-        require(intent == delivery_intent(intent['report_id'], intent['binding'], intent['payload']),
+        require(safe_report(intent, trusted_keys=True) == intent, 'REPORT_CREDENTIAL_WITHHELD')
+        require(intent == delivery_intent(intent['report_id'], intent['binding'], intent['payload'], thread_id=intent.get('thread_id')),
                 'REPORT_INTENT_MISMATCH')
         require(len(intent['payload'].encode('utf-8')) <= self.max_payload_bytes, 'REPORT_PAYLOAD_TOO_LARGE')
         # Identity and mode admission always precede secret resolution.
@@ -39,6 +40,7 @@ class PlatformReportingAdapter:
             raise ValidationError('REPORT_SECRET_UNAVAILABLE') from None
         require(isinstance(secret, str) and bool(secret), 'REPORT_SECRET_UNAVAILABLE')
         require(secret not in intent['payload'], 'REPORT_PAYLOAD_CONTAINS_SECRET')
+        require(safe_report(intent, trusted_keys=True, credentials=(secret,)) == intent, 'REPORT_CREDENTIAL_WITHHELD')
         return secret
 
     def send(self, intent, attempt_id):

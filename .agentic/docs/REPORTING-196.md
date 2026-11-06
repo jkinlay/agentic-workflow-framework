@@ -2,8 +2,8 @@
 
 ## Settings and construction
 
-Reporting defaults OFF: no reporting transaction, cursor, metadata, byte changes
-or secret reads. Disabling a bound session records suspension to exclude disabled
+Reporting defaults OFF: no transactions, cursors, metadata, byte changes
+or secret reads. Disabling records suspension to exclude disabled
 periods. Reporting grants no inbound chat, accounting, dispatch, Jira, merge or
 activation authority.
 
@@ -13,11 +13,11 @@ Operating `reporting.mode` selects `off`, `teams`, `slack`, `both`.
 duplicate or foreign bindings refuse before credential access. Rotation cannot
 retarget old intents or reset attempts. New channels require explicit binding.
 
-Infrastructure supplies `ReportingSettingsRegistry`; independent
-`observe_owner_direction` authenticates settings/destinations. Operating locks
+`ReportingSettingsRegistry` and independent `observe_owner_direction`
+authenticate settings/destinations. Operating locks
 and journal recovery persist admission. Configuration cannot register executable ports.
 
-The reference factory's `configure_reporting` port requires reviewed
+`configure_reporting` requires reviewed
 `reporting.slack`/`reporting.teams` `context` and `sender` bindings
 (workspace/user or tenant/delegated-user). Slack destinations are channel IDs;
 Teams destinations are `team-ID/channel-ID`. The reference resolver supports
@@ -52,8 +52,16 @@ One controller owns snapshots, intents and transactions. Additive migration adds
 Pre-release REPORT rows relocate byte-for-byte, preserving kind/history.
 Snapshot/intent immutability and protected SQLite checks remain.
 
-Dispatch completes before delivery. Each platform has its own non-daemon thread,
-ordering and budget; slow Teams never holds Slack behind an alert barrier. Alerts
+Dispatch completes before source collection and delivery. Sources have a separate
+**30-second** deadline; trusted source ports use `source_timeout()` for network
+operations. The reference collector bounds its pagination subprocess by the
+remaining allowance. Expiry retains verified inventory with PARTIAL coverage and
+unavailable PR totals; failed collection reports STALE_OR_UNAVAILABLE. Neither
+spends delivery admission. Delivered review identities are re-observed first;
+withdrawal corrects each confirmed destination once, using its original thread.
+
+Each platform has a non-daemon thread,
+ordering and budget; slow Teams never holds Slack. Alerts
 drain before periodic work within each platform. Newest hourly work precedes
 backlog. Historical UNKNOWN rows rotate by observation count.
 
@@ -62,8 +70,9 @@ historical reconciliation and 32 HTTP calls per platform. Admission stops after
 30 seconds. Each HTTP request has an overall monotonic deadline of at most 15
 seconds covering DNS, connect, TLS, send, headers and the entire body. Expiry
 shuts down sockets, including slow-drip reads. The concurrent delivery network
-stage is bounded by **45 seconds**; joins use the same deadline. Storage/host
-observation time is separate. Joined threads finish before return; a slow
+stage is bounded by **45 seconds**; joins use the same deadline. Source plus
+delivery network stages total at most **75 seconds**. Local storage/host time is
+separate. Joined threads finish before return; a slow
 destination can delay the NEXT cycle by up to that maximum. Trusted injected
 transports must honour this contract. Direct TLS ignores ambient proxy settings; redirects/retries are disabled.
 A timed-out DNS lookup cannot later connect or send.
@@ -75,8 +84,8 @@ Terminal rejection/absence permits exactly one retry, two sends maximum across
 restart/concurrency. Missing listings and API acceptance (including 202) prove
 no landing. Local JSONL receipts remain `LOCAL_RECEIPT`, `channel_delivery:false`.
 
-The shared admission filter protects retained source evidence, version-2 snapshots,
-journal appends, controller report bytes, readbacks and status output. It checks
+The shared admission filter protects source evidence, snapshots, journal appends,
+reports, public outbox admission, sender/POST boundaries, readbacks and status. It checks
 the host credential grammar and resolved sender values; only references are
 cached. Withholding keeps a fixed marker, never secret excerpts. Unsafe journal
 records refuse before writing. Slack readback IDs must contain bounded ASCII
@@ -89,7 +98,7 @@ and verify no REPORT rows remain in `controller_outbox`. The actual merge-base
 controller consumes legacy digests and leaves reports intact. Never delete intents
 or reset attempts.
 
-Assign sender owner, credential administrator and recovery contact. Disable
+Assign sender, credential and recovery owners. Disable
 admission before rotation/revocation. Inspect UNKNOWN/FAILED and pending age using
 read-only `workflow.py reporting-status --state STATE --binding BINDING`.
 Accounting reads only the existing attributed ledger; OFF/unknown is unavailable.
