@@ -593,17 +593,23 @@ class ReviewReportingPort:
                            (key, selected[0][0]))
         restorations = [report for _, kind, group in selected if kind == 'restoration' for report in group]
         payloads = [v for _, kind, v in selected if kind == 'batch']
-        for report in restorations:
-            payload = report['review_batch']
-            try:
-                self._check(payload, calendar, observe_candidate, budget=budget, restoration=True)
-            except ValidationError as exc:
-                self._defer(report['report_id'], str(exc))
-                if str(exc) == 'REPORT_DESTINATION_BUDGET':
-                    return
-                raise
-            drain(self.store, self.operating, self.binding, self.providers, report_ids={report['report_id']}, budget=budget,
-                  before_send=lambda: self._check(payload, calendar, observe_candidate, budget=budget, restoration=True))
+        if restorations:
+            report_ids = {r['report_id'] for r in restorations}
+            payload = restorations[0]['review_batch']
+            def before_send():
+                try:
+                    self._check(payload, calendar, observe_candidate, budget=budget, restoration=True)
+                except ValidationError as exc:
+                    for report_id in report_ids:
+                        self._defer(report_id, str(exc))
+                    raise
+            # The outbox invokes this guard only at reservation/POST. UNKNOWN
+            # readback needs neither readiness nor an open presentation window.
+            # Submit the whole occurrence to the ordinary concurrent drain;
+            # per-report drains would serialize its destination-specific rows.
+            drain(self.store, self.operating, self.binding, self.providers,
+                  report_ids=report_ids, budget=budget, before_send=before_send)
+
         for payload in payloads:
             report_id = self._id(payload)
             status = reporting_status(self.store, self.operating, self.binding, report_ids={report_id})

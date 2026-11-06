@@ -106,6 +106,8 @@ def collect_review_corrections(store, binding, now, observe):
     batch delivery. Unavailable observations never mean readiness withdrawal.
     Each delivered correction can seed one restoration occurrence. Subsequent
     withdrawals follow that restoration's delivery, leaving all attempts intact.
+    Reply delivery IDs are receipts; the immutable intent retains the original
+    channel root for every later correction and restoration in that thread.
     """
     from ..canonical import loads, fingerprint, timestamp
     from ..review_batching import _candidate, _OBSERVATION_KEYS, _observation_valid
@@ -168,13 +170,13 @@ def collect_review_corrections(store, binding, now, observe):
                     readback = next(h for h in reversed(state['history']) if h.get('status') == 'DELIVERED')
                     notices.append(dict(id=restoration_id, prior_report=report['report_id'],
                         correction_id=correction_id, delivery_id=delivery_id, binding=intent['binding'],
-                        thread_id=readback['message_id'], restored=True,
+                        thread_id=intent.get('thread_id') or readback['message_id'], restored=True,
                         review_batch=deepcopy(report['review_batch'])))
                 elif invalid and not restoring:
                     readback = next(h for h in reversed(state['history']) if h.get('status') == 'DELIVERED')
                     notices.append(dict(id=correction_id, prior_report=report['report_id'],
                         delivery_id=delivery_id, binding=intent['binding'],
-                        thread_id=readback['message_id'], invalidated=invalid))
+                        thread_id=intent.get('thread_id') or readback['message_id'], invalidated=invalid))
     if selected is not None:
         with store.transaction() as db:
             db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
