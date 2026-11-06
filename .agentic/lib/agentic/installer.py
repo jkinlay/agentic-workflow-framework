@@ -13,7 +13,7 @@ import uuid
 
 from . import ValidationError, VERSION
 from .canonical import MAX_DOCUMENT_BYTES, load_yaml, loads, now_text, sha256
-from .safeio import Tree, relative_parts
+from .safeio import Tree, relative_parts, validate_windows_metadata
 from .providers.github import load_observation_report, validate_codeowner
 
 MANIFEST = "MANIFEST.json"
@@ -715,9 +715,16 @@ def _load_recovery_objects(tree, journal):
             raise ValidationError(
                 f"Recovery object size references disagree; journal retained: {digest}")
         sizes[digest] = item["old_size"]
+    for reference in journal.get('windows_metadata', {}).values():
+        digest, size = reference['sha256'], reference['size']
+        if digest in sizes and sizes[digest] != size:
+            raise ValidationError('Recovery metadata object size references disagree; journal retained')
+        sizes[digest] = size
     objects = {}
     for digest, size in sizes.items():
         objects[digest] = _read_recovery_object(tree, digest, size)
+    for reference in journal.get('windows_metadata', {}).values():
+        validate_windows_metadata(loads(objects[reference['sha256']].decode('utf-8')))
     return objects
 
 
@@ -725,7 +732,8 @@ def _cleanup_recovery_objects(tree, journal):
     if not _compact_journal(journal):
         return
     for digest in sorted({item["old_sha256"] for item in journal["files"]
-                          if item["old_sha256"] is not None}):
+                          if item["old_sha256"] is not None} |
+                         {ref['sha256'] for ref in journal.get('windows_metadata', {}).values()}):
         tree.unlink(_recovery_object_path(digest))
 
 
@@ -746,6 +754,9 @@ def _verify_compact_old_endpoint(tree, journal, context):
             mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
             if mode != item["old_mode"]:
                 raise ValidationError(f"Transaction old file mode differs at {item['path']}")
+    for path, reference in journal.get('windows_metadata', {}).items():
+        if os.name != 'nt' or sha256(json_bytes(tree.windows_metadata(path))) != reference['sha256']:
+            raise ValidationError('Transaction old Windows metadata differs; journal retained: ' + path)
     _verify_runtime_state(
         tree, _validated_runtime_journal(journal), "old", require_cleanup=True,
         preserve_partial_stage=(journal["phase"] == "rollback_cleanup" and
@@ -1237,7 +1248,8 @@ def _validated_runtime_journal(journal):
                             "managed_before", "managed_after"}:
             raise ValidationError("Invalid recovery journal")
     elif journal["format"] == "awf-install-journal-4":
-        if set(journal) not in ({"format", "transaction_id", "phase", "files", "runtime",
+        keys = set(journal) - {'windows_metadata'}
+        if keys not in ({"format", "transaction_id", "phase", "files", "runtime",
                             "managed_before_sha256", "managed_after_sha256"},
                            {"format", "transaction_id", "phase", "files", "runtime",
                             "managed_before_sha256", "managed_after_sha256", "created_directories"}):
@@ -1339,6 +1351,16 @@ def _validate_transaction_journal(journal):
     if not isinstance(journal["files"], list) or len(journal["files"]) > 10000:
         raise ValidationError("Invalid recovery file inventory")
     seen = set()
+    metadata = journal.get('windows_metadata', {})
+    if not isinstance(metadata, dict):
+        raise ValidationError('Invalid Windows recovery metadata inventory')
+    for path, reference in metadata.items():
+        relative_parts(path)
+        if (not isinstance(reference, dict) or set(reference) != {'sha256', 'size'} or
+                not isinstance(reference['sha256'], str) or
+                not re.fullmatch('[0-9a-f]{64}', reference['sha256']) or
+                type(reference['size']) is not int or not 0 < reference['size'] <= MAX_DOCUMENT_BYTES):
+            raise ValidationError('Invalid Windows recovery metadata reference')
     backup_prefix = f".agentic-backup/{transaction_id}/"
     mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     for item in journal["files"]:
@@ -1360,6 +1382,8 @@ def _validate_transaction_journal(journal):
                      or state_path or transaction_backup)
         has_old = (item["old_sha256"] is not None if _compact_journal(journal)
                    else item["old"] is not None)
+        if item['path'] in metadata and not has_old:
+            raise ValidationError('Windows recovery metadata has no original file')
         if (not safe_path or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new or
                 (transaction_backup and (has_old or item["new_sha256"] is None))):
             raise ValidationError("Unsafe or duplicate recovery path/digest")
@@ -1385,6 +1409,8 @@ def _validate_transaction_journal(journal):
                     (not has_old) != (item["old_mode"] is None) or
                     (item["new_sha256"] is None and item["new_mode"] is not None)):
                 raise ValidationError("Invalid recovery file mode")
+    if set(metadata) - {item['path'] for item in journal['files']}:
+        raise ValidationError('Windows recovery metadata has no journalled path')
     return journal
 
 
@@ -1444,6 +1470,8 @@ def rollback(tree, journal):
     # Resolve and authenticate every recovery object before any project or
     # runtime mutation, so one missing/tampered object fails the whole rollback.
     recovery_objects = _load_recovery_objects(tree, journal)
+    if journal.get('windows_metadata') and os.name != 'nt':
+        raise ValidationError('Windows metadata recovery requires Windows; journal retained')
     runtime = _validated_runtime_journal(journal)
     backup_prefix = f".agentic-backup/{journal['transaction_id']}/"
     mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
@@ -1457,6 +1485,10 @@ def rollback(tree, journal):
                     raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
             elif current is None or sha256(current) != item["new_sha256"]:
                 raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
+        metadata_reference = journal.get('windows_metadata', {}).get(item['path'])
+        if (metadata_reference is not None and current is not None and
+                sha256(json_bytes(tree.windows_metadata(item['path']))) != metadata_reference['sha256']):
+            raise ValidationError(f"Recovery found an external metadata edit at {item['path']}; marker retained")
         if mode_aware and current is not None:
             mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
             expected_mode = item["old_mode"] if current == old else item["new_mode"]
@@ -1517,7 +1549,11 @@ def rollback(tree, journal):
         if old is None:
             tree.unlink(item["path"])
         else:
-            tree.write(item["path"], old)
+            reference = journal.get('windows_metadata', {}).get(item['path'])
+            if reference is None:
+                tree.write(item['path'], old)
+            else:
+                tree.write(item['path'], old, windows_metadata=loads(recovery_objects[reference['sha256']].decode('utf-8')))
             if mode_aware:
                 os.chmod(tree.root / item["path"], item["old_mode"])
     if backup_root.exists() and "created_directories" not in journal:
@@ -2138,6 +2174,15 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         write_plan.extend({"path": path, "action": "delete"} for path in deletions)
         if conflicts and conflict == "error":
             raise ValidationError("Conflicting files; no managed files written: " + ", ".join(sorted(conflicts)))
+        # Capture and prove metadata restoration for the entire change set
+        # before creating the lock, journal, objects or any target payload.
+        original_metadata = {}
+        if os.name == 'nt':
+            for path, old in originals.items():
+                if old is not None and (path in deletions or old != planned.get(path)):
+                    if path not in deletions and dst.inspect(path).st_file_attributes & 1:
+                        raise ValidationError('Read-only replacement cannot preserve metadata safely; no files changed: ' + path)
+                    original_metadata[path] = dst.windows_metadata(path, preflight=True)
         if dry_run:
             return {"status": "PLAN", "managed_files": sorted(planned), "conflicts": conflicts, "source_manifest_sha256": digest,
                     "installed": False, "configuration": configuration_report, "governance_proposal": governance_proposal,
@@ -2155,6 +2200,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             for path, old in originals.items():
                 if _exists_read(dst, path) != old:
                     raise ValidationError("Destination changed after preflight")
+                if path in original_metadata and dst.windows_metadata(path) != original_metadata[path]:
+                    raise ValidationError('Destination metadata changed after preflight; no payload changed')
             managed_before = _managed_file_inventory(dst)
             transaction_id = str(uuid.uuid4())
             backup_plan = {}
@@ -2167,17 +2214,24 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                             raise ValidationError("Transaction backup path appeared after preflight")
                         backup_plan[backup_path] = old
             recovery_objects = {}
+            metadata_references = {}
 
             def recovery_entry(path, old, new_digest):
                 info = dst.inspect(path)
                 old_digest = sha256(old) if old is not None else None
                 if old is not None:
                     recovery_objects[old_digest] = old
-                return {"path": path,
+                entry = {"path": path,
                         "old_sha256": old_digest,
                         "old_size": len(old) if old is not None else None,
                         "old_mode": stat.S_IMODE(info.st_mode) if info is not None else None,
                         "new_sha256": new_digest, "new_mode": None}
+                if path in original_metadata:
+                    raw_metadata = json_bytes(original_metadata[path])
+                    metadata_digest = sha256(raw_metadata)
+                    recovery_objects[metadata_digest] = raw_metadata
+                    metadata_references[path] = {'sha256': metadata_digest, 'size': len(raw_metadata)}
+                return entry
 
             changed_planned = [(path, data) for path, data in sorted(planned.items())
                                if originals[path] != data]
@@ -2192,6 +2246,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 "managed_before_sha256": _managed_inventory_sha256(managed_before),
                 "managed_after_sha256": None,
                 "runtime": None}
+            if metadata_references:
+                journal['windows_metadata'] = metadata_references
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
             # Bind the complete object inventory before creating it. An abrupt

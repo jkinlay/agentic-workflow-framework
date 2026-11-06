@@ -1063,7 +1063,7 @@ class RoutingLedger:
         return require_routing_switch_provenance(
             self, policy, prior_route, new_route, record)
 
-    def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None, budget_registry=None, budget_binding=None):
+    def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None, budget_registry=None, budget_binding=None, legacy_store=None):
         """Persist a validated policy observation, then atomically admit a run.
 
         The savepoint rolls back failed admission work while the enclosing write
@@ -1073,7 +1073,7 @@ class RoutingLedger:
         validate_policy(policy)
         _, operating_binding = _operating_binding(operating, governance, policy)
         _request(request)
-        from .budgeting import resolve_settings
+        from .budgeting import resolve_settings, legacy_reservation_snapshot, BudgetLedger
         settings = resolve_settings(operating.config if operating is not None else {})
         explicit = 'legacy_behavior' not in settings
         enrolled = bool(explicit and settings['accounting_enabled'] and budget_registry is not None
@@ -1115,7 +1115,7 @@ class RoutingLedger:
         now = datetime.now(timezone.utc).isoformat()
         day = now[:10]
         error = None
-        with self._transaction() as connection:
+        with legacy_reservation_snapshot(legacy_store, self.path, project_id, enabled=enrolled) as retained, self._transaction() as connection:
             retry_limit = policy.get("reconciliation", {}).get("max_reconciled_incident_retries_per_ticket", 2)
             ceiling_state = self._retry_ceiling(connection, project_id, retry_limit, policy)
             ceiling = ceiling_state["retry_limit"]
@@ -1136,6 +1136,8 @@ class RoutingLedger:
                     "provenance": "validated configuration observed before admission; caller identity is a host assertion"})
             connection.execute("SAVEPOINT model_admission")
             try:
+                if enrolled:
+                    BudgetLedger.validate_legacy_imports(connection, project_id, retained)
                 result = self._admit(connection, project_id, policy, request, capabilities, retry_limit, now, day, run_id,
                                      operating=operating, governance=governance)
             except Exception as exc:
