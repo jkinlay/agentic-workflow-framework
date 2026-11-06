@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 import test_awf243_operator_recovery as operator_fixture
+import test_awf243_review_regressions as regressions
 from test_jira_mutation_scope import KEY
 
 
@@ -168,6 +169,8 @@ class OwnerClosureHttpTests(unittest.TestCase):
         case.prepare_closeout()
         case.clock.value = '2026-10-09T08:02:03Z'
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_owner_done_counts_after_history_recheck_and_two_search_traversals(self):
         case, server = self.fixture()
         self.close_by_owner(case, server)
@@ -194,6 +197,8 @@ class OwnerClosureHttpTests(unittest.TestCase):
                 self.assertNotIn('owner_closure', result)
                 self.assert_read_only(server)
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_count_refuses_when_owner_history_changes_after_reconciliation(self):
         case, server = self.fixture()
         self.close_by_owner(case, server)
