@@ -3265,9 +3265,21 @@ def production_review_batching_cycle(store, *, calendar, binding, clock,
 						if m['intent_id'] == identity), utc_instant(now))}
 				excluded.update(blocked or (m['intent_id'] for m in batch['members']))
 				continue
-			# No intervening provider calls; the delivery port enforces idempotency.
-			batch_store.begin_delivery(batch['batch_id'], send_at)
-			receipt = deliver_review_batch(deepcopy(payload))
+			transport_payload = deepcopy(payload)
+			cancel_uninvoked = batch_store.begin_delivery(batch['batch_id'], send_at)
+			# The fence commit can cross cutoff or evidence expiry. Only this live
+			# serialized path knows transport was never invoked; restart stays UNKNOWN.
+			send_at = clock()
+			window = next_review_presentation(send_at, calendar)
+			if (utc_instant(window['presentation_at']) != utc_instant(send_at)
+					or any(utc_instant(item['expires_at']) <= utc_instant(send_at) for item in checked.values())):
+				cancel_uninvoked(send_at)
+				excluded.update(m['intent_id'] for m in batch['members'])
+				failed('review_recheck', ValidationError('Post-fence presentation window closed or evidence expired'))
+				continue
+			# An unavoidable small gap remains from this last clock check to provider
+			# receipt of the send (scheduling/transport latency); no atomic remote clock.
+			receipt = deliver_review_batch(transport_payload)
 			if receipt is not None:
 				reconcile(payload, receipt)
 			else:

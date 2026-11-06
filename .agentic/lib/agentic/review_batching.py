@@ -145,12 +145,48 @@ class ReviewBatchStore:
                    (identity, reason, utc_text(now), retry, count))
 
     @staticmethod
+    def _attempt_windows(db, calendar):
+        """Retained send evidence, keyed by the immutable presentation opening.
+
+        Detail/retry times are diagnostic history, never calendar authority.
+        PREPARED/UNSENT batches have no charge. Legacy terminal receipts prove
+        non-ambiguity; preparation identifies their window under today's calendar,
+        never a delayed receipt time. Unexplained charges stay charged.
+        """
+        counts, totals = {}, {}
+        has_phase = db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_phase_v1'").fetchone()
+        join = "LEFT JOIN review_presentation_phase_v1 p USING(batch_id) " if has_phase else ""
+        started = "(p.phase='SENDING' OR p.phase IS NULL)" if has_phase else "1"
+        for row in db.execute("SELECT o.* FROM review_presentation_outbox_v1 o " + join +
+                              "WHERE o.state IN ('NOT_DELIVERED','DELIVERED') "
+                              "OR (o.state='CLAIMED' AND " + started + ")"):
+            payload = ReviewBatchStore._payload(row)
+            opening = payload.get('presentation_window', {}).get('opening')
+            if opening is None:
+                if row['receipt_json'] is None:
+                    continue  # Legacy UNKNOWN has no release/window evidence.
+                opening = _window(payload['prepared_at'], calendar)['opening']
+            opening = utc_text(opening)
+            for member in payload['members']:
+                identity = member['intent_id']
+                counts[identity, opening] = counts.get((identity, opening), 0) + 1
+                totals[identity] = totals.get(identity, 0) + 1
+        return counts, totals
+
+    @staticmethod
+    def _window_count(row, opening, evidence):
+        counts, totals = evidence
+        identity = row['intent_id']
+        return counts.get((identity, opening), 0) + max(0, row['attempts'] - totals.get(identity, 0))
+
+    @staticmethod
     def view_from_db(db, now, calendar):
         """Read-only state for status/AWF-241; no provider calls or recovery."""
         result = {'intents': [], 'unresolved_batches': [], 'owner_alerts': []}
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_intent_v1'").fetchone():
             return result
         has_detail = db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_detail_v1'").fetchone()
+        evidence = ReviewBatchStore._attempt_windows(db, calendar)
         for row in db.execute("SELECT * FROM review_presentation_intent_v1 ORDER BY intent_id"):
             detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (row['intent_id'],)).fetchone() if has_detail else None
             try:
@@ -159,13 +195,26 @@ class ReviewBatchStore:
                         utc_instant(next_review_presentation(now, calendar)['presentation_at']) > utc_instant(now))
             except ValidationError:
                 schedule, held = None, True
+            retry = detail['retry_at'] if detail else None
+            if row['state'] == 'EXHAUSTED':
+                try:
+                    window = _window(now, calendar)
+                    if schedule is None:
+                        retry = None
+                    elif ReviewBatchStore._window_count(row, window['opening'], evidence) >= 2:
+                        retry = window['next_opening']
+                    else:
+                        retry = utc_text(max(utc_instant(schedule['presentation_at']),
+                                             utc_instant(next_review_presentation(now, calendar)['presentation_at'])))
+                except ValidationError:
+                    retry = None
             item = {'intent_id': row['intent_id'], 'candidate': loads(row['candidate_json']),
                     'state': row['state'], 'ready_at': row['ready_at'], 'attempts': row['attempts'],
                     'held': row['state'] == 'PENDING' and held,
                     'scheduled_at': schedule['presentation_at'] if schedule else None,
                     'reason': detail['reason'] if detail else 'Retained review intent',
                     'changed_at': detail['changed_at'] if detail else row['ready_at'],
-                    'retry_at': detail['retry_at'] if detail else None}
+                    'retry_at': retry}
             result['intents'].append(item)
             if row['state'] == 'EXHAUSTED':
                 result['owner_alerts'].append({'intent_id': row['intent_id'], 'state': 'EXHAUSTED',
@@ -203,8 +252,8 @@ class ReviewBatchStore:
             if existing is not None:
                 if existing["state"] == "PENDING":
                     return identity
-                detail = db.execute("SELECT window_attempts FROM review_presentation_detail_v1 WHERE intent_id=?", (identity,)).fetchone()
-                allowance_used = detail[0] if detail else existing['attempts']
+                allowance_used = self._window_count(existing, _window(changed_at, calendar)['opening'],
+                                                    self._attempt_windows(db, calendar))
                 if not (restore and existing["state"] == "WITHDRAWN" and allowance_used < 2):
                     return None
             for row in db.execute("SELECT intent_id,candidate_json FROM review_presentation_intent_v1 WHERE state='PENDING'").fetchall():
@@ -259,6 +308,8 @@ class ReviewBatchStore:
         if utc_instant(window["presentation_at"]) != current:
             return None
         with self.controller.transaction() as db:
+            presentation_window = _window(now, calendar)
+            evidence = self._attempt_windows(db, calendar)
             fenced = set()
             for claimed in db.execute("SELECT candidate_json FROM review_presentation_intent_v1 WHERE state='CLAIMED'"):
                 value = loads(claimed['candidate_json'])
@@ -269,22 +320,9 @@ class ReviewBatchStore:
                 candidate = _candidate(loads(row["candidate_json"]))
                 if row['intent_id'] in exclude or (candidate['repository_id'], candidate['pull_request']) in fenced:
                     continue
-                if row['state'] == 'EXHAUSTED':
-                    detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (row['intent_id'],)).fetchone()
-                    if detail is None:
-                        # Legacy terminal receipts establish non-delivery and
-                        # its time; preserve old charges, never reset ambiguity.
-                        for prior in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='NOT_DELIVERED' ORDER BY rowid DESC"):
-                            payload = self._payload(prior)
-                            if any(m['intent_id'] == row['intent_id'] for m in payload['members']):
-                                at = loads(prior['receipt_json'])['observed_at']
-                                self._detail(db, row['intent_id'], 'Legacy delivery allowance exhausted', at,
-                                             attempts=row['attempts'], retry_at=_window(at, calendar)['next_opening'])
-                                self._changed(db)
-                                break
-                        detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (row['intent_id'],)).fetchone()
-                    if detail is None or detail['retry_at'] is None or current < utc_instant(detail['retry_at']):
-                        continue
+                count = self._window_count(row, presentation_window['opening'], evidence)
+                if count >= 2:
+                    continue
                 _require(_identity(candidate) == row["intent_id"], "Stored review intent identity mismatch")
                 try:
                     schedule = next_review_presentation(row["ready_at"], calendar)
@@ -304,8 +342,7 @@ class ReviewBatchStore:
                     self._detail(db, row['intent_id'], 'Candidate changed, closed or no longer owner-ready', now)
                     self._changed(db)
                     continue
-                if row['state'] == 'EXHAUSTED':
-                    self._detail(db, row['intent_id'], 'Bounded recovery at the next presentation window', now, attempts=0)
+                self._detail(db, row['intent_id'], 'Qualified in the current presentation window', now, attempts=count)
                 members.append({"intent_id": row["intent_id"], "candidate": candidate,
                                 "ready_at": row["ready_at"], "scheduled_at": schedule["presentation_at"],
                                 "initial_schedule": loads(row["initial_schedule_json"]),
@@ -313,7 +350,6 @@ class ReviewBatchStore:
                                 "observation": deepcopy(observation), "attempt": row["attempts"] + 1})
             if not members:
                 return None
-            presentation_window = _window(now, calendar)
             body = {"kind": "routine-final-human-review", "version": 1,
                     'preparation_sequence': db.execute('SELECT count(*) FROM review_presentation_outbox_v1').fetchone()[0] + 1,
                     "prepared_at": utc_text(current), "calendar_sha256": window["calendar_sha256"],
@@ -424,7 +460,8 @@ class ReviewBatchStore:
         """Durably fence the side effect and charge attempts immediately before it.
 
         A crash after this transaction is UNKNOWN, even if the host never reached
-        the provider. No release or timeout can repeat that ambiguous send.
+        the provider. Only the live serialized caller's returned continuation may
+        cancel before invoking transport; restart cannot reconstruct that proof.
         """
         with self.controller.transaction() as db:
             row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
@@ -434,6 +471,28 @@ class ReviewBatchStore:
             _require(db.execute("SELECT 1 FROM review_presentation_check_v1 WHERE batch_id=?", (batch_id,)).fetchone(),
                      'Review delivery requires a pre-send recheck')
             self._start(db, self._payload(row), now)
+
+        def cancel_uninvoked(cancelled_at):
+            # This continuation is exclusively for a post-fence check refusal,
+            # before calling any transport. Never retain it or use after a send.
+            with self.controller.transaction() as db:
+                row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
+                phase = db.execute("SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?", (batch_id,)).fetchone()
+                _require(row['state'] == 'CLAIMED' and phase[0] == 'SENDING' and row['receipt_json'] is None,
+                         'Uninvoked delivery cancellation is no longer current')
+                for member in self._payload(row)['members']:
+                    intent = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?", (member['intent_id'],)).fetchone()
+                    detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (member['intent_id'],)).fetchone()
+                    _require(intent['state'] == 'CLAIMED' and intent['attempts'] == member['attempt']
+                             and detail['window_attempts'] > 0, 'Uninvoked delivery charge differs')
+                    db.execute("UPDATE review_presentation_intent_v1 SET state='PENDING',attempts=attempts-1 WHERE intent_id=?",
+                               (member['intent_id'],))
+                    self._detail(db, member['intent_id'], 'Post-fence window or expiry check refused; transport not invoked',
+                                 cancelled_at, attempts=detail['window_attempts'] - 1)
+                db.execute("UPDATE review_presentation_outbox_v1 SET state='UNSENT' WHERE batch_id=?", (batch_id,))
+                db.execute("UPDATE review_presentation_phase_v1 SET phase='RELEASED' WHERE batch_id=?", (batch_id,))
+                self._changed(db)
+        return cancel_uninvoked
 
     def acknowledge(self, receipt):
         _require(isinstance(receipt, dict) and receipt.get("status") == "DELIVERED",
