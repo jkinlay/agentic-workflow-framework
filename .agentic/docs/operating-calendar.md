@@ -28,42 +28,32 @@ The optional `operating_calendar` subtree uses version 1 `OPERATING_CONFIG.yaml`
 
 Omissions resolve in memory; nulls/unknown keys refuse. Times require local
 `HH:MM`, presentation before cutoff. Days require nonempty unique ISO integers
-1-7, excluding booleans; lists sort. Only `continuous` work is supported.
+1-7, excluding booleans. Only `continuous` work is supported.
 Disabled batching presents immediately without authority. EoD days are independent;
 changes never enable reporting or suppress hourly reports. Legacy bytes/hashes/history
 remain unchanged.
-
-`effective_calendar(root)` returns detached validated defaults;
-`validate_calendar(subtree)` validates the subtree or raises `ValidationError`.
-`next_review_presentation(ready_at, subtree)` accepts RFC3339 or aware `datetime`.
-Results contain original `ready_at` (datetimes normalize), UTC-Z `presentation_at`, effective
-`calendar_sha256`, `held`, and always-false `merge_authorized`.
 
 The window includes 07:00, excludes 17:00. Early weekdays wait until morning;
 later readiness waits for the next review day. Friday evening/weekends wait
 until Monday. Late ticks recheck the current window. IANA rules resolve ambiguous
 boundaries to the later occurrence, gaps to the first valid instant; collapsed
-windows skip. Bounded search includes the next weekly recurrence.
+windows skip.
 Weekdays have no holiday exclusions: Christmas Day gets a digest when selected.
 
-The lock pins `tzdata==2026.6` and its reviewed SHA-256. Wheelhouses and installed
-inventories include it. Missing/invalid IANA data refuses, even with batching
-disabled; no offset fallback exists. Tests require London/New York data.
+The lock pins `tzdata==2026.6` and its reviewed SHA-256. Missing/invalid IANA data
+refuses, even with batching disabled; no offset fallback exists.
 
 ## Persistence and delivery
 
-`ReviewBatchStore(controller_store)` retains protected-path integrity,
-full-synchronous SQLite and serialized `BEGIN IMMEDIATE`. Versioned review tables
-remain separate from `controller_outbox`, dispatch, lifecycle and reporting.
+`ReviewBatchStore` retains protected-path integrity, separate from dispatch,
+lifecycle and reporting.
 
 1. `enqueue(candidate, ready_at, calendar)` preserves first readiness/schedule.
-   Closed identity requires positive integer repository/PR IDs, lowercase
-   40-hex head/base/tree and 64-hex `final_gate_sha256` independently validated
+   Repository/PR/head/base/tree/final-gate identity is independently validated
    against current evidence. Repeats deduplicate; changed tuples withdraw pending
    predecessors.
 2. `claim(now, calendar, observer)` recomputes schedules and atomically claims
-   one due digest. Immutable payloads retain original/current schedules,
-   readiness, observation, attempt and timestamped catch-up. Catch-up means a
+   one due digest. Immutable payloads record timestamped catch-up. Catch-up means a
    held opening or earlier window was missed, never ordinary clock precision.
 3. Trusted fresh observation requires exact candidate, `observed_at == now`,
    later `expires_at`, literal `open: true`, `merged: false`,
@@ -73,7 +63,7 @@ remain separate from `controller_outbox`, dispatch, lifecycle and reporting.
    absent that field, readiness uses observation time. Cutoff still applies.
    Withdrawn identities require fresh qualification, never replay.
 4. Immediately before initial send, `recheck(batch_id, now, calendar, observer)`
-   persists fresh member/window/calendar evidence. Payloads remain immutable.
+   persists fresh member/window/calendar evidence.
    Refusal releases only durable PREPARED claims with proof no send started;
    fresh invalidation withdraws only that member. Survivors form another batch.
    Serialize check/mutation; checks are never reusable send permits.
@@ -86,8 +76,8 @@ remain separate from `controller_outbox`, dispatch, lifecycle and reporting.
    attempts from the next presentation opening, never a retry of an unknown send.
    Newer tuples take precedence; transport retry ceilings remain independent.
 
-`begin_delivery` durably fences/counts before invoking transport. Restart releases
-PREPARED claims only; missing legacy phase evidence and started sends require
+`begin_delivery` durably fences/counts before invoking transport. UNKNOWN never
+sends twice. Restart releases PREPARED claims only; missing legacy phase evidence and started sends require
 terminal readback through `pending_batches()`. Unknowns fence their PR, allowing
 unrelated digests. No blind resend, operator reset or timeout release exists.
 `view(now, calendar)` exposes held, withdrawn, exhausted and unresolved identities,
@@ -101,34 +91,29 @@ cannot mean NOT_DELIVERED. Never multiply retry allowances.
 ## Settings and controller ports
 
 Validation/set/show retains lock/journal/audit/recovery. Weekdays use JSON lists.
-Generated defaults/schema include calendars; legacy bytes remain unchanged.
 `operating set`: exit 3 `PENDING_OWNER_CONFIRMATION`, unchanged settings. Owner runs
 `operating confirm --digest D` within 15 minutes, typing eight digest characters.
 Terminal/stored GitHub User identity must match reviewed numeric owners.
 OFF/unchanged assignments require admission. Under lock: revalidate domains/governance/bytes,
 consume once across mixed changes, journal/audit/readback. Calendar creates no
-budget/enrollment state. Historical `CalendarSettingsRegistry` observations/pinned recovery remain supported.
+budget/enrollment state.
 
-`production_controller_cycle` resolves the validated snapshot's effective calendar
-each cycle, returning `operating_calendar` for AWF-241's separate EoD/hourly
-scheduler. After dispatch and immediate status/action delivery it calls
-`production_review_batching_cycle`, constructing protected `ReviewBatchStore`.
-Reviewed CLI adapters may inject four optional ports:
+Each controller cycle resolves the validated calendar for AWF-241's separate
+EoD/hourly scheduler. Batching follows dispatch and immediate status/action delivery.
+Reviewed adapters expose optional ports:
 
-- `observe_owner_ready({binding, observed_at})` returns exactly
-  `{binding, observed_at, candidates}` with matching scope/time. Candidates are
-  locators, never authority or inventory-derived readiness.
+- `observe_owner_ready` supplies candidate locators bound to scope/time,
+  never authority or inventory-derived readiness.
 - `observe_review_candidate(candidate, now)` independently observes repository,
   PR/head/base/tree, open/merged state, lifecycle and current final-gate bytes.
-  Its observation above must pass `enqueue_observed`; only
-  `READY_FOR_OWNER_AUTHORIZATION` enqueues. Claim/pre-send recheck repeat observation;
+  Only `READY_FOR_OWNER_AUTHORIZATION` enqueues. Claim/pre-send recheck repeat observation;
   post-read trusted time guards cutoff/expiry; changed members withdraw; expired evidence stays pending.
 - `deliver_review_batch(payload)` conditionally sends once using immutable
   `batch_id` as idempotency key; returns verified terminal receipt or `None`.
 - `observe_review_delivery(payload)` reads receipts only. Unknown returns `None`.
   Confirmed NOT_DELIVERED must fence delayed sends before allowing a retry.
 
-Lane E supplies transport and receipt authentication. The host serializes cycles
+The host supplies transport and receipt authentication, serializes cycles
 and bounds adapter calls. Without delivery ports, collection persists without
 claiming. Restart reconciles started sends without resending. Held/unknown reviews
 never gate implementation, tests, independent review, amendments or hourly reports.
