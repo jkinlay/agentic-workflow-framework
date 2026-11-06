@@ -460,6 +460,7 @@ def catalog(*, include_ticket_plan=True):
     schemas['operating-change']['properties']['owner_admission'] = obj({
         'actor_id': integer(1), 'login': text(maxLength=39), 'type': const('User'),
         'digest': DIGEST, 'request_id': UUID, 'confirmed_at': TIME,
+        'executable_path': text(maxLength=32768), 'executable_sha256': DIGEST,
     })
     schemas["operating-epics"] = obj({
         "schema_version": const(1),

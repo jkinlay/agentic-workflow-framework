@@ -4,7 +4,7 @@ No chat assertion authenticates an owner. Protected host state is outside worker
 worktrees. This boundary cannot resist a process with the owner's full rights
 and an interactive terminal of its own. Digests bind requests, not identities.
 """
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from datetime import timedelta
 import json
@@ -142,9 +142,29 @@ def propose(root, governance, snapshot, instruction, intent, changes):
                 next_action='Owner must confirm the exact changes in their own terminal: ' + command)
 
 
+def _windows_console(stream):
+    """isatty also accepts NUL on Windows; require an actual console handle."""
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    try:
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.GetConsoleMode.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD()
+        return bool(kernel.GetConsoleMode(msvcrt.get_osfhandle(stream.fileno()), ctypes.byref(mode)))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def require_terminal(stdin, stdout):
-    require(callable(getattr(stdin, 'isatty', None)) and stdin.isatty()
-            and callable(getattr(stdout, 'isatty', None)) and stdout.isatty(),
+    def terminal(stream):
+        try:
+            return (_windows_console(stream) if os.name == 'nt' else
+                    callable(getattr(stream, 'isatty', None)) and stream.isatty())
+        except (OSError, ValueError):
+            return False
+    require(terminal(stdin) and terminal(stdout),
             'INTERACTIVE_TERMINAL_REQUIRED: owner must run confirm in their own terminal')
 
 
@@ -155,22 +175,68 @@ def _require_stored_login_environment():
             'GITHUB_HOST_REFUSED: GH_HOST must be absent or github.com')
 
 
+def _worker_writable(path):
+    """Fail closed if this identity can modify or replace the host executable.
+
+    Test permissions without writing. On Windows CreateFile checks the token's
+    effective ACL rights; os.access alone does not inspect Windows DACLs.
+    Full-rights owner processes remain outside this boundary.
+    """
+    if os.name != 'nt':
+        return any(os.access(p, os.W_OK) for p in (path, *path.parents))
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # WRITE_DATA/APPEND_DATA for the file; DELETE_CHILD for its ancestors.
+    for member in (path, *path.parents):
+        rights = (2, 4, 0x10000, 0x40000, 0x80000) if member == path else (0x40, 0x10000, 0x40000, 0x80000)
+        for access in rights:
+            handle = kernel.CreateFileW(str(member), access, 7, None, 3, 0x02000000, None)
+            if handle != wintypes.HANDLE(-1).value:
+                kernel.CloseHandle(handle)
+                return True
+            if ctypes.get_last_error() != 5:  # Only ACCESS_DENIED proves refusal.
+                return True
+    return False
+
+
+def _native_executable(path):
+    """Admit executable binaries only, never batch files, shebangs or scripts."""
+    if os.name == 'nt' and path.suffix.lower() != '.exe':
+        return False
+    with path.open('rb') as source:
+        magic = source.read(4)
+    return (magic[:2] == b'MZ' if os.name == 'nt' else magic == b'\x7fELF' or
+            magic in (b'\xfe\xed\xfa\xce', b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe',
+                      b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe'))
+
+
 def _github_executable(root):
-    """Resolve explicit host PATH entries, never a worker's current directory."""
+    """Resolve PATH once, then validate that exact absolute binary or refuse."""
     from .budgeting import protected_state_roots
     from .path_containment import is_within
-    excluded = protected_state_roots(root)
-    for directory in os.environ.get('PATH', '').split(os.pathsep):
-        path = Path(directory)
-        if not path.is_absolute():
-            continue
-        # A qualified name prevents Windows' implicit current-directory search.
-        executable = shutil.which(str(path / 'gh'))
+    directories = [d for d in os.environ.get('PATH', '').split(os.pathsep) if Path(d).is_absolute()]
+    executable = None
+    for directory in directories:
+        # Qualified search also avoids Python/Windows implicit CWD lookup.
+        executable = shutil.which(str(Path(directory) / 'gh'))
         if executable is not None:
-            resolved = Path(executable).resolve()
-            if not any(is_within(resolved, worktree) for worktree in excluded):
-                return str(resolved)
-    return None
+            break
+    if executable is None:
+        return None
+    try:
+        resolved = Path(executable).resolve(strict=True)
+        if (not resolved.is_file() or any(is_within(resolved, p) for p in protected_state_roots(root))
+                or not _native_executable(resolved) or _worker_writable(resolved)):
+            return None
+        return str(resolved)
+    except OSError:
+        return None
 
 
 def observe_github_owner(governance, root):
@@ -182,6 +248,7 @@ def observe_github_owner(governance, root):
     executable = _github_executable(root)
     require(executable is not None, 'GITHUB_AUTH_UNAVAILABLE: install gh and sign in with the owner account')
     try:
+        executable_hash = sha256(Path(executable).read_bytes())
         status = subprocess.run([executable, 'auth', 'status', '--hostname', 'github.com', '--active'],
                                 capture_output=True, text=True, timeout=30, check=False, env=child_env())
         status_text = status.stdout + '\n' + status.stderr
@@ -189,10 +256,14 @@ def observe_github_owner(governance, root):
         require(status.returncode == 0 and account is not None
                 and re.search(r'Active account:\s*true\b', status_text) is not None,
                 'GITHUB_AUTH_UNAVAILABLE: stored active github.com login was not observed')
+        require(sha256(Path(executable).read_bytes()) == executable_hash,
+                'GITHUB_AUTH_UNAVAILABLE: gh changed during identity lookup')
         identity = subprocess.run([executable, 'api', '--hostname', 'github.com', '--method', 'GET', 'user'],
                                   capture_output=True, text=True, timeout=30, check=False, env=child_env())
         require(identity.returncode == 0, 'GITHUB_AUTH_UNAVAILABLE: GitHub user lookup failed')
         user = loads(identity.stdout)
+        require(sha256(Path(executable).read_bytes()) == executable_hash,
+                'GITHUB_AUTH_UNAVAILABLE: gh changed during identity lookup')
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
         raise ValidationError('GITHUB_AUTH_UNAVAILABLE: stored GitHub login could not be verified') from exc
     require(isinstance(user, dict) and type(user.get('id')) is int and user['id'] > 0
@@ -201,7 +272,8 @@ def observe_github_owner(governance, root):
             'OWNER_IDENTITY_REFUSED: require a User with numeric id in merge_gate.trusted_owner_ids')
     require(account.group(1).casefold() == user['login'].casefold(),
             'OWNER_IDENTITY_REFUSED: active stored login differs from GitHub user response')
-    return {key: user[key] for key in ('id', 'login', 'type')}
+    return {**{key: user[key] for key in ('id', 'login', 'type')},
+            'executable_path': executable, 'executable_sha256': executable_hash}
 
 
 class _ConfirmedOwner:
@@ -231,7 +303,9 @@ class _ConfirmedOwner:
                 'PROPOSAL_BINDING_MISMATCH: owner observation requires the exact validated change')
         _check_time(self.record)
         audit = dict(actor_id=self.identity['id'], login=self.identity['login'], type=self.identity['type'],
-                     digest=self.digest, request_id=self.record['request_id'], confirmed_at=now_text())
+                     digest=self.digest, request_id=self.record['request_id'], confirmed_at=now_text(),
+                     executable_path=self.identity['executable_path'],
+                     executable_sha256=self.identity['executable_sha256'])
         self.audit = audit
         self._observation = dict(observation_id='github-terminal:' + self.record['request_id'] + ':' + self.digest,
                     actor_id=str(self.identity['id']), project_id=project_id,
@@ -268,3 +342,50 @@ def confirm(root, governance, digest, *, stdin=None, stdout=None):
     host = _ConfirmedOwner(root, store, digest, record, identity)
     registry = EnrollmentRegistry(store.path, host, (root,))
     return set_operating(root, governance, record['instruction'], budget_registry=registry, **record['intent'])
+
+
+def validate_recovery(root, governance, before, after, event):
+    """Read consumed admission from protected storage; a journal is not authority.
+
+    Recovery never authenticates afresh, consumes again or extends the proposal's
+    lifetime. Confirmation must have occurred within its original validity window.
+    """
+    from .operating import _get, _put, validate_operating
+    from .budgeting import settings_hash
+    message = 'OWNER_RECOVERY_REFUSED: journal requires the exact consumed owner confirmation'
+    audit = event.get('owner_admission')
+    require(before is not None and isinstance(audit, dict), message)
+    store = ProposalStore.for_project(root, governance['project']['id'])
+    store.validate_path()
+    require(store.path.is_file(), message)
+    try:
+        with closing(sqlite3.connect(store.path.as_uri() + '?mode=ro', uri=True)) as db:
+            proposal = db.execute('SELECT record FROM owner_proposals WHERE digest=?', (audit['digest'],)).fetchone()
+            confirmed = db.execute('SELECT record FROM owner_confirmations WHERE digest=?', (audit['digest'],)).fetchone()
+            require(proposal is not None and confirmed is not None, message)
+            record = loads(proposal[0])
+            require(loads(confirmed[0]) == audit and fingerprint('owner-admission-proposal', record) == audit['digest'], message)
+            observation = event.get('budget_owner_observation')
+            require(isinstance(observation, dict), message)
+            observed = db.execute('SELECT record FROM budget_owner_observations WHERE observation_id=?',
+                                 (observation['observation_id'],)).fetchone()
+            require(observed is not None and loads(observed[0]) == observation, message)
+        prior = validate_operating(before, governance)
+        require(record['binding'] == accepted_binding(root, governance, prior)
+                and record['request_id'] == audit['request_id']
+                and record['instruction'] == event['instruction']
+                and record['changes'] == event['changes']
+                and audit['type'] == 'User' and audit['actor_id'] in governance['merge_gate']['trusted_owner_ids']
+                and timestamp(record['created_at']) <= timestamp(audit['confirmed_at']) < timestamp(record['expires_at'])
+                and timestamp(record['expires_at']) - timestamp(record['created_at']) == timedelta(seconds=TTL_SECONDS), message)
+        require(observation['project_id'] == governance['project']['id']
+                and observation['actor_id'] == str(audit['actor_id'])
+                and observation['observation_id'] == 'github-terminal:' + record['request_id'] + ':' + audit['digest']
+                and observation['prior_settings_hash'] == settings_hash(before['budgeting']), message)
+        expected = deepcopy(before)
+        for change in record['changes']:
+            require(_get(before, change['path']) == change['before'], message)
+            _put(expected, change['path'], deepcopy(change['after']))
+        require(canonical(expected) == canonical(after), message)
+    except (sqlite3.Error, OSError, KeyError, TypeError, ValueError) as exc:
+        raise ValidationError(message) from exc

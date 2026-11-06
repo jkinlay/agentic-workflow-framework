@@ -728,6 +728,16 @@ def recover_operating(project_root, governance, expected_journal_sha256):
         if checked.operating_hash != event["after_hash"] or checked.governance_hash != event["governance_hash"] or (
                 (fingerprint("operating", load_yaml(before)) if before is not None else None) != event["before_hash"]):
             fail("$", "Journal content/hash/governance binding differs")
+        from .budgeting import fresh_settings
+        prior_value = load_yaml(before) if before is not None else None
+        after_value = load_yaml(after)
+        prior_budget = (prior_value.get('budgeting') if prior_value is not None else
+                        None if after_value.get('budgeting') is None else fresh_settings())
+        if (prior_budget != after_value.get('budgeting') or 'owner_admission' in event
+                or 'budget_owner_observation' in event
+                or any(c['path'].startswith('budgeting') for c in event['changes'])):
+            from .owner_admission import validate_recovery
+            validate_recovery(project_root, governance, prior_value, after_value, event)
         current = _read(tree, CONFIG)
         if current not in (before, after):
             fail("$", "Operating bytes contain an unmatched external edit; preserve the journal")

@@ -159,7 +159,9 @@
         "type",
         "digest",
         "request_id",
-        "confirmed_at"
+        "confirmed_at",
+        "executable_path",
+        "executable_sha256"
       ],
       "properties": {
         "actor_id": {
@@ -189,6 +191,16 @@
           "type": "string",
           "minLength": 1,
           "format": "date-time"
+        },
+        "executable_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "executable_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     }
