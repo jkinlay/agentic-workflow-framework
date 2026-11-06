@@ -2,62 +2,68 @@
 
 ## Construction
 
-Reporting defaults OFF; disabling records suspension and excludes disabled periods.
-Reporting grants no chat, accounting, dispatch,
-Jira, merge or activation authority.
+Reporting defaults OFF; suspension excludes disabled periods.
+Reports grant no chat/accounting/dispatch/Jira/merge/activation authority.
 
 Authenticated ReportingSettingsRegistry/observe_owner_direction persists
-off/teams/slack/both and explicit project/repository/scope/platform/destination/
-revision/secret_ref bindings. Missing, duplicate or foreign bindings refuse before
-credential access. Rotation cannot retarget intents or reset attempts.
+off/teams/slack/both and project/repository/scope/platform/destination/revision/
+secret_ref bindings. Missing/duplicate/foreign bindings refuse before credentials;
+rotation cannot retarget intents/reset attempts.
 
-configure_reporting requires reviewed context/sender bindings and Slack channel
-or Teams team/channel IDs. env:VARIABLE uses the reference resolver; other
-references need a host resolver. Configuration cannot register ports. Sender
-owners manage least permissions, liveness, recovery and credential rotation.
+configure_reporting requires reviewed context/sender and channel IDs.
+env:VARIABLE uses the reference resolver; other references need a host resolver.
+Configuration cannot register ports. Sender owners manage permissions, liveness,
+recovery and rotation.
 
 ## Sources and periods
 
 Ports reread digest-bound evidence; reporting_sources binds scope and at most 100 PRs.
 Unknown details/metrics remain unavailable; observed work stays visible.
-Accounting reads the attributed ledger; OFF/unknown is unavailable.
+Accounting reads the actual setting and attributed ledger; reporting never enables
+it. Measured runs supply completed-ticket means/Epic totals; forecasts require
+canonical observation IDs. Unobserved model/input/output stays unknown;
+OFF/unknown stays unavailable.
 
 AWF-244 supplies timezone/calendar, default EoD 17:00 Europe/London. Hourly reports
 continue 24/7; UTC identities distinguish DST folds. Downtime retains snapshots,
 sending labelled hourly CATCH-UP and at most two EoDs. Generation advances seven
-days/cycle. EoD excludes later merges; invalid times are unavailable. Rendering
-errors roll back.
+days/cycle. EoD excludes later merges. Invalid ticket times/order or forecast
+inputs make affected figures unavailable without suppressing reports/alerts.
+Unknown inventory states are unclassified, not known remaining work; unobserved
+planning dates cannot establish defects. Elapsed coverage uses completed cohorts.
+Displayed periods use local dates/timezones; elapsed figures use hours.
+
+Limits remain 12,000 Slack / 20,000 Teams UTF-8 bytes. Compact output prioritizes
+owner decisions, counts omissions, and retains complete hashed bodies through
+reporting-status/detailed artifacts. Identity/unverified-link failures refuse
+atomically. Resolved actions read resolved.
 
 ## Delivery and deadlines
 
-One controller owns snapshots/intents/transactions; migration preserves REPORT
-bytes/SQLite protections. Dispatch precedes reporting.
+One controller owns snapshots/intents/transactions; migration preserves REPORT/SQLite
+protections. Dispatch precedes reporting.
 
-Sources have 30 seconds via source_timeout(). Expiry retains PARTIAL coverage;
-unknown totals remain unavailable. Sources cannot spend delivery admission.
-One delivered batch/cycle is reobserved with a durable rotating cursor. Withdrawal
-corrects each delivery once; delivered corrections seed restorations through the
-review port, preserving attempts and rechecking before each POST.
+Sources have 30 seconds via source_timeout(); expiry retains PARTIAL coverage,
+unavailable totals and separate delivery admission. One delivered batch/cycle
+is reobserved via durable rotation. Withdrawal corrects each delivery once;
+delivered corrections seed review-port restorations, preserving attempts and
+rechecking before POST.
 
-Destination threads admit alerts, hourly, EoD, then review.
-Four advances, one historical reconciliation and 32 HTTP
-calls/platform share a 30-second admission deadline. One advance is protected for
-review. Alternate review turns restrict periodic admission to ten seconds,
-with joins ending five seconds before the common admission deadline. Phases share
-counters/gates; phase cancellation cannot revoke the reserved review allowance.
-Overflow classes rotate; deferred classes receive the next turn after alerts.
-New candidate discovery and historical review priority
-alternate across restarts; batch/restoration work and readback also rotate. New
-batches contain one candidate. Both restoration destinations share one turn.
-Restorations use the same concurrent destination drain as ordinary reports.
-Observers cap at 15 seconds, checking deadlines before/after calls. Exact
-candidate/window checks immediately precede reservation/POST; observations run outside SQLite
-write transactions.
+Destination threads admit alerts, hourly, EoD, then review: four advances,
+one historical reconciliation and 32 HTTP calls/platform per 30-second admission
+deadline. Review reserves one advance. Alternate review turns limit periodic
+admission to ten seconds; joins end five seconds before the common deadline.
+Phases share counters/gates; cancellation preserves reserved review admission.
+Overflow/deferred classes rotate after alerts. New/historical reviews alternate
+across restarts; batch/restoration/readback rotate. Batches contain one candidate;
+restoration destinations share one concurrent-drain turn. Observers cap at 15
+seconds, checking before/after calls. Candidate/window checks precede reservation/POST;
+observations occur outside SQLite write transactions.
 
 HTTP has a monotonic 15-second maximum, DNS through body; expiry closes sockets.
 Direct TLS ignores proxies; redirects/retries are disabled. Delivery, cancellation
 and joins remain bounded by **45 seconds**, sources plus delivery by **75 seconds**,
-excluding storage/host time. Ports must honor deadlines. Cancellation fences
+excluding storage/host time. Cancellation fences
 reservation/transport entry; workers join within the bound. Noncooperative workers
 are durably recorded REPORT_DESTINATION_WORKER_NOT_QUIESCENT with revoked tokens.
 
@@ -76,16 +82,16 @@ TWO_SEND_ATTEMPTS_EXHAUSTED.
 
 ## Retention and recovery
 
-The credential filter checks grammar/resolved values throughout retention/delivery.
-Enqueue validates bindings and transiently checks every intent field before writing;
-only references persist. Custom resolvers must accompany admission.
+Credential filtering checks grammar/resolved values throughout retention/delivery.
+Enqueue validates bindings/intent fields before writing; only references persist.
+Custom resolvers accompany admission.
 
 Confirmation requires sender, destination/thread, final reserved delivery/hash
 marker and normalized-content hash. Embedded markers are quoted. Invalid IDs/unknown
 normalization remain UNKNOWN. Pagination permits ten budgeted pages;
 Graph links retain origin/resource.
-JSONL is LOCAL_RECEIPT, channel_delivery:false. Both destinations need channel evidence
-for successful review acknowledgement; review/merge authority remains separate.
+JSONL is LOCAL_RECEIPT, channel_delivery:false. Review acknowledgement requires both
+destinations' channel evidence; review/merge authority remains separate.
 
 A CLAIMED batch transfers to REPORTING after exact-payload retention in the outbox.
 REPORTING permits newer batches. Crash recovery creates missing reports under
@@ -98,10 +104,10 @@ one deduplicated owner-action alert. Failed alerts appear in periodic diagnostic
 without recursive alerts. Compact diagnostics list four identities and the total;
 reporting-status retains every identity.
 
-PENDING/ABSENT retry through rotation and fresh gates; THROTTLED waits for its
-durable cooldown. IN_FLIGHT/UNKNOWN reconcile without blind reposts. Missing gate,
-changed calendar or observation-budget refusal retains owner-visible deferred
-evidence; restore valid evidence/calendar or present a newly verified tuple.
+PENDING/ABSENT retry through rotation/fresh gates; THROTTLED waits for cooldown.
+IN_FLIGHT/UNKNOWN reconcile without reposts. Missing gates, changed calendar or
+observation-budget refusal retain visible deferred evidence; restore evidence/calendar
+or present a newly verified tuple.
 Restoration readback proceeds after withdrawal/cutoff; sends require fresh gates.
 Landed restorations seed withdrawal corrections. Correction/restoration chains
 retain original channel roots separately from reply receipts across restarts.

@@ -82,7 +82,7 @@ def render_body(body, platform, *, max_bytes=None):
             'REPORT_BODY_HASH')
     kind, data = body['kind'], body['data']
     require(kind in LAYOUTS, 'REPORT_BODY_TYPE')
-    limit = {'slack': 12000, 'teams': 20000}[platform]
+    provider_limit = limit = {'slack': 12000, 'teams': 20000}[platform]
     if max_bytes is not None:
         require(type(max_bytes) is int and 0 < max_bytes <= limit, 'REPORT_RENDER_LIMIT_INVALID')
         limit = max_bytes
@@ -92,8 +92,9 @@ def render_body(body, platform, *, max_bytes=None):
     def item_title(item):
         return (link(item['url'], item['key']) if item.get('url') else plain(item['key'])) + ' — ' + plain(item.get('title', 'Unknown title'))
     def ticket_block(item, group):
-        lines = [item_title(item), 'Planned start: ' + plain(item.get('planned_start') or 'Unknown: planning defect')
-                 + ' | Planned end: ' + plain(item.get('planned_end') or 'Unknown: planning defect')]
+        missing = 'Unknown: source does not observe planning dates' if item.get('planning_observed') is False else 'Unknown: planning defect'
+        lines = [item_title(item), 'Planned start: ' + plain(item.get('planned_start') or missing)
+                 + ' | Planned end: ' + plain(item.get('planned_end') or missing)]
         fields = (('Owner', 'owner'), ('Remaining', 'remaining'), ('ETA / milestone', 'eta'), ('Tokens', 'tokens'),
                   ('Dependencies, assumptions and forecast change', 'assumptions')) if group == 'epics' else (
                   ('Stage', 'stage'), ('Actor/stream', 'actor'), ('Elapsed', 'elapsed'), ('Next gate', 'next_gate'),
@@ -113,7 +114,8 @@ def render_body(body, platform, *, max_bytes=None):
     if 'Token usage' in sections and 'Usage (tokens)' not in sections:
         sections['Usage (tokens)'] = sections.pop('Token usage')
     sections['Summary'] = data['summary']
-    header = bold + plain(data['project']) + ' — ' + TITLES[kind] + bold
+    resolved = kind == 'owner-action' and data.get('action_resolved') is True
+    header = bold + plain(data['project']) + ' — ' + ('Owner action resolved' if resolved else TITLES[kind]) + bold
     header += '\n\nObserved: ' + plain(data['observed_at']) + ' | Timezone: ' + plain(data['timezone'])
     header += '\nScope: ' + plain(data['scope']) + ' | Candidate: ' + plain(data['candidate'])
     header += '\nStage: ' + plain(data.get('stage', 'Unknown; approval, merge and reconciled Done are separate'))
@@ -130,15 +132,15 @@ def render_body(body, platform, *, max_bytes=None):
         text = plain(sections.get(title, 'Unknown: ' + title + ' observations unavailable'))
         if kind in {'owner-action', 'final-human-review'}:
             if title == 'Decision / readiness':
-                text += '\nDecision: ' + plain(data.get('decision', 'Unknown'))
+                text += ('\nResolved request: ' if resolved else '\nDecision: ') + plain(data.get('decision', 'Unknown'))
                 text += '\nCandidate: ' + plain(data['candidate']) + ' | Stage: ' + plain(data.get('stage', 'Unknown'))
                 text += '\nNext gate: ' + plain(data.get('next_gate', 'Unknown'))
-            if title == 'Owner action':
+            if title == 'Owner action' and not resolved:
                 text += '\nDecision owner: ' + plain(data.get('decision_owner', 'Unknown'))
                 text += '\nRequested response: ' + plain(data.get('requested_response', 'Unknown'))
                 text += '\nOptions: ' + plain('; '.join(data.get('options', [])) or 'Unknown')
                 text += '\nRecommendation: ' + plain(data.get('recommendation', 'Unknown'))
-            if title == 'Impact and independent work':
+            if title == 'Impact and independent work' and not resolved:
                 text += '\nConsequence of delay: ' + plain(data.get('delay_consequence', 'Unknown'))
                 text += '\nWork that can continue: ' + plain(data.get('independent_work', 'Unknown'))
                 text += '\nResume condition: ' + plain(data.get('resume', 'Unknown'))
@@ -146,8 +148,9 @@ def render_body(body, platform, *, max_bytes=None):
             text = '\n\n'.join(prs) or 'None'
         if title == 'PRs merged and Jira delivery' and 'prs' in data:
             merged = [block for pr, block in zip(data['prs'], prs) if pr.get('merged_at')]
-            text += '\n\nDistinct merged PRs: ' + str(len({pr['url'] for pr in data['prs'] if pr.get('merged_at')}))
+            text += '\n\nDistinct merged PRs: ' + str(data.get('_total_merged_prs', len({pr['url'] for pr in data['prs'] if pr.get('merged_at')})))
             text += '\n\n' + ('\n\n'.join(merged) or 'None')
+        if title == 'PRs merged and Jira delivery':
             text += '\nTickets delivered: ' + plain(data.get('delivered', 'Unknown; PR count is not ticket count'))
         for label, group in (('Current work', 'current'), ('Next tickets', 'next'), ('Epic outlook', 'epics'), ('Epic and project forecast', 'epics')):
             if title == label and group in data:
@@ -159,9 +162,63 @@ def render_body(body, platform, *, max_bytes=None):
             if data.get('detail_url'):
                 text = link(data['detail_url'], 'Detailed report') + '\n\n' + text
         blocks.append(bold + title + bold + '\n\n' + text)
+    if data.get('_presentation_omissions'):
+        blocks.append('Compact report; omitted: ' + '; '.join(str(n) + ' ' + key
+            for key, n in data['_presentation_omissions'].items())
+            + '. Complete retained report: reporting-status' + (' / Detailed report link above' if data.get('detail_url') else ''))
     blocks.append('REPORT ONLY — no merge, release, dispatch, chat or accounting authority')
     text = '\n\n'.join(blocks).replace('AWF delivery:', 'AWF delivery (quoted):')
-    require(len(text.encode('utf-8')) <= limit, 'REPORT_RENDER_TOO_LARGE')
+    # The provider ceiling includes the final delivery/hash marker and, for
+    # Teams, HTML expansion. Compact before admission rather than discovering
+    # that overhead at POST and losing an otherwise valid report.
+    wire = text + '\n\nAWF delivery: ' + '0' * 64 + ' / ' + '0' * 64
+    if platform == 'teams':
+        from .http_transport import teams_html
+        wire = teams_html(wire)
+    if max_bytes is not None:
+        # An explicit caller bound remains strict, including exact UTF-8 byte
+        # boundaries. Automatic channel compaction uses the provider ceiling.
+        require(len(text.encode('utf-8')) <= limit, 'REPORT_RENDER_TOO_LARGE')
+    if len(wire.encode('utf-8')) > provider_limit:
+        # Shorten presentation only. The hashed retained body and detailed
+        # artifact keep all records. Alert decision/owner and summary take
+        # precedence over PR and WIP lists on every report type.
+        compact = deepcopy(data)
+        omissions = compact.setdefault('_presentation_omissions', {})
+        groups = [g for g in ('prs', 'current', 'next', 'epics') if compact.get(g)]
+        if groups:
+            group = max(groups, key=lambda g: len(canonical(compact[g])))
+            if group == 'prs':
+                compact.setdefault('_total_merged_prs', len({p['url'] for p in compact[group] if p.get('merged_at')}))
+            count = max(1, len(compact[group]) // 2)
+            compact[group] = compact[group][:-count]
+            label = {'prs': 'PR entries', 'current': 'current tickets', 'next': 'next tickets', 'epics': 'Epic entries'}[group]
+            omissions[label] = omissions.get(label, 0) + count
+        else:
+            candidates = [(len(str(v).encode('utf-8')), k) for k, v in compact['sections'].items() if len(str(v)) > 120]
+            if candidates:
+                _, key = max(candidates)
+                original = str(compact['sections'][key])
+                keep = max(80, len(original) // 2)
+                compact['sections'][key] = original[:keep]
+                label = key + ' characters'
+                omissions[label] = omissions.get(label, 0) + len(original) - keep
+            else:
+                # Bound unusually long free text, retaining its leading request
+                # and an exact omission count. Fixed labels/identity cannot be
+                # discarded to satisfy an arbitrarily tiny caller limit.
+                candidates = [(len(str(compact.get(k, ''))), k) for k in
+                    ('summary', 'decision', 'recommendation', 'independent_work', 'delay_consequence', 'resume')
+                    if len(str(compact.get(k, ''))) > 120]
+                require(bool(candidates), 'REPORT_RENDER_TOO_LARGE')
+                _, key = max(candidates)
+                original = str(compact[key])
+                keep = max(80, len(original) // 2)
+                compact[key] = original[:keep]
+                omissions[key + ' characters'] = omissions.get(key + ' characters', 0) + len(original) - keep
+        projected = dict(format=body['format'], kind=kind, data=compact)
+        projected['sha256'] = fingerprint('report-body-1', projected)
+        return render_body(projected, platform, max_bytes=max_bytes)
     return text
 
 

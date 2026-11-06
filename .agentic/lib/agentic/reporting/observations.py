@@ -63,10 +63,19 @@ def attributed_accounting(path, operating, project_id, *, worktree_roots=()):
         require(all(type(r['actual_tokens']) is int and r['actual_tokens'] >= 0 for r in known), 'REPORT_ACCOUNTING_USAGE_INVALID')
         total = sum(r['actual_tokens'] for r in known)
         complete = bool(admitted) and len(known) == len(admitted)
+        observations = []
+        for row in admitted:
+            outcome = loads(row['outcome']) if row['outcome'] else {}
+            observations.append(dict(id=row['run_id'], agent=row['agent_id'], ticket=row['ticket_id'],
+                role=row['role'], total=row['actual_tokens'],
+                model=outcome.get('actual_model') or 'Unknown: actual model unavailable', outcome=row['status']))
+        unknown_tickets = {r['ticket_id'] for r in admitted if r['actual_tokens'] is None}
         return dict(status='AVAILABLE' if complete else 'PARTIAL' if admitted else 'UNAVAILABLE',
                     consumed=total if complete else None, known_tokens=total if known else None,
                     coverage=dict(observed=len(known), enrolled=len(admitted)),
                     unknown_runs=[r['run_id'] for r in admitted if r['actual_tokens'] is None],
+                    observations=observations, enrolled=sorted({r['agent_id'] for r in admitted}),
+                    complete_tickets=sorted({r['ticket_id'] for r in known} - unknown_tickets),
                     reason=None if complete else 'ATTRIBUTED_USAGE_INCOMPLETE',
                     components='UNAVAILABLE', source='canonical routing ledger; read only')
     except (OSError, sqlite3.Error, ValidationError, ValueError, KeyError):

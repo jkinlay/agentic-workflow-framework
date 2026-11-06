@@ -1717,7 +1717,7 @@ def _build(config):
 		tickets, actions = [], []
 		for item in inventory['tickets']:
 			tickets.append(dict(key=item['ticket'], kind='implementation', state='UNKNOWN',
-				actor=item['actor'], activity=item['activity']))
+				actor=item['actor'], activity=item['activity'], planning_observed=False))
 			if item['disposition'] == 'BLOCKED' and item['actor'] == 'owner':
 				actions.append(dict(id=item['ticket'], decision=item['next_action'], owner=item['actor'],
 					due='Owner response required', reason=item['reason'], options=[item['next_action'], 'Park'],

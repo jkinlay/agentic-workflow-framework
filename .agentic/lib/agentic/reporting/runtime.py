@@ -16,7 +16,7 @@ from ..canonical import canonical, fingerprint, loads, timestamp
 from ..operating_calendar import effective_calendar, next_review_presentation
 from .bodies import prepare_body, render_body
 from .bounded import DeliveryBudget, MAX_ADVANCES
-from .compose import compose_report, describe
+from .compose import compose_report, describe, number
 from .delivery import DeliveryOutbox, delivery_intent, require
 from .events import approval_event, withdrawal_event, due_periods, owner_events, readiness_events, utc
 from .settings import effective_reporting
@@ -60,8 +60,11 @@ def _body(kind, binding, now, calendar, context, period=None, action=None):
     if supplied is not None:
         require(supplied.get('binding') == binding and supplied.get('created_at') == now,
                 'REPORT_SOURCE_BINDING_MISMATCH')
-        supplied.update(timezone=calendar['timezone'], period=period or {},
-                        capacity=context.get('capacity'), accounting=context.get('accounting', {'mode': 'off'}))
+        supplied.update(timezone=calendar['timezone'], period=period or {})
+        for field in ('capacity', 'accounting'):
+            if field in context:
+                supplied[field] = deepcopy(context[field])
+        supplied['implementation_observed'] = any(s.get('state') == 'WORKING' for s in context.get('streams') or [])
         if context.get('previous_daily_end'):
             supplied['previous_daily_end'] = context['previous_daily_end']
         body = compose_report(kind, supplied, binding, verify_sources=lambda value, accepted: value,
@@ -80,8 +83,8 @@ def _body(kind, binding, now, calendar, context, period=None, action=None):
         data['delivery_attention'] = deepcopy(context['delivery_attention'])
         data['sections']['Sources and freshness'] += '\nDelivery needs owner attention: ' + describe(context['delivery_attention'])
     if kind == 'hourly':
-        data['sections']['Capacity and review queue'] = describe(context.get('capacity'))
-        data['sections']['Current work'] = describe(context.get('streams'))
+        if context.get('capacity') is not None and supplied is None:
+            data['sections']['Capacity and review queue'] = data['sections'].get('Capacity and review queue', '') + '\nController capacity: ' + describe(context['capacity'])
         if context.get('streams') is not None:
             # Inventory details can be UNKNOWN while controller work is observed.
             # The displayed WIP must follow that observation, not ticket metrics.
@@ -91,23 +94,39 @@ def _body(kind, binding, now, calendar, context, period=None, action=None):
                 if not stream.get('ticket') or stream['state'] == 'COMPLETE':
                     continue
                 ticket = deepcopy(tickets.get(stream['ticket'], {}))
-                if not ticket or ticket.get('state') == 'UNKNOWN':
+                if not ticket:
+                    ticket['planning_observed'] = False
+                if not ticket.get('key') or ticket.get('state') == 'UNKNOWN':
                     ticket['title'] = 'Ticket details unavailable'
                 ticket.update(key=stream['ticket'], stage=stream['state'],
                     actor=stream['stream'] + ' / ' + stream['actor'],
                     activity=stream['activity'], next_gate=stream['verification_gate'])
+                if ticket.get('first_started_at'):
+                    try:
+                        elapsed = (timestamp(now) - timestamp(ticket['first_started_at'])).total_seconds()
+                        ticket['elapsed'] = number(elapsed / 3600) + ' h since first start' if elapsed >= 0 else 'UNAVAILABLE: future start'
+                    except (ValidationError, ValueError, TypeError):
+                        ticket['elapsed'] = 'UNAVAILABLE: invalid start'
                 data['current'].append(ticket)
-        data['sections']['Changes since the previous report'] = 'Gates: ' + describe(context.get('gates'))
-    if kind == 'eod' and context.get('accounting_summary') is not None:
+        if context.get('gates') is not None:
+            data['sections']['Changes since the previous report'] = data['sections'].get('Changes since the previous report', '') + '\nGates: ' + describe(context['gates'])
+    if kind == 'eod' and context.get('accounting_summary') is not None and not supplied:
         data['sections']['Usage (tokens)'] = describe(context['accounting_summary'])
     if action is not None:
         record = action['record']['action']
+        resolved = action['kind'] == 'owner-action-resolved'
         data.update(decision=record['decision'], decision_owner=record['owner'],
                     requested_response=record['due'], options=record['options'], resume=record['resume'],
                     delay_consequence=record['reason'], summary=action['kind'],
-                    owner_action=record['decision'])
-        data['sections']['Owner action'] = record['decision']
-        data['sections']['Evidence'] = describe(action)
+                    owner_action=record['decision'], action_resolved=resolved,
+                    recommendation=record.get('recommendation', 'Unknown'))
+        data['sections']['Owner action'] = ('No further action; resolved: ' if resolved else '') + record['decision']
+        data['sections']['Decision / readiness'] = 'Owner action resolved' if resolved else record['decision']
+        if resolved:
+            data['summary'] = 'Owner action resolved: ' + record['decision']
+            data['sections']['Next action'] = 'No further action for this resolved decision'
+        data['sections']['Evidence'] = ('Resolution observed for action ' + record['id']
+            + '; event: ' + action['id'] if resolved else describe(action))
     return prepare_body(kind, data, verify_link=context.get('verify_link'))
 
 
@@ -371,7 +390,8 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                 extra['catch_up_periods'] = deepcopy(summarized)
                 data = deepcopy(body['data'])
                 data['sections']['Changes since the previous report'] = (
-                    'CATCH-UP: missed hourly periods ending ' + ', '.join(p['end'] for p in hours)
+                    data['sections'].get('Changes since the previous report', '')
+                    + '\nCATCH-UP: missed hourly periods ending ' + ', '.join(p['end'] for p in hours)
                     + '\nSpan: ' + hours[0]['start'] + ' to ' + hours[-1]['end']
                     + '\nOlder End of Day dates (retained, no separate post): '
                     + (', '.join(p['local_end'][:10] for p in daily[:-2]) or 'None'))

@@ -98,6 +98,17 @@ def project_metrics(tickets):
 
 def required_leaves(tickets):
     """Shared snapshot/composition denominator, excluding non-required work."""
-    parents = {t['parent'] for t in tickets if t.get('parent')}
-    return [t for t in tickets if t['kind'] == 'implementation' and t['key'] not in parents
-            and not t.get('conditional') and t.get('state') not in {'CANCELLED', 'DEFERRED', 'OUT_OF_SCOPE'}]
+    eligible = [t for t in tickets if not t.get('conditional') and t.get('state') not in
+                {'CANCELLED', 'DEFERRED', 'OUT_OF_SCOPE', 'SUPERSEDED', 'DUPLICATE'}]
+    # A removed/conditional child cannot discharge its required parent's work.
+    # Walk ancestors so a required grandchild still replaces every parent once.
+    by_key = {t['key']: t for t in tickets}
+    parents = set()
+    for ticket in eligible:
+        parent = ticket.get('parent')
+        seen = set()
+        while parent in by_key and parent not in seen:
+            seen.add(parent)
+            parents.add(parent)
+            parent = by_key[parent].get('parent')
+    return [t for t in eligible if t['kind'] == 'implementation' and t['key'] not in parents]

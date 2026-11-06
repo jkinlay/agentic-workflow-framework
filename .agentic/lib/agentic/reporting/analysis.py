@@ -25,6 +25,8 @@ def planning_defects(tickets):
     def defect(t, reason):
         defects.append(dict(key=t['key'], reason=reason, owner_action='Correct accepted planning data'))
     for t in tickets:
+        if t.get('planning_observed') is False:
+            continue
         start, end = t.get('planned_start'), t.get('planned_end')
         if not start or not end:
             defect(t, 'PLANNED_DATES_MISSING')
@@ -32,8 +34,9 @@ def planning_defects(tickets):
         try:
             require(date.fromisoformat(start).isoformat() == start and date.fromisoformat(end).isoformat() == end,
                     'REPORT_PLANNED_DATE_INVALID')
-        except (ValueError, TypeError):
-            require(False, 'REPORT_PLANNED_DATE_INVALID')
+        except (ValidationError, ValueError, TypeError):
+            defect(t, 'PLANNED_DATE_INVALID')
+            continue
         if end < start:
             defect(t, 'PLANNED_DATES_INVERTED')
         if t.get('due') and end != t['due']:
@@ -166,15 +169,20 @@ def token_metrics(mode, observations, enrolled, *, completed=(), complete_ticket
         require(row['id'] not in unique or unique[row['id']] == row, 'REPORT_USAGE_ID_CONFLICT')
         unique[row['id']] = row
     tickets, models, roles, outcomes, overhead, unknown = Counter(), Counter(), Counter(), Counter(), 0, []
-    input_tokens, output_tokens = 0, 0
+    input_tokens, output_tokens, splits_known = 0, 0, True
     for identity, row in unique.items():
         amounts = [row.get('input'), row.get('output')]
-        if not all(type(n) is int and n >= 0 for n in amounts):
+        split = all(type(n) is int and n >= 0 for n in amounts)
+        if split:
+            total = sum(amounts)
+            input_tokens += amounts[0]
+            output_tokens += amounts[1]
+        elif type(row.get('total')) is int and row['total'] >= 0:
+            total = row['total']
+            splits_known = False
+        else:
             unknown.append(identity)
             continue
-        total = sum(amounts)
-        input_tokens += amounts[0]
-        output_tokens += amounts[1]
         models[row.get('model') or 'Unknown'] += total
         roles[row.get('role') or 'Unknown'] += total
         outcomes[row.get('outcome') or 'Unknown'] += total
@@ -207,8 +215,8 @@ def token_metrics(mode, observations, enrolled, *, completed=(), complete_ticket
                 completed_n=len(complete), completed_coverage=dict(numerator=len(complete), denominator=len(set(completed))),
                 completed_mean=ratio(Fraction(sum(tickets[k] for k in complete), len(complete))) if complete else None,
                 tickets=dict(tickets), overhead=overhead, model_mix=dict(models), excluded=excluded,
-                input_tokens=input_tokens if consumed is not None else None,
-                output_tokens=output_tokens if consumed is not None else None,
+                input_tokens=input_tokens if consumed is not None and splits_known else None,
+                output_tokens=output_tokens if consumed is not None and splits_known else None,
                 by_role=dict(roles), by_outcome=dict(outcomes),
                 forecast_components=deepcopy(forecasts),
                 remaining=remaining, expected_total={s: consumed + remaining[s] for s in SCENARIOS}
@@ -218,6 +226,7 @@ def token_metrics(mode, observations, enrolled, *, completed=(), complete_ticket
 def elapsed_comparison(tickets):
     """Original estimates stay distinct; only calendar seconds are comparable."""
     from .metrics import elapsed_seconds
+    tickets = [t for t in tickets if t.get('state') == 'DONE' or t.get('completion_unavailable')]
     samples, delays, comparisons, components = [], [], [], defaultdict(list)
     for ticket in tickets:
         actual = elapsed_seconds(ticket)
@@ -296,8 +305,11 @@ def scope_metrics(tickets):
         return delivered(dict(t, state=t.get('state', 'UNKNOWN')))
     delivered_n = sum(bool(is_delivered(t)) for t in required)
     remaining_groups = {e: [t for t in rows if not is_delivered(t)] for e, rows in groups.items()}
+    unclassified = sum(t.get('state', 'UNKNOWN') == 'UNKNOWN' and not t.get('completion_unavailable') for t in required)
     return dict(epics=len(epics), implementation_tickets=len(required), delivered=delivered_n,
-        remaining=len(required)-delivered_n, priority_size=matrix(required), epic_priority_size=matrix(epics),
+        remaining=None if unclassified else len(required)-delivered_n, unclassified=unclassified,
+        known_remaining=sum(not is_delivered(t) and t.get('state', 'UNKNOWN') != 'UNKNOWN' for t in required),
+        priority_size=matrix(required), epic_priority_size=matrix(epics),
         states=dict(Counter(t.get('state', 'UNKNOWN') for t in required)),
         dispositions=dict(cancelled=sum(t.get('state') == 'CANCELLED' for t in leaves),
                           deferred=sum(t.get('state') in {'DEFERRED', 'OUT_OF_SCOPE'} for t in leaves),
@@ -422,7 +434,11 @@ def reconciliation_coverage(tickets):
     from .metrics import delivered, required_leaves
     implementation = required_leaves(tickets)
     known_states = {'BACKLOG', 'READY', 'WORKING', 'REVIEWING', 'MERGED', 'OWNER_WAITING',
-                    'CANCELLED', 'SUPERSEDED'}
+                    'BLOCKED', 'PAUSED', 'PAUSED_INPUT', 'REVIEW_PASSED', 'OWNER_APPROVED',
+                    'IN_PROGRESS', 'DISPATCHED', 'PR_DRAFT', 'READY_FOR_CRITIC', 'CHANGES_REQUESTED',
+                    'AMENDING', 'REVIEW_CAP_REACHED', 'SPECIALIST_REVIEW', 'FINAL_REVIEW',
+                    'READY_FOR_OWNER_AUTHORIZATION', 'OWNER_AUTHORIZED', 'MERGING', 'MERGE_UNKNOWN',
+                    'MERGED_PENDING_JIRA', 'MERGED_PENDING_OWNER_CLOSURE', 'FAILED', 'REOPENED'}
     observed = sum(t.get('state') in known_states or delivered(t) for t in implementation)
     return dict(status='KNOWN' if observed == len(implementation) else 'UNAVAILABLE',
                 observed=observed, total=len(implementation))
@@ -472,6 +488,7 @@ def daily_metrics(prs, tickets, end, previous_daily_end, timezone_name, *, obser
                             reconciliation_coverage=coverage,
                             reconciled_tickets=[t['key'] for t in completed],
                             elapsed=elapsed_cohorts(completed))
-    result['merged_pending_reconciliation'] = [t['key'] for t in tickets if t.get('state') in {'MERGED', 'OWNER_WAITING'}
+    result['merged_pending_reconciliation'] = [t['key'] for t in tickets if t.get('state') in
+        {'MERGED', 'OWNER_WAITING', 'MERGED_PENDING_JIRA', 'MERGED_PENDING_OWNER_CLOSURE'}
                                               and not delivered(t)]
     return result

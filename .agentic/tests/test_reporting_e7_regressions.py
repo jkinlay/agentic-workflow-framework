@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import runpy
 import subprocess
+import sys
+import threading
 import time
 import unittest
 
@@ -106,9 +108,7 @@ class E7ControllerTests(unittest.TestCase):
         self.assertEqual({d['status'] for d in self.status()['deliveries']}, {'DELIVERED'})
 
     def cooldown(self, platform, operation):
-        # Keep the real Git/reservation checks, but isolate timing from the
-        # caller's dirty checkout. Its growing diff otherwise triggers a full
-        # physical-alias inventory scan per edited file inside the five seconds.
+        # Keep real Git/reservation checks in an isolated repository.
         repository = Path(self.helper.temp.name) / 'cooldown-repository'
         subprocess.run(['git', 'clone', '--shared', '--quiet',
                         str(self.repository['repository_root']), str(repository)],
@@ -122,8 +122,22 @@ class E7ControllerTests(unittest.TestCase):
             self.network.read_throttled = {operation}
             matches = lambda m, u: m == 'GET' and operation in u
         self.owner_alert('First alert')
-        started = time.monotonic()
-        self.assertEqual(self.cycle('2026-11-10T10:00:00Z')['errors'], [])
+        # Observe, without replacing production functions, that cooldown never
+        # sleeps inside a cycle. Host/Git time is unrelated to Retry-After.
+        # Profile new destination threads too; retain the controlled 59/60-second
+        # checks below to prove durable cooldown admission across restart.
+        sleeps = []
+        def observe_sleep(frame, event, argument):
+            if event == 'c_call' and argument is time.sleep and frame.f_globals.get('__name__', '').startswith('agentic.'):
+                sleeps.append(frame.f_code.co_name)
+        prior, prior_threads = sys.getprofile(), threading.getprofile()
+        sys.setprofile(observe_sleep)
+        threading.setprofile(observe_sleep)
+        try:
+            self.assertEqual(self.cycle('2026-11-10T10:00:00Z')['errors'], [])
+        finally:
+            sys.setprofile(prior)
+            threading.setprofile(prior_threads)
         initial = [c for c in self.network.calls if matches(*c)]
         self.assertEqual(len(initial), 1)
         states = self.status()['deliveries']
@@ -133,7 +147,7 @@ class E7ControllerTests(unittest.TestCase):
             self.assertTrue(all(len(d['attempts']) <= 1 for d in states))
         if operation in {'conversations.info', '/members'}:
             self.assertTrue(all(d['attempts'] == [] for d in states))
-        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(sleeps, [], 'Retry-After must persist and defer, never sleep in the controller')
         attempts = {d['delivery_id']: list(d['attempts']) for d in states}
         self.restart()
         self.owner_alert('Another report during cooldown')

@@ -3440,7 +3440,15 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			context['coverage']['accounting'] = context['accounting_summary']['status']
 		# Reporting does not admit source-supplied usage: the canonical read-only
 		# ledger is the accounting boundary; missing token components stay unknown.
-		context['accounting'] = {'mode': 'off' if not budget_settings['accounting_enabled'] else 'unknown'}
+		summary = context.get('accounting_summary', {})
+		context['accounting'] = dict(mode='on' if budget_settings['accounting_enabled'] else 'off',
+			observations=deepcopy(summary.get('observations', [])), enrolled=summary.get('enrolled', []),
+			complete_tickets=summary.get('complete_tickets', []))
+		# Forecasts may cite canonical observation IDs; source usage/enrollment
+		# never enters the ledger projection or turns accounting on.
+		source_accounting = (context.get('records') or {}).get('accounting', {})
+		if 'forecasts' in source_accounting:
+			context['accounting']['forecasts'] = deepcopy(source_accounting['forecasts'])
 		# Source observation cannot spend the shared delivery/review allowance.
 		report_delivery_budget = DeliveryBudget()
 		if report_settings['mode'] != 'off':
