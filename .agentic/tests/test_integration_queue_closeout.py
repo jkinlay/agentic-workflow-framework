@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.closeout import require_jira_reconciliation_before_counts
-from agentic.continuous_controller import production_merge_observed
+from agentic.continuous_controller import ContinuousControllerStore, production_merge_observed
 from agentic.contracts import Contracts
 from agentic.lifecycle import definition
 from agentic.policy import policy_hash
@@ -226,21 +226,44 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "this merge result"):
             self.gate(authenticated, replay)
 
-    def test_awf76_ac3_production_entry_cannot_count_before_closeout_gate(self):
+    def production_progress_fixture(self):
         closeout, transition = self.record(), self.reconciliation()
         count_gate = self.gate(closeout, transition, return_args=True)
+        temporary = tempfile.TemporaryDirectory(prefix="awf-closeout-journal-")
+        self.addCleanup(temporary.cleanup)
+        store = ContinuousControllerStore(Path(temporary.name) / "controller.sqlite3", ["A"])
+        provider = transition["jira_provider"]
+        issue = closeout["binding"]["issue_id"]
+        # Retain the completed controller transition that the closeout references.
+        store.prepare_jira_operation(transition, NOW, identity={
+            "connector": "jira", "jira_provider": provider,
+            "project_id": PROJECT_CONFIG["project"]["id"],
+            "repository_id": PROJECT_CONFIG["github"]["repository_id"],
+            "issue_id": issue})
+        store.begin_jira_operation(transition["operation_id"], NOW)
+        store.finish_jira_operation(transition["operation_id"], "SUCCEEDED", {
+            "issue_id": issue, "jira_provider": provider, "status": "Done",
+            "actor": "fixture-controller", "observed_at": NOW}, NOW)
         jira_binding = {"cloud_id": "fixture-cloud", "project_id": "fixture-project",
                         "actor_id": "fixture-controller"}
         scope = "project = EX"
         scope_sha = fingerprint("jira-progress-scope", {
             "scope": scope, "binding": jira_binding, "include_epics": False})
-        progress = production_merge_observed(
-            lifecycle_state="MERGING",
-            lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
-            jira_progress={
+        return {
                 "jira_enabled": True, "merged_ticket": "AWF-17", "scope": scope,
                 "observed_at": NOW, "jira_binding": jira_binding,
                 "count_gate": count_gate,
+                "store": store, "config": copy.deepcopy(PROJECT_CONFIG),
+                "observe_provider_identity": lambda: copy.deepcopy(provider),
+                "observe_issue_identity": lambda key: {"issue_key": key, "observed_at": NOW},
+                "observe_issue_policy": lambda key: {
+                    "issue_key": key, "issue_type": "LEAF", "observed_at": NOW,
+                    "snapshot": {"issue_id": key, "project_key": "EX", "epic_ids": [],
+                                 "labels": ["awf-fixture"], "component_ids": [],
+                                 "summary": "Routine fixture work"}},
+                "read_current_status": lambda binding: {
+                    "issue_id": issue, "jira_provider": copy.deepcopy(provider),
+                    "status_id": "Done", "observed_at": NOW},
                 "reconcile_merged_ticket": lambda ticket: {
                     "ticket": ticket, "issue_id": "17", **jira_binding,
                     "status": "RECONCILED",
@@ -250,7 +273,13 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
                 "fetch_scope_page": lambda _scope, _cursor: {
                     "items": [], "next_cursor": None, "complete": True,
                     "snapshot_id": "fixture-snapshot", "scope_sha256": scope_sha,
-                    "observed_at": NOW}})
+                    "observed_at": NOW}}
+
+    def test_awf76_ac3_production_entry_cannot_count_before_closeout_gate(self):
+        progress = production_merge_observed(
+            lifecycle_state="MERGING",
+            lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
+            jira_progress=self.production_progress_fixture())
         self.assertEqual("COUNTED", progress["jira_progress"]["jira_state"])
 
     def test_r6_002_api_has_no_caller_jira_enablement_boolean(self):

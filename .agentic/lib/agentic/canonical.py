@@ -151,6 +151,19 @@ def timestamp(value: str) -> datetime:
         raise ValidationError(f"Invalid timestamp: {value}") from exc
 
 
+def jira_timestamp(value: str) -> datetime:
+    """Parse Jira observation timestamps without relaxing canonical AWF records."""
+    if isinstance(value, str) and re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?[+-]\d{4}", value
+    ):
+        value = value[:-2] + ":" + value[-2:]
+    # fromisoformat normalizes invalid offset minutes; reject them explicitly.
+    if isinstance(value, str) and re.search(r"[+-]\d{2}:\d{2}$", value):
+        if int(value[-5:-3]) > 23 or int(value[-2:]) > 59:
+            raise ValidationError("Invalid Jira timestamp offset")
+    return timestamp(value)
+
+
 def now_text():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 

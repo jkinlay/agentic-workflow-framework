@@ -138,8 +138,14 @@ class FakeHttp:
 		if '/rest/api/3/issue/' in url and method == 'GET':
 			self.issue_reads += 1
 			if 'expand=changelog' in url:
-				status = 'Done' if '/issue/EX-100?' in url else 'In Progress'
-				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}}, 'changelog': {'histories': [{'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'to': status, 'toString': status}]}]}}))
+				posted = bool(getattr(self, 'transition_bodies', [])) or not any('?fields=project,parent,labels,components,issuetype,summary' in call[1] for call in self.calls)
+				from_status = 'In Review' if '/issue/EX-100?' in url else 'Ready'
+				status = ('Done' if '/issue/EX-100?' in url else 'In Progress') if posted else from_status
+				previous = {'id': '1', 'created': '2026-10-09T08:59:59.000+0100', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': 'Backlog', 'to': from_status}]}
+				histories = [previous]
+				if posted:
+					histories = [{'id': '2', 'created': '2026-10-09T08:00:00.000+0000', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'to': status, 'toString': status}, {'field': 'resolution', 'fieldtype': 'jira', 'fieldId': 'resolution', 'from': None, 'to': '10000'}]}, previous]
+				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}, 'updated': '2026-10-09T08:00:00.000+0000' if posted else previous['created']}, 'changelog': {'histories': histories, 'startAt': 0, 'total': len(histories), 'maxResults': len(histories)}}))
 			status = 'Ready' if self.issue_reads == 1 else 'In Progress'
 			return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status}}}))
 		if method == 'POST' and '/transitions' in url:
@@ -148,6 +154,25 @@ class FakeHttp:
 			self.asserted_transition_id = self.transition_bodies[-1]['transition']['id']
 			return (204, '')
 		raise AssertionError('unexpected Jira request: ' + method + ' ' + url)
+
+class ProgressHttp(FakeHttp):
+	"""Stateful post-merge transport: canonical key and status follow the write."""
+	def __init__(self):
+		super().__init__()
+		self.status='In Review'
+
+	def request(self,method,url,**kwargs):
+		status,body=super().request(method,url,**kwargs)
+		if method=='POST' and '/transitions' in url:
+			self.status='Done'
+		if '/issue/' in url and method=='GET':
+			value=json.loads(body)
+			if url.endswith('?fields=key'):
+				value['key']=url.split('/issue/',1)[1].split('?',1)[0]
+			elif url.endswith('?fields=status'):
+				value['fields']['status']['id']=self.status
+			body=json.dumps(value)
+		return status,body
 
 class ForeignActorHttp(FakeHttp):
 
@@ -159,7 +184,7 @@ class ForeignActorHttp(FakeHttp):
 			body = json.dumps(value)
 		return (status, body)
 
-class AdvancingPageHttp(FakeHttp):
+class AdvancingPageHttp(ProgressHttp):
 
 	def request(self, method, url, **kwargs):
 		status, body = super().request(method, url, **kwargs)
@@ -360,7 +385,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		config_path = self.root / 'config.json'
 		config_path.write_text(json.dumps(self.config), encoding='utf-8')
 		adapters, loader = _load_real(self.adapter, config_path)
-		self.assertEqual(set(adapters), {'observe_issue_identity', 'observe_issue_policy', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'})
+		self.assertEqual(set(adapters), {'read_assignment', 'observe_jira_operation_identity', 'observe_issue_identity', 'observe_issue_policy', 'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'})
 		loader._require_adapters(adapters, {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'})
 		with self.assertRaisesRegex(ValidationError, 'SHA-256 pin'):
 			loader._load_reviewed_adapters(self.adapter, '0' * 64, config_path)
@@ -1295,7 +1320,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=key')), next(i for i, url in enumerate(urls) if url.endswith('?fields=status')))
 					post = next(i for i, call in enumerate(http.calls) if call[0] == 'POST')
 					self.assertLess(next(i for i, url in enumerate(urls) if url.endswith('?fields=status')), post)
-					self.assertGreater(next(i for i, url in enumerate(urls) if 'expand=changelog' in url), post)
+					# Changelog reads bind the pre-write boundary and verify the post-write readback.
+					self.assertTrue(any(i < post for i, url in enumerate(urls) if 'expand=changelog' in url))
+					self.assertTrue(any(i > post for i, url in enumerate(urls) if 'expand=changelog' in url))
 				else:
 					self.assertEqual([], http.calls)
 					self.assertEqual([], operations)
@@ -1333,17 +1360,30 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		self.assertNotEqual(result.get('record', {}).get('status'), 'SUCCEEDED')
 		self.assertIn('writes_stopped', result)
 
+	def journaled_progress(self,adapters,*,project_config=None,binding=None,merge_result_id='merge-1'):
+		from test_continuous_controller import journaled_progress_inputs
+		project_config=project_config or json.loads(Path(self.config['observations']['accepted_project_config']['path']).read_text())
+		store=ContinuousControllerStore(self.root/'progress.sqlite3',['A'],worktree_roots=[self.root/'worktree'])
+		return journaled_progress_inputs(store,project_config,'EX-100',binding=binding,adapters=adapters,merge_result_id=merge_result_id,now=NOW,record_callback=lambda record:setattr(self,'reconciliation_record',record))
+
 	def test_merge_observed_reconciles_then_pages(self):
-		http = FakeHttp()
+		http = ProgressHttp()
 		clock = FakeClock()
 		cfg = {**self.config, '_http_transport': http, '_clock': clock}
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](cfg)
 		progress = {'jira_enabled': True, 'merged_ticket': 'EX-100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': {}, 'max_pages': 5, 'max_items': 10}
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), patch('agentic.closeout.require_jira_reconciliation_before_counts', return_value={'status': 'PASS', 'count_allowed': True, 'ticket': 'EX-100'}):
+			progress.update(self.journaled_progress(adapters))
+			self.assertEqual(sum(call[0]=='POST' for call in http.calls),1)
+			progress_start=len(http.calls)
 			result = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
 		self.assertEqual(result['state'], 'MERGED')
-		self.assertEqual(result['jira_progress']['jira_state'], 'COUNTED')
+		self.assertEqual(result['jira_progress']['jira_state'], 'COUNTED', result)
 		self.assertEqual(result['jira_progress']['closed'], 1)
+		self.assertEqual(result['jira_progress']['remaining_open'],1)
+		progress_calls=http.calls[progress_start:]
+		self.assertFalse(any(call[0]=='POST' for call in progress_calls))
+		self.assertEqual(sum('/rest/api/3/search?' in call[1] for call in progress_calls),2)
 
 	def test_merge_observed_uses_shipped_adapter_closeout_observers(self):
 		repository = self.root / 'merge-repository'
@@ -1385,20 +1425,33 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		transition = {'schema_version': 3, 'record_id': transition_id, 'created_at': NOW, 'producer_id': 'controller', 'run_id': '10000000-0000-0000-0000-000000000007', 'binding': binding, 'operation_id': '10000000-0000-0000-0000-000000000008', 'merge_result_id': merge_result_id, 'jira_provider': {'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller'}, 'lifecycle_event': 'JIRA_RECONCILED', 'from_status_id': '3', 'to_status_id': 'Done', 'transition_id': 'done-transition', 'status': 'SUCCEEDED', 'evidence': ['urn:awf:fixture:jira-transition'], 'read_back': {'observed_status': 'Done', 'observed_actor': 'controller', 'observed_at': NOW}}
 		(closeout_dir / (closeout_id + '.json')).write_bytes(canonical({'record': closeout, 'merge_result_id': merge_result_id, 'merge_observed_at': NOW}))
 		(jira_dir / (transition_id + '.json')).write_bytes(canonical({'record': transition}))
-		http = FakeHttp()
+		http = ProgressHttp()
 		adapter_config = {**self.config, '_http_transport': http, '_clock': FakeClock(), 'observations': {'accepted_project_config': {'path': str(project_path), 'sha256': sha256(project_bytes), 'blob_sha': 'e' * 40, 'acceptance_receipt_id': 'fixture-acceptance'}, 'closeout_directory': str(closeout_dir), 'jira_transition_directory': str(jira_dir)}}
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](adapter_config)
 		import importlib.util
 		spec = importlib.util.spec_from_file_location('test_awf76_controller_loader', ROOT / '.agentic/scripts/continuous_controller.py')
 		controller_script = importlib.util.module_from_spec(spec)
 		spec.loader.exec_module(controller_script)
+		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
+			journal=self.journaled_progress(adapters,project_config=project_config,binding=binding,merge_result_id=merge_result_id)
+		transition=self.reconciliation_record
+		transition_id=transition['record_id']
+		closeout['jira_transition_record_id']=transition_id
+		(closeout_dir/(closeout_id+'.json')).write_bytes(canonical({'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW}))
+		(jira_dir/(transition_id+'.json')).write_bytes(canonical({'record':transition}))
 		count_gate = controller_script._count_gate_inputs({'closeout_record': closeout}, config=project_config, repository=repository, contracts=Contracts(ROOT / '.agentic/schemas'), adapters=adapters, adapter_sha256=sha256(self.adapter.read_bytes()), observed_at=NOW)
 		progress = {'jira_enabled': True, 'merged_ticket': 'EX-100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': count_gate, 'max_pages': 5, 'max_items': 10}
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
+			progress.update({key:value for key,value in journal.items() if key!='count_gate'})
+			progress_start=len(http.calls)
 			result = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
 		self.assertEqual(result['state'], 'MERGED')
-		self.assertEqual(result['jira_progress']['jira_state'], 'COUNTED')
+		self.assertEqual(result['jira_progress']['jira_state'], 'COUNTED', result)
 		self.assertEqual(result['jira_progress']['closed'], 1)
+		self.assertEqual(result['jira_progress']['remaining_open'],1)
+		progress_calls=http.calls[progress_start:]
+		self.assertFalse(any(call[0]=='POST' for call in progress_calls))
+		self.assertEqual(sum('/rest/api/3/search?' in call[1] for call in progress_calls),2)
 		original_request = http.request
 		for returned_key in (None, 'EX-999'):
 			with self.subTest(returned_key=returned_key):
@@ -1422,8 +1475,14 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](cfg)
 		progress = {'jira_enabled': True, 'merged_ticket': 'EX-100', 'scope': 'project = EX', 'observed_at': NOW, 'jira_binding': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'}, 'count_gate': {}, 'max_pages': 5, 'max_items': 10}
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), patch('agentic.closeout.require_jira_reconciliation_before_counts', return_value={'status': 'PASS', 'count_allowed': True, 'ticket': 'EX-100'}):
+			progress.update(self.journaled_progress(adapters))
+			self.assertEqual(sum(call[0]=='POST' for call in http.calls),1)
+			progress_start=len(http.calls)
 			result = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
 		self.assertEqual(result['jira_progress']['jira_state'], 'RECONCILED')
+		self.assertEqual(result['jira_progress']['closed'],'UNOBSERVED')
+		self.assertEqual(sum('/rest/api/3/search?' in call[1] for call in http.calls[progress_start:]),2)
+		self.assertFalse(any(call[0]=='POST' for call in http.calls[progress_start:]))
 
 	def test_interrupted_dispatch_is_observed_without_relaunch(self):
 		runner = FakeRunner()
@@ -1727,7 +1786,7 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 		expected = {
 			'cycle': {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'},
 			'jira-lifecycle': {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition'},
-			'merge-observed': {'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation'},
+			'merge-observed': {'observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation'},
 			'owner-publication-prepare': {'authorize_owner_publication'},
 			'owner-publication-resume': {'observe_identity', 'observe_remote_heads', 'create_draft_pr', 'observe_draft_pr'},
 			'owner-publication-status': set(),
@@ -1746,7 +1805,7 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 				if not operations:
 					self.assertEqual('None', cell)
 		merge = actual['merge-observed'][1]
-		self.assertRegex(merge, r'additionally `observe_jira_reconciliation` when accepted project configuration has `jira.enabled is True`')
+		self.assertRegex(merge, r'additionally `observe_jira_reconciliation` when the supplied project configuration \(--project-config\) has `jira.enabled is True`')
 
 	def test_doc_cycle_flag_requirements_describe_supplied_flags(self):
 		section = ' '.join(self._required_operations_section().split())

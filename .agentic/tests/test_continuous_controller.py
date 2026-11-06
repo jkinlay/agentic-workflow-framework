@@ -122,6 +122,27 @@ def observe_jira_provider(config,**overrides):
 	value.update(overrides)
 	return value
 
+
+def journaled_progress_inputs(store, config, issue, *, binding=None, now=NOW, adapters=None, merge_result_id='merge-1', record_callback=None):
+	"""Establish a real lifecycle reconciliation before testing read-only progress."""
+	provider=configured_jira_provider(config)
+	binding=binding or {'issue_id':issue}
+	calls=adapters or {
+		'observe_provider_identity':lambda:dict(provider),
+		'observe_issue_identity':lambda key:{'issue_key':key,'observed_at':now},
+		'observe_issue_policy':lambda key:{'issue_key':key,'issue_type':'LEAF','observed_at':now,'snapshot':{'issue_id':key,'project_key':'EX','epic_ids':[],'labels':['awf-fixture'],'component_ids':[],'summary':'Routine work'}},
+		'read_current_status':lambda value:jira_current(value,config['jira']['status_map']['in_review'],now),
+		'write_transition':lambda record:{'operation_id':record['operation_id'],'issue_id':issue,'status':'ATTEMPTED','observed_at':now,'jira_provider':provider},
+		'read_transition':lambda record,operation:{'issue_id':issue,'status':config['jira']['status_map']['done'],'actor':provider['controller_actor_id'],'observed_at':now,'jira_provider':provider}}
+	result=real_production_jira_lifecycle(store,config=config,contract={'owner_closure_required':False},event='JIRA_RECONCILED',facts={'merge_confirmed':True,'closeout_valid':True},binding=binding,issue_type='LEAF',state='MERGED',producer_id=provider['controller_actor_id'],run_id=str(uuid.UUID(int=99)),now=now,evidence=['urn:awf:fixture:journaled-reconciliation'],transition_id='done-transition',merge_result_id=merge_result_id,**{key:calls[key] for key in ('observe_provider_identity','observe_issue_identity','observe_issue_policy','read_current_status','write_transition','read_transition')})
+	if result.get('record',{}).get('status')!='SUCCEEDED':
+		raise AssertionError(result)
+	record=result['record']
+	if record_callback:
+		record_callback(record)
+	return {'store':store,'config':config,'count_gate':{'closeout_record':{'binding':binding,'jira_transition_record_id':record['record_id']}},**{key:calls[key] for key in ('observe_provider_identity','observe_issue_identity','observe_issue_policy')},'read_current_status':calls['read_current_status'] if adapters else lambda value:jira_current(value,config['jira']['status_map']['done'],now)}
+
+
 def ticket(name,priority,disposition='ELIGIBLE',paths=None,**overrides):
 	value={'ticket':name,'priority':priority,'disposition':disposition,'actor':'worker-'+name,'reason':'eligible scoped action' if disposition=='ELIGIBLE' else 'specific wait condition','next_action':'continue '+name,'resume_trigger':'named prerequisite becomes current','paths':paths or['.agentic/tests/fixtures/'+name.lower()+'.txt'],'dependencies_satisfied':True,'budget_available':True,'cap_available':True,'review_independent':True,'exact_tuple':'base:a/head:b/tree:c/contract:d/review:e','activity':'implement '+name,'verification_gate':'PENDING','reviewer_completion':dict(COUNTS),'open_findings':0,'jira_status':'In Progress','dispatch_role':'writer','lifecycle_stage':'implementation'}
 	value.update(overrides)
@@ -907,39 +928,47 @@ class JiraProgressTests(unittest.TestCase):
 		gate.start()
 		self.addCleanup(gate.stop)
 
-	def receipt(self,ticket='EX-1',**overrides):
-		value={'ticket':ticket,'issue_id':'10001',**BINDING,'status':'RECONCILED','operation_id':str(uuid.UUID(int=2)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW}
-		value.update(overrides)
-		return value
+	def progress_inputs(self,now=NOW):
+		if getattr(self,'_progress_store',None) is self.store:
+			return dict(self._progress_inputs)
+		config=json.loads((ROOT/'.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+		config['jira'].update(cloud_id=BINDING['cloud_id'],provider_project_id=BINDING['project_id'],controller_actor_id=BINDING['actor_id'])
+		self._progress_inputs=journaled_progress_inputs(self.store,config,'EX-1',now=now)
+		self._progress_store=self.store
+		return dict(self._progress_inputs)
 
 	def page(self,items,*,cursor=None,complete=True,snapshot='snapshot-1',observed=NOW,include_epics=False):
 		scope_hash=fingerprint('jira-progress-scope',{'scope':self.scope,'binding':BINDING,'include_epics':include_epics})
 		return{'items':items,'next_cursor':cursor,'complete':complete,'snapshot_id':snapshot,'scope_sha256':scope_hash,'observed_at':observed}
 
-	def call(self,reconcile=None,fetch=None,**overrides):
-		args=dict(jira_enabled=True,merged_ticket='EX-1',scope=self.scope,observed_at=NOW,jira_binding=BINDING,count_gate={},reconcile_merged_ticket=reconcile or(lambda ticket:self.receipt(ticket)),fetch_scope_page=fetch or(lambda scope,cursor:self.page([])))
+	def call(self,fetch=None,**overrides):
+		inputs={'count_gate':{}} if overrides.get('jira_enabled') is False else ({} if 'store' in overrides else self.progress_inputs())
+		args=dict(jira_enabled=True,merged_ticket='EX-1',scope=self.scope,observed_at=NOW,jira_binding=BINDING,fetch_scope_page=fetch or(lambda scope,cursor:self.page([])),**inputs)
 		args.update(overrides)
 		return post_merge_jira_progress(**args)
 
 	def test_reconciliation_precedes_complete_paginated_stable_identity_counts(self):
 		calls=[]
 
-		def reconcile(ticket_id):
-			calls.append(('reconcile',ticket_id))
-			return self.receipt(ticket_id)
+		def observe_status(binding):
+			calls.append(('reconcile',binding['issue_id']))
+			return jira_current(binding,'Done',NOW)
 
 		def page(scope,cursor):
 			calls.append(('count',cursor))
 			if cursor is None:
 				return self.page([{'id':'1','issue_type':'TASK','status_category':'TERMINAL'},{'id':'2','issue_type':'EPIC','status_category':'NON_TERMINAL'}],cursor='p2',complete=False)
 			return self.page([{'id':'3','issue_type':'TASK','status_category':'NON_TERMINAL'}])
-		result=self.call(reconcile=reconcile,fetch=page)
-		self.assertEqual(calls[0],('reconcile','EX-1'))
+		result=self.call(read_current_status=observe_status,fetch=page)
+		self.assertEqual(calls,[('reconcile','EX-1'),('count',None),('count','p2')])
 		self.assertEqual((result['jira_state'],result['closed'],result['remaining_open']),('COUNTED',1,1))
 
 	def test_routine_merge_observation_uses_reconcile_first_progress_route(self):
 		calls=[]
-		args=dict(jira_enabled=True,merged_ticket='EX-1',scope=self.scope,observed_at=NOW,jira_binding=BINDING,count_gate={},reconcile_merged_ticket=lambda ticket:calls.append(('reconcile',ticket))or self.receipt(ticket),fetch_scope_page=lambda scope,cursor:calls.append(('count',cursor))or self.page([]))
+		args=dict(jira_enabled=True,merged_ticket='EX-1',scope=self.scope,observed_at=NOW,jira_binding=BINDING,fetch_scope_page=lambda scope,cursor:calls.append(('count',cursor))or self.page([]),**self.progress_inputs())
+		# Reconciliation now means observing the durable write, before fetching pages.
+		args['read_current_status']=lambda binding:calls.append(('reconcile',binding['issue_id']))or jira_current(binding,'Done',NOW)
+		args['reconcile_merged_ticket']=lambda key:self.fail('progress must never mutate')
 		with patch('agentic.closeout.require_jira_reconciliation_before_counts',return_value={'status':'PASS','count_allowed':True,'ticket':'EX-1'}):
 			result=production_merge_observed(lifecycle_state='MERGING',lifecycle_facts={'merge_confirmed':True,'candidate_matched':True},jira_progress=args)
 		self.assertEqual(calls,[('reconcile','EX-1'),('count',None)])
@@ -951,7 +980,7 @@ class JiraProgressTests(unittest.TestCase):
 
 	def test_awf76_production_merge_count_requires_validated_closeout_gate(self):
 		calls=[]
-		args=dict(jira_enabled=True,merged_ticket='EX-1',scope=self.scope,observed_at=NOW,jira_binding=BINDING,reconcile_merged_ticket=lambda ticket:calls.append(('reconcile',ticket))or self.receipt(ticket),fetch_scope_page=lambda scope,cursor:calls.append(('count',cursor))or self.page([]))
+		args=dict(jira_enabled=True,merged_ticket='EX-1',scope=self.scope,observed_at=NOW,jira_binding=BINDING,reconcile_merged_ticket=lambda ticket:calls.append(('reconcile',ticket)),fetch_scope_page=lambda scope,cursor:calls.append(('count',cursor))or self.page([]))
 		with self.assertRaisesRegex(ValidationError,'closeout'):
 			production_merge_observed(lifecycle_state='MERGING',lifecycle_facts={'merge_confirmed':True,'candidate_matched':True},jira_progress=args)
 		self.assertEqual([],calls)
@@ -961,16 +990,26 @@ class JiraProgressTests(unittest.TestCase):
 
 	def test_disabled_jira_performs_no_reads_or_writes(self):
 		calls=[]
-		result=self.call(jira_enabled=False,reconcile=lambda value:calls.append('write'),fetch=lambda scope,cursor:calls.append('read'))
+		result=self.call(jira_enabled=False,reconcile_merged_ticket=lambda value:calls.append('write'),fetch=lambda scope,cursor:calls.append('read'))
 		self.assertEqual(calls,[])
 		self.assertEqual((result['jira_state'],result['closed'],result['remaining_open']),('JIRA_DISABLED','UNOBSERVED','UNOBSERVED'))
 
 	def test_wrong_reconciliation_binding_is_not_retried_or_counted(self):
-		for field,value in(('cloud_id','other'),('actor_id','other'),('status','UNKNOWN'),('ticket','EX-2')):
+		# The old callback receipt is no longer trusted. Preserve wrong-provider,
+		# unknown-status and wrong-ticket refusal using the required observations.
+		for field,value in(('cloud_id','other'),('controller_actor_id','other'),('status_id','UNKNOWN'),('issue_id','EX-2')):
+			inputs=self.progress_inputs()
 			calls=[]
-			result=self.call(reconcile=lambda ticket,f=field,v=value:calls.append(ticket)or self.receipt(ticket,**{f:v}),fetch=lambda scope,cursor:self.fail('count requires proven reconciliation'))
-			self.assertEqual(calls,['EX-1'])
+			if field in ('cloud_id','controller_actor_id'):
+				provider=configured_jira_provider(inputs['config'])|{field:value}
+				inputs['observe_provider_identity']=lambda provider=provider:provider
+			else:
+				inputs['read_current_status']=lambda binding,f=field,v=value:jira_current(binding,'Done',NOW)|{f:v}
+			result=self.call(**inputs,reconcile_merged_ticket=lambda key:calls.append(key),fetch=lambda scope,cursor:self.fail('count requires proven reconciliation'))
+			self.assertEqual(calls,[],'legacy mutation must never be retried')
 			self.assertEqual(result['jira_state'],'UNOBSERVED')
+			# Each negative case owns a separate journal; a mismatch durably stops it.
+			self.store=ContinuousControllerStore(Path(self.temporary.name)/f'{field}.sqlite3',['A'])
 
 	def test_snapshot_scope_time_category_and_completeness_fail_closed(self):
 		bad_final=[self.page([],complete=False),self.page([{'id':'1','issue_type':'TASK','status_category':'UNKNOWN'}])]
@@ -983,9 +1022,9 @@ class JiraProgressTests(unittest.TestCase):
 		self.assertEqual(result['jira_state'],'RECONCILED')
 
 	def test_count_snapshot_must_not_predate_reconciliation(self):
-		receipt=self.receipt(observed_at='2026-10-02T10:00:01Z')
+		inputs=self.progress_inputs(now='2026-10-02T10:00:01Z')
 		stale=self.page([],observed=NOW)
-		result=self.call(reconcile=lambda ticket:receipt,fetch=lambda scope,cursor:stale)
+		result=self.call(**inputs,fetch=lambda scope,cursor:stale)
 		self.assertEqual((result['jira_state'],result['closed'],result['remaining_open']),('RECONCILED','UNOBSERVED','UNOBSERVED'))
 		self.assertIn('incomplete',result['reason'])
 
@@ -1140,10 +1179,24 @@ class JiraProgressTests(unittest.TestCase):
 		recovered_at='2026-10-02T10:00:01Z'
 		restarted.recover_jira_operations(recovered_at)
 		self.assertEqual(restarted.jira_operations(binding['issue_id'])[0]['status'],'UNKNOWN')
+		# The crash callback above must not read back before its process loss.
+		# Recovery has a different, explicitly operation-bound evidence observer;
+		# the fresh status read alone cannot establish the original transition.
+		recovery_reads=[]
+		def recovered_transition(record,operation):
+			recovery_reads.append((record['operation_id'],operation['operation_id']))
+			self.assertEqual((record['operation_id'],operation['operation_id']),(operation_id,operation_id))
+			self.assertEqual(operation['issue_id'],binding['issue_id'])
+			self.assertEqual(operation['jira_provider'],configured_jira_provider(config))
+			return {'issue_id':binding['issue_id'],'status':external['status'],
+				'actor':'fixture-controller','observed_at':recovered_at,
+				'jira_provider':configured_jira_provider(config)}
+		common['read_transition']=recovered_transition
 		result=production_jira_lifecycle(restarted,now=recovered_at,read_current_status=lambda value:observe(value,recovered_at),write_transition=lambda record:self.fail('unknown side effect was reissued'),**common)
 		durable=restarted.jira_operations(binding['issue_id'])
 		self.assertEqual((external['writes'],durable[0]['operation_id'],durable[0]['status']),(1,operation_id,'SUCCEEDED'))
 		self.assertFalse(result['planned'])
+		self.assertEqual(recovery_reads,[(operation_id,operation_id)])
 
 	def test_unknown_jira_intent_without_success_readback_stops_all_retries(self):
 		path=Path(self.temporary.name)/'jira-unknown.sqlite3'
@@ -1208,12 +1261,13 @@ class JiraProgressTests(unittest.TestCase):
 		bound_bytes=git('cat-file','blob',bound_blob,binary=True)
 		merge_result_id=str(uuid.UUID(int=24))
 		transition_id=str(uuid.UUID(int=25))
-		closeout={'schema_version':3,'record_id':str(uuid.UUID(int=20)),'created_at':NOW,'producer_id':'fixture-controller','run_id':str(uuid.UUID(int=21)),'binding':{'project_id':project_config['project']['id'],'repository_id':project_config['github']['repository_id'],'issue_id':'QA-CLI','requirements_hash':'a'*64,'contract_hash':'b'*64,'policy_hash':policy_hash(project_config,definition()),'candidate_id':'c'*64},'pr_number':42,'reviewed_head_sha':merged_head,'base_sha':merged_head,'merge_commit_sha':merged_head,'merge_tree_sha':merged_tree,'bound_files':[{'path':bound_path,'blob_sha':bound_blob,'sha256':sha256(bound_bytes)}],'gate_record_id':str(uuid.UUID(int=22)),'review_record_ids':[str(uuid.UUID(int=23))],'jira_transition_record_id':transition_id,'evidence':['urn:awf:fixture:cli-closeout']}
+		closeout={'schema_version':3,'record_id':str(uuid.UUID(int=20)),'created_at':NOW,'producer_id':'fixture-controller','run_id':str(uuid.UUID(int=21)),'binding':{'project_id':project_config['project']['id'],'repository_id':project_config['github']['repository_id'],'issue_id':'EX-42','requirements_hash':'a'*64,'contract_hash':'b'*64,'policy_hash':policy_hash(project_config,definition()),'candidate_id':'c'*64},'pr_number':42,'reviewed_head_sha':merged_head,'base_sha':merged_head,'merge_commit_sha':merged_head,'merge_tree_sha':merged_tree,'bound_files':[{'path':bound_path,'blob_sha':bound_blob,'sha256':sha256(bound_bytes)}],'gate_record_id':str(uuid.UUID(int=22)),'review_record_ids':[str(uuid.UUID(int=23))],'jira_transition_record_id':transition_id,'evidence':['urn:awf:fixture:cli-closeout']}
+		bundle['critic']['binding']=dict(closeout['binding'])
 		transition={'schema_version':3,'record_id':transition_id,'created_at':NOW,'producer_id':'fixture-controller','run_id':str(uuid.UUID(int=26)),'binding':closeout['binding'],'operation_id':str(uuid.UUID(int=27)),'merge_result_id':merge_result_id,'jira_provider':{'cloud_id':'fixture-cloud','site':'https://jira.example.invalid','project_id':'fixture-project','project_key':'EX','controller_actor_id':'fixture-controller'},'lifecycle_event':'JIRA_RECONCILED','from_status_id':'In Review','to_status_id':'Done','transition_id':'31','status':'SUCCEEDED','evidence':['urn:awf:fixture:cli-jira-transition'],'read_back':{'observed_status':'Done','observed_actor':'fixture-controller','observed_at':NOW}}
 		planning_inventory={**inventory_observation(NOW,inventory), 'binding': INVENTORY_BINDING, 'inventory_sha256': fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': inventory})}
 		reservation_envelope={'schema_version':1,'source':'host_observation','repository_id':INVENTORY_BINDING['repository_id'],'head_sha':merged_head,'tree_sha':merged_tree,'inventory_sha256':planning_inventory['inventory_sha256'],'observed_at':NOW,'authenticated':True,'complete':True,'sources':[]}
 		reservation_envelope['observation_sha256']=fingerprint('controller-reservation-observation',reservation_envelope)
-		adapter_config={'reservations':reservation_envelope,'inventory':planning_inventory,'publication':publication,'jira_now':NOW,'jira_before':'Ready','jira_after':'In Progress','reconcile_receipt':{'ticket':'QA-CLI','issue_id':'10001',**jira_binding,'status':'RECONCILED','operation_id':str(uuid.UUID(int=9)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW},'jira_page':{'items':[{'id':'10001','issue_type':'TASK','status_category':'TERMINAL'}],'next_cursor':None,'complete':True,'snapshot_id':'snapshot-cli','scope_sha256':scope_sha256,'observed_at':NOW},'project_config_observation':{'raw_bytes_base64':base64.b64encode(project_config_bytes).decode('ascii'),'config_sha256':sha256(project_config_bytes),'policy_sha256':policy_hash(project_config,definition()),'path':'.agentic/PROJECT_CONFIG.yaml','repository':project_config['github']['repository'],'repository_id':project_config['github']['repository_id'],'ref':'refs/heads/'+project_config['github']['base_branch'],'blob_sha':'e'*40,'acceptance':{'status':'ACCEPTED','receipt_id':'cli-acceptance','workflow_version':project_config['template']['expected_workflow_version']}},'closeout_observation':{'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW},'jira_reconciliation_observation':{'record':transition}}
+		adapter_config={'reservations':reservation_envelope,'inventory':planning_inventory,'publication':publication,'jira_now':NOW,'jira_before':'Ready','jira_after':'In Progress','reconcile_receipt':{'ticket':'EX-42','issue_id':'10001',**jira_binding,'status':'RECONCILED','operation_id':str(uuid.UUID(int=9)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW},'jira_page':{'items':[{'id':'10001','issue_type':'TASK','status_category':'TERMINAL'}],'next_cursor':None,'complete':True,'snapshot_id':'snapshot-cli','scope_sha256':scope_sha256,'observed_at':NOW},'project_config_observation':{'raw_bytes_base64':base64.b64encode(project_config_bytes).decode('ascii'),'config_sha256':sha256(project_config_bytes),'policy_sha256':policy_hash(project_config,definition()),'path':'.agentic/PROJECT_CONFIG.yaml','repository':project_config['github']['repository'],'repository_id':project_config['github']['repository_id'],'ref':'refs/heads/'+project_config['github']['base_branch'],'blob_sha':'e'*40,'acceptance':{'status':'ACCEPTED','receipt_id':'cli-acceptance','workflow_version':project_config['template']['expected_workflow_version']}},'closeout_observation':{'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW},'jira_reconciliation_observation':{'record':transition}}
 		adapter_source='def build_adapters(config):\n    now = config["jira_now"]\n    def observe_inventory():\n        return config["inventory"]\n    def observe_reservations(request):\n        return config["reservations"]\n    def observe_publication(item):\n        return config["publication"]\n    def dispatch_ticket(payload):\n        keys = ["dispatch_schema_version", "dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage", "lane_start_waivers"]\n        if "reconcile_nonce" in payload:\n            keys += ["reconcile_nonce", "reconcile_at"]\n        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "dispatch_state": "TERMINAL", "terminal": True, "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}\n    def observe_dispatch(payload):\n        return dispatch_ticket(payload)\n    def deliver_status(digest):\n        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}\n    def observe_provider_identity():\n        return {"cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",\n                "project_id": "fixture-project", "project_key": "EX",\n                "controller_actor_id": "fixture-controller"}\n    def observe_issue_identity(issue):\n        return {"issue_key": "EX-42", "observed_at": now}\n    def read_current_status(binding):\n        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}\n    def write_transition(record):\n        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}\n    def read_transition(record, operation):\n        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}\n    def reconcile_merged_ticket(ticket):\n        value = dict(config["reconcile_receipt"])\n        value["ticket"] = ticket\n        return value\n    def fetch_scope_page(scope, cursor):\n        return config["jira_page"]\n    def observe_accepted_project_config(request):\n        return {"observed_at": now, "result": config["project_config_observation"]}\n    def observe_closeout_record(request):\n        return {"observed_at": now, "result": config["closeout_observation"]}\n    def observe_jira_reconciliation(request):\n        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}\n    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}\n'
 		adapter_source=adapter_source.replace('    def read_current_status(binding):',
 			'    def observe_issue_policy(issue):\n        return {"issue_key": issue, "issue_type": "LEAF", "observed_at": now, "snapshot": {"issue_id": issue, "project_key": "EX", "epic_ids": [], "labels": ["awf-fixture"], "component_ids": [], "summary": "Routine work"}}\n    def read_current_status(binding):')
@@ -1241,11 +1295,23 @@ class JiraProgressTests(unittest.TestCase):
 		lifecycle_output=json.loads(lifecycle.stdout)
 		self.assertEqual(lifecycle_output['record']['status'],'SUCCEEDED')
 		self.assertEqual(lifecycle_output['current_observation']['status_id'],'Ready')
-		progress={'jira_enabled':True,'merged_ticket':'QA-CLI','scope':scope,'observed_at':NOW,'jira_binding':jira_binding,'count_gate':{'closeout_record':closeout}}
+		# Preserve the WORKER_STARTED checks above, then execute the distinct,
+		# journaled post-merge transition required by read-only progress.
+		adapter_config.update(jira_before='In Review',jira_after='Done')
+		adapter_config_path.write_text(json.dumps(adapter_config),encoding='utf-8')
+		reconciliation=subprocess.run([*common,'jira-lifecycle','--contract',str(dump('contract.json',bundle['contract'])),'--event','JIRA_RECONCILED','--facts',str(dump('reconciliation-facts.json',{'merge_confirmed':True,'closeout_valid':True})),'--binding',str(dump('closeout-binding.json',closeout['binding'])),'--lifecycle-state','MERGED','--producer-id','fixture-controller','--run-id',str(uuid.UUID(int=28)),'--now',NOW,'--evidence','urn:awf:fixture:cli-reconciliation','--transition-id','31','--merge-result-id',merge_result_id],cwd=ROOT,text=True,capture_output=True,timeout=30)
+		self.assertEqual(reconciliation.returncode,0,reconciliation.stderr)
+		transition=json.loads(reconciliation.stdout)['record']
+		self.assertEqual(transition['status'],'SUCCEEDED')
+		closeout['jira_transition_record_id']=transition['record_id']
+		adapter_config['jira_reconciliation_observation']={'record':transition}
+		adapter_config['jira_before']='Done'
+		adapter_config_path.write_text(json.dumps(adapter_config),encoding='utf-8')
+		progress={'jira_enabled':True,'merged_ticket':'EX-42','scope':scope,'observed_at':NOW,'jira_binding':jira_binding,'count_gate':{'closeout_record':closeout}}
 		merge=subprocess.run([*common,'merge-observed','--lifecycle-state','MERGING','--lifecycle-facts',str(dump('merge-facts.json',{'merge_confirmed':True,'candidate_matched':True})),'--jira-progress',str(dump('progress.json',progress)),'--repository-root',str(worktree)],cwd=ROOT,text=True,capture_output=True,timeout=30)
 		self.assertEqual(merge.returncode,0,merge.stderr)
 		merge_output=json.loads(merge.stdout)
-		self.assertEqual((merge_output['state'],merge_output['jira_progress']['jira_state']),('MERGED','COUNTED'))
+		self.assertEqual((merge_output['state'],merge_output['jira_progress']['jira_state']),('MERGED','COUNTED'),merge_output)
 		wrong_pin=subprocess.run([*common[:common.index('--adapter-sha256')+1],'0'*64,'--adapter-config',str(adapter_config_path),'cycle','--inventory-binding',str(binding_path),'--repository-root',str(ROOT),'--repository-head-sha',REPOSITORY['repository_head_sha'],'--repository-tree-sha',REPOSITORY['repository_tree_sha'],'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
 		self.assertNotEqual(wrong_pin.returncode,0)
 		self.assertIn('SHA-256 pin',wrong_pin.stderr)
