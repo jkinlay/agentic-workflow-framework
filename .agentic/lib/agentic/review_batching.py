@@ -170,11 +170,27 @@ class ReviewBatchStore:
         window = next_review_presentation(now, calendar)
         if utc_instant(window["presentation_at"]) != current:
             return None
+        selected = None
+        if max_members is not None:
+            # Commit the scheduling cursor before a remote observation can
+            # fail/roll back claim. A broken observer or unresolved schedule
+            # must not monopolize the bounded first-candidate slot on restart.
+            with self.controller.transaction() as db:
+                ids = [r[0] for r in db.execute("SELECT intent_id FROM review_presentation_intent_v1 WHERE state='PENDING' ORDER BY intent_id")]
+                key = 'report-review-claim-cursor'
+                row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+                cursor = row[0] if row else ''
+                selected = ([i for i in ids if i > cursor] + [i for i in ids if i <= cursor])[:max_members]
+                if selected:
+                    db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                               (key, selected[-1]))
         with self.controller.transaction() as db:
             if db.execute("SELECT 1 FROM review_presentation_outbox_v1 WHERE state='CLAIMED'").fetchone():
                 return None
             members = []
             rows = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE state='PENDING' ORDER BY intent_id").fetchall()
+            if selected is not None:
+                rows = [row for row in rows if row['intent_id'] in selected]
             for index, row in enumerate(rows):
                 if max_members is not None and index >= max_members:
                     break
@@ -236,7 +252,7 @@ class ReviewBatchStore:
         window = next_review_presentation(now, calendar)
         with self.controller.transaction() as db:
             row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
-            _require(row is not None and row["state"] == "CLAIMED", "Review batch is not claimed")
+            _require(row is not None and row["state"] in {"CLAIMED", "REPORTING"}, "Review batch is not claimed")
             payload = self._payload(row)
             _require(current >= utc_instant(payload["prepared_at"]) and
                      utc_instant(window["presentation_at"]) == current and
@@ -256,11 +272,78 @@ class ReviewBatchStore:
                        (batch_id, utc_text(current), encoded))
             return payload
 
-    def pending_batches(self):
+    def pending_batches(self, *, limit=None, batch_ids=None):
         """Read unresolved identities for provider readback, never for resending."""
         with self.controller.transaction() as db:
-            return [self._payload(row) for row in db.execute(
-                "SELECT * FROM review_presentation_outbox_v1 WHERE state='CLAIMED' ORDER BY batch_id")]
+            rows = list(db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state IN ('CLAIMED','REPORTING') ORDER BY batch_id"))
+            if batch_ids is not None:
+                rows = [row for row in rows if row['batch_id'] in batch_ids]
+            if limit is not None:
+                key = 'report-review-readback-cursor'
+                prior = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+                cursor = prior[0] if prior else ''
+                rows = ([r for r in rows if r['batch_id'] > cursor] +
+                        [r for r in rows if r['batch_id'] <= cursor])[:limit]
+                if rows:
+                    db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                               (key, rows[-1]['batch_id']))
+            return [self._payload(row) for row in rows]
+
+    def track_reporting(self, batch_id):
+        """Transfer a claim to the durable per-destination reporting outbox.
+
+        Only an exact retained report can take responsibility. Unknown outcomes
+        remain tracked without blocking unrelated presentations or allowing a
+        second batch/attempt identity for these members.
+        """
+        with self.controller.transaction() as db:
+            row = db.execute('SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (batch_id,)).fetchone()
+            _require(row is not None, 'Unknown reporting batch')
+            payload = self._payload(row)
+            report = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', ('review-' + batch_id,)).fetchone()
+            _require(report is not None and loads(report[0]).get('review_batch') == payload,
+                     'Reporting handoff requires the exact retained batch')
+            db.execute("UPDATE review_presentation_outbox_v1 SET state='REPORTING' WHERE batch_id=? AND state='CLAIMED'", (batch_id,))
+
+    def finish_reporting_failure(self, batch_id, now):
+        """Close exhausted reporting identities, never manufacture absence.
+
+        All selected destinations must be terminal. A successful destination's
+        receipt and every attempt remain untouched. Members cannot be retried
+        under a new presentation identity.
+        """
+        with self.controller.transaction() as db:
+            row = db.execute('SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (batch_id,)).fetchone()
+            _require(row is not None, 'Unknown reporting batch')
+            if row['state'] in {'FAILED', 'DELIVERED', 'NOT_DELIVERED'}:
+                return
+            _require(row['state'] == 'REPORTING', 'Reporting batch has no tracked claim')
+            payload = self._payload(row)
+            report = loads(db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                                     ('review-' + batch_id,)).fetchone()[0])
+            _require(report.get('review_batch') == payload and utc_instant(now) >= utc_instant(payload['prepared_at']),
+                     'Reporting failure binding/time mismatch')
+            states = []
+            for delivery_id in report['delivery_ids']:
+                intent_json, state_json = db.execute('SELECT intent_json,state_json FROM controller_report_delivery WHERE delivery_id=?',
+                                                     (delivery_id,)).fetchone()
+                intent, state = loads(intent_json), loads(state_json)
+                _require(intent['report_id'] == report['report_id'], 'Reporting delivery binding mismatch')
+                _require(state['status'] != 'FAILED' or len(state['attempts']) == 2,
+                         'Reporting failure requires exhausted send attempts')
+                states.append(dict(delivery_id=delivery_id, platform=intent['binding']['platform'],
+                                   status=state['status'], attempts=deepcopy(state['attempts'])))
+            if not states or not any(s['status'] == 'FAILED' for s in states) or not all(
+                    s['status'] in {'FAILED', 'DELIVERED'} for s in states):
+                return
+            receipt = dict(batch_id=batch_id, payload_sha256=payload['payload_sha256'], status='FAILED',
+                           observed_at=utc_text(utc_instant(now)), destinations=states,
+                           reason='REPORT_DELIVERY_EXHAUSTED', merge_authorized=False)
+            db.execute("UPDATE review_presentation_outbox_v1 SET state='FAILED',receipt_json=? WHERE batch_id=?",
+                       (canonical(receipt).decode(), batch_id))
+            for member in payload['members']:
+                db.execute("UPDATE review_presentation_intent_v1 SET state='EXHAUSTED' WHERE intent_id=? AND state='CLAIMED'",
+                           (member['intent_id'],))
 
     def acknowledge(self, receipt):
         _require(isinstance(receipt, dict) and receipt.get("status") == "DELIVERED",
@@ -290,7 +373,7 @@ class ReviewBatchStore:
             if row["receipt_json"] is not None:
                 _require(row["receipt_json"] == encoded, "Conflicting review batch readback; stop and reconcile")
                 return
-            _require(row["state"] == "CLAIMED", "Review batch has no unresolved claim")
+            _require(row["state"] in {"CLAIMED", "REPORTING"}, "Review batch has no unresolved claim")
             _require(db.execute("SELECT 1 FROM review_presentation_receipt_v1 WHERE provider_receipt_id=?",
                                 (receipt["provider_receipt_id"],)).fetchone() is None,
                      "Provider review receipt identity was reused; stop and reconcile")

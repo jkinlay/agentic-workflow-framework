@@ -83,6 +83,22 @@ class DeliveryBudget:
         # gates preserve destination isolation during a slow HTTP operation.
         self.send_locks = {p: threading.RLock() for p in ('slack', 'teams')}
 
+    def reporting_slice(self):
+        """Reserve time as well as one advance for the review stage.
+
+        A phase has its own revocation token, sharing the cycle's HTTP/advance
+        counters and send gates. Its workers must quiesce before review starts.
+        Neither a phase nor repeated drain calls enlarge the original budget.
+        """
+        phase = DeliveryBudget()
+        phase.deadline = min(self.deadline, monotonic() + 10)
+        phase.stage_deadline = min(self.stage_deadline, self.deadline - 5)
+        phase.deadline = min(phase.deadline, phase.stage_deadline)
+        phase.counts, phase.http_counts = self.counts, self.http_counts
+        phase.reconciliations, phase.lock = self.reconciliations, self.lock
+        phase.send_locks = self.send_locks
+        return phase
+
     def remaining(self):
         with self.lock:
             remaining = self.deadline - monotonic()

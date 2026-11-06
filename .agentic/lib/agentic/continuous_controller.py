@@ -2933,7 +2933,7 @@ def production_review_batching_cycle(store, *, calendar, binding, clock,
 
 		# Restart never resends unresolved identities. Only verified terminal
 		# readback may complete them or admit the store's one remaining retry.
-		for pending in batch_store.pending_batches():
+		for pending in batch_store.pending_batches(limit=1 if candidate_limit is not None else None):
 			receipt = observe_review_delivery(deepcopy(pending))
 			if receipt is not None:
 				reconcile(pending, receipt)
@@ -3386,6 +3386,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	report_binding = dict(project=inventory_binding['project_id'], repository=inventory_binding['repository_id'],
 		scope_revision=inventory_binding['scope_sha256'])
 	operating_root = planning_operating_snapshot.config
+	port = None
+	review_retry_first = False
 	reporting = {'state': 'UNAVAILABLE', 'coverage': {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'}}
 	try:
 		report_settings = effective_reporting(operating_root, binding=report_binding)
@@ -3408,6 +3410,15 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			selected = {'teams', 'slack'} if report_settings['mode'] == 'both' else {report_settings['mode']}
 			_require(isinstance(reporting_providers, dict) and selected <= reporting_providers.keys(), 'REPORT_PROVIDERS_REQUIRED')
 			with SourceBudget():
+				# Demand is a scheduling hint only; production discovery still
+				# validates freshness, scope and every gate before admission.
+				context['review_demand'] = callable(observe_owner_ready)
+				if callable(observe_owner_ready):
+					try:
+						demand = observe_owner_ready({'binding': deepcopy(inventory_binding), 'observed_at': post_provider_time()})
+						context['review_demand'] = bool(demand.get('candidates')) if isinstance(demand, dict) else True
+					except Exception:
+						context['coverage']['review_demand'] = 'UNAVAILABLE'
 				try:
 					context['review_corrections'] = collect_review_corrections(store, report_binding, now, observe_review_candidate)
 					context['coverage']['review_corrections'] = 'OBSERVED'
@@ -3446,11 +3457,6 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			if report_settings['mode'] != 'off':
 				port = ReviewReportingPort(store, operating_root, report_binding, reporting_providers, post_provider_time,
 					observe_candidate=observe_review_candidate, delivery_budget=report_delivery_budget)
-				if callable(observe_review_candidate):
-					try:
-						port.resume(calendar, observe_review_candidate)
-					except Exception as exc:
-						errors.append({'operation': 'reporting_review_resume', 'state': 'UNKNOWN', 'reason': type(exc).__name__})
 				deliver_review_batch, observe_review_delivery = port.deliver_review_batch, port.observe_review_delivery
 	except Exception as exc:
 		# Invalid bindings and generation failure cannot fall back to a different
@@ -3460,9 +3466,48 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		reporting.update(state='REFUSED', reason=str(exc) if re.fullmatch(r'REPORT_[A-Z_]+', str(exc))
 			else 'REPORT_CONFIGURATION_OR_PROVIDER_UNAVAILABLE')
 		errors.append({'operation': 'reporting', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+	if port is not None:
+		# Alternate new admissions and historical retry/readback priority.
+		# The sole reconciliation slot must rotate along with send admission.
+		with store.transaction() as db:
+			key = 'report-review-work-turn'
+			row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+			review_retry_first = row is not None and row[0] == 'RETRY'
+			db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+				(key, 'NEW' if review_retry_first else 'RETRY'))
+	if reporting.get('state') == 'ENABLED':
+		try:
+			from .reporting.runtime import drain
+			from .review_batching import ReviewBatchStore
+			review_waiting = context.get('review_demand', False) or bool(ReviewBatchStore(store).pending_batches())
+			with store.connection() as db:
+				review_waiting = review_waiting or bool(db.execute("""SELECT 1 FROM controller_reports r
+					JOIN controller_report_delivery d ON json_extract(d.intent_json,'$.report_id')=r.report_id
+					WHERE r.kind='final-human-review' AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED')
+					LIMIT 1""").fetchone())
+			# Protected admissions: alerts, hourly, EoD, then review work. Retain
+			# one advance/platform for review; unused allowance stays available.
+			reporting['deliveries'] = drain(store, operating_root, report_binding, reporting_providers or {},
+				budget=report_delivery_budget.reporting_slice() if review_waiting and review_retry_first else report_delivery_budget,
+				reserve_review=port is not None, reserve_reconciliation=review_retry_first and review_waiting)
+		except Exception as exc:
+			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+	if port is not None:
+		from .review_batching import ReviewBatchStore
+		resume_batch_ids = {p['batch_id'] for p in ReviewBatchStore(store).pending_batches()}
+	def resume_reporting_reviews():
+		if port is not None and callable(observe_review_candidate):
+			try:
+				port.resume(calendar, observe_review_candidate, batch_ids=resume_batch_ids)
+			except Exception as exc:
+				errors.append({'operation': 'reporting_review_resume', 'state': 'UNKNOWN', 'reason': type(exc).__name__})
+	if review_retry_first:
+		resume_reporting_reviews()
 	# Calendar waits and uncertain review sends never gate dispatch, independent
 	# review, amendments, or the separate immediate status/action channel above.
 	try:
+		if port is not None:
+			report_delivery_budget.remaining()
 		review_batching = production_review_batching_cycle(store, calendar=calendar,
 			binding=inventory_binding, clock=post_provider_time,
 			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
@@ -3470,15 +3515,13 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			candidate_limit=MAX_REVIEW_CANDIDATES if report_settings['mode'] != 'off' else None)
 		errors.extend(review_batching['errors'])
 	except Exception as exc:
-		review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
-		errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
-	if reporting.get('state') == 'ENABLED':
-		try:
-			from .reporting.runtime import drain
-			reporting['deliveries'] = drain(store, operating_root, report_binding, reporting_providers or {},
-				budget=report_delivery_budget)
-		except Exception as exc:
-			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+		if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+			review_batching = {'state': 'DEFERRED', 'reason': str(exc), 'merge_authorized': False}
+		else:
+			review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
+			errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
+	if not review_retry_first:
+		resume_reporting_reviews()
 	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'operating_calendar': calendar, 'reporting': reporting, 'review_batching': review_batching, 'errors': errors, 'execution_authority': False}
 
 def _observe_jira_write_policy(config, issue, observer, now):
