@@ -105,7 +105,7 @@ class _JiraServer:
             return {'cloudId': 'cloud-1'}
         assert headers.get('Authorization') == 'Bearer fixture-token'
         if path == '/oauth/token/accessible-resources':
-            return [{'id': 'cloud-1', 'url': 'https://jira.example.invalid'}]
+            return [{'id': 'cloud-1', 'url': 'https://jira.example.invalid', 'scopes': ['read:jira-work']}]
         prefix = '/ex/jira/cloud-1/rest/api/3/'
         assert path.startswith(prefix), target
         route = path[len(prefix):]

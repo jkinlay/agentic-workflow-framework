@@ -1419,8 +1419,16 @@ def _build(config):
 		_require(isinstance(tenant, dict) and tenant.get('cloudId') == jira['cloud_id'], 'Jira provider identity mismatch')
 		if credential_type == 'oauth':
 			resources = jira_json('GET', '/oauth/token/accessible-resources', resources=True)
-			_require(isinstance(resources, list) and len([r for r in resources if isinstance(r, dict) and
-				r.get('id') == jira['cloud_id'] and r.get('url') == site]) == 1, 'Jira OAuth resource identity mismatch')
+			_require(isinstance(resources, list), 'Jira OAuth resource identity mismatch')
+			# Container IDs can repeat across products. Identify Jira by classic
+			# or granular scopes before checking the configured tenant identity.
+			matches = [r for r in resources if isinstance(r, dict) and
+				(r.get('id') == jira['cloud_id'] or r.get('url') == site) and
+				isinstance(r.get('scopes'), list) and all(isinstance(s, str) for s in r['scopes']) and
+				any(re.fullmatch(r'(?:read|write|manage|delete|send):(?:jira-[a-z0-9-]+|[a-z0-9.-]+:jira(?:-software|-servicedesk)?)', s)
+					for s in r['scopes'])]
+			_require(len(matches) == 1 and matches[0].get('id') == jira['cloud_id'] and
+				matches[0].get('url') == site, 'Jira OAuth resource identity mismatch')
 		myself = jira_json('GET', '/rest/api/3/myself')
 		project = jira_json('GET', '/rest/api/3/project/' + quote(jira['project_key'], safe=''))
 		_require(isinstance(myself, dict) and isinstance(project, dict) and

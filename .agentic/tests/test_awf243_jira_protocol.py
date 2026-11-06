@@ -3,9 +3,13 @@ import base64
 import json
 import os
 import runpy
+import subprocess
+import sys
 import tempfile
 import traceback
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -78,6 +82,136 @@ class JiraProtocolTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     self.build(http)['observe_provider_identity']()
                 self.assertEqual([], http.calls)
+
+    def test_oauth_shared_resource_identity_selects_jira_by_scopes(self):
+        for scope in ('read:jira-work', 'read:issue:jira', 'read:board-scope:jira-software',
+                      'read:issue.property:jira', 'send:notification:jira'):
+            for reverse in (False, True):
+                with self.subTest(scope=scope, reverse=reverse):
+                    resources = [
+                        {'id': 'cloud-1', 'url': 'https://jira.example.invalid',
+                         'scopes': ['read:confluence-content.all']},
+                        {'id': 'cloud-1', 'url': 'https://jira.example.invalid',
+                         'scopes': [scope]},
+                        {'id': 'other-cloud', 'url': 'https://other.example.invalid',
+                         'scopes': ['read:jira-work']},
+                    ]
+                    if reverse:
+                        resources.reverse()
+                    http = self.resource_http(resources)
+                    result = self.build(http)['observe_issue_identity']('EX-42')
+                    self.assertEqual('EX-42', result['issue_key'])
+                    self.assertEqual([
+                        'https://jira.example.invalid/_edge/tenant_info',
+                        'https://api.atlassian.com/oauth/token/accessible-resources',
+                        *['https://api.atlassian.com/ex/jira/cloud-1' + path for path in (
+                            '/rest/api/3/myself', '/rest/api/3/project/EX',
+                            '/rest/api/3/issue/EX-42?fields=key')],
+                    ], [call[1] for call in http.calls])
+                    self.assertTrue(all(call[0] == 'GET' for call in http.calls))
+
+    @staticmethod
+    def resource_http(resources):
+        class Resources(FakeHttp):
+            def respond(inner, method, url, *, body):
+                if url.endswith('/oauth/token/accessible-resources'):
+                    return 200, json.dumps(resources)
+                return super().respond(method, url, body=body)
+        return Resources()
+
+    def test_oauth_missing_non_jira_or_conflicting_resources_refuse_before_myself(self):
+        jira = {'id': 'cloud-1', 'url': 'https://jira.example.invalid',
+                'scopes': ['read:jira-work']}
+        invalid = [{}, [], [jira, dict(jira)],
+                   [{**jira, 'id': 'foreign'}], [{**jira, 'url': 'https://foreign.invalid'}],
+                   [jira, {**jira, 'url': 'https://foreign.invalid'}],
+                   [jira, {**jira, 'id': 'foreign'}]]
+        for scopes in (None, [], 'read:jira-work', [None], ['offline_access'],
+                       ['read:confluence-content.all'], ['read:issue:jira-pretend'],
+                       ['prefix:read:jira-work']):
+            invalid.append([{**jira, 'scopes': scopes}])
+        invalid.append([{key: value for key, value in jira.items() if key != 'scopes'}])
+        for resources in invalid:
+            with self.subTest(resources=resources):
+                http = self.resource_http(resources)
+                with self.assertRaisesRegex(ValidationError, 'OAuth resource identity mismatch'):
+                    self.build(http)['observe_issue_identity']('EX-42')
+                self.assertEqual(2, len(http.calls))
+                self.assertTrue(all(call[0] == 'GET' for call in http.calls))
+                self.assertFalse(any('/myself' in call[1] or '/issue/' in call[1]
+                                     for call in http.calls))
+        # A JSON null is rejected by the transport's object/list boundary.
+        http = self.resource_http(None)
+        with self.assertRaisesRegex(ValidationError, 'Jira request failed'):
+            self.build(http)['observe_issue_identity']('EX-42')
+        self.assertEqual(2, len(http.calls))
+
+    def isolated_search(self, *, omit_tzdata=False):
+        # Expose only distributions declared by the shipped lock. -I -S also
+        # prevents ambient site packages or a system timezone DB hiding gaps.
+        from agentic.adoption_config import _locked_dependencies
+        from test_bootstrap_configuration import installed_wheel
+        dependencies, _ = _locked_dependencies(ROOT / '.agentic/requirements.lock')
+        with tempfile.TemporaryDirectory(prefix='awf-zone-runtime-') as temporary:
+            runtime = Path(temporary)
+            for name, requirement in dependencies.items():
+                if omit_tzdata and name == 'tzdata':
+                    continue
+                version, wheel = installed_wheel(requirement['name'])
+                self.assertEqual(requirement['version'], version)
+                with zipfile.ZipFile(BytesIO(wheel)) as archive:
+                    archive.extractall(runtime)
+            script = '''
+import importlib.util, json, socket, sys, zoneinfo
+sys.path[:0] = sys.argv[1:]
+zoneinfo.reset_tzpath(())
+zoneinfo.ZoneInfo.clear_cache()
+from test_awf243_jira_protocol import JiraProtocolTests
+from agentic import ValidationError
+from unittest.mock import patch
+case = JiraProtocolTests()
+try:
+    case.setUp()
+    with patch.object(socket, 'socket', side_effect=AssertionError('network forbidden')):
+        adapters = case.build()
+        try:
+            pages = case.traverse(adapters)
+            result = {'complete': pages[-1]['complete'],
+                      'ids': [item['id'] for page in pages for item in page['items']]}
+        except ValidationError as error:
+            result = {'error': str(error)}
+    result.update(tzpath=list(zoneinfo.TZPATH),
+                  tzdata_present=importlib.util.find_spec('tzdata') is not None,
+                  search_requests=sum('/search/jql?' in call[1] for call in case.http.calls),
+                  search_urls=[call[1] for call in case.http.calls if '/search/jql?' in call[1]])
+    print(json.dumps(result))
+finally:
+    case.doCleanups()
+'''
+            process = subprocess.run(
+                [sys.executable, '-B', '-I', '-S', '-c', script, str(runtime),
+                 str(ROOT / '.agentic/tests'), str(ROOT / '.agentic/lib')],
+                capture_output=True, text=True, timeout=60, check=False)
+            self.assertEqual(0, process.returncode, process.stderr)
+            return json.loads(process.stdout)
+
+    def test_declared_runtime_search_without_system_timezone_database(self):
+        result = self.isolated_search()
+        self.assertEqual([], result['tzpath'])
+        self.assertNotIn('error', result)
+        self.assertTrue(result['tzdata_present'])
+        self.assertTrue(result['complete'])
+        self.assertEqual(['100', '101'], result['ids'])
+        self.assertEqual(4, result['search_requests'])
+        for url in result['search_urls']:
+            self.assertIn('updated < "2026-10-09 09:00"', parse_qs(urlsplit(url).query)['jql'][0])
+
+    def test_isolated_runtime_really_missing_timezone_data_refuses_search(self):
+        result = self.isolated_search(omit_tzdata=True)
+        self.assertEqual([], result['tzpath'])
+        self.assertFalse(result['tzdata_present'])
+        self.assertEqual('Jira authenticated user timezone is missing or unsupported', result['error'])
+        self.assertEqual(0, result['search_requests'])
 
     def test_site_must_be_a_credential_free_https_origin(self):
         for site in ('http://jira.example.invalid', 'https://actor@jira.example.invalid',
@@ -258,7 +392,7 @@ class JiraProtocolTests(unittest.TestCase):
                     self.assertIsNone(request.get_header('Authorization'))
                     raw, code = json.dumps({'cloudId': 'cloud-1'}).encode(), 200
                 elif request.full_url.endswith('/accessible-resources'):
-                    raw, code = json.dumps([{'id': 'cloud-1', 'url': 'https://jira.example.invalid'}]).encode(), 200
+                    raw, code = json.dumps([{'id': 'cloud-1', 'url': 'https://jira.example.invalid', 'scopes': ['read:jira-work']}]).encode(), 200
                 else:
                     self.assertTrue(request.get_header('Authorization'))
                     headers['Location'] = 'https://foreign.invalid/?fixture-secret'

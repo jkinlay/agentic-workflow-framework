@@ -365,7 +365,7 @@ class OwnerClosureIdentityTests(unittest.TestCase):
             if method == 'GET':
                 value = json.loads(body)
                 if url.endswith('/oauth/token/accessible-resources'):
-                    value = [{'id': case.policy['jira']['cloud_id'], 'url': site}]
+                    value = [{'id': case.policy['jira']['cloud_id'], 'url': site, 'scopes': ['read:jira-work']}]
                 elif url.endswith('/myself'):
                     value['accountId'] = case.policy['jira']['controller_actor_id']
                 elif url.endswith('/_edge/tenant_info'):

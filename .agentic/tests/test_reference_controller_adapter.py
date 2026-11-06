@@ -129,7 +129,7 @@ class FakeHttp:
 
 	def respond(self, method, url, *, body):
 		if url == 'https://api.atlassian.com/oauth/token/accessible-resources':
-			return 200, json.dumps([{'id': 'cloud-1', 'url': 'https://jira.example.invalid'}])
+			return 200, json.dumps([{'id': 'cloud-1', 'url': 'https://jira.example.invalid', 'scopes': ['read:jira-work']}])
 		if self.mismatch:
 			return (200, json.dumps({'accountId': 'foreign'}))
 		if url.endswith('/rest/api/3/myself'):
