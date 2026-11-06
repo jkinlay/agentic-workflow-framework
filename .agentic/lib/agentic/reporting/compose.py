@@ -78,6 +78,28 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
         # Ticket observations remain usable; PR absence cannot establish zero.
         data['freshness'] = 'PARTIAL'
         sections['Sources and freshness'] = 'PARTIAL: PR observations unavailable\n' + describe(sources)
+    # Bound nested ticket actuals before *any* completion, elapsed or usage
+    # projection. Keep supplied evidence intact for history/source hashing.
+    tickets = deepcopy(tickets)
+    unavailable = []
+    for ticket in tickets:
+        actuals = [(ticket, 'first_started_at'), (ticket, 'reconciled_at')]
+        actuals += [(pr, 'merged_at') for pr in ticket.get('required_prs', [])]
+        for record, field in actuals:
+            if not record.get(field):
+                continue
+            try:
+                actual = timestamp(record[field])
+            except (ValidationError, ValueError, TypeError):
+                raise ValidationError('REPORT_TICKET_ACTUAL_TIMESTAMP_INVALID') from None
+            if actual > timestamp(observed):
+                unavailable.append(dict(key=ticket['key'], field=field, reason='FUTURE_TICKET_ACTUAL'))
+                record[field] = None
+                if ticket.get('state') == 'DONE':
+                    ticket['state'] = 'UNKNOWN'
+    if unavailable:
+        data['freshness'] = 'PARTIAL'
+        sections['Sources and freshness'] += '\nUNAVAILABLE actuals: ' + describe(unavailable)
     metrics = scope_metrics(tickets)
     implementation = required_leaves(tickets)
     completed = [t['key'] for t in implementation if t.get('state') == 'DONE']
@@ -95,6 +117,8 @@ def compose_report(kind, supplied, accepted_binding, *, verify_sources=None, ver
                                       reservations=f.get('reservations'), previous=f.get('previous'))
     estimates = estimated_time(implementation)
     data['detail_metrics'] = dict(scope=metrics, elapsed=elapsed, estimated_time=estimates, tokens=usage, forecast=forecast)
+    if unavailable:
+        data['detail_metrics']['unavailable_actuals'] = unavailable
     data['source_sha256'] = fingerprint('report-composition-1', values)
     data['stage'] = values.get('stage', 'Unknown; planning acceptance, review, owner approval, merge and Done are separate')
     sections['Scope and progress'] = ('Epics: ' + str(metrics['epics']) + ' | Implementation tickets: '

@@ -18,7 +18,7 @@ from .bodies import prepare_body, render_body
 from .bounded import DeliveryBudget, MAX_ADVANCES
 from .compose import compose_report, describe
 from .delivery import DeliveryOutbox, delivery_intent, require
-from .events import approval_event, due_periods, owner_events, readiness_events, utc
+from .events import approval_event, withdrawal_event, due_periods, owner_events, readiness_events, utc
 from .settings import effective_reporting
 from .safety import safe_report
 
@@ -168,7 +168,7 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                   ON json_extract(d.intent_json,'$.report_id')=r.report_id
                 WHERE json_extract(d.intent_json,'$.binding.platform')=?
                   AND json_extract(d.intent_json,'$.binding')=json(?)
-                  AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED')
+                  AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED','WITHDRAWN')
                   AND (? OR r.kind<>'final-human-review')
                   AND (? OR json_extract(d.state_json,'$.status') NOT IN ('PENDING','ABSENT','THROTTLED')
                        OR json_extract(d.state_json,'$.retry_action')='RECONCILE')
@@ -397,6 +397,38 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                 generated.append(_retain(db, report_id, 'jira-review',
                     _body('jira-review', binding, now, calendar, context), binding, destinations, now,
                     extra={'baseline_approval': notice}, senders=(providers or {}).values()))
+        withdrawal = context.get('baseline_withdrawal')
+        if withdrawal is not None:
+            require(withdrawal == withdrawal_event(binding['scope_revision'], withdrawal['record']['revision'],
+                    withdrawal['record']['approval']), 'REPORT_APPROVAL_SCOPE_MISMATCH')
+        # Immutable baseline reports remain history. Delivery withdrawal is
+        # durable even if later sources disappear, or readback arrives later.
+        for row in db.execute("SELECT payload_json FROM controller_reports WHERE kind='jira-review'").fetchall():
+            prior = loads(row[0])
+            approval = prior.get('baseline_approval')
+            if prior['binding'] != binding or not approval:
+                continue
+            for delivery_id in prior['delivery_ids']:
+                if withdrawal and approval['record']['revision'] == withdrawal['record']['revision']:
+                    DeliveryOutbox.withdraw_in_transaction(db, delivery_id, withdrawal)
+                intent, delivery = DeliveryOutbox._load(db, delivery_id)
+                invalidated = delivery.get('approval_withdrawal')
+                if not invalidated or delivery['status'] != 'DELIVERED' or intent['binding'] not in destinations:
+                    continue
+                correction_id = fingerprint('report-baseline-correction-1', delivery_id)
+                if db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (correction_id,)).fetchone():
+                    continue
+                readback = next(h for h in reversed(delivery['history']) if h.get('status') == 'DELIVERED')
+                notice = dict(prior_report=prior['report_id'], delivery_id=delivery_id, withdrawal=invalidated)
+                body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
+                    timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=approval['record']['revision'],
+                    summary='Correction: prior backlog approval withdrawn', sections={
+                        'Evidence': describe(notice),
+                        'Owner action': 'Do not rely on prior backlog approval; await current owner approval'}))
+                generated.append(_retain(db, correction_id, 'owner-action', body, binding, [intent['binding']], now,
+                    extra={'baseline_correction': notice},
+                    threads={intent['binding']['platform']: intent.get('thread_id') or readback['message_id']},
+                    senders=(providers or {}).values()))
         if context.get('owner_actions') is not None:
             events, state['owner'] = owner_events(fingerprint('reporting-scope', binding), context['owner_actions'], state['owner'])
             for action in events:

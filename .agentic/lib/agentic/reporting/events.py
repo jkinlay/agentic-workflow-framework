@@ -111,6 +111,17 @@ def approval_event(scope, revision, approval):
     return event('jira-review', scope, dict(revision=revision, approval=approval))
 
 
+def withdrawal_event(scope, revision, approval):
+    """Explicit revocation from an independently verified source envelope.
+
+    A missing/unverified approval alone cannot establish a withdrawal.
+    """
+    require(approval.get('verified') is False and approval.get('status') == 'REVOKED'
+            and approval.get('revision') == revision and approval.get('evidence_id'),
+            'REPORT_APPROVAL_WITHDRAWAL_UNVERIFIED')
+    return event('baseline-approval-withdrawn', scope, dict(revision=revision, approval=approval))
+
+
 def local_boundary(day, hour, minute, tz):
     """Later fold; gaps advance to first valid local minute, calendar contract."""
     naive = datetime.combine(day, datetime.min.time()).replace(hour=hour, minute=minute)

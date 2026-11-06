@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import runpy
+import subprocess
 import time
 import unittest
 
@@ -105,6 +106,14 @@ class E7ControllerTests(unittest.TestCase):
         self.assertEqual({d['status'] for d in self.status()['deliveries']}, {'DELIVERED'})
 
     def cooldown(self, platform, operation):
+        # Keep the real Git/reservation checks, but isolate timing from the
+        # caller's dirty checkout. Its growing diff otherwise triggers a full
+        # physical-alias inventory scan per edited file inside the five seconds.
+        repository = Path(self.helper.temp.name) / 'cooldown-repository'
+        subprocess.run(['git', 'clone', '--shared', '--quiet',
+                        str(self.repository['repository_root']), str(repository)],
+                       check=True, capture_output=True)
+        self.repository['repository_root'] = str(repository)
         self.settings['mode'] = platform
         if operation == 'POST':
             self.network.throttled = {platform}

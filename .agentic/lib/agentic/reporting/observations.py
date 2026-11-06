@@ -97,17 +97,23 @@ def collect_sources(binding, now, observe, verify):
     # same approval evidence in both the source record and event projection.
     records = value['records']
     if isinstance(records, dict) and records.get('binding') == binding and records.get('created_at') == now:
-        from .events import approval_event
+        from .events import approval_event, withdrawal_event
         revision, approval = records.get('baseline_revision'), records.get('owner_approval')
         sources = records.get('sources', [])
         if (isinstance(revision, str) and revision and isinstance(approval, dict)
-                and approval.get('verified') is True and approval.get('revision') == revision
+                and approval.get('revision') == revision
                 and approval.get('evidence_id') and any(s.get('field') == 'tickets' for s in sources)
                 and all(s.get('stale') is False and s.get('observed_at') is not None
                         and timestamp(s['observed_at']) <= timestamp(now) for s in sources)):
-            notice = approval_event(binding['scope_revision'], revision, approval)
-            if records.get('review') == notice:
-                result['baseline_approval'] = notice
+            if approval.get('verified') is True and approval.get('status') != 'REVOKED':
+                notice = approval_event(binding['scope_revision'], revision, approval)
+                if records.get('review') == notice:
+                    result['baseline_approval'] = notice
+            elif approval.get('verified') is False and approval.get('status') == 'REVOKED':
+                notice = withdrawal_event(binding['scope_revision'], revision, approval)
+                if records.get('review') == dict(kind=notice['kind'], revision=revision,
+                                               evidence_id=approval['evidence_id']):
+                    result['baseline_withdrawal'] = notice
     if isinstance(value['records'], dict) and 'source_coverage' in value['records']:
         result['source_coverage'] = deepcopy(value['records']['source_coverage'])
     if isinstance(value['records'], dict) and 'readiness_candidates' in value['records']:

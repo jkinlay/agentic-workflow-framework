@@ -150,6 +150,23 @@ class DeliveryOutbox:
             return self._load(db, delivery_id)[1]
 
     @staticmethod
+    def withdraw_in_transaction(db, delivery_id, notice):
+        """Fence unsent approval presentations, retaining uncertain attempts.
+
+        An uncertain send still needs readback; withdrawal never proves absence.
+        """
+        _, state = DeliveryOutbox._load(db, delivery_id)
+        if state.get('approval_withdrawal'):
+            return
+        state['approval_withdrawal'] = deepcopy(notice)
+        state['history'].append(dict(kind='APPROVAL_WITHDRAWN', notice=deepcopy(notice)))
+        if not state['attempts'] or state['status'] == 'ABSENT':
+            state.update(status='WITHDRAWN', fence=str(uuid.uuid4()), reason='BASELINE_APPROVAL_WITHDRAWN')
+        elif state['status'] == 'THROTTLED':
+            state['retry_action'] = 'RECONCILE'
+        DeliveryOutbox._save(db, delivery_id, state)
+
+    @staticmethod
     def _rejection(raw, intent, attempt_id):
         """A trusted send port's terminal non-acceptance, bound to one attempt."""
         if not isinstance(raw, dict) or safe_report(raw, trusted_keys=True) != raw or any(raw.get(k) != v for k, v in dict(
@@ -225,8 +242,10 @@ class DeliveryOutbox:
         """
         with self.controller.transaction() as db:
             intent, state = self._load(db, delivery_id)
-            if state['status'] in {'DELIVERED', 'FAILED'}:
+            if state['status'] in {'DELIVERED', 'FAILED', 'WITHDRAWN'}:
                 return state
+            if state.get('approval_withdrawal'):
+                allow_send = False
             if state['status'] == 'THROTTLED':
                 now = clock() if clock is not None else datetime.now(timezone.utc).isoformat()
                 if timestamp(now) < timestamp(state['retry_not_before']):
@@ -326,6 +345,8 @@ class DeliveryOutbox:
                     current.pop(key, None)
             if current['status'] == 'ABSENT' and len(attempts) == 2:
                 current['status'] = 'FAILED'
+            if current['status'] == 'ABSENT' and current.get('approval_withdrawal'):
+                current.update(status='WITHDRAWN', reason='BASELINE_APPROVAL_WITHDRAWN')
             # Changing fence also fences a late return from a previous observer.
             current['fence'] = str(uuid.uuid4())
             self._save(db, delivery_id, current)
