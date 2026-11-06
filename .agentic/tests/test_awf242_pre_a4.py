@@ -192,7 +192,7 @@ class ProductionPreA4Tests(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, 'independent|quarantined'):
                     self.agent(driver, role)
 
-    def test_other_candidate_worker_context_does_not_poison_review(self):
+    def test_changed_head_preserves_worker_independence(self):
         self.value['budgeting']['accounting_enabled'] = False
         driver = self.review()
         worker = self.agent(driver, 'worker')
@@ -201,7 +201,10 @@ class ProductionPreA4Tests(unittest.TestCase):
         self.value['budgeting']['accounting_enabled'] = True
         driver = self.review()
         driver.thread = context
-        self.agent(driver, 'critic')
+        # An amendment publishes a new head on the same ticket/PR. The worker
+        # remains a contributor; exact candidate equality lost this lineage.
+        with self.assertRaisesRegex(ValidationError, 'independent|quarantined'):
+            self.agent(driver, 'critic')
         self.assertEqual(self.summary(driver)['known_tokens'], 100)
 
 

@@ -667,26 +667,55 @@ def _build(config):
 		_require(isinstance(budgeting, ControllerBudgeting), 'Budget context must come from the trusted controller')
 		return budgeting
 
-	def complete_budget(record, result):
+	def complete_run(record, result, *, failed=False):
+		"""One terminal outcome boundary, independent of the accounting mode."""
 		admission = record.get('budget_admission')
-		if admission is not None:
-			_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
-			settlement = budgeting.complete(admission, result)
-			_require(settlement['accepted'], 'Budget routing settlement quarantined this dispatch')
+		try:
+			if admission is not None:
+				_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
+				settlement = budgeting.complete(admission, result)
+				_require(settlement['accepted'], 'Budget routing settlement quarantined this dispatch')
+		finally:
+			if failed:
+				record.update(status='FAILED', terminal_failure=result, observed_at=_clock_text(clock))
+				_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
+
+	def admit_run(record, selected):
+		"""Shared admission for writers, critics and explicitly unbudgeted probes.
+
+		Operational records are always in record_dir, including OFF failures;
+		neither their durability nor recovery admission depends on a ledger.
+		"""
+		for path in record_dir.glob('*.json'):
+			prior = _read_record(path)
+			if (prior.get('format') != 'awf-reference-dispatch-2'
+					or prior.get('ticket') != record['ticket'] or prior.get('role') != record['role']
+					or prior['dispatch_id'] == record['dispatch_id']):
+				continue
+			if prior.get('status') == 'LAUNCHED' and Path(prior['terminal_proof_path']).is_file():
+				try:
+					observe_run('observe', prior, timeout=0)
+				except _TerminalRunFailure:
+					prior = _read_record(path)
+			if (prior.get('status') == 'FAILED' and not (budgeting is not None
+					and budgeting.operational_failure_resolved(prior.get('budget_admission')))):
+				raise ValidationError('resolve non-reasoning failure before retry: unknown')
+		if budgeting is not None and record['role'] in {'writer', 'critic'}:
+			binding = {'project_id': budgeting.governance['project']['id'], 'ticket_id': record['ticket'],
+				'run_id': record['launch_nonce'], 'dispatch_id': record['dispatch_id'],
+				'session_id': record['launch_nonce'], 'role': 'worker' if record['role'] == 'writer' else 'critic'}
+			admission = budgeting.admit(binding, selected, stream=record['stream'])
+			if admission is not None:
+				record['budget_admission'] = admission
+				_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
 
 	def observe_run(method, record, **kwargs):
 		try:
 			return _invoke(runner, method, record, **kwargs)
 		except _TerminalRunFailure as exc:
-			if record.get('budget_admission') is None:
-				raise
 			# Failure remains an error to dispatch/recovery, but terminal usage is
 			# settled exactly once and the failed outcome survives a host restart.
-			try:
-				complete_budget(record, exc.observation)
-			finally:
-				record.update(status='FAILED', terminal_failure=exc.observation, observed_at=_clock_text(clock))
-				_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
+			complete_run(record, exc.observation, failed=True)
 			raise
 
 	def observation_evidence():
@@ -1295,14 +1324,7 @@ def _build(config):
 		terminal_proof_path = record_path.with_suffix('.terminal.json')
 		record = {'format': 'awf-reference-dispatch-2', 'dispatch_schema_version': 2, 'dispatch_id': payload['dispatch_id'], 'dispatch_nonce': payload['dispatch_nonce'], 'stream': payload['stream'], 'ticket': payload['ticket'], 'exact_tuple': payload['exact_tuple'], 'prepared_at': payload['prepared_at'], 'begun_at': payload['begun_at'], 'role': role, 'lifecycle_stage': payload['lifecycle_stage'], 'lane_start_waivers': list(payload['lane_start_waivers']), 'argv': argv, 'worktree': str(worktree), 'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest(), 'argv_sha256': hashlib.sha256(canonical(argv)).hexdigest(), 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_proof_path), 'terminal_proof_path': str(terminal_proof_path), 'status': 'PREPARED', 'created_at': _clock_text(clock)}
 		_write_record(record_path, record)
-		if budgeting is not None and role in {'writer', 'critic'}:
-			binding = {'project_id': budgeting.governance['project']['id'], 'ticket_id': payload['ticket'],
-				'run_id': launch_nonce, 'dispatch_id': payload['dispatch_id'],
-				'session_id': launch_nonce, 'role': 'worker' if role == 'writer' else 'critic'}
-			admission = budgeting.admit(binding, selected, stream=payload['stream'])
-			if admission is not None:
-				record['budget_admission'] = admission
-				_write_record(record_path, record)
+		admit_run(record, selected)
 		_verify_executable(codex_executable)
 		launch_env = _safe_env(token_env)
 		launch_env['CODEX_HOME'] = str(isolated_home)
@@ -1355,7 +1377,7 @@ def _build(config):
 		record['startup_observed_at'] = _clock_text(clock)
 		if terminal:
 			record['observed_at'] = record['startup_observed_at']
-			complete_budget(record, result)
+			complete_run(record, result)
 		_write_record(record_path, record)
 		return _record_receipt(payload, record['startup_observed_at'], session_id, 'TERMINAL' if terminal else 'LAUNCHED')
 
@@ -1390,20 +1412,21 @@ def _build(config):
 			observed_session = result.get('session_id')
 			_require(isinstance(observed_session, str) and observed_session.strip(), 'Interrupted dispatch did not prove an observed session identity')
 			_require(record.get('session_id') in {None, observed_session}, 'Interrupted dispatch session identity changed')
-			complete_budget(record, result)
+			complete_run(record, result)
 			record['session_id'] = observed_session
 			record['status'] = 'COMPLETED'
 			record['observed_at'] = _clock_text(clock)
 			_write_record(path, record)
 		else:
 			_require(record.get('status') in {'LAUNCHED', 'COMPLETED'}, 'Dispatch has no accepted durable launch')
-			if record.get('budget_admission') is not None and record['status'] == 'LAUNCHED':
+			if record['status'] == 'LAUNCHED' and (record.get('budget_admission') is not None
+					or Path(record['terminal_proof_path']).is_file()):
 				result = observe_run('observe', record, timeout=timeout)
 				if result.get('terminal') is True:
 					_require(result.get('status') == 'COMPLETED' and result.get('returncode') == 0
 						and result.get('pid') == record['pid'] and result.get('launch_nonce') == record['launch_nonce']
 						and result.get('session_id') == record['session_id'], 'Budget completion process identity differs')
-					complete_budget(record, result)
+					complete_run(record, result)
 					record.update(status='COMPLETED', observed_at=_clock_text(clock))
 					_write_record(path, record)
 		_require(isinstance(record.get('session_id'), str) and record['session_id'].strip(), 'Dispatch durable record has no observed session identity')

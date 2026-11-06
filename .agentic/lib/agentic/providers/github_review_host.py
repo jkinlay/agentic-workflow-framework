@@ -375,21 +375,35 @@ class HostDriver:
     def observe_enrollment(self, binding):
         from ..budget_enrollment import validate_binding
         validate_binding(binding)
-        run = self.state / 'runs' / self._controller_run_id(binding['run_id'])
+        run = self._budget_execution(binding)
         with Tree(run) as tree:
             intent = loads(tree.read('budget-intent.json', maximum=16384).decode('utf-8'))
         require(intent == binding, 'Review enrollment differs from host dispatch intent')
         return intent
 
+    def _budget_execution(self, binding):
+        """Locate a unique execution, including first-draft retry attempts."""
+        run = self.state / 'runs' / self._controller_run_id(binding['run_id'])
+        if (run / 'budget-intent.json').is_file():
+            return run
+        matches = []
+        for path in (self.state / 'runs').glob('*/attempt-*/budget-intent.json'):
+            with Tree(path.parent) as tree:
+                prior = loads(tree.read(path.name, maximum=16384).decode('utf-8'))
+            if prior == binding:
+                matches.append(path.parent)
+        require(len(matches) == 1, 'Budget execution lineage is missing or ambiguous')
+        return matches[0]
+
     def observe_budget_admission(self, binding, selected):
         from ..budgeting import subprocess_budget_request
         self.observe_enrollment(binding)
-        with Tree(self.state / 'runs' / binding['run_id']) as tree:
+        with Tree(self._budget_execution(binding)) as tree:
             payload = loads(tree.read('input.json', maximum=1024 * 1024).decode('utf-8'))
         contexts = self._worker_contexts(binding, payload['candidate']) if binding['role'] in ('critic', 'specialist') else []
         request = subprocess_budget_request(binding,
             worker_context_id=contexts[-1]['context_id'] if contexts else None, stream=self.c.get('budget_stream'))
-        request['_candidate_id'] = candidate_id(payload['candidate'])
+        request['_candidate_id'] = candidate_id(payload['candidate']) if payload.get('candidate') else 'first-draft'
         request['worker_context_ids'] = sorted({row['context_id'] for row in contexts})
         if contexts:
             request['worker_run_id'] = contexts[-1]['run_id']
@@ -397,23 +411,30 @@ class HostDriver:
             selected['model']: [selected['reasoning_effort']]}}, 'limits_enforced': False}
 
     def _worker_contexts(self, binding, candidate):
-        """All observed worker contexts bound to this ticket and candidate.
+        """Conservatively exclude the ticket's complete worker lineage.
 
         Host intent and execution logs persist even with accounting OFF. Older
         successful workers have an identity binding instead of a budget intent.
-        Neither an unrelated ticket/candidate nor a reviewer is a worker.
+        Head equality is deliberately unnecessary: workers publish successor
+        heads. Incomplete ancestry cannot establish independence, so contexts
+        on the ticket remain excluded across all its amendments and restarts.
         """
         contexts = []
         roots = {path.parent for name in ('budget-intent.json', 'codex-identity.json')
-                 for path in (self.state / 'runs').glob('*/' + name)}
+                 for pattern in ('*/' + name, '*/attempt-*/' + name)
+                 for path in (self.state / 'runs').glob(pattern)}
         for run in sorted(roots, key=lambda path: (path.stat().st_mtime_ns, path.name)):
             with Tree(run) as tree:
                 has_identity = tree.inspect('codex-identity.json') is not None
                 if tree.inspect('input.json') is None:
+                    # Old publication identities predate retained task inputs.
+                    # Their ticket/ancestry is UNKNOWN, so exclude the observed
+                    # context conservatively rather than drop it from lineage.
+                    require(has_identity and run.parent.name == 'runs',
+                            'Worker lineage lacks retained input; independence unknown')
+                    contexts.append(dict(context_id=self.codex_run_id(run.name), run_id=run.name))
                     continue
                 payload = loads(tree.read('input.json', maximum=1024 * 1024).decode('utf-8'))
-                if payload.get('candidate') != candidate:
-                    continue
                 if tree.inspect('budget-intent.json') is not None:
                     prior = loads(tree.read('budget-intent.json', maximum=16384).decode('utf-8'))
                     from ..budget_enrollment import validate_binding
@@ -423,9 +444,27 @@ class HostDriver:
                         continue
                 elif not has_identity:
                     continue
+                else:
+                    # Legacy identities lack a role/ticket binding. A changed
+                    # head on the same PR is still potentially worker lineage.
+                    prior_candidate = payload.get('candidate')
+                    if not isinstance(prior_candidate, dict) or any(
+                            prior_candidate.get(key) != candidate.get(key)
+                            for key in ('repository_id', 'pr', 'head_ref')):
+                        continue
                 if tree.inspect('codex.jsonl') is None:
-                    continue  # Prepared intent without an observed execution.
-            context = self.codex_run_id(run.name) if has_identity else self._codex_thread_id(run / 'codex.jsonl')
+                    require(tree.inspect('execution-started.json') is None,
+                            'Worker lineage lacks observed execution identity; independence unknown')
+                    continue  # Prepared intent without an execution.
+            context = self._codex_thread_id(run / 'codex.jsonl')
+            if has_identity and run.parent.name == 'runs':
+                self.codex_run_id(run.name)
+                with Tree(run) as tree:
+                    latest = loads(tree.read('codex-identity.json', maximum=16384).decode('utf-8'))
+                # The publication identity points to the latest first-draft
+                # attempt; earlier executions remain separate contributors.
+                if latest['codex_log'] == 'codex.jsonl':
+                    require(latest['codex_run_id'] == context, 'Worker lineage identity changed')
             contexts.append(dict(context_id=context, run_id=run.name))
         return contexts
 
@@ -433,13 +472,13 @@ class HostDriver:
         from ..budgeting import codex_usage, subprocess_budget_outcome
         binding = admission['binding']
         self.observe_enrollment(binding)
-        run = self.state / 'runs' / binding['run_id']
+        run = self._budget_execution(binding)
         with Tree(run) as tree:
             raw = tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT)
         events = [loads(line) for line in raw.decode('utf-8').splitlines() if line.strip()]
         success = observation.get('success', True)
-        thread_events = [event for event in events if isinstance(event, dict) and event.get('type') == 'thread.started']
-        session = self._codex_thread_id(run / 'codex.jsonl') if success or thread_events else None
+        session = self._terminal_context(run / 'codex.jsonl')
+        require(not success or session is not None, 'Successful execution lacks observed context')
         require(observation['session_id'] == session, 'Review usage differs from observed thread')
         return subprocess_budget_outcome(binding, admission['reservation'], session_id=session,
             actual_tokens=codex_usage(events), success=success,
@@ -820,14 +859,31 @@ class HostDriver:
                 timer.daemon = True
                 timer.start()
             try:
+                streamed = {'stdout': bytearray(), 'stderr': bytearray()}
+                def retain_stream(channel, chunk):
+                    # run_bounded enforces the closed channel/aggregate caps
+                    # before invoking this sink. Keep bytes even on its kill.
+                    streamed[channel].extend(chunk)
                 try:
                     result = run_bounded(
                         command, cwd=cwd, env=child_env(env), stdin=stdin,
                         watched_files=watched_results, policy=policy,
                         operation_budget=operation_budget,
                         cancel_event=cancel_event,
+                        stream_sink=retain_stream if log else None,
                     )
-                except ValidationError as exc:
+                except BaseException as exc:
+                    if log:
+                        raw = bytes(streamed['stdout'])
+                        # A killed write can leave a partial final event. It
+                        # proves no usage; retain all preceding complete events.
+                        if raw and not raw.endswith(b'\n'):
+                            raw = raw[:raw.rfind(b'\n') + 1]
+                        with Tree(Path(log).parent) as tree:
+                            retain_codex_log(tree, Path(log).name, raw,
+                                bytes(streamed['stderr']), maximum=CODEX_LOG_LIMIT,
+                                credentials=credential_values,
+                                paths=(self.root, self.worker, self.critic, self.state))
                     if (name == 'gh'
                             and str(exc).startswith('SUBPROCESS_STDOUT_LIMIT:')):
                         raise ValidationError(
@@ -878,7 +934,7 @@ class HostDriver:
                 )
             if result.returncode != 0:
                 raise _HostCommandFailure(f'HOST_COMMAND_FAILED: {name} failed; inspect retained run log',
-                                          failure_kind='unknown')
+                                          failure_kind='cancelled' if result.returncode < 0 else 'unknown')
             return ''
         failure_message = (f'HOST_COMMAND_FAILED: {name} failed with exit '
                            f'{result.returncode}; reconcile before retry')
@@ -1560,6 +1616,87 @@ class HostDriver:
                 'Protected governance or unsafe/empty candidate; separate human review required')
         return files
 
+    def _agent_admission(self, role, run, *, enrolled=True):
+        """One admission boundary for every agent launch in this host."""
+        budgeting = getattr(self, 'budgeting', None)
+        if not enrolled or budgeting is None or 'legacy_behavior' in budgeting.settings:
+            return None, None
+        require(isinstance(self.budget_ticket_id, str) and self.budget_ticket_id.strip(),
+                'Review budget admission requires a host-bound ticket identity')
+        # Operational failures are retained in host run state in every mode.
+        # Budgeted failures also have the ledger's authenticated resolution path.
+        for path in (self.state / 'runs').glob('**/execution-outcome.json'):
+            with Tree(path.parent) as tree:
+                prior = loads(tree.read(path.name, maximum=16384).decode('utf-8'))
+            binding = prior.get('binding') or {}
+            if (binding.get('ticket_id') == self.budget_ticket_id
+                    and binding.get('project_id') == budgeting.governance['project']['id']
+                    and binding.get('role') == role and not prior['success']):
+                saved_admission = None
+                if prior['budgeted']:
+                    with Tree(path.parent) as tree:
+                        saved_admission = loads(tree.read('budget-admission.json', maximum=1024 * 1024).decode('utf-8'))
+                require(budgeting.operational_failure_resolved(saved_admission),
+                        'resolve non-reasoning failure before retry: ' + prior['failure_kind'])
+        execution_id = run.name if run.parent.name == 'runs' else str(uuid.uuid5(
+            uuid.NAMESPACE_URL, 'awf:review-execution:' + run.parent.name + ':' + run.name))
+        binding = {'project_id': budgeting.governance['project']['id'],
+            'ticket_id': self.budget_ticket_id, 'run_id': execution_id,
+            'dispatch_id': execution_id, 'session_id': execution_id, 'role': role}
+        (run / 'budget-intent.json').write_bytes(canonical(binding))
+        template_role = 'critic' if role == 'specialist' else role
+        admission = budgeting.admit(binding, {'model': self.c['models'][template_role],
+            'reasoning_effort': (self.c.get('reasoning_effort') or {}).get(template_role)},
+            stream=self.c.get('budget_stream'))
+        if admission is not None:
+            (run / 'budget-admission.json').write_bytes(canonical(admission))
+        return admission, binding
+
+    def _agent_outcome(self, run, admission, binding, *, success, failure_kind='unknown'):
+        """One terminal boundary; operational state never requires accounting."""
+        log = run / 'codex.jsonl'
+        if not log.exists():
+            with Tree(run) as tree:
+                tree.write(log.name, b'')
+        session = self._terminal_context(log)
+        identity_missing = success and binding is not None and session is None
+        if identity_missing:
+            success, failure_kind = False, 'unknown'
+        try:
+            if admission is not None:
+                settled = self.budgeting.complete(admission,
+                    dict(session_id=session, success=success, failure_kind=failure_kind))
+                require(settled['accepted'], 'Review budget routing settlement quarantined the run')
+        finally:
+            with Tree(run) as tree:
+                tree.write('execution-outcome.json', canonical(dict(binding=binding,
+                    success=success, failure_kind=None if success else failure_kind,
+                    budgeted=admission is not None)))
+        require(not identity_missing, 'Terminal execution lacks an unambiguous observed context')
+        return session
+
+    def _terminal_context(self, log):
+        """Missing/ambiguous context is UNKNOWN for failure accounting."""
+        try:
+            return self._codex_thread_id(log)
+        except (OSError, UnicodeError, ValidationError):
+            return None
+
+    def _launch_agent(self, role, run, args, prompt, *, enrolled=True):
+        admission, binding = self._agent_admission(role, run, enrolled=enrolled)
+        with Tree(run) as tree:
+            tree.write('execution-started.json', canonical(dict(binding=binding)))
+        try:
+            self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
+        except BaseException as exc:
+            kind = getattr(exc, 'failure_kind', None) or ('cancelled' if isinstance(
+                exc, (KeyboardInterrupt, SystemExit, subprocess.TimeoutExpired)) or str(exc).startswith(
+                ('SUBPROCESS_CANCELLED:', 'SUBPROCESS_TIMEOUT:')) else 'unknown')
+            self._agent_outcome(run, admission, binding, success=False, failure_kind=kind)
+            raise
+        session = self._agent_outcome(run, admission, binding, success=True)
+        return session, binding
+
     def agent(self, role, candidate, findings, run_id, files=None):
         require(role in {'worker', 'critic', 'specialist'}, 'Controller and independent runs are not review sub-agents')
         template_role = 'critic' if role == 'specialist' else role
@@ -1592,37 +1729,10 @@ class HostDriver:
         (run / 'effective-config.json').write_text(json.dumps({'model': self.c['models'][template_role], 'reasoning_effort': effort,
             'sandbox': cli_sandbox, 'cli_sandbox': cli_sandbox,
             'codex_config_overrides': overrides}, sort_keys=True), encoding='utf-8')
-        admission = None
         budgeting = getattr(self, 'budgeting', None)
-        if budgeting is not None and 'legacy_behavior' not in budgeting.settings:
-            require(isinstance(self.budget_ticket_id, str) and self.budget_ticket_id.strip(),
-                    'Review budget admission requires a host-bound ticket identity')
-            binding = {'project_id': budgeting.governance['project']['id'],
-                'ticket_id': self.budget_ticket_id, 'run_id': run_id,
-                'dispatch_id': run_id, 'session_id': run_id, 'role': role}
-            (run / 'budget-intent.json').write_bytes(canonical(binding))
-            admission = budgeting.admit(binding, {'model': self.c['models'][template_role], 'reasoning_effort': effort},
-                                        stream=self.c.get('budget_stream'))
-            if admission is not None:
-                (run / 'budget-admission.json').write_bytes(canonical(admission))
-        try:
-            self.run('codex',args,stdin=prompt,timeout=self.c['agent_timeout_seconds'],log=run/'codex.jsonl')
-        except _HostCommandFailure as exc:
-            if admission is not None:
-                with Tree(run) as tree:
-                    events = [loads(line) for line in tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT)
-                              .decode('utf-8').splitlines() if line.strip()]
-                has_thread = any(isinstance(event, dict) and event.get('type') == 'thread.started' for event in events)
-                observed = dict(session_id=self._codex_thread_id(run / 'codex.jsonl') if has_thread else None,
-                    success=False, failure_kind=exc.failure_kind)
-                budgeting.complete(admission, observed)
-            raise
-        session = self._codex_thread_id(run / 'codex.jsonl') if admission is not None or reviewer else None
-        if admission is not None:
-            observed = {'session_id': session, 'log': str(run / 'codex.jsonl'), 'result': str(output)}
-            settled = budgeting.complete(admission, observed)
-            require(settled['accepted'], 'Review budget routing settlement quarantined the run')
+        session, binding = self._launch_agent(role, run, args, prompt)
         if reviewer and budgeting is not None and 'legacy_behavior' not in budgeting.settings:
+            session = self._codex_thread_id(run / 'codex.jsonl')
             contexts = self._worker_contexts(binding, candidate)
             require(session not in {row['context_id'] for row in contexts},
                     'Review context is not independent of candidate worker contexts')
@@ -1683,9 +1793,8 @@ class HostDriver:
         }, sort_keys=True), encoding='utf-8')
         self._qualification_probe = True
         try:
-            self.run('codex', args, stdin=prompt,
-                     timeout=self.c['agent_timeout_seconds'],
-                     log=run / 'codex.jsonl')
+            # Isolation probes have no ticket and are not AWF ticket runs.
+            self._launch_agent(role, run, args, prompt, enrolled=False)
         finally:
             self._qualification_probe = False
         raw_result, value = self._bounded_result(output, run)
@@ -1798,7 +1907,9 @@ class HostDriver:
         git_controls = expected_git_controls or self.first_draft_git_controls()
         self.require_first_draft_git_controls(git_controls)
         self.require_clean_first_draft_checkout()
-        self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
+        (run / 'input.json').write_bytes(canonical(dict(candidate=None,
+            allowed_amendment_paths=self.c['allowed_paths'], contract=contract)))
+        self._launch_agent('worker', run, args, prompt)
         self.require_first_draft_git_controls(git_controls)
         raw_result, value = self._bounded_result(output, run)
         self._record_codex_identity(run_id, run_root, run, output)

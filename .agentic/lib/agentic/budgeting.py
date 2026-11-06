@@ -254,19 +254,12 @@ class ControllerBudgeting:
                 'Budget recovery route differs from the host launch route')
         return {'binding': binding, 'reservation': reservation}
 
-    def _retained_recovery(self, binding, selected, *, stream=None):
-        """Read existing operational history in OFF mode, without creating state.
-
-        A missing/unusable destination with no ledger is fine. An existing
-        ledger must be readable and safe; OFF cannot erase its recovery stops.
-        No enrollment, usage observation, reservation or budget quota is needed.
-        """
+    def _recovery_database(self):
+        """Open existing protected recovery evidence read-only, never create it."""
         import sqlite3
-        from .model_routing import policy_from_config, recovery_admission, _current_retry_ceiling
-        from .budget_enrollment import validate_binding
         from .path_containment import is_within
         if self.database is None or not self.database.path.is_file():
-            return
+            return None
         path = self.database.path
         for parent in (path, *path.parents):
             require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
@@ -274,13 +267,49 @@ class ControllerBudgeting:
         require(path.stat().st_nlink == 1, 'Protected state has multiple hardlinks')
         require(not any(is_within(path, root) for root in self.database.worktree_roots),
                 'Protected state must be outside worker worktrees')
+        db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def operational_failure_resolved(self, admission):
+        """Only retained authenticated resolution can clear a host failure.
+
+        Operational failure records live with host executions in every mode.
+        Budgeted history can use its existing protected resolution authority;
+        a missing ledger or admission never supplies evidence of resolution.
+        """
+        if admission is None:
+            return False
+        db = self._recovery_database()
+        if db is None:
+            return False
+        try:
+            db.execute('BEGIN')
+            binding = admission['binding']
+            row = db.execute('SELECT request FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(row is not None and json.loads(row['request']).get('_budget_binding') == binding,
+                    'Operational resolution differs from retained execution identity')
+            return db.execute('SELECT run_id FROM model_failure_resolutions WHERE run_id=?',
+                              (binding['run_id'],)).fetchone() is not None
+        finally:
+            db.close()
+
+    def _retained_recovery(self, binding, selected, *, stream=None):
+        """Read existing operational history in OFF mode, without creating state.
+
+        Fresh host failures are independently durable in the host run registry.
+        This also retains pre-existing ledger recovery stops without telemetry.
+        """
+        from .model_routing import policy_from_config, recovery_admission, _current_retry_ceiling
+        from .budget_enrollment import validate_binding
+        db = self._recovery_database()
+        if db is None:
+            return
         binding = validate_binding(binding)
         require(binding['project_id'] == self.governance['project']['id'], 'Budget project identity differs')
         policy = policy_from_config(self.governance)
         request = subprocess_budget_request(binding, stream=stream)
         capabilities = {'models': {selected['model']: [selected['reasoning_effort']]}}
-        db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
-        db.row_factory = sqlite3.Row
         try:
             db.execute('BEGIN')
             ceiling = _current_retry_ceiling(db, binding['project_id'])
