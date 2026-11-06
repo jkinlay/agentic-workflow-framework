@@ -116,8 +116,8 @@ def subprocess_budget_outcome(binding, selected, *, session_id, actual_tokens, s
 
 
 def protected_state_roots(*roots):
-    """Canonical complete exclusions, shared by ledger and execution state."""
-    return tuple(dict.fromkeys(Path(root).resolve() for root in roots))
+    """Canonical exclusions including the loaded runtime, for every state store."""
+    return tuple(dict.fromkeys(Path(root).resolve() for root in (*roots, Path(__file__).resolve().parents[3])))
 
 
 def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_roots=(), previous_paths=()):
@@ -205,14 +205,12 @@ class ControllerBudgeting:
     @property
     def operations(self):
         from .budget_enrollment import OperationalRegistry
-        return OperationalRegistry.for_project(self.governance['project']['id'], self.worktree_roots)
+        return OperationalRegistry.for_project(self.governance['project']['id'], self.worktree_roots,
+            retry_limit=self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket'])
 
     def start_execution(self, binding):
         limit = self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket']
-        self.operations.begin(binding, limit, self._shared_failure_resolved)
-
-    def _shared_failure_resolved(self, binding):
-        return self.operational_failure_resolved({'binding': binding})
+        self.operations.begin(binding, limit)
 
     def advance(self, store, *args, **kwargs):
         """Advance local lifecycle with the validated, effective mode."""
@@ -232,14 +230,14 @@ class ControllerBudgeting:
         # Apply the same containment/link checks before RoutingLedger opens it.
         with self.database.transaction(''):
             pass
-        return RoutingLedger(self.database.path)
+        return RoutingLedger(self.database.path, worktree_roots=self.worktree_roots)
 
     def admit(self, binding, selected, *, stream=None, enrolled=True):
         from .budget_enrollment import validate_binding
         from .model_routing import policy_from_config
         require(type(enrolled) is bool, 'Enrollment classification must be boolean')
         if not enrolled:
-            self.operations.admit(binding, self._shared_failure_resolved)
+            self.operations.admit(binding)
             return None  # Operational recovery applies without enrollment/usage.
         if binding.get('role') not in ('worker', 'fix', 'critic', 'specialist'):
             return None
@@ -247,9 +245,8 @@ class ControllerBudgeting:
             return None  # Existing legacy host controls remain the host's responsibility.
         if binding['role'] in ('critic', 'specialist'):
             self.operations.worker_contexts(binding)
-        self.operations.admit(binding, self._shared_failure_resolved)
+        self.operations.admit(binding)
         if not self.settings['accounting_enabled']:
-            self._retained_recovery(binding, selected, stream=stream)
             return None
         binding = validate_binding(binding)
         require(binding['project_id'] == self.governance['project']['id'], 'Budget project identity differs')
@@ -301,57 +298,28 @@ class ControllerBudgeting:
         return db
 
     def operational_failure_resolved(self, admission, binding=None):
-        """Only retained authenticated resolution can clear a host failure.
-
-        Operational failure records live with host executions in every mode.
-        Budgeted history can use its existing protected resolution authority;
-        a missing ledger or admission never supplies evidence of resolution.
-        """
-        if admission is None:
-            return binding is not None and self.operations.resolved(binding)
-        db = self._recovery_database()
-        if db is None:
-            return False
-        try:
-            db.execute('BEGIN')
-            binding = admission['binding']
-            row = db.execute('SELECT request FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
-            if row is None:
-                return False
-            require(json.loads(row['request']).get('_budget_binding') == binding,
+        """Admission trusts only bounded operational resolution, in every mode."""
+        if admission is not None:
+            require(binding is None or binding == admission['binding'],
                     'Operational resolution differs from retained execution identity')
-            return db.execute('SELECT run_id FROM model_failure_resolutions WHERE run_id=?',
-                              (binding['run_id'],)).fetchone() is not None
-        finally:
-            db.close()
+            binding = admission['binding']
+        return binding is not None and self.operations.resolved(binding)
 
-    def _retained_recovery(self, binding, selected, *, stream=None):
-        """Read existing operational history in OFF mode, without creating state.
+    def migrate_operational_recovery(self):
+        """Explicit trusted upgrade step before resuming legacy-only history.
 
-        Fresh host failures are independently durable in the host run registry.
-        This also retains pre-existing ledger recovery stops without telemetry.
+        Quiesce dispatch, select the verified old ledger and import failures,
+        consumed resolutions and the retained retry ceiling. No usage/charge or
+        old ledger bytes change. OFF admission never performs this migration.
+        Missing/corrupt migration sources refuse rather than imply fresh state.
         """
-        from .model_routing import policy_from_config, recovery_admission, _current_retry_ceiling
-        from .budget_enrollment import validate_binding
+        from .model_routing import RoutingLedger
         db = self._recovery_database()
-        if db is None:
-            return
-        binding = validate_binding(binding)
-        require(binding['project_id'] == self.governance['project']['id'], 'Budget project identity differs')
-        policy = policy_from_config(self.governance)
-        request = subprocess_budget_request(binding, stream=stream)
-        capabilities = {'models': {selected['model']: [selected['reasoning_effort']]}}
+        require(db is not None, 'Explicit recovery migration requires verified legacy budget history')
         try:
             db.execute('BEGIN')
-            ceiling = _current_retry_ceiling(db, binding['project_id'])
-            limit = policy['reconciliation']['max_reconciled_incident_retries_per_ticket']
-            require(ceiling is None or limit <= ceiling['retry_limit'],
-                    'configured retry cap exceeds the protected ledger ceiling; explicit human direction required')
-            route, _, _ = recovery_admission(db, binding['project_id'], policy, request, capabilities, limit,
-                operating=self.operating, governance=self.governance, enforcing=False)
-            require(route['status'] == 'ready', 'Operational recovery admission refused: ' + str(route))
-            require(all(route[key] == selected.get(key) for key in ('model', 'reasoning_effort')),
-                    'Operational recovery route differs from the host launch route')
+            return RoutingLedger._migrate_operational_recovery(db, self.governance['project']['id'],
+                self.operations)
         finally:
             db.close()
 
@@ -489,7 +457,7 @@ class BudgetLedger(ProtectedDatabase):
         # Apply the protected-state path/permission checks before schema access.
         with self.transaction(''):
             pass
-        return RoutingLedger(self.path)
+        return RoutingLedger(self.path, worktree_roots=self.worktree_roots)
 
     def reserve(self, binding, settings, tokens):
         from datetime import datetime, timezone

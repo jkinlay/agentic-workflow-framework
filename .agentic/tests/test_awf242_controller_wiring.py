@@ -179,7 +179,9 @@ class BudgetWiringTests(unittest.TestCase):
 
     def test_review_host_exposes_shared_budget_context(self):
         from agentic.providers.github_review_host import HostDriver
-        driver = HostDriver.__new__(HostDriver)
+        driver = HostDriver(dict(worker_checkout=str(self.root / 'worker'),
+            critic_checkout=str(self.root / 'critic'), state_dir=str(self.root / 'review'),
+            repository='fixture/project'), self.root)
         context = self.context()
         driver.configure_budgeting(context)
         self.assertIs(driver.budgeting, context)

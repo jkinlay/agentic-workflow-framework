@@ -365,7 +365,7 @@ class HostDriver:
         pattern = pattern.replace(r'\{slug\}', r'[A-Za-z0-9_.-]+')
         matched = re.fullmatch(pattern, config['head_branch'])
         ticket = matched.groupdict().get('ticket') if matched else None
-        state_roots = protected_state_roots(driver.worker, driver.critic)
+        state_roots = protected_state_roots(driver.root, driver.worker, driver.critic)
         path = project_ledger_path(governance['project']['id'], path=config.get('budget_ledger_path'),
             accounting_enabled=resolve_settings(snapshot.config)['accounting_enabled'],
             worktree_roots=state_roots, previous_paths=(driver.state / 'routing.sqlite3',))
@@ -492,6 +492,10 @@ class HostDriver:
         require(isinstance(context, ControllerBudgeting), 'Review budgeting requires a trusted controller context')
         self.budgeting = context
         self.budget_ticket_id = ticket_id
+        # Internal trusted context, excluded from serialized host-policy hashes.
+        # First-draft reservation/resume sees the same validated mode as tick.
+        self.c['_budgeting_context'] = context
+        self.c['_runtime_root'] = str(self.root)
 
     def __init__(self, config, runtime_root):
         self.c = config
@@ -1628,7 +1632,7 @@ class HostDriver:
         require(isinstance(self.budget_ticket_id, str) and self.budget_ticket_id.strip(),
                 'Review budget admission requires a host-bound ticket identity')
         # Operational failures are retained in host run state in every mode.
-        # Budgeted failures also have the ledger's authenticated resolution path.
+        # Every recovery path must first consume the operational allowance.
         for path in (self.state / 'runs').glob('**/execution-outcome.json'):
             with Tree(path.parent) as tree:
                 prior = loads(tree.read(path.name, maximum=16384).decode('utf-8'))
@@ -1636,11 +1640,7 @@ class HostDriver:
             if (binding.get('ticket_id') == self.budget_ticket_id
                     and binding.get('project_id') == budgeting.governance['project']['id']
                     and binding.get('role') == role and not prior['success']):
-                saved_admission = None
-                if prior['budgeted']:
-                    with Tree(path.parent) as tree:
-                        saved_admission = loads(tree.read('budget-admission.json', maximum=1024 * 1024).decode('utf-8'))
-                require(budgeting.operational_failure_resolved(saved_admission, binding),
+                require(budgeting.operational_failure_resolved(None, binding),
                         'resolve non-reasoning failure before retry: ' + prior['failure_kind'])
         execution_id = run.name if run.parent.name == 'runs' else str(uuid.uuid5(
             uuid.NAMESPACE_URL, 'awf:review-execution:' + run.parent.name + ':' + run.name))

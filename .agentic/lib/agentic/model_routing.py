@@ -961,7 +961,9 @@ class RoutingLedger:
     BEGIN IMMEDIATE serializes admission across connections. Outstanding runs stay
     charged indefinitely until observed completion; timeout never refunds a run.
     """
-    def __init__(self, path):
+    def __init__(self, path, *, worktree_roots=()):
+        from .budgeting import protected_state_roots
+        self.worktree_roots = protected_state_roots(*worktree_roots)
         self.path = Path(path).absolute()
         _require(str(path) != ":memory:", "routing ledger must be durable")
         _require(self.path.parent.is_dir(), "create a trusted ledger directory before use")
@@ -1299,6 +1301,48 @@ class RoutingLedger:
         return row
 
     def authorize_retry_limit(self, project_id, policy, observation):
+        """Commit trusted-host authority before changing operational capacity."""
+        result = self._authorize_retry_limit(project_id, policy, observation)
+        # Historical exact replays retain their original result bytes. They
+        # cannot manufacture a new operational authorization or restore a
+        # ceiling which has since been reduced.
+        if not {'project_id', 'status', 'operation_id', 'previous_limit', 'new_limit', 'new_revision'} <= set(result):
+            return result
+        with self._transaction() as connection:
+            current = _current_retry_ceiling(connection, project_id)
+            if (current is None or current['revision'] != result['new_revision']
+                    or current['retry_limit'] != result['new_limit']):
+                return result
+            from .budget_enrollment import OperationalRegistry
+            operations = OperationalRegistry.for_project(project_id, self.worktree_roots)
+            operations.apply_retry_authorization(project_id, result)
+            # Existing verified closures may have been refused a resolution at
+            # the old cap. Spend the new allowance on those exact failures.
+            self._migrate_operational_recovery(connection, project_id, operations)
+            pending = connection.execute('SELECT r.*,c.observation FROM model_runs r '
+                'JOIN model_reconciliations c ON c.run_id=r.run_id '
+                'LEFT JOIN model_failure_resolutions f ON f.run_id=r.run_id '
+                'WHERE r.project_id=? AND f.run_id IS NULL ORDER BY r.rowid', (project_id,)).fetchall()
+            for row in pending:
+                outcome = json.loads(row['outcome'] or '{}')
+                if outcome.get('success', True) or outcome.get('failure_kind') not in NON_REASONING_FAILURES:
+                    continue
+                binding = json.loads(row['request']).get('_budget_binding') or dict(project_id=project_id,
+                    ticket_id=row['ticket_id'], run_id=row['run_id'], dispatch_id=row['run_id'],
+                    session_id=row['run_id'], role=row['role'])
+                try:
+                    operations.resolve(binding)
+                except ValidationError as exc:
+                    if str(exc) != 'Operational recovery retry limit exhausted':
+                        raise
+                    continue
+                closure = json.loads(row['observation'])
+                connection.execute('INSERT INTO model_failure_resolutions VALUES (?,?)', (row['run_id'], json.dumps(
+                    dict(verified=True, reason=closure['reason'], evidence_ref=closure['evidence_ref'],
+                         retry_authorization_id=result['operation_id'], recorded_at=datetime.now(timezone.utc).isoformat()))))
+        return result
+
+    def _authorize_retry_limit(self, project_id, policy, observation):
         """Trusted-host-only CAS operation; assertions do not authenticate humans.
 
         Do not expose this operation or direct ledger writes to workers. The host
@@ -1450,6 +1494,44 @@ class RoutingLedger:
                     "operating_hash": row["operating_hash"], "policy_sha256": row["policy_hash"],
                     "actual_model": outcome["actual_model"], "actual_reasoning_effort": outcome["actual_reasoning_effort"]}
 
+    @staticmethod
+    def _migrate_operational_recovery(connection, project_id, operations):
+        """Import a verified legacy snapshot; never used by OFF admission."""
+        from .budget_enrollment import validate_binding
+        ceiling = _current_retry_ceiling(connection, project_id)
+        retry_limit = 2 if ceiling is None else ceiling['retry_limit']
+        records = []
+        for row in connection.execute('SELECT r.*,f.run_id AS resolved_run FROM model_runs r '
+                'LEFT JOIN model_failure_resolutions f ON f.run_id=r.run_id WHERE r.project_id=?', (project_id,)):
+            outcome = json.loads(row['outcome'] or '{}')
+            if row['status'] not in ('settled', 'quarantined', 'reconciled') or outcome.get('success', True):
+                continue
+            request = json.loads(row['request'])
+            binding = request.get('_budget_binding') or dict(project_id=project_id, ticket_id=row['ticket_id'],
+                run_id=row['run_id'], dispatch_id=row['run_id'], session_id=row['run_id'], role=row['role'])
+            binding = validate_binding(binding)
+            _require(all(binding[key] == value for key, value in (
+                ('project_id', project_id), ('ticket_id', row['ticket_id']), ('run_id', row['run_id']), ('role', row['role']))),
+                'Recovery migration differs from retained execution identity')
+            records.append(dict(binding=binding, context_id=(outcome.get('actual_context_id')
+                if outcome.get('actual_context_observed', True) else None), resolved=row['resolved_run'] is not None))
+        operations.import_recovery(project_id, records, retry_limit)
+        return {'status': 'migrated', 'project_id': project_id, 'failures': len(records),
+                'resolutions': sum(record['resolved'] for record in records), 'budgets_refunded': False}
+
+    def migrate_operational_recovery(self, project_id, *, worktree_roots=()):
+        """Trusted explicit upgrade: quiesce, verify old ledger, then import once.
+
+        Replays retain exact identities, consumed resolutions and the minimum
+        historical retry ceiling. Source usage, charges and ledger bytes remain
+        unchanged. OFF hosts never discover or read an optional ledger.
+        """
+        from .budget_enrollment import OperationalRegistry
+        _name(project_id, 'project_id')
+        operations = OperationalRegistry.for_project(project_id, (*self.worktree_roots, *worktree_roots))
+        with self._transaction() as connection:
+            return self._migrate_operational_recovery(connection, project_id, operations)
+
     def resolve_failure(self, run_id, observation):
         """Trusted coordinator records a verified external recovery, never a refund."""
         _name(run_id, "run_id")
@@ -1466,6 +1548,16 @@ class RoutingLedger:
                      "only non-reasoning failures can be externally resolved")
             _require(connection.execute("SELECT run_id FROM model_failure_resolutions WHERE run_id=?", (run_id,)).fetchone() is None,
                      "failure resolution already recorded")
+            from .budget_enrollment import OperationalRegistry
+            operations = OperationalRegistry.for_project(row['project_id'], self.worktree_roots)
+            # Explicit recovery may import legacy-only evidence. Consumption is
+            # durable before the ledger receipt: a crash cannot grant a retry
+            # without spending the one shared, ticket-wide allowance.
+            self._migrate_operational_recovery(connection, row['project_id'], operations)
+            binding = json.loads(row['request']).get('_budget_binding') or dict(
+                project_id=row['project_id'], ticket_id=row['ticket_id'], run_id=run_id,
+                dispatch_id=run_id, session_id=run_id, role=row['role'])
+            operations.resolve(binding)
             recorded = {**observation, "recorded_at": datetime.now(timezone.utc).isoformat()}
             connection.execute("INSERT INTO model_failure_resolutions VALUES (?,?)", (run_id, json.dumps(recorded)))
             return {"status": "resolved", "run_id": run_id, "budgets_refunded": False}
@@ -1524,17 +1616,35 @@ class RoutingLedger:
                           "settled_at": now, "actual_usage_known": False, "operating_hash": row["operating_hash"]}
                 connection.execute("UPDATE model_runs SET status='reconciled',outcome=?,closed_day=? WHERE run_id=?",
                                    (json.dumps(closed), now[:10], run_id))
-                connection.execute("INSERT INTO model_failure_resolutions VALUES (?,?)",
-                                   (run_id, json.dumps({**observation, "verified": True, "recorded_at": now})))
             else:
                 # Preserve the original quarantine outcome, defects and every
                 # observed overrun byte; reconciliation is a separate audit event.
                 connection.execute("UPDATE model_runs SET status='reconciled' WHERE run_id=?", (run_id,))
-                previous_outcome = json.loads(row["outcome"])
-                if not previous_outcome["success"] and previous_outcome.get("failure_kind") in NON_REASONING_FAILURES:
+            recovery_resolved = False
+            terminal = json.loads(connection.execute('SELECT outcome FROM model_runs WHERE run_id=?',
+                (run_id,)).fetchone()['outcome'])
+            if not terminal['success'] and terminal.get('failure_kind') in NON_REASONING_FAILURES:
+                from .budget_enrollment import OperationalRegistry
+                operations = OperationalRegistry.for_project(project_id, self.worktree_roots,
+                    retry_limit=settings.get('max_reconciled_incident_retries_per_ticket', 2))
+                self._migrate_operational_recovery(connection, project_id, operations)
+                execution = json.loads(row['request']).get('_budget_binding') or dict(
+                    project_id=project_id, ticket_id=row['ticket_id'], run_id=run_id,
+                    dispatch_id=run_id, session_id=run_id, role=row['role'])
+                try:
+                    operations.resolve(execution)
+                    recovery_resolved = True
+                except ValidationError as exc:
+                    # Safe incident closure is always permitted. Exhaustion
+                    # refuses *resolution* and leaves the operational stop in
+                    # place, without granting capacity or refunding charges.
+                    if str(exc) != 'Operational recovery retry limit exhausted':
+                        raise
+                if recovery_resolved:
                     connection.execute("INSERT INTO model_failure_resolutions VALUES (?,?)",
                                        (run_id, json.dumps({**observation, "verified": True, "recorded_at": now})))
             result = {"status": "reconciled", "run_id": run_id, "project_id": project_id,
+                      "recovery_resolved": recovery_resolved,
                       "operating_hash": row["operating_hash"],
                       "reconciliation_id": observation["reconciliation_id"], "previous_status": row["status"],
                       "budgets_refunded": False, "positive_evidence_eligible": False,

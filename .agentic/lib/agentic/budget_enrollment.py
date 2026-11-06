@@ -50,8 +50,9 @@ class ProtectedDatabase:
     directory from worker writes. Path checks are defense in depth, not sandboxing.
     """
     def __init__(self, path, worktree_roots=()):
+        from .budgeting import protected_state_roots
         self.path = Path(path).absolute()
-        self.worktree_roots = tuple(Path(root).resolve() for root in worktree_roots)
+        self.worktree_roots = protected_state_roots(*worktree_roots)
 
     def validate_path(self):
         for parent in (self.path, *self.path.parents):
@@ -168,8 +169,10 @@ CREATE TABLE IF NOT EXISTS execution_contexts(run_id TEXT PRIMARY KEY, context_i
 CREATE TABLE IF NOT EXISTS execution_outcomes(run_id TEXT PRIMARY KEY, success INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_resolutions(run_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_retry_limits(project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_retry_authorizations(operation_id TEXT PRIMARY KEY, record TEXT NOT NULL);
 '''
-for _table in ('execution_intents', 'execution_contexts', 'execution_outcomes', 'execution_resolutions'):
+for _table in ('execution_intents', 'execution_contexts', 'execution_outcomes', 'execution_resolutions',
+               'execution_retry_authorizations'):
     for _action in ('UPDATE', 'DELETE'):
         OPERATIONAL_DDL += (f'CREATE TRIGGER IF NOT EXISTS {_table}_no_{_action} BEFORE {_action} ON {_table} '
                             "BEGIN SELECT RAISE(ABORT,'immutable execution evidence'); END;")
@@ -184,10 +187,15 @@ class OperationalRegistry(ProtectedDatabase):
     Only trusted operational resume/reconciliation calls may resolve failures.
     """
     @classmethod
-    def for_project(cls, project_id, worktree_roots=()):
+    def for_project(cls, project_id, worktree_roots=(), *, retry_limit=None):
         from .budgeting import project_ledger_path
         path = project_ledger_path(project_id, accounting_enabled=True, worktree_roots=worktree_roots)
-        return cls(path.with_name('executions.sqlite3'), worktree_roots)
+        instance = cls(path.with_name('executions.sqlite3'), worktree_roots)
+        require(retry_limit is None or type(retry_limit) is int and retry_limit >= 0,
+                'Operational retry limit is invalid')
+        instance.retry_limit = retry_limit
+        instance.project_id = project_id
+        return instance
 
     @contextmanager
     def transaction(self, ddl):
@@ -228,6 +236,12 @@ class OperationalRegistry(ProtectedDatabase):
                     db.execute('INSERT INTO execution_identity VALUES (?)', (identity,))
                 require([row['identity'] for row in db.execute('SELECT identity FROM execution_identity')] == [identity],
                         'Worker independence unknown: protected shared execution evidence identity lost; restore verified host state')
+                if getattr(self, 'retry_limit', None) is not None:
+                    self._limit(db, self.project_id, self.retry_limit)
+                    # A refusal must not erase an observed ceiling reduction.
+                    # Keep allowance consumption in the subsequent transaction.
+                    db.execute('COMMIT')
+                    db.execute('BEGIN IMMEDIATE')
                 yield db
         except ValidationError:
             raise
@@ -240,31 +254,86 @@ class OperationalRegistry(ProtectedDatabase):
         require(row is not None and row['binding'] == encoded(binding), 'Operational execution identity differs')
         return binding
 
-    def _admit(self, db, binding, failure_resolved):
+    def _admit(self, db, binding):
         for row in db.execute('SELECT i.binding FROM execution_intents i '
                               'JOIN execution_outcomes o ON o.run_id=i.run_id '
                               'LEFT JOIN execution_resolutions r ON r.run_id=i.run_id '
                               'WHERE o.success=0 AND r.run_id IS NULL'):
             prior = validate_binding(json.loads(row['binding']))
             if all(prior[key] == binding[key] for key in ('project_id', 'ticket_id')):
-                require(failure_resolved is not None and failure_resolved(prior),
-                        'resolve non-reasoning failure before retry: shared execution ' + prior['run_id'])
+                raise ValidationError('resolve non-reasoning failure before retry: unknown shared execution ' + prior['run_id'])
 
-    def admit(self, binding, failure_resolved=None):
+    def admit(self, binding):
         binding = validate_binding(binding)
         with self.transaction(OPERATIONAL_DDL) as db:
-            self._admit(db, binding, failure_resolved)
+            self._admit(db, binding)
 
-    def begin(self, binding, retry_limit, failure_resolved=None):
+    @staticmethod
+    def _limit(db, project_id, retry_limit):
+        db.execute('INSERT INTO execution_retry_limits VALUES (?,?) ON CONFLICT(project_id) DO UPDATE '
+                   'SET retry_limit=min(retry_limit,excluded.retry_limit)', (project_id, retry_limit))
+
+    def begin(self, binding, retry_limit):
         binding = validate_binding(binding)
         require(type(retry_limit) is int and retry_limit >= 0, 'Operational retry limit is invalid')
+        self.project_id, self.retry_limit = binding['project_id'], retry_limit
         with self.transaction(OPERATIONAL_DDL) as db:
-            self._admit(db, binding, failure_resolved)
+            self._admit(db, binding)
             row = db.execute('SELECT binding FROM execution_intents WHERE run_id=?', (binding['run_id'],)).fetchone()
             require(row is None or row['binding'] == encoded(binding), 'Operational execution cannot be rebound')
             db.execute('INSERT OR IGNORE INTO execution_intents VALUES (?,?)', (binding['run_id'], encoded(binding)))
+            self._limit(db, binding['project_id'], retry_limit)
+
+    def import_recovery(self, project_id, records, retry_limit):
+        """Explicit migration of authenticated old failures and consumed allowances.
+
+        The caller holds a consistent verified source snapshot. Import is atomic
+        and idempotent; historical resolutions count even if already above the
+        current ceiling. Neither replay nor migration can raise that ceiling.
+        """
+        require(type(retry_limit) is int and retry_limit >= 0, 'Operational retry limit is invalid')
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._limit(db, project_id, retry_limit)
+            for record in records:
+                binding = validate_binding(record['binding'])
+                require(binding['project_id'] == project_id, 'Recovery migration project differs')
+                old = db.execute('SELECT binding FROM execution_intents WHERE run_id=?', (binding['run_id'],)).fetchone()
+                require(old is None or old['binding'] == encoded(binding), 'Operational execution cannot be rebound')
+                db.execute('INSERT OR IGNORE INTO execution_intents VALUES (?,?)', (binding['run_id'], encoded(binding)))
+                self._binding(db, binding)
+                old = db.execute('SELECT success FROM execution_outcomes WHERE run_id=?', (binding['run_id'],)).fetchone()
+                require(old is None or old['success'] == 0, 'Operational terminal outcome changed')
+                db.execute('INSERT OR IGNORE INTO execution_outcomes VALUES (?,0)', (binding['run_id'],))
+                context = record['context_id']
+                if context is not None:
+                    require(text_id(context), 'Recovery migration context is invalid')
+                    old = db.execute('SELECT context_id FROM execution_contexts WHERE run_id=?', (binding['run_id'],)).fetchone()
+                    require(old is None or old['context_id'] == context, 'Operational context identity changed')
+                    db.execute('INSERT OR IGNORE INTO execution_contexts VALUES (?,?)', (binding['run_id'], context))
+                if record['resolved']:
+                    db.execute('INSERT OR IGNORE INTO execution_resolutions VALUES (?,?)', (binding['run_id'], encoded(binding)))
+
+    def apply_retry_authorization(self, project_id, record):
+        """Apply only a durably accepted trusted-host ceiling authorization.
+
+        RoutingLedger validates/authenticates the caller boundary and commits its
+        approval consumption first. Operational replay is exact and cannot undo
+        a later reduction. No ordinary admission or migration calls this method.
+        """
+        require(record['project_id'] == project_id and record['status'] == 'retry_limit_authorization_recorded',
+                'Operational retry authorization differs from accepted ledger authority')
+        with self.transaction(OPERATIONAL_DDL) as db:
+            old = db.execute('SELECT record FROM execution_retry_authorizations WHERE operation_id=?',
+                (record['operation_id'],)).fetchone()
+            if old is not None:
+                require(old['record'] == encoded(record), 'Operational retry authorization identity conflicts')
+                return
+            limit = db.execute('SELECT retry_limit FROM execution_retry_limits WHERE project_id=?', (project_id,)).fetchone()
+            require(limit is None or limit['retry_limit'] == record['previous_limit'],
+                    'Operational retry ceiling changed; obtain a current authorization')
             db.execute('INSERT INTO execution_retry_limits VALUES (?,?) ON CONFLICT(project_id) DO UPDATE '
-                       'SET retry_limit=min(retry_limit,excluded.retry_limit)', (binding['project_id'], retry_limit))
+                       'SET retry_limit=excluded.retry_limit', (project_id, record['new_limit']))
+            db.execute('INSERT INTO execution_retry_authorizations VALUES (?,?)', (record['operation_id'], encoded(record)))
 
     def context(self, binding, context_id):
         require(text_id(context_id), 'Worker independence unknown: observed context unavailable')
