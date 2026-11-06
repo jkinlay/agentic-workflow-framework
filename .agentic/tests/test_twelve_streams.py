@@ -321,6 +321,91 @@ class TwelveStreamTests(unittest.TestCase):
                                          (route["model"], route["reasoning_effort"]))
                         self.assertFalse(route["pinned"])
 
+    def test_matching_catalog_does_not_identify_edited_operating_defaults(self):
+        routing = load(ROOT / ".agentic/defaults/routing.yaml")
+        routing["role_defaults"]["worker"] = {"model": "gpt-5.6-sol", "effort": "high"}
+        routing["simple_worker"] = {"model": "gpt-5.6-luna", "effort": "high"}
+        with routing_context(json.dumps(routing), "synthetic owner defaults"):
+            operating = default_operating()
+        operating["streams"]["A"]["worker"].update(model="gpt-6.1-sol", reasoning_effort="high")
+        for protection in ("none", "pin", "user_source"):
+            value = deepcopy(operating)
+            if protection == "pin":
+                value["streams"]["A"]["worker"]["pinned"] = True
+            elif protection == "user_source":
+                value["source"] = "user"
+            for role in ("worker", "fix"):
+                for complexity in ("low", "medium"):
+                    with self.subTest(protection=protection, role=role, complexity=complexity):
+                        route = self.retained_default_route(routing, value, role=role, complexity=complexity)
+                        self.assertEqual("ready", route["status"])
+                        self.assertEqual(("gpt-6.1-sol", "high"),
+                                         (route["model"], route["reasoning_effort"]))
+                        self.assertEqual(protection == "pin", route["pinned"])
+
+    def test_semantically_unchanged_defaults_follow_owner_worker_choice(self):
+        for source in ("defaults/routing.yaml", "tests/fixtures/routing/valid.yaml"):
+            path = ROOT / ".agentic" / source
+            routing = load(path)
+            operating = default_operating(default_policy(path))
+            routing["catalog"]["owner-model"] = {"efforts": ["medium", "high"]}
+            routing["role_defaults"]["worker"] = {"model": "owner-model", "effort": "high"}
+            for addition in ("none", "epic_overrides", "controller_pin", "worker_pin",
+                             "all_false_pins", "key_order", "combined"):
+                value = deepcopy(operating)
+                if addition in ("epic_overrides", "combined"):
+                    value["epic_overrides"] = {}
+                if addition in ("controller_pin", "combined"):
+                    value["controller"]["pinned"] = False
+                if addition == "worker_pin":
+                    value["streams"]["A"]["worker"]["pinned"] = False
+                if addition in ("all_false_pins", "combined"):
+                    for role in ("controller", "critic", "specialist", "simple_worker"):
+                        value[role]["pinned"] = False
+                    for label in "ABC":
+                        value["streams"][label]["worker"]["pinned"] = False
+                if addition in ("key_order", "combined"):
+                    value = json.loads(json.dumps(value, sort_keys=True))
+                for role in ("worker", "fix"):
+                    with self.subTest(source=source, addition=addition, role=role):
+                        route = self.retained_default_route(routing, value, role=role)
+                        self.assertEqual("ready", route["status"])
+                        self.assertEqual(("owner-model", "high"),
+                                         (route["model"], route["reasoning_effort"]))
+                        self.assertFalse(route["pinned"])
+
+    def test_simple_worker_edits_preserve_the_option_and_unchanged_ordinary_defaults(self):
+        path = ROOT / ".agentic/defaults/routing.yaml"
+        routing = load(path)
+        routing["catalog"]["owner-model"] = {"efforts": ["medium", "high"]}
+        routing["role_defaults"]["worker"] = {"model": "owner-model", "effort": "high"}
+        operating = default_operating(default_policy(path))
+        operating["simple_worker"].update(model="gpt-5.6-luna", reasoning_effort="low")
+        operating["epic_overrides"] = {}
+        operating["controller"]["pinned"] = False
+        for role in ("worker", "fix"):
+            for complexity, expected in (("medium", ("owner-model", "high")),
+                                         ("low", ("gpt-5.6-luna", "low"))):
+                with self.subTest(role=role, complexity=complexity):
+                    route = self.retained_default_route(routing, operating, role=role, complexity=complexity)
+                    self.assertEqual("ready", route["status"])
+                    self.assertEqual(expected, (route["model"], route["reasoning_effort"]))
+
+    def test_edit_in_another_ordinary_route_prevents_baseline_inference(self):
+        path = ROOT / ".agentic/defaults/routing.yaml"
+        routing = load(path)
+        routing["role_defaults"]["worker"] = {"model": "gpt-5.6-sol", "effort": "high"}
+        for edited_role in ("controller", "other_stream"):
+            operating = default_operating(default_policy(path))
+            pair = operating["controller"] if edited_role == "controller" else operating["streams"]["B"]["worker"]
+            pair["model"] = "gpt-5.6-sol"
+            for role in ("worker", "fix"):
+                with self.subTest(edited_role=edited_role, role=role):
+                    route = self.retained_default_route(routing, operating, role=role)
+                    self.assertEqual("ready", route["status"])
+                    self.assertEqual(("gpt-6.1-sol", "high"),
+                                     (route["model"], route["reasoning_effort"]))
+
     def test_catalog_changes_alone_preserve_generated_and_legacy_defaults(self):
         for source in ("defaults/routing.yaml", "tests/fixtures/routing/valid.yaml"):
             path = ROOT / ".agentic" / source
@@ -468,7 +553,7 @@ class TwelveStreamTests(unittest.TestCase):
 
     def test_missing_simple_worker_keys_still_refuse(self):
         routing = load(ROOT / ".agentic/defaults/routing.yaml")
-        for field in ("simple_worker", "model", "reasoning_effort"):
+        for field in ("simple_worker", "model", "reasoning_effort", "enabled"):
             operating = deepcopy(self.value)
             if field == "simple_worker":
                 operating.pop(field)

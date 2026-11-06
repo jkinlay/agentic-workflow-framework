@@ -608,27 +608,44 @@ def _operating_binding(operating, governance, policy):
                               "operating_provenance": deepcopy(operating.provenance)}
 
 
+def _operating_route_projection(config):
+    """Project validated ordinary routes; optional metadata is not identity."""
+    def pair(route):
+        return {key: route[key] for key in ("model", "reasoning_effort")}
+
+    return {
+        **{role: pair(config[role])
+           for role in ("controller", "critic", "specialist") if role in config},
+        "streams": {
+            label: {role: pair(entry[role]) for role in ("worker", "reviewer") if role in entry}
+            for label, entry in config["streams"].items() if label in STREAM_LABELS},
+    }
+
+
 def _generated_operating_baseline(policy, config):
-    """Identify retained defaults without treating an editable route as origin."""
+    """Identify retained defaults from operating routes, never a catalog alone."""
     if not config or config.get("source") != "default":
         return None
     from .operating import default_operating
 
     baselines = [default_policy(RELEASE_ROUTING_SOURCE), default_policy(LEGACY_ROUTING_SOURCE)]
-    catalogs = [baseline for baseline in baselines
-                if baseline["model_order"] == policy["model_order"]
-                and baseline["models"] == policy["models"]]
-    # A complete generated configuration can still identify its baseline after
-    # owner edits to routing.yaml's catalog, defaults or review floors. Compare
-    # every stored field, including pins, optional choices and retained streams;
-    # one matching pair cannot identify either a release or an unedited file.
-    generated = [baseline for baseline in baselines
-                 if config == default_operating(baseline, count=config["streams"]["count"])]
-    # Conflicting evidence is ambiguous too. In particular, resemblance to an
-    # older generated configuration must not override a different known catalog.
-    candidates = ([baseline for baseline in catalogs if baseline in generated]
-                  if catalogs and generated else catalogs or generated)
-    return candidates[0] if len(candidates) == 1 else None
+    projection = _operating_route_projection(config)
+    # Every stored ordinary role/stream must match the same generator. The
+    # simple-worker option is independently editable: it neither identifies nor
+    # invalidates that ordinary baseline, and is compared separately before any
+    # substitution below. Pins and Epic choices are also enforced per route.
+    candidates = [baseline for baseline in baselines if projection == _operating_route_projection(
+        default_operating(baseline, count=config["streams"]["count"]))]
+    if len(candidates) != 1:
+        return None
+    baseline = candidates[0]
+    # A catalog can only veto an ambiguous cross-generation resemblance. It
+    # cannot identify an origin, or rescue a nonmatching operating projection.
+    catalogs = [item for item in baselines
+                if item["model_order"] == policy["model_order"] and item["models"] == policy["models"]]
+    if catalogs and baseline not in catalogs:
+        return None
+    return baseline
 
 
 def select_route(policy, request, capabilities, *, operating=None, governance=None):
