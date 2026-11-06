@@ -22,7 +22,8 @@ def with_operating(root, governance, report):
         if source_template:
             try:
                 value = validate_operating(load_yaml(tree.read('OPERATING_CONFIG.yaml')), governance)
-                operating = {'status': 'ACCEPTED', 'hash': value.operating_hash, 'source': value.source,
+                from .owner_admission import protected_diagnostic
+                operating = {**protected_diagnostic(root, governance, value.config), 'hash': value.operating_hash, 'source': value.source,
                              'budgeting': resolve_settings(value.config),
                              'streams': value.count, 'last_change_id': None, 'refusals': [],
                              'provenance': 'source_template', **operating_ceiling(governance)}
@@ -37,7 +38,7 @@ def with_operating(root, governance, report):
         # Filesystem observation failed; the already accepted project policy is
         # not thereby invalid. Activation reports this independent blocker.
         result['operating_observation'] = 'UNOBSERVED'
-    elif operating['status'] != 'ACCEPTED':
+    elif operating['status'] not in ('ACCEPTED', 'OWNER_CONFIRMATION_REQUIRED', 'PENDING_OWNER_CONFIRMATION'):
         result['status'] = 'REJECTED'
         for item in operating['refusals']:
             result['unresolved'].append({

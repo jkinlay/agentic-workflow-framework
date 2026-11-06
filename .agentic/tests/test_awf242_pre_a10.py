@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError
 from agentic.providers.github_review_host import HostDriver
 from agentic.review_loop import resume, tick
@@ -224,7 +225,7 @@ class ProductionPreA10Tests(unittest.TestCase):
         self.gov = inputs['planning_config']
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting'] = dict(self.value['budgeting'], accounting_enabled=False)
-        snapshot = fixtures.op.validate_operating(value, self.gov)
+        snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         config['codex']['roles']['writer']['reasoning_effort'] = 'high'
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
@@ -363,7 +364,7 @@ class ProductionPreA10Tests(unittest.TestCase):
                 runner = ConflictingCli(record_dir=config['codex']['run_record_directory'])
                 adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
                 context = adapters['dispatch_ticket'].configure_budgeting(path=self.root / (str(uuid.uuid4()) + '.sqlite'),
-                    governance=self.gov, operating=fixtures.op.validate_operating(self.value, self.gov))
+                    governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
                 payload = dict(_dispatch_payload(str(uuid.uuid4())), ticket='EX-10')
                 try:
                     with self.assertRaisesRegex(ValidationError, 'context|identity'):

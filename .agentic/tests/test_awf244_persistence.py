@@ -23,6 +23,11 @@ class FixtureHost:
         self.identity = 'fixture-observation'
         self.corrupt = False
 
+    def validate_operating_change(self, governance, snapshot, instruction, intent, changes, prior, requested):
+        from agentic.budgeting import settings_hash
+        if prior != settings_hash(snapshot.config["budgeting"]):
+            raise ValidationError("fixture prior mismatch")
+
     def observe_owner_direction(self, project_id, prior, changes):
         self.calls.append(deepcopy(changes))
         return dict(observation_id=self.identity, actor_id='fixture-owner',
@@ -43,6 +48,24 @@ class CalendarPersistenceTests(unittest.TestCase):
         self.value.pop('operating_calendar', None)
         (self.root / op.CONFIG).write_bytes(op._json(self.value))
         self.host = FixtureHost()
+        # Unit host facts stay in disposable clone/account storage. The real load
+        # validator still checks their digests; no ambient owner store is used.
+        from agentic import owner_admission as admission
+        import shutil
+        import subprocess
+        subprocess.run([shutil.which('git'), 'init', '-q', str(self.root)], check=True, capture_output=True)
+        location = patch.object(admission, '_owner_state_home', return_value=Path(self.temp.name) / 'protected')
+        location.start()
+        self.addCleanup(location.stop)
+        original_commit = op._commit_prepared
+        def commit(tree, governance, before, prepared):
+            if 'owner_admission' not in prepared[0]:
+                from owner_admission_fixtures import record_fixture_owner_confirmation
+                record_fixture_owner_confirmation(self, tree.root, governance, json.loads(prepared[1]))
+            return original_commit(tree, governance, before, prepared)
+        publication = patch.object(op, '_commit_prepared', side_effect=commit)
+        publication.start()
+        self.addCleanup(publication.stop)
 
     def registry(self):
         from agentic.operating_calendar import CalendarSettingsRegistry
@@ -238,7 +261,7 @@ class CalendarPersistenceTests(unittest.TestCase):
         database = ProposalStore.for_project(self.root, self.gov['project']['id']).path
         with closing(sqlite3.connect(database)) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            self.assertEqual({'owner_proposals', 'owner_confirmations'}, tables)
+            self.assertEqual({'owner_proposals', 'owner_confirmations', 'owner_transactions', 'owner_applied'}, tables)
             return tuple(db.execute('SELECT count(*) FROM ' + table).fetchone()[0]
                          for table in ('owner_proposals', 'owner_confirmations'))
 

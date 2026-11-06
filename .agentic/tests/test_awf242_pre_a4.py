@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
 from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle
@@ -31,7 +32,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         runner.exit_code = 1
         path = self.root / 'ledger.sqlite'
         context = adapters['dispatch_ticket'].configure_budgeting(path=path,
-            governance=self.gov, operating=op.validate_operating(self.value, self.gov))
+            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
         payload = _dispatch_payload('failure')
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             adapters['dispatch_ticket'](payload)
@@ -46,7 +47,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         restarted = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         self.value['budgeting']['accounting_enabled'] = False
         restarted['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov,
-            operating=op.validate_operating(self.value, self.gov))
+            operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
         with self.assertRaisesRegex(ValidationError, 'resolve non-reasoning failure before retry: unknown'):
             try:
                 restarted['dispatch_ticket'](_dispatch_payload('retry'))
@@ -66,7 +67,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         unusable = self.root / 'not-a-directory'
         unusable.write_text('Fixture obstruction')
         adapters['dispatch_ticket'].configure_budgeting(path=unusable / 'ledger.sqlite',
-            governance=self.gov, operating=op.validate_operating(self.value, self.gov))
+            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
         payload = _dispatch_payload('off')
         adapters['dispatch_ticket'](payload)
         record = json.loads((runner._budget_record_dir / 'off.json').read_text())
@@ -89,7 +90,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         path = self.root / 'host-state/project.sqlite'
         context = adapters['dispatch_ticket'].configure_budgeting(path=path,
-            governance=self.gov, operating=op.validate_operating(value, self.gov))
+            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, value, self.gov))
         runner.exit_code = 1
         payload = _dispatch_payload('failed-cycle-worker')
         payload['ticket'] = 'AWF-32'
@@ -101,7 +102,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         # external inventory/publication and CLI behavior come from the runner.
         runner.exit_code = 0
         value['budgeting']['accounting_enabled'] = False
-        snapshot = op.validate_operating(value, self.gov)
+        snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         head, tree = [subprocess.check_output(['git', '-C', str(fixtures.ROOT), 'rev-parse', ref],
