@@ -544,10 +544,14 @@ def _worker_writable(path):
             or allowed(path.parent, 2) and (allowed(path, 0x10000) or allowed(path.parent, 0x40))):
         return True
     for directory in path.parents:
+        # ACL/ownership control can grant replacement rights on descendants.
+        if allowed(directory, 0x40000 | 0x80000):
+            return True
         if directory.parent == directory:
             continue
-        # Object DACL rights exclude DELETE_CHILD granted on the volume root.
-        if allowed(directory, 0x10000 | 0x40000 | 0x80000) and allowed(directory.parent, 4):
+        # Renaming/removing a directory can use DELETE on it OR DELETE_CHILD
+        # on its parent; installing a replacement also needs ADD_SUBDIRECTORY.
+        if (allowed(directory, 0x10000) or allowed(directory.parent, 0x40)) and allowed(directory.parent, 4):
             return True
     return False
 

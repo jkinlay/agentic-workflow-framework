@@ -18,6 +18,123 @@ from agentic.path_containment import is_reparse_point
 
 
 class HostStorageTests(unittest.TestCase):
+    def sandbox_acl(self, target, mask):
+        """Apply a real, non-inheriting capability ACL to a temporary object."""
+        import ctypes
+        from ctypes import wintypes
+        api = ctypes.WinDLL('advapi32', use_last_error=True)
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p)
+        api.GetSecurityDescriptorDacl.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL))
+        api.SetNamedSecurityInfoW.argtypes = (wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+        kernel.LocalFree.argtypes = (ctypes.c_void_p,)
+        descriptor, acl = ctypes.c_void_p(), ctypes.c_void_p()
+        present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+        # Full owner/admin/Users access must not count as sandbox authority.
+        sddl = ('D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;BU)'
+                f'(A;;{hex(mask)};;;S-1-15-3-1024-12345)')
+        self.assertTrue(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, 1, ctypes.byref(descriptor), None))
+        try:
+            self.assertTrue(api.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present),
+                ctypes.byref(acl), ctypes.byref(defaulted)))
+            self.assertEqual(0, api.SetNamedSecurityInfoW(str(target), 1, 0x80000004,
+                None, None, acl, None))
+        finally:
+            kernel.LocalFree(descriptor)
+        self.assertEqual(mask, admission._sandbox_group_rights(target))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows ancestor replacement ACLs')
+    def test_parent_delete_child_replaces_each_executable_ancestor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            native = base / 'install/vendor/bin/gh.exe'
+            native.parent.mkdir(parents=True)
+            shutil.copyfile(sys.executable, native)
+            targets = (native, native.parent, native.parent.parent, base / 'install', base)
+            inspect = admission._sandbox_group_rights
+            for directory in native.parents:
+                if directory == base or base not in directory.parents:
+                    break
+                with self.subTest(ancestor=directory.relative_to(base)):
+                    for target in targets:
+                        self.sandbox_acl(target, 0x1200ed if target == directory.parent else 0x1200a9)
+                    # Outside the fixture is protected; every fixture ACL is real.
+                    with patch.object(admission, '_sandbox_group_rights',
+                            side_effect=lambda p: inspect(p) if p in targets else 0), \
+                            patch.dict(os.environ, {'PATH': str(native.parent)}):
+                        self.assertTrue(admission._worker_writable(native))
+                        with self.assertRaisesRegex(ValidationError, 'can modify or replace gh'):
+                            admission._github_executable(base / 'project')
+                        with patch.object(admission, '_git_executable', return_value=str(native)), \
+                                patch.object(admission, '_git_metadata_identity', return_value='fixture'):
+                            with self.assertRaisesRegex(ValidationError, 'protected native git executable'):
+                                admission.git_common_identity(base / 'project')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native installation ACLs')
+    def test_normal_install_allows_owner_and_users_full_control(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            native = base / 'Program Files/vendor/bin/gh.exe'
+            native.parent.mkdir(parents=True)
+            shutil.copyfile(sys.executable, native)
+            targets = (native, native.parent, native.parent.parent, base / 'Program Files', base)
+            for target in targets:
+                self.sandbox_acl(target, 0x1200a9)
+            inspect = admission._sandbox_group_rights
+            with patch.object(admission, '_sandbox_group_rights',
+                    side_effect=lambda p: inspect(p) if p in targets else 0), \
+                    patch.dict(os.environ, {'PATH': str(native.parent)}):
+                self.assertFalse(admission._worker_writable(native))
+                self.assertEqual(str(native), admission._github_executable(base / 'project'))
+                with patch.object(admission, '_git_executable', return_value=str(native)), \
+                        patch.object(admission, '_git_metadata_identity', return_value='fixture'):
+                    self.assertEqual('fixture', admission.git_common_identity(base / 'project'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows ancestor ACL control')
+    def test_ancestor_acl_control_needs_no_preexisting_create_rights(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            native = base / 'install/vendor/bin/gh.exe'
+            native.parent.mkdir(parents=True)
+            shutil.copyfile(sys.executable, native)
+            targets = (native, native.parent, native.parent.parent, base / 'install', base)
+            inspect = admission._sandbox_group_rights
+            for directory in targets[1:]:
+                for control in (0x40000, 0x80000):
+                    with self.subTest(ancestor=directory.relative_to(base), control=control):
+                        for target in targets:
+                            self.sandbox_acl(target, 0x1200a9 | (control if target == directory else 0))
+                        with patch.object(admission, '_sandbox_group_rights',
+                                side_effect=lambda p: inspect(p) if p in targets else 0):
+                            self.assertTrue(admission._worker_writable(native))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows volume root ACL routes')
+    def test_volume_root_sandbox_replacement_routes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            native = base / 'install/bin/gh.exe'
+            native.parent.mkdir(parents=True)
+            shutil.copyfile(sys.executable, native)
+            inspect = admission._sandbox_group_rights
+            root_acl = base / 'root-acl'
+            root_acl.mkdir()
+            # Inspect real fixture ACLs as the root grant; never mutate a volume ACL.
+            for mask, refused in ((0x40, False), (4, False), (0x44, True),
+                                  (0x40000, True), (0x80000, True)):
+                with self.subTest(root_grant=mask):
+                    self.sandbox_acl(root_acl, 0x1200a9 | mask)
+                    seen = []
+                    def rights(member):
+                        seen.append(member)
+                        return inspect(root_acl) if member == Path(native.anchor) else 0x1200a9
+                    with patch.object(admission, '_sandbox_group_rights', side_effect=rights):
+                        self.assertEqual(refused, admission._worker_writable(native))
+                    self.assertIn(Path(native.anchor), seen)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows sandbox principal rights')
     def test_owner_writable_install_without_sandbox_grants_is_allowed(self):
         with tempfile.TemporaryDirectory() as temporary:

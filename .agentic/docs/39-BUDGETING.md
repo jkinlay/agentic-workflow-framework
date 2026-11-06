@@ -68,12 +68,14 @@ until manual versioned budget adoption.
 Confirm requires interactive stdin/stdout (Windows console handles, excluding
 NUL/pipes/files); refuses token environment variables and foreign `GH_HOST`.
 `gh auth status --hostname github.com --active` and
-`gh api --hostname github.com --method GET user` verify a User's numeric ID
-against `merge_gate.trusted_owner_ids`; empty refuses
-`OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`. Resolve native `gh` once; refuse scripts/worker-writable locations using sandbox-group/capability SID
-file/directory grants; owner/admin token rights are not disqualifying. Without sandbox
-principals this check passes, including POSIX. Owner-writable clones pass; volume-root grants alone
-cannot establish replacement. Audit path/SHA-256.
+`gh api --hostname github.com --method GET user` verify numeric User ID
+against `merge_gate.trusted_owner_ids`; empty yields
+`OWNER_GATE_NOT_CONFIGURED` (`.agentic/PROJECT_CONFIG.yaml`). Resolve native `gh` once;
+refuse scripts and sandbox-group/capability SID modification/replacement rights.
+Inspect ancestors through volume root for ACL/ownership control; replacement needs
+parent creation plus DELETE or parent delete-child. Owner/admin rights pass.
+Without sandbox principals (POSIX), pass.
+Audit path/SHA-256.
 `trusted_owner_ids` comes from the working tree:
 a process editing it still needs that terminal/login. A process with the
 owner's full rights can still get around this. No execution authority.
