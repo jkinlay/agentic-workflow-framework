@@ -44,6 +44,7 @@ later readiness waits for the next review day. Friday evening/weekends wait
 until Monday. Late ticks recheck the current window. IANA rules resolve ambiguous
 boundaries to the later occurrence, gaps to the first valid instant; collapsed
 windows skip. Bounded search includes the next weekly recurrence.
+Weekdays have no holiday exclusions: Christmas Day gets a digest when selected.
 
 The lock pins `tzdata==2026.6` and its reviewed SHA-256. Wheelhouses and installed
 inventories include it. Missing/invalid IANA data refuses, even with batching
@@ -62,26 +63,36 @@ remain separate from `controller_outbox`, dispatch, lifecycle and reporting.
    predecessors.
 2. `claim(now, calendar, observer)` recomputes schedules and atomically claims
    one due digest. Immutable payloads retain original/current schedules,
-   readiness, observation, attempt and timestamped catch-up. Unresolved claims
-   block review digests only.
+   readiness, observation, attempt and timestamped catch-up. Catch-up means a
+   held opening or earlier window was missed, never ordinary clock precision.
 3. Trusted fresh observation requires exact candidate, `observed_at == now`,
    later `expires_at`, literal `open: true`, `merged: false`,
    `final_gate_valid: true`, and owner-ready `readiness`. Stored flags cannot
    authenticate observations. Invalid observations withdraw; exceptions roll back.
-   Withdrawn identities require fresh qualification/new pins, never replay.
+   Optional trusted `ready_at <= observed_at` preserves actual readiness;
+   absent that field, readiness uses observation time. Cutoff still applies.
+   Withdrawn identities require fresh qualification, never replay.
 4. Immediately before initial send, `recheck(batch_id, now, calendar, observer)`
-   persists fresh member/window/calendar evidence; drift refuses the whole digest.
-   Payload/identity remain immutable. Serialize check/mutation; checks are never
-   reusable send permits.
+   persists fresh member/window/calendar evidence. Payloads remain immutable.
+   Refusal releases only durable PREPARED claims with proof no send started;
+   fresh invalidation withdraws only that member. Survivors form another batch.
+   Serialize check/mutation; checks are never reusable send permits.
 5. Only verified readback calls `acknowledge`/`reconcile`. Closed receipts require
    matching `batch_id`, `payload_sha256`, status, nonempty `provider_receipt_id`
    and `observed_at` not before preparation. Identical receipts deduplicate;
    conflicts/reused identities refuse. DELIVERED completes; confirmed
-   NOT_DELIVERED requeues once. Two failures exhaust; newer tuples take precedence.
+   NOT_DELIVERED requeues once. Two delivery attempts exhaust the window; claims
+   consume none. Lifetime counts persist. Fresh qualification allows two bounded
+   attempts from the next presentation opening, never a retry of an unknown send.
+   Newer tuples take precedence; transport retry ceilings remain independent.
 
-After restart, `pending_batches()` permits readback only. Unknown sends and
-refused rechecks remain unresolved until verified delivery/non-delivery; no blind
-resend, expiry retry, operator reset or timeout release exists.
+`begin_delivery` durably fences/counts before invoking transport. Restart releases
+PREPARED claims only; missing legacy phase evidence and started sends require
+terminal readback through `pending_batches()`. Unknowns fence their PR, allowing
+unrelated digests. No blind resend, operator reset or timeout release exists.
+`view(now, calendar)` exposes held, withdrawn, exhausted and unresolved identities,
+reasons/times, counts and retry openings read-only for AWF-241. Exhausted/unknown
+states raise owner alerts and remain in controller status digests.
 
 AWF-241 owns OFF/Teams/Slack/both and per-platform two-attempt ceilings. Partial
 delivery must reconcile before logical terminal receipts; one failed destination
@@ -89,15 +100,14 @@ cannot mean NOT_DELIVERED. Never multiply retry allowances.
 
 ## Settings and controller ports
 
-Operating validation/set/show uses existing lock/journal/audit/recovery. Dotted
-paths use JSON weekday lists. Generated defaults/schema include the calendar;
-legacy files omit it unchanged.
-`CalendarSettingsRegistry` reuses budgeting's protected registry and trusted-host
-`observe_owner_direction` pattern, with separate immutable replay records.
-Infrastructure injects `calendar_registry` into `set_operating`/`main`; standalone
-CLI instructions refuse calendar mutations. Host observations bind the project,
-effective prior-calendar hash and exact changes, consumed after mixed-root
-validation under the operating lock. Recovery retains that observation.
+Validation/set/show retains lock/journal/audit/recovery. Weekdays use JSON lists.
+Generated defaults/schema include calendars; legacy bytes remain unchanged.
+`operating set`: exit 3 `PENDING_OWNER_CONFIRMATION`, unchanged settings. Owner runs
+`operating confirm --digest D` within 15 minutes, typing eight digest characters.
+Terminal/stored GitHub User identity must match reviewed numeric owners.
+OFF/unchanged assignments require admission. Under lock: revalidate domains/governance/bytes,
+consume once across mixed changes, journal/audit/readback. Calendar creates no
+budget/enrollment state. Historical `CalendarSettingsRegistry` observations/pinned recovery remain supported.
 
 `production_controller_cycle` resolves the validated snapshot's effective calendar
 each cycle, returning `operating_calendar` for AWF-241's separate EoD/hourly
@@ -110,9 +120,9 @@ Reviewed CLI adapters may inject four optional ports:
   locators, never authority or inventory-derived readiness.
 - `observe_review_candidate(candidate, now)` independently observes repository,
   PR/head/base/tree, open/merged state, lifecycle and current final-gate bytes.
-  Its closed observation above must pass `enqueue_observed`; only
+  Its observation above must pass `enqueue_observed`; only
   `READY_FOR_OWNER_AUTHORIZATION` enqueues. Claim/pre-send recheck repeat observation;
-  post-read trusted time guards cutoff/expiry; stale pending members withdraw.
+  post-read trusted time guards cutoff/expiry; changed members withdraw; expired evidence stays pending.
 - `deliver_review_batch(payload)` conditionally sends once using immutable
   `batch_id` as idempotency key; returns verified terminal receipt or `None`.
 - `observe_review_delivery(payload)` reads receipts only. Unknown returns `None`.
@@ -120,8 +130,7 @@ Reviewed CLI adapters may inject four optional ports:
 
 Lane E supplies transport and receipt authentication. The host serializes cycles
 and bounds adapter calls. Without delivery ports, collection persists without
-claiming. Restart reads unresolved receipts without resending. Refused pre-send
-checks retain unresolved claims for verified reconciliation. Held/unknown reviews
+claiming. Restart reconciles started sends without resending. Held/unknown reviews
 never gate implementation, tests, independent review, amendments or hourly reports.
 Safety and action alerts stay immediate. No port grants merge authority.
 Delivery/OFF qualification, current-head independent review, specialists,

@@ -5,9 +5,10 @@
 Reporting defaults OFF; suspension excludes disabled periods.
 Reports grant no chat/accounting/dispatch/Jira/merge/activation authority.
 
-Authenticated ReportingSettingsRegistry/observe_owner_direction persists
+The shared operating proposal/owner-confirmation transaction persists
 off/teams/slack/both and project/repository/scope/platform/destination/revision/
-secret_ref bindings. Missing/duplicate/foreign bindings refuse before credentials;
+secret_ref bindings. Set changes nothing until the owner confirms its digest;
+OFF/rebinding also require admission. Show reads persisted settings. Missing/duplicate/foreign bindings refuse before credentials;
 rotation cannot retarget intents/reset attempts.
 
 configure_reporting requires reviewed context/sender and channel IDs.
@@ -19,6 +20,8 @@ recovery and rotation.
 
 Ports reread digest-bound evidence; reporting_sources binds scope and at most 100 PRs.
 Unknown details/metrics remain unavailable; observed work stays visible.
+Periodic reports use the AWF-244 read-only review view for held, withdrawn and
+exhausted PRs, preserving candidate identities and recovery reasons.
 Accounting reads the actual setting and attributed ledger; reporting never enables
 it. Measured runs supply completed-ticket means/Epic totals; forecasts require
 canonical observation IDs. Unobserved model/input/output stays unknown;

@@ -38,6 +38,269 @@
     "all_complete": {
       "type": "boolean"
     },
+    "review_batching": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intents",
+        "unresolved_batches",
+        "owner_alerts"
+      ],
+      "properties": {
+        "intents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent_id",
+              "candidate",
+              "state",
+              "ready_at",
+              "attempts",
+              "held",
+              "scheduled_at",
+              "reason",
+              "changed_at",
+              "retry_at"
+            ],
+            "properties": {
+              "intent_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "candidate": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "repository_id",
+                  "pull_request",
+                  "head_sha",
+                  "base_sha",
+                  "head_tree_sha",
+                  "final_gate_sha256"
+                ],
+                "properties": {
+                  "repository_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "pull_request": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "head_sha": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "base_sha": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "head_tree_sha": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "final_gate_sha256": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              },
+              "state": {
+                "enum": [
+                  "PENDING",
+                  "CLAIMED",
+                  "DELIVERED",
+                  "WITHDRAWN",
+                  "EXHAUSTED"
+                ]
+              },
+              "ready_at": {
+                "type": "string",
+                "minLength": 1,
+                "format": "date-time"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "held": {
+                "type": "boolean"
+              },
+              "scheduled_at": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "changed_at": {
+                "type": "string",
+                "minLength": 1,
+                "format": "date-time"
+              },
+              "retry_at": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "minItems": 0
+        },
+        "unresolved_batches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "batch_id",
+              "prepared_at",
+              "state",
+              "reason",
+              "intent_ids"
+            ],
+            "properties": {
+              "batch_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "prepared_at": {
+                "type": "string",
+                "minLength": 1,
+                "format": "date-time"
+              },
+              "state": {
+                "const": "UNKNOWN"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "intent_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "minItems": 1
+              }
+            }
+          },
+          "minItems": 0
+        },
+        "owner_alerts": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "intent_id",
+                  "state",
+                  "reason",
+                  "retry_at"
+                ],
+                "properties": {
+                  "intent_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "state": {
+                    "const": "EXHAUSTED"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "retry_at": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "format": "date-time"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "batch_id",
+                  "prepared_at",
+                  "state",
+                  "reason",
+                  "intent_ids"
+                ],
+                "properties": {
+                  "batch_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "prepared_at": {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "date-time"
+                  },
+                  "state": {
+                    "const": "UNKNOWN"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "intent_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "minItems": 1
+                  }
+                }
+              }
+            ]
+          },
+          "minItems": 0
+        }
+      }
+    },
     "unresolved_dispatches": {
       "type": "array",
       "items": {

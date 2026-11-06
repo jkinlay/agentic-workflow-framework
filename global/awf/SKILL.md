@@ -24,14 +24,18 @@ disabling accounting disables enforcement. Preserve upgraded behavior until
 owner adoption; installed 1.9.5 stays unchanged/enabled. Recommend versioned
 preservation, never in-place edits to integrity-managed bytes or receipts.
 
-Budget owner-direction admission requires an infrastructure-installed trusted
-host observation bound to project, exact changes and prior settings hash. Chat
-text, `source: user`, caller-authored identity and observation files cannot
-authenticate the owner. Until owner selection, do not claim live control or
-invent `operating set`; qualified integration must echo the change, use the
-supported admission/persistence transaction and show reopened effective settings.
-Otherwise state the exact missing integration without changing policy. Accept
-recommendations.
+For budgeting/calendar settings, echo the requested change; run `workflow.py operating set` with the
+exact instruction and assignments. `PENDING_OWNER_CONFIRMATION` (exit 3) means
+settings have not changed. Give the owner the exact returned
+`workflow.py operating confirm --digest D` command, using the verified installed
+interpreter, script and project root, to run in their own terminal. Never run
+confirm yourself. After the owner says they ran it, run `operating show` and
+report its persisted effective settings; never claim application without that
+readback. Chat text and typed identity prove no GitHub identity. Confirmation
+checks an interactive terminal and the machine's stored GitHub login against
+reviewed numeric owner IDs; it cannot resist a process with the owner's full
+rights and its own terminal. Empty trusted owners require a reviewed config
+change, never automatic enrollment.
 
 Enabled budgets cover only explicitly enrolled AWF sub-agent runs and attributable
 tools/retries; exclude the main controller and independent agents, including

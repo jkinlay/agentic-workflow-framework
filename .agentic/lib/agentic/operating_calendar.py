@@ -12,7 +12,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import ValidationError
 from .canonical import fingerprint, timestamp
-from .budget_enrollment import EnrollmentRegistry, encoded, text_id
+from .budget_enrollment import DDL as BUDGET_DDL, EnrollmentRegistry, encoded, text_id
+from .controller_state import restrict_state_permissions
 
 
 _DEFAULTS = {
@@ -113,6 +114,18 @@ def transition_calendar(current, changes):
     return validate_calendar(result)
 
 
+CALENDAR_DDL = (
+    'CREATE TABLE IF NOT EXISTS calendar_owner_observations '
+    '(observation_id TEXT PRIMARY KEY, observation TEXT NOT NULL);'
+    'CREATE TRIGGER IF NOT EXISTS calendar_observations_no_update '
+    'BEFORE UPDATE ON calendar_owner_observations '
+    "BEGIN SELECT RAISE(ABORT,'immutable owner observation'); END;"
+    'CREATE TRIGGER IF NOT EXISTS calendar_observations_no_delete '
+    'BEFORE DELETE ON calendar_owner_observations '
+    "BEGIN SELECT RAISE(ABORT,'immutable owner observation'); END;"
+)
+
+
 class CalendarSettingsRegistry(EnrollmentRegistry):
     """Budgeting's trusted-host admission pattern, with separate replay state.
 
@@ -123,7 +136,16 @@ class CalendarSettingsRegistry(EnrollmentRegistry):
     crash requires a fresh observation; a retained journal uses pinned recovery.
     """
 
-    def admit_owner_direction(self, project_id, current, changes):
+    def admit_owner_direction(self, project_id, current, changes, *, validate_observation=None):
+        admitted = self.prepare_owner_direction(project_id, current, changes)
+        if validate_observation is not None:
+            validate_observation(deepcopy(admitted['observation']))
+        with self.transaction(CALENDAR_DDL) as db:
+            self.consume_owner_direction(admitted['observation'], db)
+        return admitted
+
+    def prepare_owner_direction(self, project_id, current, changes):
+        """Authenticate and bind calendar direction without consuming it."""
         _require(text_id(project_id), 'project_id must be a bounded identity')
         result = transition_calendar(current, changes)
         _require(self.host is not None and callable(getattr(self.host, 'observe_owner_direction', None)),
@@ -138,20 +160,46 @@ class CalendarSettingsRegistry(EnrollmentRegistry):
         _require(observed['project_id'] == project_id and observed['prior_settings_hash'] == prior
                  and encoded(observed['changes']) == encoded(changes),
                  'Owner observation must bind project, exact changes and prior settings hash')
-        with self.transaction('CREATE TABLE IF NOT EXISTS calendar_owner_observations '
-                              '(observation_id TEXT PRIMARY KEY, observation TEXT NOT NULL);'
-                              'CREATE TRIGGER IF NOT EXISTS calendar_observations_no_update '
-                              'BEFORE UPDATE ON calendar_owner_observations '
-                              "BEGIN SELECT RAISE(ABORT,'immutable owner observation'); END;"
-                              'CREATE TRIGGER IF NOT EXISTS calendar_observations_no_delete '
-                              'BEFORE DELETE ON calendar_owner_observations '
-                              "BEGIN SELECT RAISE(ABORT,'immutable owner observation'); END;") as db:
-            _require(db.execute('SELECT 1 FROM calendar_owner_observations WHERE observation_id=?',
-                                (observed['observation_id'],)).fetchone() is None,
-                     'Owner observation already consumed')
-            db.execute('INSERT INTO calendar_owner_observations VALUES (?,?)',
-                       (observed['observation_id'], encoded(observed)))
         return {'settings': result, 'observation': deepcopy(observed)}
+
+    def consume_owner_direction(self, observed, db, *, schema='main'):
+        _require(schema in ('main', 'calendar_admission'), 'Invalid calendar admission database')
+        table = schema + '.calendar_owner_observations'
+        _require(db.execute('SELECT 1 FROM ' + table + ' WHERE observation_id=?',
+                            (observed['observation_id'],)).fetchone() is None,
+                 'Owner observation already consumed')
+        db.execute('INSERT INTO ' + table + ' VALUES (?,?)',
+                   (observed['observation_id'], encoded(observed)))
+
+    def admit_with_budget(self, budget_registry, project_id, budget, budget_changes,
+                          calendar, calendar_changes, *, validate_observations):
+        """Consume both domains in one SQLite transaction, or consume neither.
+
+        The operating lock remains held by the caller. Attached rollback-journal
+        databases commit together, including host budget replay writes. WAL/OFF
+        cannot provide cross-file crash atomicity and are refused before writes.
+        """
+        admitted_budget = budget_registry.prepare_owner_direction(project_id, budget, budget_changes)
+        admitted_calendar = self.prepare_owner_direction(project_id, calendar, calendar_changes)
+        validate_observations(admitted_budget, admitted_calendar)
+        # Only schema initialization occurs separately; no admission is consumed.
+        with self.transaction(CALENDAR_DDL):
+            pass
+        with budget_registry.transaction(BUDGET_DDL) as db:
+            schema = 'main'
+            if self.path != budget_registry.path:
+                self.validate_path()
+                db.execute('ATTACH DATABASE ? AS calendar_admission', (str(self.path),))
+                restrict_state_permissions(self.path)
+                schema = 'calendar_admission'
+            for name in {'main', schema}:
+                _require(db.execute('PRAGMA ' + name + '.journal_mode').fetchone()[0]
+                         in ('delete', 'truncate', 'persist')
+                         and db.execute('PRAGMA ' + name + '.synchronous').fetchone()[0] >= 2,
+                         'Mixed owner admission requires durable rollback-journal databases')
+            self.consume_owner_direction(admitted_calendar['observation'], db, schema=schema)
+            budget_registry.consume_owner_direction(admitted_budget['observation'], db)
+        return admitted_budget, admitted_calendar
 
 
 def utc_instant(value):

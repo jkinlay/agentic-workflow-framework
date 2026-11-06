@@ -8,11 +8,13 @@ Uncertain sends remain claimed across restart until explicit reconciliation.
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import timedelta
 import re
 
 from . import ValidationError
 from .canonical import canonical, fingerprint, loads
-from .operating_calendar import next_review_presentation, utc_instant, utc_text
+from .operating_calendar import (next_review_presentation, utc_instant, utc_text,
+                                 validate_calendar, _zone, _local_boundary)
 
 
 _CANDIDATE_KEYS = {"repository_id", "pull_request", "head_sha", "base_sha",
@@ -33,6 +35,11 @@ _DDL = (
     """CREATE TABLE IF NOT EXISTS review_presentation_check_v1(
         batch_id TEXT NOT NULL, checked_at TEXT NOT NULL,
         observation_json TEXT NOT NULL, PRIMARY KEY(batch_id,checked_at))""",
+    """CREATE TABLE IF NOT EXISTS review_presentation_phase_v1(
+        batch_id TEXT PRIMARY KEY, phase TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS review_presentation_detail_v1(
+        intent_id TEXT PRIMARY KEY, reason TEXT NOT NULL, changed_at TEXT NOT NULL,
+        retry_at TEXT, window_attempts INTEGER NOT NULL)""",
 )
 
 
@@ -57,21 +64,55 @@ def _identity(value):
     return fingerprint("review-presentation-intent-v1", _candidate(value))
 
 
+def _observation_current(value, now):
+    """Only a complete, fresh trusted observation can establish invalidation."""
+    if not isinstance(value, dict) or set(value) not in (_OBSERVATION_KEYS, _OBSERVATION_KEYS | {"ready_at"}):
+        return False
+    try:
+        _candidate(value["candidate"])
+        observed = utc_instant(value["observed_at"])
+        expiry = utc_instant(value["expires_at"])
+        if "ready_at" in value and utc_instant(value["ready_at"]) > now:
+            return False
+    except (ValidationError, TypeError, ValueError):
+        return False
+    return (observed == now and now < expiry and
+            type(value["open"]) is bool and type(value["merged"]) is bool and
+            isinstance(value["readiness"], str) and type(value["final_gate_valid"]) is bool)
+
+
+def _window(now, calendar):
+    """Identify the current local window and the next bounded retry opening."""
+    effective = validate_calendar(calendar)
+    current = utc_instant(now)
+    zone = _zone(effective["timezone"])
+    day = current.astimezone(zone).date()
+    review = effective["review_batching"]
+    if review["enabled"]:
+        opening = _local_boundary(day, review["presentation_time"], zone)
+        closing = _local_boundary(day, review["cutoff_time"], zone)
+        try:
+            following = next_review_presentation(closing, effective)["presentation_at"]
+        except ValidationError:
+            following = None  # No representable future window, never retry.
+    else:
+        # Immediate presentation still has a finite daily retry allowance.
+        opening = _local_boundary(day, "00:00", zone)
+        try:
+            closing = _local_boundary(day + timedelta(days=1), "00:00", zone)
+            following = utc_text(closing)
+        except OverflowError:
+            following = None
+    return {"opening": utc_text(opening), "next_opening": following}
+
+
 def _observation_valid(value, candidate, now):
     """A trusted collector must observe at the tick instant, with a live expiry.
 
     No caller-selected age tolerance: stale observations fail closed. The adapter
     must independently validate current final-gate bytes, not echo a stored bool.
     """
-    if not isinstance(value, dict) or set(value) != _OBSERVATION_KEYS:
-        return False
-    try:
-        same = _candidate(value["candidate"]) == candidate
-        observed = utc_instant(value["observed_at"])
-        expiry = utc_instant(value["expires_at"])
-    except (ValidationError, TypeError, ValueError):
-        return False
-    return (same and observed == now and now < expiry and
+    return (_observation_current(value, now) and value["candidate"] == candidate and
             value["open"] is True and value["merged"] is False and
             value["readiness"] == "READY_FOR_OWNER_AUTHORIZATION" and
             value["final_gate_valid"] is True)
@@ -91,29 +132,121 @@ class ReviewBatchStore:
             for statement in _DDL:
                 db.execute(statement)
 
+    @staticmethod
+    def _changed(db):
+        db.execute("UPDATE controller_meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'")
+
+    @staticmethod
+    def _detail(db, identity, reason, now, *, retry_at=None, attempts=None):
+        prior = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (identity,)).fetchone()
+        count = attempts if attempts is not None else (prior['window_attempts'] if prior else 0)
+        retry = retry_at if retry_at is not None else (prior['retry_at'] if prior else None)
+        db.execute("INSERT OR REPLACE INTO review_presentation_detail_v1 VALUES(?,?,?,?,?)",
+                   (identity, reason, utc_text(now), retry, count))
+
+    @staticmethod
+    def view_from_db(db, now, calendar):
+        """Read-only state for status/AWF-241; no provider calls or recovery."""
+        result = {'intents': [], 'unresolved_batches': [], 'owner_alerts': []}
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_intent_v1'").fetchone():
+            return result
+        has_detail = db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_detail_v1'").fetchone()
+        for row in db.execute("SELECT * FROM review_presentation_intent_v1 ORDER BY intent_id"):
+            detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (row['intent_id'],)).fetchone() if has_detail else None
+            try:
+                schedule = next_review_presentation(row['ready_at'], calendar)
+                held = (utc_instant(schedule['presentation_at']) > utc_instant(now) or
+                        utc_instant(next_review_presentation(now, calendar)['presentation_at']) > utc_instant(now))
+            except ValidationError:
+                schedule, held = None, True
+            item = {'intent_id': row['intent_id'], 'candidate': loads(row['candidate_json']),
+                    'state': row['state'], 'ready_at': row['ready_at'], 'attempts': row['attempts'],
+                    'held': row['state'] == 'PENDING' and held,
+                    'scheduled_at': schedule['presentation_at'] if schedule else None,
+                    'reason': detail['reason'] if detail else 'Retained review intent',
+                    'changed_at': detail['changed_at'] if detail else row['ready_at'],
+                    'retry_at': detail['retry_at'] if detail else None}
+            result['intents'].append(item)
+            if row['state'] == 'EXHAUSTED':
+                result['owner_alerts'].append({'intent_id': row['intent_id'], 'state': 'EXHAUSTED',
+                    'reason': item['reason'], 'retry_at': item['retry_at']})
+        for row in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='CLAIMED' ORDER BY batch_id"):
+            payload = ReviewBatchStore._payload(row)
+            item = {'batch_id': row['batch_id'], 'prepared_at': payload['prepared_at'],
+                    'state': 'UNKNOWN', 'reason': 'Delivery unresolved; receipt-only reconciliation required',
+                    'intent_ids': [member['intent_id'] for member in payload['members']]}
+            result['unresolved_batches'].append(item)
+            result['owner_alerts'].append(deepcopy(item))
+        return result
+
+    def view(self, now, calendar):
+        with self.controller.connection() as db:
+            return self.view_from_db(db, now, calendar)
+
+    def reporting_failure_intents(self):
+        """Reporting owns terminal failures and its durable owner-action notices.
+
+        Keep them in the shared view and immediate status channel without
+        treating an already handled outcome as another controller error.
+        Only the exact retained reporting handoff can establish that ownership.
+        """
+        identities = set()
+        with self.controller.connection() as db:
+            for row in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='FAILED'"):
+                payload = self._payload(row)
+                receipt = loads(row['receipt_json'])
+                _require(receipt['batch_id'] == payload['batch_id'] and
+                         receipt['payload_sha256'] == payload['payload_sha256'] and
+                         receipt['status'] == 'FAILED' and receipt['reason'] == 'REPORT_DELIVERY_EXHAUSTED',
+                         'Reporting failure receipt differs from its retained batch')
+                report = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                                    ('review-' + payload['batch_id'],)).fetchone()
+                _require(report is not None and loads(report[0]).get('review_batch') == payload,
+                         'Reporting failure has no matching retained report')
+                identities.update(m['intent_id'] for m in payload['members'])
+        return identities
+
     def enqueue(self, candidate, ready_at, calendar):
         """Retain first readiness and original schedule; identical events dedup.
 
         A new tuple withdraws pending older tuples for the same repository/PR.
-        Withdrawn identities need fresh evidence/new tuple; replay cannot revive
-        them. Already claimed presentations require provider reconciliation.
+        Replay cannot revive withdrawn identities. None means no pending intent
+        was retained; claimed/delivered/exhausted identities never enqueue again.
         """
+        return self._enqueue(candidate, ready_at, calendar, restore=False)
+
+    def _enqueue(self, candidate, ready_at, calendar, *, restore, observed_at=None):
         candidate = _candidate(candidate)
         identity = _identity(candidate)
         schedule = next_review_presentation(ready_at, calendar)
+        changed_at = ready_at if observed_at is None else observed_at
         with self.controller.transaction() as db:
-            existing = db.execute("SELECT intent_id FROM review_presentation_intent_v1 WHERE intent_id=?",
+            existing = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?",
                                   (identity,)).fetchone()
             if existing is not None:
-                return identity
+                if existing["state"] == "PENDING":
+                    return identity
+                detail = db.execute("SELECT window_attempts FROM review_presentation_detail_v1 WHERE intent_id=?", (identity,)).fetchone()
+                allowance_used = detail[0] if detail else existing['attempts']
+                if not (restore and existing["state"] == "WITHDRAWN" and allowance_used < 2):
+                    return None
             for row in db.execute("SELECT intent_id,candidate_json FROM review_presentation_intent_v1 WHERE state='PENDING'").fetchall():
                 prior = loads(row["candidate_json"])
                 if (prior["repository_id"], prior["pull_request"]) == (candidate["repository_id"], candidate["pull_request"]):
                     db.execute("UPDATE review_presentation_intent_v1 SET state='WITHDRAWN' WHERE intent_id=?",
                                (row["intent_id"],))
-            db.execute("INSERT INTO review_presentation_intent_v1 VALUES(?,?,?,?,?,0)",
-                       (identity, canonical(candidate).decode(), schedule["ready_at"],
-                        canonical(schedule).decode(), "PENDING"))
+                    self._detail(db, row['intent_id'], 'Superseded by a newly qualified candidate', changed_at)
+            if existing is None:
+                db.execute("INSERT INTO review_presentation_intent_v1 VALUES(?,?,?,?,?,0)",
+                           (identity, canonical(candidate).decode(), schedule["ready_at"],
+                            canonical(schedule).decode(), "PENDING"))
+            else:
+                # Fresh qualification restores only a resolved, unsent intent.
+                # Preserve first readiness, schedule and the delivery retry cap.
+                db.execute("UPDATE review_presentation_intent_v1 SET state='PENDING' WHERE intent_id=?",
+                           (identity,))
+            self._detail(db, identity, 'Awaiting review presentation', changed_at)
+            self._changed(db)
         return identity
 
     def enqueue_observed(self, candidate, observation, now, calendar, *, repository_id):
@@ -121,14 +254,15 @@ class ReviewBatchStore:
 
         Discovery supplies locators, never readiness. The reviewed collector
         independently verifies lifecycle and current final-gate evidence. Invalid
-        readiness cannot create an intent or revive a withdrawn identity.
+        readiness cannot create an intent or revive a withdrawn identity. Fresh
+        qualification may restore an unsent withdrawn intent, never a delivery.
         """
         candidate = _candidate(candidate)
         _require(str(candidate['repository_id']) == repository_id,
                  'Review candidate repository differs from the controller binding')
         if not _observation_valid(observation, candidate, utc_instant(now)):
             return None
-        return self.enqueue(candidate, now, calendar)
+        return self._enqueue(candidate, observation.get('ready_at', now), calendar, restore=True, observed_at=now)
 
     def discovery_candidates(self, candidates, limit):
         """Bound fresh admissions, rotating deferred locators across restarts.
@@ -155,12 +289,14 @@ class ReviewBatchStore:
                            (key, selected[-1][0]))
             return [deepcopy(v[1]) for v in selected], len(eligible) - len(selected)
 
-    def claim(self, now, calendar, observer, *, max_members=None):
+    def claim(self, now, calendar, observer, *, max_members=None, exclude=()):
         """Recompute pending eligibility and atomically claim one due digest.
 
         The trusted observer runs inside the serialized transaction. An exception
-        rolls back the tick; invalid/stale/closed members withdraw. A missed run
-        catches up during a current presentation window, never after cutoff.
+        rolls back the tick; fresh invalid/changed/closed members withdraw.
+        Stale, malformed or unavailable evidence retains the pending intent.
+        A missed run catches up during a current presentation window, never
+        after cutoff.
         A pending intent whose schedule cannot resolve stays pending without
         blocking other intents; later settings may make it resolvable again.
         No lease timeout can retry an ambiguous provider send.
@@ -176,7 +312,8 @@ class ReviewBatchStore:
             # fail/roll back claim. A broken observer or unresolved schedule
             # must not monopolize the bounded first-candidate slot on restart.
             with self.controller.transaction() as db:
-                ids = [r[0] for r in db.execute("SELECT intent_id FROM review_presentation_intent_v1 WHERE state='PENDING' ORDER BY intent_id")]
+                ids = [r[0] for r in db.execute("SELECT intent_id FROM review_presentation_intent_v1 WHERE state IN ('PENDING','EXHAUSTED') ORDER BY intent_id")
+                       if r[0] not in exclude]
                 key = 'report-review-claim-cursor'
                 row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
                 cursor = row[0] if row else ''
@@ -185,16 +322,36 @@ class ReviewBatchStore:
                     db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                                (key, selected[-1]))
         with self.controller.transaction() as db:
-            if db.execute("SELECT 1 FROM review_presentation_outbox_v1 WHERE state='CLAIMED'").fetchone():
-                return None
+            fenced = set()
+            for claimed in db.execute("SELECT candidate_json FROM review_presentation_intent_v1 WHERE state='CLAIMED'"):
+                value = loads(claimed['candidate_json'])
+                fenced.add((value['repository_id'], value['pull_request']))
             members = []
-            rows = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE state='PENDING' ORDER BY intent_id").fetchall()
+            rows = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE state IN ('PENDING','EXHAUSTED') ORDER BY intent_id").fetchall()
             if selected is not None:
                 rows = [row for row in rows if row['intent_id'] in selected]
             for index, row in enumerate(rows):
                 if max_members is not None and index >= max_members:
                     break
                 candidate = _candidate(loads(row["candidate_json"]))
+                if row['intent_id'] in exclude or (candidate['repository_id'], candidate['pull_request']) in fenced:
+                    continue
+                if row['state'] == 'EXHAUSTED':
+                    detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (row['intent_id'],)).fetchone()
+                    if detail is None:
+                        # Legacy terminal receipts establish non-delivery and
+                        # its time; preserve old charges, never reset ambiguity.
+                        for prior in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='NOT_DELIVERED' ORDER BY rowid DESC"):
+                            payload = self._payload(prior)
+                            if any(m['intent_id'] == row['intent_id'] for m in payload['members']):
+                                at = loads(prior['receipt_json'])['observed_at']
+                                self._detail(db, row['intent_id'], 'Legacy delivery allowance exhausted', at,
+                                             attempts=row['attempts'], retry_at=_window(at, calendar)['next_opening'])
+                                self._changed(db)
+                                break
+                        detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (row['intent_id'],)).fetchone()
+                    if detail is None or detail['retry_at'] is None or current < utc_instant(detail['retry_at']):
+                        continue
                 _require(_identity(candidate) == row["intent_id"], "Stored review intent identity mismatch")
                 try:
                     schedule = next_review_presentation(row["ready_at"], calendar)
@@ -206,28 +363,42 @@ class ReviewBatchStore:
                 if utc_instant(schedule["presentation_at"]) > current:
                     continue
                 observation = observer(deepcopy(candidate))
+                if not _observation_current(observation, current):
+                    continue
                 if not _observation_valid(observation, candidate, current):
                     db.execute("UPDATE review_presentation_intent_v1 SET state='WITHDRAWN' WHERE intent_id=?",
                                (row["intent_id"],))
+                    self._detail(db, row['intent_id'], 'Candidate changed, closed or no longer owner-ready', now)
+                    self._changed(db)
                     continue
+                if row['state'] == 'EXHAUSTED':
+                    self._detail(db, row['intent_id'], 'Bounded recovery at the next presentation window', now, attempts=0)
                 members.append({"intent_id": row["intent_id"], "candidate": candidate,
                                 "ready_at": row["ready_at"], "scheduled_at": schedule["presentation_at"],
                                 "initial_schedule": loads(row["initial_schedule_json"]),
+                                "held_schedule": schedule['held'],
                                 "observation": deepcopy(observation), "attempt": row["attempts"] + 1})
             if not members:
                 return None
+            presentation_window = _window(now, calendar)
             body = {"kind": "routine-final-human-review", "version": 1,
+                    'preparation_sequence': db.execute('SELECT count(*) FROM review_presentation_outbox_v1').fetchone()[0] + 1,
                     "prepared_at": utc_text(current), "calendar_sha256": window["calendar_sha256"],
-                    "members": members, "catch_up": any(utc_instant(item["scheduled_at"]) < current for item in members),
+                    "members": members, 'presentation_window': presentation_window,
+                    "catch_up": any(utc_instant(item['scheduled_at']) < current and
+                        (item['held_schedule'] or utc_instant(item['scheduled_at']) < utc_instant(presentation_window['opening']))
+                        for item in members),
                     "merge_authorized": False}
             batch_id = fingerprint("review-presentation-batch-v1", body)
             body["batch_id"] = batch_id
             body["payload_sha256"] = fingerprint("review-presentation-payload-v1", body)
             db.execute("INSERT INTO review_presentation_outbox_v1 VALUES(?,?,'CLAIMED',NULL)",
                        (batch_id, canonical(body).decode()))
+            db.execute("INSERT INTO review_presentation_phase_v1 VALUES(?,'PREPARED')", (batch_id,))
             for member in members:
-                db.execute("UPDATE review_presentation_intent_v1 SET state='CLAIMED',attempts=attempts+1 WHERE intent_id=?",
+                db.execute("UPDATE review_presentation_intent_v1 SET state='CLAIMED' WHERE intent_id=?",
                            (member["intent_id"],))
+            self._changed(db)
             return body
 
     @staticmethod
@@ -241,11 +412,10 @@ class ReviewBatchStore:
         return {**value, "batch_id": identity, "payload_sha256": pin}
 
     def recheck(self, batch_id, now, calendar, observer):
-        """Mandatory immediate pre-send recheck; never returns a changed payload.
+        """Immediate pre-send recheck; immutable payload, no reusable permit.
 
-        A refusal leaves an unresolved claim. Only verified provider readback
-        (including confirmed NOT_DELIVERED) resolves it, so an earlier ambiguous
-        send cannot be accidentally reissued. The sender must not cache a permit.
+        The serialized host releases provably unsent PREPARED claims on refusal.
+        A send-started or legacy claim requires verified terminal readback.
         """
         _require(callable(observer), "Fresh review candidate observer is required")
         current = utc_instant(now)
@@ -344,14 +514,76 @@ class ReviewBatchStore:
             for member in payload['members']:
                 db.execute("UPDATE review_presentation_intent_v1 SET state='EXHAUSTED' WHERE intent_id=? AND state='CLAIMED'",
                            (member['intent_id'],))
+                self._detail(db, member['intent_id'],
+                    'Reporting delivery exhausted; per-platform attempts retained; owner attention required', now)
+                # Reporting owns the two-send ceiling after handoff. Calendar
+                # recovery must not issue another identity or resend a platform
+                # whose receipt already proves delivery.
+                db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
+                           (member['intent_id'],))
+            self._changed(db)
+
+    def release_unsent(self, batch_id, now, calendar, observations=None, reason='Pre-send check refused'):
+        """Release only a durable PREPARED claim, never legacy/started sends.
+
+        The serialized host calls this before invoking any delivery port. Missing
+        phase evidence is ambiguous, including all claims from the old runtime.
+        Fresh invalid observations withdraw only their own candidate identity.
+        """
+        current = utc_instant(now)
+        with self.controller.transaction() as db:
+            row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
+            phase = db.execute("SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?", (batch_id,)).fetchone()
+            if row is None or row['state'] != 'CLAIMED' or phase is None or phase[0] != 'PREPARED':
+                return False
+            payload = self._payload(row)
+            for member in payload['members']:
+                observation = (observations or {}).get(member['intent_id'])
+                withdrawn = (_observation_current(observation, current) and
+                             not _observation_valid(observation, member['candidate'], current))
+                state = 'WITHDRAWN' if withdrawn else 'PENDING'
+                why = 'Candidate changed, closed or no longer owner-ready' if withdrawn else reason
+                db.execute("UPDATE review_presentation_intent_v1 SET state=? WHERE intent_id=? AND state='CLAIMED'",
+                           (state, member['intent_id']))
+                self._detail(db, member['intent_id'], why, now)
+            db.execute("UPDATE review_presentation_outbox_v1 SET state='UNSENT' WHERE batch_id=?", (batch_id,))
+            db.execute("UPDATE review_presentation_phase_v1 SET phase='RELEASED' WHERE batch_id=?", (batch_id,))
+            self._changed(db)
+            return True
+
+    def _start(self, db, payload, now):
+        for member in payload['members']:
+            detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (member['intent_id'],)).fetchone()
+            count = detail['window_attempts'] if detail else member['attempt'] - 1
+            _require(count < 2, 'Review delivery attempt ceiling reached')
+            db.execute("UPDATE review_presentation_intent_v1 SET attempts=attempts+1 WHERE intent_id=?", (member['intent_id'],))
+            self._detail(db, member['intent_id'], 'Delivery started; unresolved until terminal readback', now,
+                         attempts=count + 1, retry_at=payload.get('presentation_window', {}).get('next_opening'))
+        db.execute("UPDATE review_presentation_phase_v1 SET phase='SENDING' WHERE batch_id=?", (payload['batch_id'],))
+        self._changed(db)
+
+    def begin_delivery(self, batch_id, now):
+        """Durably fence the side effect and charge attempts immediately before it.
+
+        A crash after this transaction is UNKNOWN, even if the host never reached
+        the provider. No release or timeout can repeat that ambiguous send.
+        """
+        with self.controller.transaction() as db:
+            row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
+            phase = db.execute("SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?", (batch_id,)).fetchone()
+            _require(row is not None and row['state'] == 'CLAIMED' and phase is not None and phase[0] == 'PREPARED',
+                     'Review delivery already started or has no unsent proof')
+            _require(db.execute("SELECT 1 FROM review_presentation_check_v1 WHERE batch_id=?", (batch_id,)).fetchone(),
+                     'Review delivery requires a pre-send recheck')
+            self._start(db, self._payload(row), now)
 
     def acknowledge(self, receipt):
         _require(isinstance(receipt, dict) and receipt.get("status") == "DELIVERED",
                  "Review acknowledgement requires verified DELIVERED readback")
         return self.reconcile(receipt)
 
-    def reconcile(self, receipt):
-        """Persist verified readback; NOT_DELIVERED allows at most one retry.
+    def reconcile(self, receipt, calendar=None):
+        """Persist verified readback; at most two attempts before next window.
 
         The caller must authenticate provider receipt identity and content. This
         pure persistence boundary cannot turn supplied JSON into trusted evidence.
@@ -374,6 +606,11 @@ class ReviewBatchStore:
                 _require(row["receipt_json"] == encoded, "Conflicting review batch readback; stop and reconcile")
                 return
             _require(row["state"] in {"CLAIMED", "REPORTING"}, "Review batch has no unresolved claim")
+            phase = db.execute("SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?", (row['batch_id'],)).fetchone()
+            if phase is not None and phase[0] == 'PREPARED':
+                # Verified terminal provider evidence also proves an attempt for
+                # store clients that supply receipts without the production host.
+                self._start(db, payload, receipt['observed_at'])
             _require(db.execute("SELECT 1 FROM review_presentation_receipt_v1 WHERE provider_receipt_id=?",
                                 (receipt["provider_receipt_id"],)).fetchone() is None,
                      "Provider review receipt identity was reused; stop and reconcile")
@@ -382,8 +619,10 @@ class ReviewBatchStore:
             db.execute("UPDATE review_presentation_outbox_v1 SET state=?,receipt_json=? WHERE batch_id=?",
                        (receipt["status"], encoded, receipt["batch_id"]))
             for member in payload["members"]:
+                detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (member['intent_id'],)).fetchone()
+                count = detail['window_attempts'] if detail else member['attempt']
                 state = "DELIVERED" if receipt["status"] == "DELIVERED" else (
-                    "EXHAUSTED" if member["attempt"] >= 2 else "PENDING")
+                    "EXHAUSTED" if count >= 2 else "PENDING")
                 # A newer head must not be displaced by a failed older send.
                 if state == "PENDING":
                     for other in db.execute("SELECT candidate_json FROM review_presentation_intent_v1 WHERE state='PENDING'"):
@@ -394,3 +633,11 @@ class ReviewBatchStore:
                             break
                 db.execute("UPDATE review_presentation_intent_v1 SET state=? WHERE intent_id=? AND state='CLAIMED'",
                            (state, member["intent_id"]))
+                retry = payload.get('presentation_window', {}).get('next_opening')
+                if state == 'EXHAUSTED' and retry is None:
+                    retry = _window(observed, calendar or {})['next_opening']
+                self._detail(db, member['intent_id'],
+                    'Delivery allowance exhausted; owner attention and bounded next-window recovery required' if state == 'EXHAUSTED'
+                    else ('Newer candidate takes precedence' if state == 'WITHDRAWN' else receipt['status']),
+                    observed, retry_at=retry, attempts=count)
+            self._changed(db)

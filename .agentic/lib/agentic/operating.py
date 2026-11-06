@@ -28,7 +28,7 @@ from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 from .budgeting import resolve_settings
 from .operating_calendar import effective_calendar, SETTING_PATHS
-from .reporting.settings import effective_reporting
+from .reporting.settings import effective_reporting, validate_reporting_change
 
 CONFIG = "OPERATING_CONFIG.yaml"
 GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
@@ -615,7 +615,8 @@ def _new(tree, name, raw):
             pass
 
 
-def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, calendar_owner_observation=None, reporting_owner_observation=None):
+def _prepare_commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, calendar_owner_observation=None, owner_admission=None):
+    """Validate complete transaction bytes before consuming any owner admission."""
     after = validate_operating(value, _bound_governance(tree, governance))
     events = _events(tree)
     if _read(tree, JOURNAL) is not None:
@@ -634,8 +635,8 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
         event['budget_owner_observation'] = deepcopy(budget_owner_observation)
     if calendar_owner_observation is not None:
         event['calendar_owner_observation'] = deepcopy(calendar_owner_observation)
-    if reporting_owner_observation is not None:
-        event['reporting_owner_observation'] = deepcopy(reporting_owner_observation)
+    if owner_admission is not None:
+        event['owner_admission'] = deepcopy(owner_admission)
     errors = _schema("operating-change", event)
     if errors:
         raise OperatingError(errors)
@@ -646,6 +647,20 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     for path, data in (("$.configuration", raw), ("$.event", event_raw), ("$.journal", journal_raw)):
         if len(data) > MAX_BYTES:
             fail(path, "Serialized operating transaction member exceeds its 1 MiB read/recovery limit; reduce the change or use a reviewed migration")
+    return event, raw, event_raw, journal_raw
+
+
+def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, calendar_owner_observation=None, owner_admission=None):
+    prepared = _prepare_commit(
+        tree, governance, before, value, instruction, changed, applied_from,
+        created_at=created_at, budget_owner_observation=budget_owner_observation,
+        calendar_owner_observation=calendar_owner_observation, owner_admission=owner_admission)
+    return _commit_prepared(tree, governance, before, prepared)
+
+
+def _commit_prepared(tree, governance, before, prepared):
+    """Publish the exact bytes validated before owner confirmation consumption."""
+    event, raw, event_raw, journal_raw = prepared
     _new(tree, JOURNAL, journal_raw)
     # On any interruption retain the WAL. Never claim config/audit are a single rename.
     if _read(tree, CONFIG) != before:
@@ -747,6 +762,20 @@ def recover_operating(project_root, governance, expected_journal_sha256):
         if checked.operating_hash != event["after_hash"] or checked.governance_hash != event["governance_hash"] or (
                 (fingerprint("operating", load_yaml(before)) if before is not None else None) != event["before_hash"]):
             fail("$", "Journal content/hash/governance binding differs")
+        prior_value = load_yaml(before) if before is not None else None
+        after_value = load_yaml(after)
+        # Fresh initialization may publish dormant defaults without admission.
+        # Existing settings and every registered domain retain the same boundary.
+        baseline = prior_value if prior_value is not None else default_operating(_routing_policy(governance))
+        admitted_change = any(baseline.get(domain) != after_value.get(domain)
+                              for domain in OWNER_SETTING_VALIDATORS
+                              if prior_value is not None or domain in after_value)
+        if (admitted_change or 'owner_admission' in event
+                or 'budget_owner_observation' in event or 'calendar_owner_observation' in event
+                or any(c['path'] == domain or c['path'].startswith(domain + '.')
+                       for c in event['changes'] for domain in OWNER_SETTING_VALIDATORS)):
+            from .owner_admission import validate_recovery
+            validate_recovery(project_root, governance, prior_value, after_value, event)
         current = _read(tree, CONFIG)
         if current not in (before, after):
             fail("$", "Operating bytes contain an unmatched external edit; preserve the journal")
@@ -915,7 +944,43 @@ def _editable_snapshot(tree, governance, initialize):
         return OperatingSnapshot(canonical(value), fingerprint("operating", value), fingerprint("operating-governance", governance), events[-1]["id"]), raw
 
 
-def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, budget_registry=None, calendar_registry=None, reporting_registry=None):
+def _validate_budget_change(current, changes, effective):
+    from .budgeting import transition_settings
+    if current.get('budgeting') is None:
+        fail('$.budgeting', 'Legacy budgeting requires versioned adoption with an explicit budget disposition')
+    if transition_settings(current['budgeting'], changes) != effective['budgeting']:
+        fail('$.budgeting', 'Budget transition differs from validated effective settings')
+
+
+def _validate_calendar_change(current, changes, effective):
+    from .operating_calendar import transition_calendar
+    if transition_calendar(effective_calendar(current), changes) != effective_calendar(effective):
+        fail('$.operating_calendar', 'Calendar transition differs from validated effective settings')
+
+
+# Reviewed runtime code owns this table, never configuration or CLI input. A new
+# domain supplies one pure validator(current_root, dotted_changes, result_root)
+# and its path/parser/schema support. Selection triggers admission even for OFF
+# and unchanged assignments; validators never collect identity or consume state.
+OWNER_SETTING_VALIDATORS = {
+    'budgeting': _validate_budget_change,
+    'operating_calendar': _validate_calendar_change,
+    'reporting': validate_reporting_change,
+}
+
+
+def _validate_owner_settings(current, selected, effective):
+    protected = False
+    for domain, validate in OWNER_SETTING_VALIDATORS.items():
+        changes = {p[len(domain) + 1:]: deepcopy(v) for p, v in selected.items()
+                   if p.startswith(domain + '.')}
+        if changes:
+            validate(deepcopy(current), changes, deepcopy(effective))
+            protected = True
+    return protected
+
+
+def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, budget_registry=None, calendar_registry=None, owner_admission=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction.encode("utf-8")) > 65536:
         fail("$.instruction", "Record the nonempty bounded user instruction verbatim")
     if bool(assignments) == bool(recommendation_id) or bool(recommendation_id) != bool(accept):
@@ -952,8 +1017,6 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         budget_changes = {p[10:]: v for p, v in selected.items() if p.startswith('budgeting.')}
         if budget_changes:
             from .budgeting import transition_settings
-            if budget_registry is None:
-                fail('$.budgeting', 'Trusted-host owner observer required; chat words and source:user do not authenticate an owner')
             current_budget = snapshot.config.get('budgeting')
             if current_budget is None:
                 fail('$.budgeting', 'Legacy budgeting requires versioned adoption with an explicit budget disposition')
@@ -974,35 +1037,112 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             _put(value, path, choice)
         value["source"] = source
         validate_operating(value, governance)
-        reporting_changes = {p[10:]: v for p, v in selected.items() if p.startswith('reporting.')}
-        reporting_admitted = None
-        if reporting_changes:
-            if reporting_registry is None:
-                fail('$.reporting', 'Trusted-host owner observer required; chat words and source:user do not authenticate an owner')
-            reporting_admitted = reporting_registry.admit_owner_direction(
-                governance['project']['id'], effective_reporting(snapshot.config), reporting_changes)
-            if reporting_admitted['settings'] != effective_reporting(value):
-                fail('$.reporting', 'Trusted-host reporting admission differs from validated settings')
+        protected = _validate_owner_settings(snapshot.config, selected, value)
         calendar_changes = {p[19:]: v for p, v in selected.items() if p.startswith('operating_calendar.')}
         calendar_admitted = None
-        if calendar_changes:
+        common_admission = (owner_admission is not None or any(p.startswith('reporting.') for p in selected)
+                            or (budget_registry is None and calendar_registry is None))
+        if calendar_changes and not common_admission:
             if calendar_registry is None:
                 fail('$.operating_calendar', 'Trusted-host owner observer required; chat words and source:user do not authenticate an owner')
-            calendar_admitted = calendar_registry.admit_owner_direction(
-                governance['project']['id'], effective_calendar(snapshot.config), calendar_changes)
-            if calendar_admitted['settings'] != effective_calendar(value):
-                fail('$.operating_calendar', 'Trusted-host calendar admission differs from validated settings')
-        if budget_changes:
-            admitted = budget_registry.admit_owner_direction(governance['project']['id'], current_budget, budget_changes)
-            if admitted['settings'] != value['budgeting']:
-                fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
         paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
+        change_time = now_text() if protected else None
+
+        if protected and common_admission:
+            prepared = _prepare_commit(tree, governance, before, value, instruction, changes,
+                                       'chat', created_at=change_time)
+            intent = dict(assignments=list(assignments), recommendation_id=recommendation_id,
+                          accept=accept, initialize=initialize, epic_id=epic_id)
+            if owner_admission is None:
+                from .owner_admission import PendingOwnerConfirmation, propose
+                try:
+                    proposal = propose(project_root, governance, snapshot, instruction, intent, changes)
+                except ValidationError as exc:
+                    fail('$.owner_admission', 'Trusted-host owner observer required; owner admission unavailable: ' + str(exc))
+                raise PendingOwnerConfirmation(proposal)
+
+            def validate_admission(audit):
+                nonlocal prepared
+                observation = None
+                if budget_changes:
+                    from .budgeting import settings_hash
+                    observation = dict(
+                        observation_id='github-terminal:' + audit['request_id'] + ':' + audit['digest'],
+                        actor_id=str(audit['actor_id']), project_id=governance['project']['id'],
+                        prior_settings_hash=settings_hash(snapshot.config['budgeting']),
+                        changes=deepcopy(budget_changes))
+                prepared = _prepare_commit(tree, governance, before, value, instruction, changes,
+                    'chat', created_at=change_time, owner_admission=audit,
+                    budget_owner_observation=observation)
+
+            owner_admission.admit_operating_change(project_root, governance, snapshot,
+                instruction, intent, changes, validate_admission=validate_admission)
+            return _commit_prepared(tree, governance, before, prepared)
+
+        # Retained trusted-infrastructure registry protocol for historical domain
+        # observations. Production confirm uses the common admission above.
+        def admit_calendar():
+            nonlocal calendar_admitted
+            if not calendar_changes:
+                return
+            def validate_calendar_admission(observed):
+                _prepare_commit(tree, governance, before, value, instruction, changes, 'chat',
+                    created_at=change_time, calendar_owner_observation=observed)
+            calendar_admitted = calendar_registry.admit_owner_direction(
+                governance['project']['id'], effective_calendar(snapshot.config), calendar_changes,
+                validate_observation=validate_calendar_admission)
+            if calendar_admitted['settings'] != effective_calendar(value):
+                fail('$.operating_calendar', 'Trusted-host calendar admission differs from validated settings')
+
+        if budget_changes:
+            _prepare_commit(tree, governance, before, value, instruction, changes, 'chat', created_at=change_time)
+            intent = dict(assignments=list(assignments), recommendation_id=recommendation_id,
+                          accept=accept, initialize=initialize, epic_id=epic_id)
+            if budget_registry is None:
+                from .owner_admission import PendingOwnerConfirmation, propose
+                try:
+                    proposal = propose(project_root, governance, snapshot, instruction, intent, changes)
+                except ValidationError as exc:
+                    fail('$.budgeting', 'Trusted-host owner admission unavailable: ' + str(exc))
+                raise PendingOwnerConfirmation(proposal)
+            observer = getattr(budget_registry.host, 'validate_operating_change', None)
+            if observer is not None:
+                from .budgeting import settings_hash
+                observer(governance, snapshot, instruction, intent, changes,
+                         settings_hash(current_budget), budget_changes)
+            def validate_admission(observed):
+                _prepare_commit(tree, governance, before, value, instruction, changes, 'chat',
+                                created_at=change_time, budget_owner_observation=observed,
+                                owner_admission=getattr(budget_registry.host, 'audit', None))
+            if calendar_changes:
+                def validate_joint_admission(budget_admission, calendar_admission):
+                    if budget_admission['settings'] != value['budgeting']:
+                        fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
+                    if calendar_admission['settings'] != effective_calendar(value):
+                        fail('$.operating_calendar', 'Trusted-host calendar admission differs from validated settings')
+                    _prepare_commit(tree, governance, before, value, instruction, changes, 'chat',
+                        created_at=change_time, budget_owner_observation=budget_admission['observation'],
+                        calendar_owner_observation=calendar_admission['observation'],
+                        owner_admission=getattr(budget_registry.host, 'audit', None))
+                admitted, calendar_admitted = calendar_registry.admit_with_budget(
+                    budget_registry, governance['project']['id'], current_budget, budget_changes,
+                    effective_calendar(snapshot.config), calendar_changes,
+                    validate_observations=validate_joint_admission)
+            else:
+                admitted = budget_registry.admit_owner_direction(governance['project']['id'], current_budget, budget_changes,
+                                                                 validate_observation=validate_admission)
+            if admitted['settings'] != value['budgeting']:
+                fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
+        elif calendar_changes:
+            _prepare_commit(tree, governance, before, value, instruction, changes, 'chat', created_at=change_time)
+            admit_calendar()
         return _commit(tree, governance, before, value, instruction, changes, "chat",
+                       created_at=change_time,
                        budget_owner_observation=admitted['observation'] if budget_changes else None,
                        calendar_owner_observation=calendar_admitted['observation'] if calendar_admitted else None,
-                       reporting_owner_observation=reporting_admitted['observation'] if reporting_admitted else None)
+                       owner_admission=getattr(budget_registry.host, 'audit', None) if budget_changes else None)
 
 
 def _scope(paths, epic_id):
@@ -1336,7 +1476,8 @@ def _local_state(root, governance):
         return "UNVERIFIED"
 
 
-def main(argv=None, default_root=None, *, budget_registry=None, calendar_registry=None, reporting_registry=None):
+def main(argv=None, default_root=None, *, budget_registry=None, calendar_registry=None):
+    from .owner_admission import PendingOwnerConfirmation, confirm
     from .contracts import Contracts
     from .output import configure_streams, json_text
     configure_streams()
@@ -1353,6 +1494,9 @@ def main(argv=None, default_root=None, *, budget_registry=None, calendar_registr
     setter.add_argument("--epic", help="Exact observed Epic ID; scope only the selected stream/role routes")
     setter.add_argument("--initialize", action="store_true", help="Explicitly start from Balanced defaults only when the root file is absent; validate all selected changes first")
     setter.add_argument("--json", action="store_true")
+    confirmer = sub.add_parser('confirm', help='Owner confirms an exact pending proposal in their own terminal')
+    confirmer.add_argument('--digest', required=True)
+    confirmer.add_argument('--json', action='store_true')
     recommend = sub.add_parser("recommend")
     recommend.add_argument("--epics", required=True, type=Path)
     recommend.add_argument("--inventory", type=Path)
@@ -1372,7 +1516,9 @@ def main(argv=None, default_root=None, *, budget_registry=None, calendar_registr
         if args.command == "set":
             snapshot = set_operating(args.root, governance, args.instruction, args.assignments,
                                      recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic,
-                                     budget_registry=budget_registry, calendar_registry=calendar_registry, reporting_registry=reporting_registry)
+                                     budget_registry=budget_registry, calendar_registry=calendar_registry)
+        elif args.command == 'confirm':
+            snapshot = confirm(args.root, governance, args.digest)
         elif args.command == "recover":
             snapshot = recover_operating(args.root, governance, args.expected_journal_sha256)
         else:
@@ -1386,6 +1532,9 @@ def main(argv=None, default_root=None, *, budget_registry=None, calendar_registr
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
         print(json_text(result) if args.json else result["table"])
         return 0
+    except PendingOwnerConfirmation as exc:
+        print(json_text(exc.report))
+        return 3
     except (ValidationError, OSError, ValueError, UnicodeError) as exc:
         if isinstance(exc, OSError):
             from .activation import access_diagnostic

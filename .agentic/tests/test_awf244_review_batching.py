@@ -70,6 +70,14 @@ class BatchingTests(unittest.TestCase):
                 def observer(item):
                     return {**self.observe(item), **change}
                 self.assertIsNone(self.store.claim(self.now, {}, observer))
+        # Stale evidence still withholds delivery, but only fresh invalidation
+        # may withdraw the remaining pending intents.
+        with self.controller.connection() as db:
+            pending = [row[0] for row in db.execute(
+                "SELECT candidate_json FROM review_presentation_intent_v1 WHERE state='PENDING'")]
+        self.assertEqual(len(pending), 1)
+        self.assertIsNone(self.store.claim(self.now, {}, lambda item:
+                          {**self.observe(item), "open": False}))
         self.assertIsNone(self.store.claim(self.now, {}, self.observe))
 
     def test_missing_observer_and_exception_do_not_claim(self):
@@ -97,6 +105,37 @@ class BatchingTests(unittest.TestCase):
         batch = self.store.claim(self.now, {}, self.observe)
         self.assertEqual(len(batch["members"]), 1)
         self.assertEqual(batch["members"][0]["candidate"]["head_sha"], "e" * 40)
+
+    def test_fresh_restoration_supersedes_pending_replacement_without_resetting_schedule(self):
+        original = self.enqueue()
+        replacement = self.enqueue({**candidate(), "head_sha": "e" * 40})
+        self.assertIsNone(self.enqueue())
+        invalid = {**self.observe(candidate()), "expires_at": self.now}
+        self.assertIsNone(self.store.enqueue_observed(candidate(), invalid, self.now, {}, repository_id='123'))
+        restored = self.store.enqueue_observed(candidate(), self.observe(candidate()), self.now, {}, repository_id='123')
+        self.assertEqual(restored, original)
+        with self.controller.connection() as db:
+            states = dict(db.execute('SELECT intent_id,state FROM review_presentation_intent_v1'))
+        self.assertEqual(states, {original: 'PENDING', replacement: 'WITHDRAWN'})
+        batch = self.store.claim(self.now, {}, self.observe)
+        self.assertEqual(len(batch['members']), 1)
+        self.assertEqual(batch['members'][0]['intent_id'], original)
+        self.assertEqual(batch['members'][0]['ready_at'], self.ready)
+        self.assertEqual(batch['members'][0]['attempt'], 1)
+        self.assertTrue(batch['catch_up'])
+        self.assertIsNone(self.store.enqueue_observed(candidate(), self.observe(candidate()), self.now, {}, repository_id='123'))
+
+    def test_restored_confirmed_unsent_intent_keeps_delivery_retry_limit(self):
+        self.enqueue()
+        first = self.store.claim(self.now, {}, self.observe)
+        self.store.reconcile(self.receipt(first, 'NOT_DELIVERED', 'negative-1'))
+        self.enqueue({**candidate(), 'base_sha': 'e' * 40})
+        self.store.enqueue_observed(candidate(), self.observe(candidate()), self.now, {}, repository_id='123')
+        second = self.store.claim(self.now, {}, self.observe)
+        self.assertEqual(second['members'][0]['attempt'], 2)
+        self.store.reconcile(self.receipt(second, 'NOT_DELIVERED', 'negative-2'))
+        self.assertIsNone(self.store.enqueue_observed(candidate(), self.observe(candidate()), self.now, {}, repository_id='123'))
+        self.assertIsNone(self.store.claim(self.now, {}, self.observe))
 
     def test_unknown_send_needs_reconciliation_and_no_blind_retry(self):
         self.enqueue()

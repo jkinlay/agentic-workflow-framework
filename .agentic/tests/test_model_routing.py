@@ -5,6 +5,7 @@ from copy import deepcopy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -54,11 +55,28 @@ class ModelRoutingTests(unittest.TestCase):
         self.policy = fixture_policy()
         self.temp = tempfile.TemporaryDirectory(prefix="awf-routing-")
         self.addCleanup(self.temp.cleanup)
+        # Synthetic cases reuse project IDs; keep lifetime state across each
+        # case's restarts, but never inherit another case's retained ceilings.
+        environment = patch.dict(os.environ, {"AWF_STATE_HOME": self.temp.name})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.path = Path(self.temp.name) / "routing.sqlite"
         self.ledger = RoutingLedger(self.path)
 
     def reserve(self, **updates):
         return self.ledger.reserve("project-1", self.policy, request(**updates), capabilities())
+
+    def test_retained_retry_ceiling_is_project_scoped_across_new_ledgers(self):
+        reduced = deepcopy(self.policy)
+        reduced["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 0
+        self.assertEqual(self.ledger.reserve("project-1", reduced, request(), capabilities())["status"], "reserved")
+        restarted = RoutingLedger(Path(self.temp.name) / "replacement.sqlite")
+        same_project = restarted.reserve("project-1", self.policy, request(), capabilities())
+        self.assertEqual(same_project["code"], "RETRY_LIMIT_INCREASE_REQUIRES_AUTHORIZATION")
+        self.assertEqual(same_project["authorized_retry_ceiling"], 0)
+        unrelated = restarted.reserve("project-2", self.policy, request(), capabilities())
+        self.assertEqual(unrelated["status"], "reserved")
+        self.assertEqual(restarted.retry_limit_history("project-2")["retry_ceiling"], 2)
 
     def test_balanced_roles_and_simple_worker(self):
         expected = {role: (pair["model"], pair["effort"])

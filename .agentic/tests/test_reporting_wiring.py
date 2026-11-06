@@ -23,31 +23,35 @@ def binding(platform='slack', project='p', repository='101', scope='s'):
 
 
 class ReportingSettingsTests(unittest.TestCase):
+    import test_reporting_owner_admission as admission_fixture
+    setUpClass = classmethod(admission_fixture.ReportingOwnerAdmissionTests.setUpClass.__func__)
+
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / 'project'
-        self.root.mkdir()
-        self.gov = governance()
-        self.gov['project']['id'] = 'p'
-        self.gov['github']['repository_id'] = 101
-        (self.root / '.agentic').mkdir()
-        (self.root / op.GOVERNANCE).write_text(json.dumps(self.gov))
+        self.admission_fixture.ReportingOwnerAdmissionTests.setUp(self)
+        from types import SimpleNamespace
+        self.temp = SimpleNamespace(name=str(self.fixture.base))
         self.count = 0
-        owner = self
-        class Host:
-            def observe_owner_direction(self, project, prior, changes):
-                owner.count += 1
-                return dict(observation_id='owner-' + str(owner.count), actor_id='trusted-owner',
-                            project_id=project, prior_settings_hash=prior, changes=deepcopy(changes))
-        from agentic.reporting.settings import ReportingSettingsRegistry
-        self.registry = ReportingSettingsRegistry(Path(self.temp.name) / 'owner.sqlite3', Host(), [self.root])
-        op.initialize_operating(self.root, self.gov)
+
+    save_governance = admission_fixture.ReportingOwnerAdmissionTests.save_governance
+    events = admission_fixture.ReportingOwnerAdmissionTests.events
+    cli = admission_fixture.ReportingOwnerAdmissionTests.cli
+    pending = admission_fixture.ReportingOwnerAdmissionTests.pending
+    confirm = admission_fixture.ReportingOwnerAdmissionTests.confirm
+    unchanged = admission_fixture.ReportingOwnerAdmissionTests.unchanged
+    recover = admission_fixture.ReportingOwnerAdmissionTests.recover
+
+    def destinations(self):
+        return [binding(p, self.gov['project']['id'], str(self.gov['github']['repository_id']))
+                for p in ('teams', 'slack')]
 
     def set(self, mode, **kwargs):
-        return op.set_operating(self.root, self.gov, 'Use reporting ' + mode,
-            ['reporting.mode=' + mode, 'reporting.bindings=' + json.dumps([binding('teams'), binding()])],
-            reporting_registry=self.registry, **kwargs)
+        self.before, self.audit_before = (self.root / op.CONFIG).read_bytes(), self.events()
+        digest = self.pending('reporting.mode=' + mode,
+                              'reporting.bindings=' + json.dumps(self.destinations()))
+        result = self.confirm(digest, **kwargs)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.count += 1
+        return op.read_operating(self.root, self.gov)
 
     def test_modes_persist_show_and_enable_no_other_feature(self):
         from agentic.reporting.settings import effective_reporting
@@ -77,26 +81,24 @@ class ReportingSettingsTests(unittest.TestCase):
             ['reporting.mode=slack', 'reporting.bindings=' + json.dumps([binding()]), 'streams.count=99']):
             before = (self.root / op.CONFIG).read_bytes()
             with self.assertRaises(ValidationError):
-                op.set_operating(self.root, self.gov, 'Enable', assignments, reporting_registry=self.registry)
+                op.set_operating(self.root, self.gov, 'Enable', assignments)
             self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
         self.assertEqual(self.count, 0)
-        with self.assertRaisesRegex(ValidationError, 'Trusted-host'):
-            op.set_operating(self.root, self.gov, 'off', ['reporting.mode=off'])
+        self.pending('reporting.mode=off')
 
     def test_recovery_retains_owner_observation(self):
-        real = op._new
-        def interrupted(tree, name, raw):
-            if '/changes/' in name:
-                raise OSError('synthetic interruption')
-            return real(tree, name, raw)
-        with patch.object(op, '_new', interrupted), self.assertRaises(OSError):
-            self.set('both')
+        digest = self.pending('reporting.mode=both', 'reporting.bindings=' + json.dumps(self.destinations()))
+        crashed = self.confirm(digest, crash='after_config')
+        self.assertEqual(71, crashed.returncode, crashed.stdout + crashed.stderr)
+        self.count += 1
         journal = (self.root / op.JOURNAL).read_bytes()
-        observation = json.loads(journal)['event']['reporting_owner_observation']
-        result = op.recover_operating(self.root, self.gov, sha256(journal))
+        observation = json.loads(journal)['event']['owner_admission']
+        recovered = self.recover(json.loads(journal))
+        self.assertEqual(0, recovered.returncode, recovered.stdout + recovered.stderr)
+        result = op.read_operating(self.root, self.gov)
         self.assertEqual(result.config['reporting']['mode'], 'both')
         events = list((self.root / op.STATE / 'changes').glob('*.json'))
-        self.assertTrue(any(json.loads(p.read_bytes()).get('reporting_owner_observation') == observation for p in events))
+        self.assertTrue(any(json.loads(p.read_bytes()).get('owner_admission') == observation for p in events))
         self.assertEqual(self.count, 1)
 
     def test_cli_shows_effective_settings_delivery_and_coverage_without_migration(self):
@@ -104,7 +106,7 @@ class ReportingSettingsTests(unittest.TestCase):
         from agentic.reporting.runtime import reporting_cycle
         snapshot = self.set('both')
         controller = ContinuousControllerStore(Path(self.temp.name) / 'controller.sqlite3', ['A'])
-        accepted = dict(project='p', repository='101', scope_revision='s')
+        accepted = dict(project=self.gov['project']['id'], repository=str(self.gov['github']['repository_id']), scope_revision='s')
         reporting_cycle(controller, operating=snapshot.config, binding=accepted, now='2026-11-07T17:00:00Z')
         path = self.root / 'binding.json'
         path.write_text(json.dumps(accepted))

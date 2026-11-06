@@ -9,6 +9,11 @@
     "kind": "REGULAR",
     "cadence_seconds": 1,
     "all_complete": false,
+    "review_batching": {
+      "intents": [],
+      "unresolved_batches": [],
+      "owner_alerts": []
+    },
     "unresolved_dispatches": [],
     "streams": [
       {

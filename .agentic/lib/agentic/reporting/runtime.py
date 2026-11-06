@@ -82,6 +82,11 @@ def _body(kind, binding, now, calendar, context, period=None, action=None):
     if context.get('delivery_attention'):
         data['delivery_attention'] = deepcopy(context['delivery_attention'])
         data['sections']['Sources and freshness'] += '\nDelivery needs owner attention: ' + describe(context['delivery_attention'])
+    if context.get('review_batching') is not None:
+        data['review_batching'] = deepcopy(context['review_batching'])
+        review_text = '\nReview presentation: ' + describe(context['review_batching'])
+        title = 'Capacity and review queue' if kind == 'hourly' else 'Sources and freshness'
+        data['sections'][title] = data['sections'].get(title, '') + review_text
     if kind == 'hourly':
         if context.get('capacity') is not None and supplied is None:
             data['sections']['Capacity and review queue'] = data['sections'].get('Capacity and review queue', '') + '\nController capacity: ' + describe(context['capacity'])
@@ -348,6 +353,9 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                        (key, canonical(state).decode()))
         return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
     calendar, context = effective_calendar(operating), safe_report(context or {}, senders=(providers or {}).values())
+    from ..review_batching import ReviewBatchStore
+    with store.connection() as db:
+        context['review_batching'] = ReviewBatchStore.view_from_db(db, now, calendar)
     attention = delivery_attention(store, operating, binding)
     context['delivery_attention'] = attention
     # Channel size remains bounded; the read-only status command retains all
