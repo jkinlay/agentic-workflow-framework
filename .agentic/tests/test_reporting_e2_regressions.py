@@ -25,53 +25,7 @@ from test_continuous_controller import INVENTORY_BINDING, ticket
 from test_reference_controller_adapter import _base_config, FakeClock, FakeRunner
 
 
-class ReportingNetwork:
-    def __init__(self):
-        self.posts = []
-        self.messages = {'slack': [], 'teams': []}
-        self.block = threading.Event()
-        self.entered = threading.Event()
-        self.slow = False
-        self.slow_readback = False
-        self.history_reads = 0
-        self.remote_pending = []
-
-    def __call__(self, method, url, headers, payload):
-        platform = 'slack' if 'slack.com' in url else 'teams'
-        if method == 'POST':
-            self.posts.append((platform, deepcopy(payload)))
-            if platform == 'teams' and self.slow:
-                self.entered.set()
-                if not self.block.wait(5):
-                    self.remote_pending.append(deepcopy(payload))
-                    raise TimeoutError('synthetic ambiguous POST timeout')
-            self.messages[platform].append(deepcopy(payload))
-            return {'ok': True}
-        if self.block.is_set() and self.remote_pending:
-            self.messages['teams'].extend(self.remote_pending)
-            self.remote_pending.clear()
-        if 'auth.test' in url:
-            return dict(ok=True, team_id='workspace', user_id='sender')
-        if 'conversations.info' in url:
-            return dict(ok=True, channel=dict(id='CAPPROVED', is_member=True))
-        if 'conversations.history' in url:
-            self.history_reads += 1
-            if self.slow_readback:
-                self.entered.set()
-                if not self.block.wait(5):
-                    raise TimeoutError('synthetic delayed readback timeout')
-            return dict(ok=True, messages=[dict(text=m['text'], user='sender', ts=str(i+1) + '.000001')
-                                          for i, m in enumerate(self.messages['slack'])])
-        if '/me?' in url:
-            return dict(id='sender')
-        if '/organization?' in url:
-            return dict(value=[dict(id='tenant')])
-        if '/members' in url:
-            return dict(value=[dict(userId='sender')])
-        if '/messages?' in url:
-            return dict(value=[dict(id=str(i+1), body=m['body'], **{'from': {'user': {'id': 'sender'}}})
-                               for i, m in enumerate(self.messages['teams'])])
-        return dict(id='channel' if '/channels/' in url else 'team')
+from test_reporting_fixtures import ReportingNetwork, TEAMS_DESTINATION
 
 
 class ReportingE2Regressions(unittest.TestCase):
@@ -82,7 +36,7 @@ class ReportingE2Regressions(unittest.TestCase):
         self.helper.listed = []
         self.binding = dict(project=INVENTORY_BINDING['project_id'], repository='101', scope_revision='a'*64)
         self.settings = dict(mode='both', bindings=[dict(self.binding, platform=p,
-            destination='CAPPROVED' if p == 'slack' else 'team/channel', revision='1', secret_ref='env:AWF_REPORT_TEST')
+            destination='CAPPROVED' if p == 'slack' else TEAMS_DESTINATION, revision='1', secret_ref='env:AWF_REPORT_TEST')
             for p in ('teams', 'slack')])
         self.network = ReportingNetwork()
         self.addCleanup(self.network.block.set)

@@ -46,6 +46,10 @@ class PlatformReportingAdapter:
     def send(self, intent, attempt_id):
         return self.send_reserved(intent, attempt_id, lambda: None)
 
+    def clock(self):
+        # Same trusted host clock that timestamps the transport observations.
+        return self.transport.clock()
+
     def send_reserved(self, intent, attempt_id, start):
         secret = self._admit(intent)
         try:
@@ -58,6 +62,8 @@ class PlatformReportingAdapter:
                 raw = self.transport.send(deepcopy(intent), attempt_id, secret)
             from .delivery import DeliveryOutbox
             safe = DeliveryOutbox._rejection(raw, intent, attempt_id)
+            if safe is None:
+                safe = DeliveryOutbox._throttle(raw, intent, attempt_id)
             if safe is not None and safe_report(safe, trusted_keys=True, credentials=(secret,)) == safe:
                 safe.update(delivery_id=intent['delivery_id'], destination=self.binding['destination'],
                             platform=self.platform, payload_sha256=intent['payload_sha256'])

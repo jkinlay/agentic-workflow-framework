@@ -7,6 +7,7 @@ not merely that a message is currently missing from a possibly stale listing.
 No lease expiration authorizes another send. Crash reservations consume attempts.
 """
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import re
 import uuid
@@ -154,6 +155,25 @@ class DeliveryOutbox:
                     observation_id=observation_id, observed_at=raw['observed_at'])
 
     @staticmethod
+    def _throttle(raw, intent, attempt_id):
+        """Retain a bound non-acceptance/deadline, never raw headers or errors."""
+        if not isinstance(raw, dict) or safe_report(raw, trusted_keys=True) != raw or any(raw.get(k) != v for k, v in dict(
+                status='THROTTLED', evidence_kind='PROVIDER_THROTTLE',
+                delivery_id=intent['delivery_id'], destination=intent['binding']['destination'],
+                platform=intent['binding']['platform'], payload_sha256=intent['payload_sha256'],
+                attempt_id=attempt_id).items()):
+            return None
+        observation_id = raw.get('observation_id')
+        if not isinstance(observation_id, str) or not 0 < len(observation_id) <= 256 or any(ord(c) < 32 for c in observation_id):
+            return None
+        try:
+            require(timestamp(raw['retry_not_before']) > timestamp(raw['observed_at']), 'REPORT_RETRY_DEADLINE')
+        except (ValidationError, KeyError, TypeError, ValueError):
+            return None
+        return dict(status='THROTTLED', evidence_kind='PROVIDER_THROTTLE', attempt_id=attempt_id,
+                    observation_id=observation_id, observed_at=raw['observed_at'], retry_not_before=raw['retry_not_before'])
+
+    @staticmethod
     def _observation(raw, intent, attempts):
         """Retain only closed safe fields; provider error bodies never enter state."""
         unknown = dict(status='UNKNOWN', reason='CHANNEL_EVIDENCE_UNAVAILABLE')
@@ -183,7 +203,7 @@ class DeliveryOutbox:
                         observed_at=raw['observed_at'], attempt_ids=attempts, observation_id=observation_id)
         return unknown
 
-    def advance(self, delivery_id, provider, *, allow_send=True, before_send=None):
+    def advance(self, delivery_id, provider, *, allow_send=True, before_send=None, clock=None):
         """One bounded step; retries require a prior terminal-absence observation.
 
         A crashed IN_FLIGHT reservation is reconciled, never repeated. There is
@@ -193,9 +213,13 @@ class DeliveryOutbox:
             intent, state = self._load(db, delivery_id)
             if state['status'] in {'DELIVERED', 'FAILED'}:
                 return state
-            if not allow_send and state['status'] in {'PENDING', 'ABSENT'}:
+            if state['status'] == 'THROTTLED':
+                now = clock() if clock is not None else datetime.now(timezone.utc).isoformat()
+                if timestamp(now) < timestamp(state['retry_not_before']):
+                    return state
+            if not allow_send and state['status'] in {'PENDING', 'ABSENT', 'THROTTLED'}:
                 return state
-            send = allow_send and state['status'] in {'PENDING', 'ABSENT'} and len(state['attempts']) < 2
+            send = allow_send and state['status'] in {'PENDING', 'ABSENT', 'THROTTLED'} and len(state['attempts']) < 2
             if not send and not state['attempts']:
                 return state
             fence, attempts = state['fence'], list(state['attempts'])
@@ -213,12 +237,14 @@ class DeliveryOutbox:
                     require(current == state, 'REPORT_SEND_STATE_CHANGED')
                     current['attempts'].append(attempt_id)
                     current['history'].append(dict(kind='ATTEMPT_RESERVED', attempt_id=attempt_id))
+                    current.pop('retry_not_before', None)
+                    current.pop('reason', None)
                     current.update(status='IN_FLIGHT', fence=str(uuid.uuid4()))
                     self._save(db, delivery_id, current)
                     fence, attempts = current['fence'], list(current['attempts'])
                 reserved = True
 
-            rejection = None
+            rejection = throttle = None
             try:
                 if callable(getattr(provider, 'send_reserved', None)):
                     raw = provider.send_reserved(deepcopy(intent), attempt_id, reserve)
@@ -226,11 +252,23 @@ class DeliveryOutbox:
                     reserve()
                     raw = provider.send(deepcopy(intent), attempt_id)
                 rejection = self._rejection(raw, intent, attempt_id) if reserved else None
+                throttle = self._throttle(raw, intent, attempt_id) if reserved else None
             except Exception:
                 pass
             if not reserved:
                 with self.controller.transaction() as db:
                     return self._load(db, delivery_id)[1]
+            if throttle:
+                with self.controller.transaction() as db:
+                    _, current = self._load(db, delivery_id)
+                    current['history'].append(dict(kind='SEND_THROTTLED', **throttle))
+                    if current['attempts'] == attempts and current['status'] not in {'DELIVERED', 'FAILED'}:
+                        current.update(status='FAILED' if len(attempts) == 2 else 'THROTTLED',
+                            retry_not_before=throttle['retry_not_before'],
+                            reason='TWO_SEND_ATTEMPTS_EXHAUSTED' if len(attempts) == 2 else 'PROVIDER_THROTTLED',
+                            fence=str(uuid.uuid4()))
+                    self._save(db, delivery_id, current)
+                    return current
             if rejection:
                 with self.controller.transaction() as db:
                     _, current = self._load(db, delivery_id)

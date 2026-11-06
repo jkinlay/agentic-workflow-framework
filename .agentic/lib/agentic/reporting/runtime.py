@@ -77,6 +77,21 @@ def _body(kind, binding, now, calendar, context, period=None, action=None):
     if kind == 'hourly':
         data['sections']['Capacity and review queue'] = describe(context.get('capacity'))
         data['sections']['Current work'] = describe(context.get('streams'))
+        if context.get('streams') is not None:
+            # Inventory details can be UNKNOWN while controller work is observed.
+            # The displayed WIP must follow that observation, not ticket metrics.
+            tickets = {t['key']: t for t in (supplied or {}).get('tickets', [])}
+            data['current'] = []
+            for stream in context['streams']:
+                if not stream.get('ticket') or stream['state'] == 'COMPLETE':
+                    continue
+                ticket = deepcopy(tickets.get(stream['ticket'], {}))
+                if not ticket or ticket.get('state') == 'UNKNOWN':
+                    ticket['title'] = 'Ticket details unavailable'
+                ticket.update(key=stream['ticket'], stage=stream['state'],
+                    actor=stream['stream'] + ' / ' + stream['actor'],
+                    activity=stream['activity'], next_gate=stream['verification_gate'])
+                data['current'].append(ticket)
         data['sections']['Changes since the previous report'] = 'Gates: ' + describe(context.get('gates'))
     if kind == 'eod' and context.get('accounting_summary') is not None:
         data['sections']['Usage (tokens)'] = describe(context['accounting_summary'])
@@ -137,7 +152,7 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                 SELECT r.payload_json,d.delivery_id,r.kind,r.rowid AS sequence,
                     json_extract(d.state_json,'$.status') AS status,
                     json_array_length(json_extract(d.state_json,'$.history')) AS observations,
-                    json_extract(d.state_json,'$.status') IN ('PENDING','ABSENT') AS fresh
+                    json_extract(d.state_json,'$.status') IN ('PENDING','ABSENT','THROTTLED') AS fresh
                 FROM controller_reports r JOIN controller_report_delivery d
                   ON json_extract(d.intent_json,'$.report_id')=r.report_id
                 WHERE json_extract(d.intent_json,'$.binding.platform')=?
@@ -169,11 +184,11 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                 record = loads(row[0])
                 if record['binding'] != binding:
                     continue
-                if not budget.admit(platform, reconciliation=row['status'] not in {'PENDING', 'ABSENT'}):
+                if not budget.admit(platform, reconciliation=row['status'] not in {'PENDING', 'ABSENT', 'THROTTLED'}):
                     continue
                 try:
                     state = outbox.advance(row[1], provider, allow_send=allow_send,
-                                           before_send=before_send)
+                                           before_send=before_send, clock=getattr(provider, 'clock', None))
                 except Exception:
                     state = dict(status='UNKNOWN', reason='REPORT_PROVIDER_UNAVAILABLE')
                 with lock:
@@ -392,7 +407,7 @@ class ReviewReportingPort:
             report_id = self._id(payload)
             status = reporting_status(self.store, self.operating, self.binding, report_ids={report_id})
             states = [s for s in status['deliveries'] if s['report_id'] == report_id]
-            if not any(s['status'] in {'PENDING', 'ABSENT'} for s in states):
+            if not any(s['status'] in {'PENDING', 'ABSENT', 'THROTTLED'} for s in states):
                 continue
             self._check(payload, calendar, observe_candidate)
             drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id}, budget=self.delivery_budget,

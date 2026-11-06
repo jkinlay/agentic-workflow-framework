@@ -5,7 +5,7 @@ the existing secret-reference resolver, never stored on the transport. A missing
 message is UNKNOWN: these APIs cannot prove terminal absence of a delayed POST.
 The existing durable outbox alone owns attempt admission. Tests inject fake HTTP.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import html
 from html.parser import HTMLParser
@@ -13,11 +13,11 @@ import json
 import re
 from time import sleep
 from urllib.error import HTTPError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 from .. import ValidationError
-from ..canonical import fingerprint
+from ..canonical import fingerprint, timestamp
 from .delivery import require, valid_message_id
 from .safety import safe_report
 from .deadline import RequestDeadline, DeadlineHTTPSHandler
@@ -25,15 +25,38 @@ from .deadline import RequestDeadline, DeadlineHTTPSHandler
 MAX_RESPONSE = 2 * 1024 * 1024
 # These responses reject the request; timeouts, conflicts and server errors
 # are intentionally absent. Never infer non-delivery from arbitrary diagnostics.
-REJECTED_HTTP = {400, 401, 403, 404, 405, 410, 413, 415, 422, 429}
+REJECTED_HTTP = {400, 401, 403, 404, 405, 410, 413, 415, 422}
 REJECTED_SLACK = {'channel_not_found', 'not_in_channel', 'invalid_auth', 'account_inactive',
                   'token_revoked', 'missing_scope', 'is_archived', 'msg_too_long', 'no_text',
-                  'invalid_arguments', 'invalid_blocks', 'restricted_action', 'ratelimited'}
+                  'invalid_arguments', 'invalid_blocks', 'restricted_action'}
 
 
 class TerminalRejection(ValidationError):
     def __init__(self):
         super().__init__('REPORT_PROVIDER_REJECTED')
+
+
+class Throttled(ValidationError):
+    """Safe numeric delay only; never carry provider diagnostics into state."""
+    def __init__(self, headers=None):
+        super().__init__('REPORT_PROVIDER_THROTTLED')
+        value = next((v for k, v in (headers or {}).items() if k.lower() == 'retry-after'), None)
+        # Both providers specify seconds. Missing/invalid values use 60 seconds;
+        # never sleep here or clip a large valid delay to an earlier retry.
+        self.seconds = 60
+        if isinstance(value, str) and re.fullmatch(r'[0-9]+', value):
+            self.seconds = max(1, int(value)) if len(value) <= 12 else 10**12
+
+
+def graph_next_link(url, resource):
+    """Compare decoded segments, never decode encoded path separators away."""
+    parsed, expected = urlsplit(url), urlsplit(resource)
+    require(parsed.scheme == 'https' and parsed.netloc == 'graph.microsoft.com'
+            and not parsed.fragment and not any(ord(c) < 32 for c in url)
+            and tuple(unquote(p, errors='strict') for p in parsed.path.split('/'))
+            == tuple(unquote(p, errors='strict') for p in expected.path.split('/')),
+            'REPORT_PAGINATION_ORIGIN')
+    return url
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -66,6 +89,8 @@ def http_json(method, url, headers, payload, *, timeout=15):
         require(isinstance(value, dict), 'REPORT_HTTP_RESPONSE_SHAPE')
         return value
     except HTTPError as error:
+        if error.code == 429:
+            raise Throttled(error.headers) from None
         if method == 'POST' and error.code in REJECTED_HTTP:
             raise TerminalRejection() from None
         raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
@@ -137,7 +162,11 @@ class BaseTransport:
             return raw
         except TerminalRejection:
             raise TerminalRejection() from None
+        except Throttled:
+            raise
         except HTTPError as error:
+            if error.code == 429:
+                raise Throttled(error.headers) from None
             if method == 'POST' and error.code in REJECTED_HTTP:
                 raise TerminalRejection() from None
             raise ValidationError('REPORT_HTTP_UNAVAILABLE') from None
@@ -148,9 +177,26 @@ class BaseTransport:
         # Inspect raw members before Teams HTML conversion can split a detected
         # credential across markup. Direct transport callers get the same guard.
         require(safe_report(intent, trusted_keys=True) == intent, 'REPORT_CREDENTIAL_WITHHELD')
-        marker = '\n\nAWF delivery: ' + intent['delivery_id'] + ' / ' + intent['payload_sha256']
-        value = intent['payload'] + marker
+        value = intent['payload'] + '\n\n' + self.marker(intent)
         return teams_html(value) if self.platform == 'teams' else value
+
+    @staticmethod
+    def marker(intent):
+        return 'AWF delivery: ' + intent['delivery_id'] + ' / ' + intent['payload_sha256']
+
+    def throttle(self, intent, attempt_id, error):
+        observed = self.clock()
+        now = timestamp(observed)
+        # Saturate at the last representable year, rather than retrying early
+        # on an overflowing provider value. Only canonical timestamps persist.
+        maximum = datetime(9999, 12, 31, tzinfo=timezone.utc)
+        delay = min(error.seconds, int((maximum - now).total_seconds()))
+        deadline = (now + timedelta(seconds=delay)).isoformat().replace('+00:00', 'Z')
+        return dict(status='THROTTLED', evidence_kind='PROVIDER_THROTTLE',
+                    delivery_id=intent['delivery_id'], platform=self.platform,
+                    destination=intent['binding']['destination'], payload_sha256=intent['payload_sha256'],
+                    attempt_id=attempt_id, observed_at=observed, retry_not_before=deadline,
+                    observation_id=fingerprint('report-throttle-1', [intent['delivery_id'], attempt_id, observed, deadline]))
 
     def evidence(self, intent, attempts, message_id):
         require(valid_message_id(self.platform, message_id), 'REPORT_PROVIDER_ID_INVALID')
@@ -189,6 +235,8 @@ class SlackTransport(BaseTransport):
     def api(self, method, path, secret, payload=None, **query):
         url = self.origin + path + ('?' + urlencode(query) if query else '')
         result = self.call(method, url, secret, payload)
+        if result.get('ok') is False and result.get('error') == 'ratelimited':
+            raise Throttled()
         if method == 'POST' and result.get('ok') is False and result.get('error') in REJECTED_SLACK:
             raise TerminalRejection()
         require(result.get('ok') is True, 'REPORT_SLACK_UNAVAILABLE')
@@ -213,6 +261,8 @@ class SlackTransport(BaseTransport):
             self.api('POST', 'chat.postMessage', secret, payload)
         except TerminalRejection:
             return self.rejection(intent, attempt_id)
+        except Throttled as error:
+            return self.throttle(intent, attempt_id, error)
 
     def _readback(self, intent, attempts, secret):
         cursor = None
@@ -224,7 +274,10 @@ class SlackTransport(BaseTransport):
                 query['cursor'] = cursor
             result = self.api('GET', 'conversations.replies' if intent.get('thread_id') else 'conversations.history', secret, **query)
             for message in result.get('messages', []):
-                if (message.get('text') == self.wire_text(intent) and message.get('user') == self.sender
+                if (isinstance(message.get('text'), str)
+                        and self.marker(intent) in message['text'].splitlines()
+                        and message.get('user') == self.sender
+                        and message.get('channel', intent['binding']['destination']) == intent['binding']['destination']
                         and isinstance(message.get('ts'), str) and message['ts']):
                     return self.evidence(intent, attempts, message['ts'])
             cursor = result.get('response_metadata', {}).get('next_cursor')
@@ -255,11 +308,22 @@ class TeamsTransport(BaseTransport):
         org = self.call('GET', self.origin + '/organization?$select=id', secret)
         actual_team = self.call('GET', team, secret)
         actual_channel = self.call('GET', team + '/channels/' + channel, secret)
-        members = self.call('GET', team + '/channels/' + channel + '/members', secret)
-        return (me.get('id') == self.sender and any(o.get('id') == self.context for o in org.get('value', []))
+        identity_valid = (me.get('id') == self.sender and any(o.get('id') == self.context for o in org.get('value', []))
                 and actual_team.get('id') == binding['destination'].split('/')[0]
-                and actual_channel.get('id') == binding['destination'].split('/')[1]
-                and any(m.get('userId') == self.sender for m in members.get('value', [])))
+                and actual_channel.get('id') == binding['destination'].split('/')[1])
+        if not identity_valid:
+            return False
+        resource = team + '/channels/' + channel + '/members'
+        url = resource
+        for _ in range(10):
+            members = self.call('GET', url, secret)
+            if any(m.get('userId') == self.sender for m in members.get('value', [])):
+                return True
+            url = members.get('@odata.nextLink')
+            if not url:
+                break
+            url = graph_next_link(url, resource)
+        return False
 
     def send(self, intent, attempt_id, secret):
         team, channel = self.route(intent['binding'])
@@ -273,6 +337,8 @@ class TeamsTransport(BaseTransport):
                       dict(body=dict(contentType='html', content=text)))
         except TerminalRejection:
             return self.rejection(intent, attempt_id)
+        except Throttled as error:
+            return self.throttle(intent, attempt_id, error)
 
     def _readback(self, intent, attempts, secret):
         team, channel = self.route(intent['binding'])
@@ -292,7 +358,5 @@ class TeamsTransport(BaseTransport):
             if not url:
                 break
             # Provider pagination may never move credentials off this resource.
-            parsed = urlsplit(url)
-            require(parsed.scheme == 'https' and parsed.netloc == 'graph.microsoft.com'
-                    and parsed.path == urlsplit(path).path, 'REPORT_PAGINATION_ORIGIN')
+            url = graph_next_link(url, path)
         return dict(status='UNKNOWN')

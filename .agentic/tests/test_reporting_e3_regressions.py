@@ -33,7 +33,7 @@ class Network(e2.ReportingNetwork):
             raise TimeoutError('synthetic outage')
         if method == 'POST' and self.reject:
             self.posts.append(('slack' if 'slack.com' in url else 'teams', deepcopy(payload)))
-            return dict(ok=False, error='ratelimited')
+            return dict(ok=False, error='invalid_arguments')
         return super().__call__(method, url, headers, payload)
 
 

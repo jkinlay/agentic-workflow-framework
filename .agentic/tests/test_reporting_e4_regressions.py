@@ -388,4 +388,3 @@ class HTTPSDeadlineTests(unittest.TestCase):
                     right.close()
                     worker.join(2)
                     self.assertTrue(lookup_done.wait(2))
-

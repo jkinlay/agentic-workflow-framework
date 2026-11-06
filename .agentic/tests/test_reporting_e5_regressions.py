@@ -13,6 +13,7 @@ import test_reporting_e3_regressions as e3
 from agentic import ValidationError
 from agentic.canonical import fingerprint
 from agentic.reporting.delivery import DeliveryOutbox
+from test_reporting_fixtures import slack_message, graph_message
 
 SENTINEL = 'gh' + 'p_' + 'SYNTHETIC_CREDENTIAL_SENTINEL'
 
@@ -72,10 +73,10 @@ class ThreadNetwork(e3.Network):
         if method == 'POST' and '/replies' in url:
             self.correction_urls.append(url)
         if 'conversations.replies' in url:
-            return dict(ok=True, messages=[dict(text=m['text'], user='sender', ts=str(i+1) + '.000001')
+            return dict(ok=True, messages=[slack_message(m, i)
                 for i, m in enumerate(self.messages['slack'])])
         if '/replies?' in url:
-            return dict(value=[dict(id=str(i+1), body=m['body'], **{'from': {'user': {'id': 'sender'}}})
+            return dict(value=[graph_message(m, i)
                 for i, m in enumerate(self.messages['teams'])])
         return value
 
