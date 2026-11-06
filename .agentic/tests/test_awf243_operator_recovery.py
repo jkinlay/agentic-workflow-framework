@@ -216,6 +216,8 @@ class OperatorRecoveryTests(unittest.TestCase):
             self.adopt()
         self.assertEqual(1, len(self.posted))
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_adopted_done_counts_after_policy_edit(self):
         self.fixture()
         self.before_status, self.after_status = '10119', '10120'
@@ -238,6 +240,8 @@ class OperatorRecoveryTests(unittest.TestCase):
         Path(self.config['observations']['jira_transition_directory'], self.record['record_id'] + '.json').write_text(
             json.dumps({'record': self.record}), encoding='utf-8')
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_owner_hold_observes_external_done_and_counts_without_post(self):
         self.fixture()
         self.labels = ['awf-fixture', 'release-1.9.6']
@@ -288,6 +292,8 @@ class OperatorRecoveryTests(unittest.TestCase):
         self.assertIn('ABANDON_NO_REPLAY', message)
         self.assertEqual(1, len(self.posted))
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_count_rechecks_owner_transition_without_post(self):
         self.fixture()
         self.labels = ['awf-fixture', 'release-1.9.6']
@@ -299,6 +305,8 @@ class OperatorRecoveryTests(unittest.TestCase):
         self.assertEqual('UNOBSERVED', self.merge()['jira_progress']['jira_state'])
         self.assertEqual([], self.posted)
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_rejected_done_abandon_then_owner_closure_counts_without_replay(self):
         self.fixture()
         self.before_status, self.after_status = '10119', '10120'
@@ -430,6 +438,8 @@ class OwnerClosureIdentityTests(unittest.TestCase):
                     'fixture-owner', '10120', '10118'))
                 self.refused_lifecycle(case, 'WORKER_STARTED')
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_r1_owner_only_history_refuses_count_after_identity_drift(self):
         for kind in self.identities:
             with self.subTest(identity=kind):
@@ -449,6 +459,8 @@ class OwnerClosureIdentityTests(unittest.TestCase):
                 self.assertIn('Owner closure history belongs to a different project/repository/issue binding or provider/controller actor', result['reason'])
                 self.assertEqual([], case.posted)
 
+    @regressions.skip_unless_source_repo(
+        "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
     def test_r1_reviewed_policy_edit_and_repeat_owner_observations_remain_idempotent(self):
         case = self.held()
         case.edit_config()
