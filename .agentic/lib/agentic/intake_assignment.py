@@ -249,8 +249,13 @@ def _ensure_jira_writes_allowed(state, ticket_key, store=None, *, restore_curren
         # protected current record before intake can admit another assignment.
         if isinstance(recovered, dict):
             verify_assignment_record(recovered)
+            cached = state.get("tier_assignments", {}).get(ticket_key)
+            receipt_fields = {"assignment_sha256", "jira", "jira_identity", "jira_expected", "jira_receipts"}
+            same_assignment = isinstance(cached, dict) and (
+                {key: value for key, value in cached.items() if key not in receipt_fields} ==
+                {key: value for key, value in recovered.items() if key not in receipt_fields})
             if (recovered.get("jira", {}).get("read_back_status") == "VERIFIED"
-                    and (restore_current or isinstance(stop, dict) and stop.get("writes_stopped") is True)):
+                    and (restore_current and not same_assignment or isinstance(stop, dict) and stop.get("writes_stopped") is True)):
                 state.setdefault("tier_assignments", {})[ticket_key] = copy.deepcopy(recovered)
                 state.setdefault("tier_assignment_history", {})[ticket_key] = copy.deepcopy(
                     protected["tier_assignment_history"][ticket_key])
@@ -450,7 +455,7 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
                       controller_actor_id, store=None):
     """Apply a trusted-owner change and retain its old/new audit everywhere."""
     store = store if store is not None else getattr(jira_client, 'controller_store', None)
-    _ensure_jira_writes_allowed(state, ticket_key, store)
+    _ensure_jira_writes_allowed(state, ticket_key, store, restore_current=True)
     current = state.get("tier_assignments", {}).get(ticket_key)
     if not isinstance(current, dict):
         raise ValidationError(f"No current review assignment for {ticket_key}")

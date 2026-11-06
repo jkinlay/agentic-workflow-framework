@@ -481,6 +481,10 @@ def catalog(*, include_ticket_plan=True):
         'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
         'changes': obj(calendar_changes, required=[], minProperties=1),
     })
+    schemas['operating-change']['properties']['owner_admission'] = obj({
+        'actor_id': integer(1), 'login': text(maxLength=39), 'type': const('User'),
+        'digest': DIGEST, 'request_id': UUID, 'confirmed_at': TIME,
+    })
     schemas["operating-epics"] = obj({
         "schema_version": const(1),
         "epics": {"type": "array", "maxItems": 1000, "items": obj({

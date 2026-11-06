@@ -1,11 +1,9 @@
 # AWF budgeting
 
-AWF-242 is Tier 3 with FULL closure. Fresh configuration has accounting/
-enforcement OFF, dormant limits exactly 4,000,000 tokens per ticket and
-1,000,000,000 per project lifetime. A limit enables neither switch; enforcement
-requires accounting, and disabling accounting disables enforcement. Missing
-budgeting fields preserve the legacy engine/reviewed limits; they never authorize
-disabling installed budgeting.
+AWF-242: Tier 3, FULL. Fresh accounting/enforcement OFF; dormant limits exactly
+4,000,000 tokens/ticket, 1,000,000,000/project lifetime. Limits enable neither
+switch; enforcement requires accounting; accounting OFF disables enforcement.
+Missing fields preserve legacy budgeting/reviewed limits.
 
 ## Operating choices and authenticated host boundary
 
@@ -26,31 +24,36 @@ disabling installed budgeting.
 Booleans are `true`/`false`; limits are positive integers within canonical JSON
 and SQLite bounds. Choices are project-wide, never Epic-scoped.
 
-Trusted host calls `set_operating(..., budget_registry=registry)` or injects it
-into `operating.main`. The standalone CLI cannot authenticate an owner and
-refuses mutations without this boundary. Chat text, `source: user`, actor string
-or caller-authored observation file is insufficient; no config field registers a
-trusted host.
+Echo/run `workflow.py operating set --instruction "REQUEST" --set
+budgeting.accounting_enabled=true`. Valid changes print exact changes/digest,
+store a protected proposal, exit 3 `PENDING_OWNER_CONFIRMATION`; settings stay
+unchanged. Owner runs `workflow.py operating confirm --digest D` in their
+terminal within 15 minutes, typing its first eight characters. The skill never
+runs confirm; after owner-reported completion, run `operating show` for persistence.
 
 Under lock, validate change before
 `EnrollmentRegistry.admit_owner_direction` consumes the observed direction. The
-observation binds immutable source identity, authenticated actor, project, prior
-settings hash and exact changes. Write to journal and append-only audit. Invalid
+observation binds project/repository, accepted governance, prior settings,
+exact changes, request ID and expiry. Journal/audit retain numeric owner ID,
+login, digest and time, never tokens. Invalid
 mixed changes alter neither settings nor consume observation. Pinned
 journal recovery handles interruption without replay; a crash after consumption
 before journalling requires a new observation.
 
-Host supplies authenticated owner/UI source. Fixtures verify
-protocol, not live Codex authentication. APIs grant no dispatch, merge/release
-authority.
+Confirm requires interactive stdin/stdout; refuses token environment variables
+and foreign `GH_HOST`. `gh auth status --hostname github.com --active` and
+`gh api --hostname github.com --method GET user` verify a User's numeric ID
+against reviewed `merge_gate.trusted_owner_ids`; empty refuses
+`OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`. No automatic
+enrollment. Chat supplies no assertion. This proves the machine's stored GitHub login
+and an interactive terminal. It does not defend against a process with the
+owner's full rights and a terminal of its own. No dispatch/merge authority follows.
 
 ## One usage ledger and explicit enrollment
 
-`RoutingLedger.model_runs` is canonical history. `BudgetLedger` enrolls rows, not
-a second ledger. Both check ticket and
-lifetime-project totals under that database's `BEGIN IMMEDIATE` transaction.
-History, including legacy rows, remains charged across days, restarts,
-policies and worktrees. Use one protected database; never switch databases
+`RoutingLedger.model_runs` is canonical history; `BudgetLedger` adds enrollment.
+Both check ticket/lifetime totals under `BEGIN IMMEDIATE`. Legacy history stays
+charged across days, restarts, policies and worktrees. Never switch databases
 to evade history.
 If that database has `budget_charges`, routing bridges
 each identity into `model_runs` in one write transaction. Rows remain
@@ -66,12 +69,11 @@ including ULTRA agents, are excluded; repository, model, process ancestry or
 worker-authored requests cannot establish enrollment. Protect state outside
 worktrees; path checks supplement isolation.
 
-For routed runs, call `RoutingLedger.reserve` with trusted
-`budget_registry` and `budget_binding`; its binding run ID is the ledger ID.
-Finish with `RoutingLedger.settle`, retaining model, effort, context and
-review-independence checks. The budget-only facade cannot settle routed runs or
-bypass checks. Host with operational checks may use `BudgetLedger.reserve/settle`.
-Never launch twice from an idempotent replay.
+Routed runs use `RoutingLedger.reserve` with trusted `budget_registry` and
+`budget_binding`; binding run ID equals ledger ID. `RoutingLedger.settle` retains
+model/effort/context/independence checks. The budget-only facade cannot settle
+routed runs or bypass checks. Operational hosts may use `BudgetLedger.reserve/settle`.
+Never launch twice on replay.
 
 State store accepts explicit `budgeting`, `budget_ledger`, `budget_binding`.
 Enabled usage goes to canonical facade; no second state-store reservation is
@@ -119,11 +121,7 @@ authorize qualified preservation with explicit budget disposition.
 Do not edit integrity-managed bytes, pins or receipts. Keep settings
 absent/legacy until adoption; never initialize fresh OFF settings over an upgrade.
 
-Controller/reference-adapter owners pass validated settings into lifecycle/state-
-store calls, enroll dispatches, use the same ledger and retain independent
-controls OFF. Review-host owners do likewise for critic/specialist runs, excluding
-the controller. Migration owners preserve old routing/state-store history/
-reservations before enabling totals. Live identity, usage and enforcement
-capability remain separate qualification evidence.
-Lane regenerates schemas/examples; orchestrator/release lane owns
-manifests/full candidate qualification.
+Controller/review hosts pass validated settings, enroll sub-agents, share the
+ledger and retain independent controls OFF. Migration preserves history/
+reservations before totals. Live identity/usage/enforcement require qualification.
+Lane regenerates schemas/examples; release lane owns manifests/qualification.

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import json
+import os
 import uuid
 import importlib.util
 import io
@@ -30,6 +31,9 @@ class ModeIntegrationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        environment = patch.dict(os.environ, {'AWF_STATE_HOME': str(self.root / 'host-state')})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.gov = governance()
         self.value = op.default_operating(self.gov['execution']['model_routing'])
 
@@ -136,7 +140,8 @@ class ModeIntegrationTests(unittest.TestCase):
             budget_registry=registry, budget_binding=binding)
         self.assertFalse(reserved['requires_host_limit_enforcement'])
         self.assertEqual(reserved['run_cap_signal'], 'OFF')
-        self.assertEqual(ledger.settle(reserved['run_id'], outcome(reserved, actual_tokens=5000))['status'], 'settled')
+        self.assertEqual(ledger.settle(reserved['run_id'], outcome(reserved, actual_tokens=5000,
+            observation_id='accounting-overrun-usage'))['status'], 'settled')
         self.assertEqual(BudgetLedger(ledger.path, registry).summary(binding['project_id'])['known_tokens'], 5000)
 
     def test_accounting_without_estimate_is_unknown_until_observed_and_never_refused_for_quota(self):

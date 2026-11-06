@@ -123,7 +123,7 @@ class CalendarSettingsRegistry(EnrollmentRegistry):
     crash requires a fresh observation; a retained journal uses pinned recovery.
     """
 
-    def admit_owner_direction(self, project_id, current, changes):
+    def admit_owner_direction(self, project_id, current, changes, *, validate_observation=None):
         _require(text_id(project_id), 'project_id must be a bounded identity')
         result = transition_calendar(current, changes)
         _require(self.host is not None and callable(getattr(self.host, 'observe_owner_direction', None)),
@@ -138,6 +138,8 @@ class CalendarSettingsRegistry(EnrollmentRegistry):
         _require(observed['project_id'] == project_id and observed['prior_settings_hash'] == prior
                  and encoded(observed['changes']) == encoded(changes),
                  'Owner observation must bind project, exact changes and prior settings hash')
+        if validate_observation is not None:
+            validate_observation(deepcopy(observed))
         with self.transaction('CREATE TABLE IF NOT EXISTS calendar_owner_observations '
                               '(observation_id TEXT PRIMARY KEY, observation TEXT NOT NULL);'
                               'CREATE TRIGGER IF NOT EXISTS calendar_observations_no_update '

@@ -162,7 +162,14 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
 
         source = self.tree()
         write_awf_source_fixture(source)
-        snapshot = mock.Mock(operating_hash="1" * 64, source="default", count=3)
+        snapshot = mock.Mock(operating_hash="1" * 64, source="default", count=3,
+                             config={"source": "default", "streams": {"count": 3},
+                                     "budgeting": {
+                                         "accounting_enabled": False,
+                                         "enforcement_enabled": False,
+                                         "max_tokens_per_ticket": 4_000_000,
+                                         "max_tokens_per_project": 1_000_000_000,
+                                     }})
         with mock.patch.object(operating_status, "validate_operating", return_value=snapshot):
             with mock.patch.object(operating_status, "operating_ceiling", return_value={}):
                 result = operating_status.with_operating(source, {}, report)

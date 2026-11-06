@@ -160,6 +160,68 @@ class CalendarPersistenceTests(unittest.TestCase):
                              epic_id='FIX-1', calendar_registry=self.registry())
         self.assertEqual(self.host.calls, [])
 
+    def test_calendar_audit_bound_precedes_observation_consumption(self):
+        route = self.value['streams']['A']['worker']
+        assignments = ['operating_calendar.eod.time=18:00'] + [
+            f'epic_overrides.FIX-{i}.streams.A.worker={route["model"]}/{route["reasoning_effort"]}'
+            for i in range(1, 66)]
+        with self.assertRaises(ValidationError):
+            self.set_calendar(*assignments)
+        self.assertEqual(self.host.calls, [])
+        self.assertEqual(op.read_operating(self.root, self.gov).config, self.value)
+        self.assertFalse((self.root / op.JOURNAL).exists())
+        self.set_calendar('operating_calendar.eod.time=18:00')
+        with self.registry().transaction('') as db:
+            rows = db.execute('SELECT observation_id FROM calendar_owner_observations').fetchall()
+        self.assertEqual([row[0] for row in rows], ['fixture-observation'])
+
+    def test_pending_budget_proposal_does_not_consume_calendar_observation(self):
+        from agentic.owner_admission import PendingOwnerConfirmation
+        with patch('agentic.owner_admission.propose', return_value={'status': 'PENDING_OWNER_CONFIRMATION'}), \
+                self.assertRaises(PendingOwnerConfirmation):
+            op.set_operating(self.root, self.gov, 'fixture mixed direction',
+                ['budgeting.max_tokens_per_ticket=5000000', 'operating_calendar.eod.time=18:00'],
+                calendar_registry=self.registry())
+        self.assertEqual(self.host.calls, [])
+        self.assertEqual(op.read_operating(self.root, self.gov).config, self.value)
+        self.assertFalse((self.root / op.JOURNAL).exists())
+
+    def test_invalid_budget_observation_does_not_consume_calendar_observation(self):
+        from agentic.budget_enrollment import EnrollmentRegistry
+        budget_host = FixtureHost()
+        budget_host.corrupt = True
+        budget_registry = EnrollmentRegistry(Path(self.temp.name) / 'budget.sqlite', budget_host, (self.root,))
+        with self.assertRaises(ValidationError):
+            op.set_operating(self.root, self.gov, 'fixture mixed direction',
+                ['budgeting.max_tokens_per_ticket=5000000', 'operating_calendar.eod.time=18:00'],
+                budget_registry=budget_registry, calendar_registry=self.registry())
+        self.assertEqual(self.host.calls, [])
+        self.assertEqual(op.read_operating(self.root, self.gov).config, self.value)
+
+    def test_mixed_admissions_share_one_recoverable_operating_event(self):
+        from agentic.budget_enrollment import EnrollmentRegistry
+        budget_registry = EnrollmentRegistry(Path(self.temp.name) / 'budget.sqlite', FixtureHost(), (self.root,))
+        original = op._new
+        def interrupt(tree, name, raw):
+            if name.startswith(op.STATE + '/changes/'):
+                raise OSError('fixture mixed interruption')
+            return original(tree, name, raw)
+        with patch.object(op, '_new', side_effect=interrupt), self.assertRaises(OSError):
+            op.set_operating(self.root, self.gov, 'fixture mixed direction',
+                ['budgeting.max_tokens_per_ticket=5000000', 'operating_calendar.eod.time=18:00'],
+                budget_registry=budget_registry, calendar_registry=self.registry())
+        pin = sha256((self.root / op.JOURNAL).read_bytes())
+        recovered = op.recover_operating(self.root, self.gov, pin)
+        self.assertEqual(recovered.config['budgeting']['max_tokens_per_ticket'], 5000000)
+        self.assertFalse(recovered.config['budgeting']['accounting_enabled'])
+        self.assertEqual(effective_calendar(recovered.config)['eod']['time'], '18:00')
+        events = list((self.root / op.STATE / 'changes').glob('*.json'))
+        self.assertEqual(len(events), 1)
+        event = json.loads(events[0].read_text())
+        self.assertIn('budget_owner_observation', event)
+        self.assertIn('calendar_owner_observation', event)
+        self.assertEqual(len(self.host.calls), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
