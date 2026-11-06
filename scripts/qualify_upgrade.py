@@ -568,7 +568,6 @@ def prepare_upgrade(source, project, pin, before):
         'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
         'operating_sha256': hashlib.sha256(operating_raw).hexdigest() if operating_raw is not None else None,
         'settings': settings,
-        'legacy_policy_sha256': hashlib.sha256(_json_identity(load_yaml(config_raw)['execution']).encode()).hexdigest(),
         'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED', 'owner_adoption_required': True}
     disposition_raw = (json.dumps(disposition, indent=2, ensure_ascii=False) + '\n').encode()
     disposition_path = '.agentic-state/upgrade/budgeting-1.9.6.json'

@@ -27,14 +27,14 @@ BUDGET_DISPOSITION = ".agentic-state/upgrade/budgeting-1.9.6.json"
 def budget_upgrade_disposition(config, operating, previous):
     """Record compatibility, never adopt fresh OFF defaults over an upgrade."""
     settings = load_yaml(operating).get('budgeting') if operating is not None else None
-    # The upgrade receipt's detected_version/steps retain the release path.
+    # The upgrade receipt's detected_version/steps and configuration diff retain
+    # provenance. The owner policy remains in PROJECT_CONFIG.yaml, not this record.
     # Compatibility state must converge for direct and chained upgrades.
     return {'format': 'awf-budget-upgrade-1',
             'target_version': '1.9.6',
             'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
             'operating_sha256': sha256(operating) if operating is not None else None,
             'settings': settings,
-            'legacy_policy_sha256': sha256(_canonical_manifest(load_yaml(config)['execution'])),
             'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED',
             # Retained working-tree settings prove no protected owner confirmation.
             'owner_adoption_required': True}

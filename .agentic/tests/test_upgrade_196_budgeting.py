@@ -24,6 +24,69 @@ PROJECT = '11111111-1111-4111-8111-111111111111'
 
 
 class BudgetDispositionTests(unittest.TestCase):
+    @skip_unless_source_repo('requires historical upgrade fixtures',
+                             '.agentic/tests/fixtures/upgrades/versions.json')
+    def test_fixture_configuration_paths_converge_and_preserve_custom_policy(self):
+        from agentic.canonical import load_yaml, sha256
+        from upgrade_fixtures import (CONFIG, INSTALLED, OPERATING, PROVENANCE,
+                                      NEXT, fixture_blob, fixture_index, fixture_manifest)
+
+        table = upgrade.load_known_versions((ROOT / '.agentic/upgrade/known-versions.json').read_bytes())
+        manifest_raw = (ROOT / 'MANIFEST.json').read_bytes()
+        target = {'source_manifest_sha256': sha256(manifest_raw), '_immutable_files': {}}
+        # Only configuration/compatibility bytes are under test here. The full
+        # matrix separately exercises real receipts, installed trees and state.
+        for version in fixture_index()['versions']:
+            fixture = fixture_manifest(version)
+            owner = fixture['owner_files']
+            def raw(path):
+                return fixture_blob(owner[path]['sha256']) if path in owner else None
+
+            results = []
+            for customized in (False, True):
+                with self.subTest(version=version, customized=customized):
+                    config = raw(CONFIG)
+                    if customized:
+                        value = load_yaml(config)
+                        value['execution']['max_agent_runs_per_ticket'] = 7
+                        value['execution']['max_tokens_per_ticket'] = 123456
+                        config = (json.dumps(value, indent=2) + '\n').encode()
+                    original_execution = load_yaml(config)['execution']
+                    inputs = (config, raw(OPERATING), raw(INSTALLED), raw(PROVENANCE), {})
+                    direct, _ = upgrade.apply_chain(table, version, *inputs, target)
+                    results.append(direct.project_config)
+                    chained = upgrade.MigrationBundle(*inputs)
+                    cursor = version
+                    while NEXT[cursor] != table['target']:
+                        following = NEXT[cursor]
+                        chained = upgrade.migrate_step(chained, cursor, following,
+                                                       table['versions'][following])
+                        cursor = following
+                    direct_record = upgrade.budget_upgrade_disposition(config, raw(OPERATING), version)
+                    chained_record = upgrade.budget_upgrade_disposition(
+                        chained.project_config, chained.operating_config, cursor)
+                    # Compare every field and the exact serialized record, so
+                    # newly introduced path-dependent values cannot hide here.
+                    self.assertEqual(set(direct_record), set(chained_record))
+                    for field in direct_record:
+                        with self.subTest(field=field):
+                            self.assertEqual(direct_record[field], chained_record[field])
+                    self.assertEqual(json.dumps(direct_record, indent=2),
+                                     json.dumps(chained_record, indent=2))
+                    final, _ = upgrade.apply_chain(table, cursor, chained.project_config,
+                        chained.operating_config, chained.receipt, chained.provenance, {}, target)
+                    self.assertEqual(direct.project_config, final.project_config)
+                    self.assertEqual(raw(OPERATING), final.operating_config)
+                    final_execution = load_yaml(final.project_config)['execution']
+                    for field in ('max_agent_runs_per_ticket', 'max_tokens_per_ticket'):
+                        self.assertEqual(original_execution[field], final_execution[field])
+                    self.assertTrue(direct_record['owner_adoption_required'])
+            # A real owner policy difference remains visible in the upgraded
+            # configuration and its policy identity, rather than in path history.
+            self.assertNotEqual(results[0], results[1])
+            self.assertNotEqual(sha256(upgrade._canonical_manifest(load_yaml(results[0])['execution'])),
+                                sha256(upgrade._canonical_manifest(load_yaml(results[1])['execution'])))
+
     def test_compatibility_state_is_independent_of_source_release(self):
         config = b'{"execution": {"max_agent_runs_per_ticket": 16}}'
         for operating in (None, b'{"budgeting": {"accounting_enabled": false}}'):
@@ -32,6 +95,7 @@ class BudgetDispositionTests(unittest.TestCase):
                            for version in ('1.8.3', '1.8.9', '1.9.1', '1.9.2',
                                            '1.9.3', '1.9.4', '1.9.5')]
                 self.assertNotIn('source_version', records[0])
+                self.assertNotIn('legacy_policy_sha256', records[0])
                 self.assertEqual(1, len({json.dumps(record, indent=2) for record in records}))
                 self.assertTrue(records[0]['owner_adoption_required'])
                 self.assertEqual('EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED', records[0]['history_import'])

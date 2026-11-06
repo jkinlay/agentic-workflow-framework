@@ -160,7 +160,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/status_report_store.py` | `7d370b9e7be30f7518367639d52bb5e76eb02cfb2f172d7db73f3a6cfac8b512` |
 | `.agentic/lib/agentic/store.py` | `2ff68b646dcc89db3ac2da15411e78a35ce9747c3d996555ac729e083ffdb810` |
 | `.agentic/lib/agentic/streams.py` | `a51408255f4d1a1ea673bb1191d23e254a6e0296f6821e72b1e0a4d285512b9a` |
-| `.agentic/lib/agentic/upgrade.py` | `ff553659baf6ed50d96fa8f9afd2c84079ee4c9695d4d50fd8ec7a90344cf547` |
+| `.agentic/lib/agentic/upgrade.py` | `afef4e9bba17446702a1b6a874af38e2660d1efae8ae816c2ab16d605ba1e830` |
 | `.agentic/prompts/amendment.md` | `3c4e677a63693f40356b43507c4f2457bf8caeb48db3233f8a38fc8c8ada9d6f` |
 | `.agentic/prompts/controller.md` | `ab3eda9ec5817da6e3c0323587117918986a5fc9be8b150c3dc15fa0878feb4a` |
 | `.agentic/prompts/critic.md` | `bb7069683bd79bc8ec53fc7ef5b5759a986b8ff2cac4c16936a6ecd3663653e1` |
@@ -485,7 +485,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_upgrade_195_recovery.py` | `df5f3ed6bb6ce19cd3b7e613c42382d71e5c46c898d678ac15558a1b3038cba5` |
 | `.agentic/tests/test_upgrade_196.py` | `3829f9852f85f106f2f894566cf00115a4111670da3e3236e75c763c6a8c5a9d` |
 | `.agentic/tests/test_upgrade_196_archives.py` | `3fbeaeacdba1f3f59def003b10691d1d2378f725a0576aebd16dbd9305bac2f1` |
-| `.agentic/tests/test_upgrade_196_budgeting.py` | `6d8daf030a9b725f3648bea04ea9617cdb5a9fc98deb86b076aecfb9ca8d4bb2` |
+| `.agentic/tests/test_upgrade_196_budgeting.py` | `ef03bf176eaddea8a68fe42367f59078e4f63f303e4d0a85732ae62e8d56b594` |
 | `.agentic/tests/test_upgrade_journal.py` | `8f748ab6d2a7bf9c2419b7b5a19a8c4a561e0bc44b6a77d925d97987f2023b40` |
 | `.agentic/tests/test_upgrade_matrix.py` | `8fe0be683806135c04863c00c8acbf110d54975127b0759fd64a0c112eecfbf7` |
 | `.agentic/tests/test_upgrade_pycache.py` | `1d09c8b67c2321a67f82e2f09ddf1191ab0e015425ee5a359e0e305343cdaadd` |
@@ -651,7 +651,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/prompt_templates/worker.md` | `3f727448e713e52341c6a27aa061b79447869fde020fc0978f07eb25d7e26b79` |
 | `scripts/publish_catalog.py` | `edcade1a8b59ff546527e11925997555aa9e646def09e2e82ef97b2934879dcc` |
 | `scripts/publish_release.py` | `1a285001d345b8b4e9d70c8fac3d4c88e7244b87894ed472dab87715bdfb8a1a` |
-| `scripts/qualify_upgrade.py` | `f471fa1918c61dc94ca6fdf825489756977023152fff29a4b82b9d6f06a5a062` |
+| `scripts/qualify_upgrade.py` | `129731fe0dbfdecb3b7e96644110800c0f95cd08232a4e66f03b91dc6f593c2e` |
 | `scripts/release_hygiene.py` | `d2c1c97c1b2699ebf38cf2d9521bcdbcef5cb45bf29a65c44f1952c98d21a886` |
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
 | `scripts/release_review.py` | `e2b452f19c52a4f61671bd6b47342d3385f98e109e5663a1d4162f577d95e089` |
