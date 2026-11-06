@@ -18,19 +18,19 @@ Missing fields preserve legacy budgeting/reviewed limits.
 }
 ```
 
-Set `budgeting.*` booleans/positive integers within JSON/SQLite bounds.
+Set `budgeting.*` booleans/positive integers within bounds.
 
 Run `workflow.py operating set --instruction "REQUEST" --set
 budgeting.accounting_enabled=true`. Valid changes print exact changes/digest,
 store a protected proposal, exit 3 `PENDING_OWNER_CONFIRMATION`; settings stay
 unchanged. Owner runs `workflow.py operating confirm --digest D` in their
-terminal within 15 minutes, typing its first eight characters. The skill never
-runs confirm; after owner-reported completion, run `operating show` for persistence.
+terminal within 15 minutes, typing its first eight characters. Skills never
+confirm; verify persistence with `operating show`.
 
-Proposals bind clone/project/repository/governance, prior settings, exact changes, request/expiry.
-Confirmation consumes direction, retaining protected digests. Audit: numeric owner ID/login/digest/time, never tokens. Register journal SHA-256/event ID once
+Proposals bind clone/project/repository/governance, prior settings, changes, request/expiry.
+Confirmation retains protected digests. Audit: numeric owner ID/login/digest/time, never tokens. Register journal SHA-256/event ID once
 in protected storage within 15 minutes, before publication/configuration changes.
-Later confirmations supersede unapplied transactions. Recovery
+Confirmations supersede unapplied transactions. Recovery
 finishes the latest registered transaction extending bound prior
 settings, or clears its terminal journal without reapplying; it never renews
 authority. Before journal publication, unchanged settings permit fresh `set`/`confirm`;
@@ -39,20 +39,19 @@ derived enforcement OFF too.
 
 Owner storage uses the Windows current token's account SID and HKLM ProfileList
 ProfileImagePath plus AppData/Local, or POSIX password-database home, outside worker
-writes. No flag/variable/file selects it; AWF_STATE_HOME, LOCALAPPDATA, USERPROFILE and HOME cannot.
+writes. No override selects it; AWF_STATE_HOME, LOCALAPPDATA, USERPROFILE and HOME cannot.
 Usage state may use AWF_STATE_HOME; deny worker writes.
 
 Budget admission/recovery/controller/routing require protected confirmation;
 schema validation supplies none. Latest confirmed values bind even defaults/absent blocks.
-With no resolvable store/confirmation, fresh OFF/default dormant limits and absent
-legacy blocks load; nondefaults refuse budget work. Unavailable profiles, junctions
+Loads never inspect Git/gh executables. Without a store/confirmation, fresh OFF
+defaults and absent legacy blocks load; unconfirmed nondefaults refuse budget work. Unavailable profiles, junctions
 or missing password-database entries never brick defaults. New protected changes
 refuse with the reason. OFF needs no usage ledger.
 
-Binding hashes the resolved Git common directory from `git rev-parse --git-common-dir`;
-accepted project ID only cross-checks. Editable repository/project IDs cannot hide
-confirmations. Worktrees share them; moved/fresh clones and copies need fresh
-confirmation. Ignore Git environment overrides; gitfiles require registered metadata readonly to the caller. Without Git, protected changes refuse. The host must deny worker Git-metadata
+Binding hashes the Git common directory read from metadata;
+project ID cross-checks. Editable IDs cannot hide confirmations. Worktrees share them; moved/fresh clones and copies need fresh
+confirmation. Ignore Git environment overrides; gitfiles require registered backlinks outside sandbox write authority. Without Git, protected changes refuse. The host must deny worker Git-metadata
 writes/replacement: binding protects clone identity under that isolation, not processes
 able to replace it.
 
@@ -70,10 +69,12 @@ Confirm requires interactive stdin/stdout (Windows console handles, excluding
 NUL/pipes/files); refuses token environment variables and foreign `GH_HOST`.
 `gh auth status --hostname github.com --active` and
 `gh api --hostname github.com --method GET user` verify a User's numeric ID
-against reviewed `merge_gate.trusted_owner_ids`; empty refuses
-`OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`. Resolve native `gh` once; refuse scripts/worker-writable locations using token/sandbox-group
-file/directory rights; volume-root grants alone cannot establish replacement. Audit path/SHA-256.
-This proves stored GitHub login/interactive terminal. `trusted_owner_ids` comes from the working tree:
+against `merge_gate.trusted_owner_ids`; empty refuses
+`OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`. Resolve native `gh` once; refuse scripts/worker-writable locations using sandbox-group/capability SID
+file/directory grants; owner/admin token rights are not disqualifying. Without sandbox
+principals this check passes, including POSIX. Owner-writable clones pass; volume-root grants alone
+cannot establish replacement. Audit path/SHA-256.
+`trusted_owner_ids` comes from the working tree:
 a process editing it still needs that terminal/login. A process with the
 owner's full rights can still get around this. No execution authority.
 

@@ -75,27 +75,28 @@ protected `--initialize` refuses. Owner runs `workflow.py operating confirm
 --digest D` within 15 minutes in their terminal; type eight digest characters.
 Skills never confirm; verify with `show`.
 
-Stored GitHub User login requires its numeric ID in `merge_gate.trusted_owner_ids`;
+GitHub User ID matches `merge_gate.trusted_owner_ids`;
 empty refuses `OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`.
 Token variables, foreign GH_HOST, noninteractive streams refuse. Windows requires
 console handles; NUL/pipes/files refuse. Resolve `gh` once; scripts and effective
-worker modification/replacement rights refuse with their reason. Audit retains
+sandbox-group/capability modification/replacement grants refuse; owner/admin
+rights do not. Without sandbox principals this check passes. Audit retains
 path/SHA-256. Repository/governance/prior-settings/exact-change mismatches
 and replay refuse. Consume/journal/audit/readback under lock.
 
 Confirmations use protected OS-account storage: Windows token SID/HKLM ProfileList
 ProfileImagePath plus AppData/Local; POSIX password-database home.
 AWF_STATE_HOME, LOCALAPPDATA, USERPROFILE and HOME cannot select it.
-Binding hashes the resolved Git common directory from `git rev-parse --git-common-dir`;
-project ID only cross-checks. Editable repository/project IDs cannot hide confirmations.
-Worktrees share confirmations; moved/fresh clones and copies confirm afresh.
-Ignore Git environment overrides; gitfiles require registered metadata readonly to the caller.
+Binding hashes the Git common directory read from metadata;
+project ID only cross-checks. Editable IDs cannot hide confirmations.
+Worktrees share confirmations; other clones confirm afresh.
+Ignore Git environment overrides; gitfiles require registered backlinks outside sandbox write authority.
 Deny worker Git-metadata writes/replacement; binding protects clone identity,
 not against processes able to replace that boundary. Without Git, protected changes refuse.
 
-With no resolvable store/confirmation, fresh OFF/default dormant limits and absent
-legacy blocks load; nondefaults refuse budget admission. Protected changes
-refuse with storage/Git reasons. OFF needs no usage ledger.
+Loads never inspect Git/gh executables. Without a store/confirmation, fresh
+OFF/default dormant limits and absent legacy blocks load; nondefaults refuse budget admission. Protected changes
+report storage/Git refusals. OFF needs no usage ledger.
 Older checkouts/mismatches remain readable: show/validation report settings differing
 from this clone's latest confirmation; unrelated changes work, budget work refuses.
 Proposals report pending. Budgeting choices/confirmation repair admission

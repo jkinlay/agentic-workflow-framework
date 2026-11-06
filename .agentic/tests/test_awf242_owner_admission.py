@@ -187,6 +187,8 @@ class OwnerAdmissionTests(unittest.TestCase):
                 'if hasattr(admission, "_worker_writable"):\n'
                 ' original_writable=admission._worker_writable\n'
                 f' admission._worker_writable=lambda p: False if not {real_permissions!r} and p==Path({str(self.native)!r}) else original_writable(p)\n'
+                'admission._git_executable=lambda:sys.executable\n'
+                'admission._sandbox_group_rights=lambda p:0\n'
                 'original_run=admission.subprocess.run\n'
                 'def fake_run(args,**kwargs):\n'
                 f' if Path(args[0])==Path({str(self.native)!r}): args=[sys.executable,"-B",{str(self.fake)!r},*args[1:]]\n'
@@ -198,46 +200,16 @@ class OwnerAdmissionTests(unittest.TestCase):
                     'admission._owner_state_home=no_profile\n')
             if python311_lookup:
                 wrapper += ('original_which=admission.shutil.which\n'
-                    'def qualified_which(p):\n'
+                    'def qualified_which(p,**kwargs):\n'
                     ' if admission.os.name=="nt" and Path(p).suffix.lower()!=".exe": return None\n'
-                    ' return original_which(p)\n'
+                    ' return original_which(p,**kwargs)\n'
                     'admission.shutil.which=qualified_which\n')
             if ancestor_replace:
-                wrapper += ('import ctypes\nfrom types import SimpleNamespace\n'
-                    'admission._sandbox_group_rights=lambda p:0\n'
-                    f'probe=Path({str(self.native)!r})\n'
-                    'def open_probe(path,access,*args):\n'
-                    ' if (Path(path)==probe.parent and access==0x10000) or (Path(path)==probe.parent.parent and access==4): return 123\n'
-                    ' ctypes.set_last_error(5); return ctypes.c_void_p(-1).value\n'
-                    'kernel_probe=SimpleNamespace(CreateFileW=open_probe,CloseHandle=lambda h:True)\n'
-                    'writable_probe=admission._worker_writable\n'
-                    'def ancestor_writable(path):\n'
-                    ' if path!=probe: return writable_probe(path)\n'
-                    ' dll=ctypes.WinDLL\n'
-                    ' try:\n'
-                    '  ctypes.WinDLL=lambda *a,**k:kernel_probe\n'
-                    '  return writable_probe(path)\n'
-                    ' finally: ctypes.WinDLL=dll\n'
-                    'admission._worker_writable=ancestor_writable\n')
+                wrapper += (f'probe=Path({str(self.native)!r})\n'
+                    'admission._sandbox_group_rights=lambda p: 0x10000 if p==probe.parent else 4 if p==probe.parent.parent else 0\n')
             if root_delete_only:
-                wrapper += ('import ctypes\nfrom types import SimpleNamespace\n'
-                    'admission._sandbox_group_rights=lambda p:0\n'
-                    'admission._object_delete_access=lambda p:False\n'
-                    f'probe=Path({str(self.native)!r})\n'
-                    'def open_probe(path,access,*args):\n'
-                    ' p=Path(path)\n'
-                    ' if (p.parent==Path(p.anchor) and access==0x10000) or (p==Path(p.anchor) and access==4): return 123\n'
-                    ' ctypes.set_last_error(5); return ctypes.c_void_p(-1).value\n'
-                    'kernel_probe=SimpleNamespace(CreateFileW=open_probe,CloseHandle=lambda h:True)\n'
-                    'writable_probe=admission._worker_writable\n'
-                    'def volume_writable(path):\n'
-                    ' if path!=probe: return writable_probe(path)\n'
-                    ' dll=ctypes.WinDLL\n'
-                    ' try:\n'
-                    '  ctypes.WinDLL=lambda *a,**k:kernel_probe\n'
-                    '  return writable_probe(path)\n'
-                    ' finally: ctypes.WinDLL=dll\n'
-                    'admission._worker_writable=volume_writable\n')
+                wrapper += (f'probe=Path({str(self.native)!r})\n'
+                    'admission._sandbox_group_rights=lambda p: 0x40 if p==Path(probe.anchor) else 0\n')
             if tty in (True, 'stdin'):
 
                 wrapper += ('class Terminal(io.StringIO):\n def isatty(self): return True\n'
@@ -976,6 +948,8 @@ class OwnerAdmissionTests(unittest.TestCase):
         wrapper = ('import sys,runpy\nfrom pathlib import Path\n'
             f'sys.path.insert(0,{str(self.root / ".agentic/lib")!r})\n'
             'import agentic.owner_admission as admission\n'
+            'admission._git_executable=lambda:sys.executable\n'
+            'admission._sandbox_group_rights=lambda p:0\n'
             f'admission._owner_state_home=lambda:Path({str(owner_home or self.fixture.base / "protected")!r})\n')
         if owner_error:
             wrapper += f'def no_profile():\n raise {owner_error}\nadmission._owner_state_home=no_profile\n'
@@ -1033,12 +1007,9 @@ class OwnerAdmissionTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows installation ACL regression')
     def test_normal_native_install_uses_effective_file_permissions(self):
-        native = shutil.which('gh.exe')
-        if native is None:
-            self.skipTest('No native gh installation available for read-only ACL probe')
-        self.native = Path(native).resolve()
+        # Controlled native bytes/ACL grants; the runner's installation is irrelevant.
         digest = self.pending()
-        # Real binary/ACL/resolver, fake identity subprocess. Never execute gh.
+        # Real binary/resolver, controlled sandbox grants and identity subprocess.
         result = self.confirm(digest, real_permissions=True,
             env={**self.env, 'PATH': str(self.native.parent)})
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
@@ -1261,12 +1232,17 @@ class OwnerAdmissionTests(unittest.TestCase):
         self.assertFalse(json.loads(shown.stdout)['budget_admission'])
 
     def test_r17_worker_created_gitfile_target_is_refused(self):
+        self.git('config', 'core.autocrlf', 'false')
         self.git('add', '-A')
         self.git('commit', '-qm', 'defaults')
         checkout = self.fixture.base / 'worker-checkout'
         self.git('worktree', 'add', '-q', str(checkout), '-b', 'worker')
-        # Even genuine registration is insufficient when its common directory
-        # remains worker-writable; a worker could fabricate all these bytes.
+        # A missing backlink is unconditionally refused, even without sandbox
+        # principals. Avoid machine-specific owner ACLs and checkout EOL changes.
+        admin = Path((checkout / '.git').read_text().strip()[8:])
+        (admin / 'gitdir').write_text(str(self.root / '.git'))
+        for relative in ('.agentic/lib/agentic/owner_admission.py',):
+            self.assertEqual((self.root / relative).read_bytes(), (checkout / relative).read_bytes())
         result = self.cli('set', '--instruction', 'enable', '--set', 'budgeting.accounting_enabled=true',
                           '--json', root=checkout)
         self.assertEqual(2, result.returncode, result.stdout + result.stderr)

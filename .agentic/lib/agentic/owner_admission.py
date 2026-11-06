@@ -111,12 +111,12 @@ class OwnerConfirmationRequired(ValidationError):
     status = 'OWNER_CONFIRMATION_REQUIRED'
 
 
-def git_common_identity(root):
-    """Resolve this checkout explicitly, ignoring every caller GIT_* override.
+def _git_metadata_identity(root):
+    """Read clone identity without consulting or executing Git/gh at load.
 
-    A linked checkout needs a protected common directory and its registered
-    backlink. Ordinary .git directories rely on the host's Git-metadata sandbox
-    boundary; replacing that boundary is outside this mechanism's authority.
+    Ordinary directories rely on the host metadata boundary. Linked checkouts
+    additionally require registered backlinks outside sandbox write authority.
+    The owner's own metadata rights are deliberately outside this boundary.
     """
     from .path_containment import is_reparse_point
     root = Path(root).resolve(strict=True)
@@ -126,28 +126,40 @@ def git_common_identity(root):
     try:
         require(not is_reparse_point(marker) and marker.exists(), message)
         if marker.is_dir():
-            admin = marker.resolve(strict=True)
+            require(not (marker / 'commondir').exists(), message)
+            common = marker.resolve(strict=True)
         else:
             raw = marker.read_text(encoding='utf-8').strip()
             require(raw.startswith('gitdir: ') and '\n' not in raw, message)
             admin = (root / raw[8:]).resolve(strict=True)
-        executable = _git_executable()
-        require(executable is not None and _native_executable(Path(executable))
-                and not _worker_writable(Path(executable)), message + '; a protected native git executable is required')
-        result = subprocess.run([executable, '--git-dir=' + str(admin), '--work-tree=' + str(root),
-                                 'rev-parse', '--git-common-dir'], cwd=root, env=child_env(isolated_git_env()),
-                                capture_output=True, text=True, timeout=15, check=False)
-        require(result.returncode == 0 and result.stdout.strip(), message)
-        common = (root / result.stdout.strip()).resolve(strict=True)
-        require(common.is_dir() and not any(is_reparse_point(p) for p in (common, *common.parents)), message)
-        if marker.is_file() or admin != common:
+            relative = (admin / 'commondir').read_text(encoding='utf-8').strip()
+            require(relative and '\n' not in relative, message)
+            common = (admin / relative).resolve(strict=True)
             require(admin.parent == common / 'worktrees'
                     and Path((admin / 'gitdir').read_text(encoding='utf-8').strip()).resolve(strict=True) == marker, message)
             require(all(not is_reparse_point(member) and not _git_directory_writable(member)
                         for member in (common, common / 'worktrees', admin, admin / 'commondir', admin / 'gitdir')), message)
+        require(common.is_dir() and not any(is_reparse_point(p) for p in (common, *common.parents)), message)
         return sha256(os.path.normcase(str(common)).encode('utf-8'))
-    except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+    except (OSError, UnicodeError) as exc:
         raise ValidationError(message) from exc
+
+
+def git_common_identity(root):
+    """Admission checks the native Git installation; loads only read metadata."""
+    from .budgeting import protected_state_roots
+    from .path_containment import is_within
+    identity = _git_metadata_identity(root)
+    executable = _git_executable()
+    message = 'OWNER_GIT_IDENTITY_UNAVAILABLE: a protected native git executable is required'
+    try:
+        require(executable is not None and Path(executable).is_absolute(), message)
+        path = Path(executable).resolve(strict=True)
+        require(not any(is_within(path, p) for p in protected_state_roots(root))
+                and _native_executable(path) and not _worker_writable(path), message)
+    except OSError as exc:
+        raise ValidationError(message) from exc
+    return identity
 
 
 def _git_executable():
@@ -168,23 +180,9 @@ def _git_executable():
 
 
 def _git_directory_writable(path):
-    """Check metadata creation/replacement rights, without touching Git bytes."""
-    if os.name != 'nt':
-        return os.access(path, os.W_OK)
-    import ctypes
-    from ctypes import wintypes
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
-    kernel.CreateFileW.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-    for access in (2, 4, 0x10000, 0x40000, 0x80000):
-        handle = kernel.CreateFileW(str(path), access, 7, None, 3, 0x02000000, None)
-        if handle != wintypes.HANDLE(-1).value:
-            kernel.CloseHandle(handle)
-            return True
-        require(ctypes.get_last_error() == 5, 'OWNER_GIT_IDENTITY_UNAVAILABLE: cannot inspect Git directory access')
-    return bool(_sandbox_group_rights(path) & (2 | 4 | 0x10000 | 0x40000 | 0x80000))
+    """Only sandbox principals can disqualify metadata, never owner rights."""
+    return os.name == 'nt' and (bool(_sandbox_group_rights(path) & (2 | 4 | 0x40 | 0x10000 | 0x40000 | 0x80000))
+                                or _worker_writable(path))
 
 
 def _latest_confirmation(db, governance):
@@ -296,7 +294,7 @@ class ProposalStore(ProtectedDatabase):
     """Durable proposals and single-use admissions, independent of budget usage."""
     @classmethod
     def for_project(cls, root, project_id):
-        identity = git_common_identity(root)
+        identity = _git_metadata_identity(root)
         try:
             home = _owner_state_home()
         except KeyError as exc:
@@ -469,10 +467,10 @@ def _require_stored_login_environment():
 
 
 def _sandbox_group_rights(path):
-    """Read effective explicit sandbox-group ACL rights, even in an owner token.
+    """Read sandbox group/capability grants without using the current token.
 
-    The Windows Codex group need not exist on other hosts. This complements
-    current-token checks; it neither creates a token nor changes permissions.
+    An absent Codex group contributes no rights. Capability SIDs named by the
+    DACL are also sandbox principals, including on hosts without that group.
     """
     import ctypes
     from ctypes import wintypes
@@ -486,15 +484,39 @@ def _sandbox_group_rights(path):
         ctypes.POINTER(ctypes.c_void_p))
     api.GetEffectiveRightsFromAclW.argtypes = (ctypes.c_void_p, ctypes.POINTER(TRUSTEE),
                                              ctypes.POINTER(wintypes.DWORD))
+    api.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = (
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p)
+    api.ConvertStringSidToSidW.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p))
     kernel.LocalFree.argtypes = (ctypes.c_void_p,)
     acl, descriptor, rights = ctypes.c_void_p(), ctypes.c_void_p(), wintypes.DWORD()
     require(api.GetNamedSecurityInfoW(str(path), 1, 4, None, None, ctypes.byref(acl), None,
             ctypes.byref(descriptor)) == 0, 'GITHUB_AUTH_UNAVAILABLE: cannot inspect gh ACL; restore read access to the native installation ACL')
     try:
-        trustee = TRUSTEE(None, 0, 1, 2, 'CodexSandboxUsers')
-        error = api.GetEffectiveRightsFromAclW(acl, ctypes.byref(trustee), ctypes.byref(rights))
-        require(error in (0, 1332), 'GITHUB_AUTH_UNAVAILABLE: cannot inspect sandbox group rights; repair the native installation ACL')
-        value = rights.value if error == 0 else 0
+        text = ctypes.c_void_p()
+        require(api.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, 1, 4, ctypes.byref(text), None),
+            'GITHUB_AUTH_UNAVAILABLE: cannot inspect sandbox capability ACL')
+        try:
+            capabilities = set(re.findall(r'S-1-15-3-(?:\d+-)*\d+', ctypes.wstring_at(text)))
+        finally:
+            kernel.LocalFree(text)
+        value = 0
+        for principal in ('CodexSandboxUsers', *sorted(capabilities)):
+            sid = ctypes.c_void_p()
+            try:
+                if principal in capabilities:
+                    require(api.ConvertStringSidToSidW(principal, ctypes.byref(sid)),
+                            'GITHUB_AUTH_UNAVAILABLE: cannot inspect sandbox capability SID')
+                trustee = TRUSTEE(None, 0, 0 if sid.value else 1, 2,
+                                  ctypes.cast(sid, wintypes.LPWSTR) if sid.value else principal)
+                rights.value = 0
+                error = api.GetEffectiveRightsFromAclW(acl, ctypes.byref(trustee), ctypes.byref(rights))
+                require(error in (0, 1332), 'GITHUB_AUTH_UNAVAILABLE: cannot inspect sandbox principal rights; repair the native installation ACL')
+                value |= rights.value if error == 0 else 0
+            finally:
+                if sid.value:
+                    kernel.LocalFree(sid)
         if value & 0x10000000:  # GENERIC_ALL
             value |= 0x1f01ff
         if value & 0x40000000:  # GENERIC_WRITE
@@ -504,105 +526,28 @@ def _sandbox_group_rights(path):
         kernel.LocalFree(descriptor)
 
 
-def _object_delete_access(path):
-    """Check the object's own DACL, excluding parent DELETE_CHILD grants."""
-    import ctypes
-    from ctypes import wintypes
-    class Mapping(ctypes.Structure):
-        _fields_ = [('read', wintypes.DWORD), ('write', wintypes.DWORD),
-                    ('execute', wintypes.DWORD), ('all', wintypes.DWORD)]
-    api = ctypes.WinDLL('advapi32', use_last_error=True)
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    api.GetNamedSecurityInfoW.argtypes = (wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p))
-    api.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
-    api.DuplicateToken.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.POINTER(wintypes.HANDLE))
-    api.AccessCheck.argtypes = (ctypes.c_void_p, wintypes.HANDLE, wintypes.DWORD,
-        ctypes.POINTER(Mapping), ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
-        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.BOOL))
-    kernel.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-    kernel.LocalFree.argtypes = (ctypes.c_void_p,)
-    descriptor, token, impersonation = ctypes.c_void_p(), wintypes.HANDLE(), wintypes.HANDLE()
-    message = 'GITHUB_AUTH_UNAVAILABLE: cannot inspect directory replacement ACL; repair native installation permissions'
-    require(api.GetNamedSecurityInfoW(str(path), 1, 7, None, None, None, None,
-                                    ctypes.byref(descriptor)) == 0, message)
-    try:
-        require(api.OpenProcessToken(kernel.GetCurrentProcess(), 10, ctypes.byref(token)), message)
-        require(api.DuplicateToken(token, 2, ctypes.byref(impersonation)), message)
-        privileges = ctypes.create_string_buffer(65536)
-        length, granted, status = wintypes.DWORD(len(privileges)), wintypes.DWORD(), wintypes.BOOL()
-        mapping = Mapping(0x120089, 0x120116, 0x1200a0, 0x1f01ff)
-        require(api.AccessCheck(descriptor, impersonation, 0x10000, ctypes.byref(mapping),
-            privileges, ctypes.byref(length), ctypes.byref(granted), ctypes.byref(status)), message)
-        return bool(status.value)
-    finally:
-        if impersonation.value:
-            kernel.CloseHandle(impersonation)
-        if token.value:
-            kernel.CloseHandle(token)
-        kernel.LocalFree(descriptor)
-
-
 def _worker_writable(path):
-    """Fail closed if this identity can modify or replace the host executable.
+    """Check sandbox principals only; full-rights owner processes are out of scope.
 
-    Test permissions without writing. On Windows CreateFile checks the token's
-    effective ACL rights; os.access alone does not inspect Windows DACLs.
-    Full-rights owner processes remain outside this boundary.
+    No sandbox principal on this host means no disqualifying grant. POSIX has
+    no configured worker principal here. Never probe the current token's rights.
     """
     if os.name != 'nt':
-        import stat
-        if os.access(path, os.W_OK):
-            return True
-        # Replacement can rename an enclosing directory too. Sticky directories
-        # (notably /tmp) require ownership of the source or its parent.
-        for member in (path, *path.parents):
-            if member.parent == member or not os.access(member.parent, os.W_OK | os.X_OK):
-                continue
-            parent = member.parent.stat()
-            if not parent.st_mode & stat.S_ISVTX or os.geteuid() in (parent.st_uid, member.stat().st_uid):
-                return True
         return False
-    import ctypes
-    from ctypes import wintypes
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
-    kernel.CreateFileW.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-    kernel.CloseHandle.restype = wintypes.BOOL
-    group_rights = {}
-    def allowed(member, access):
-        if member not in group_rights:
-            group_rights[member] = _sandbox_group_rights(member)
-        if group_rights[member] & access:
-            return True
-        handle = kernel.CreateFileW(str(member), access, 7, None, 3, 0x02000000, None)
-        if handle != wintypes.HANDLE(-1).value:
-            kernel.CloseHandle(handle)
-            return True
-        # An unknown outcome cannot establish a protected executable.
-        return ctypes.get_last_error() != 5
-    # File modification/security rights, or effective replacement rights in its
-    # immediate directory. A writable drive root does not grant rights through
-    # a protected Program Files directory. Walking every ancestor over-rejects.
-    if (any(allowed(path, access) for access in (2, 4, 0x40000, 0x80000))
-            or any(allowed(path.parent, access) for access in (0x40000, 0x80000))
+    rights = {}
+    def allowed(member, mask):
+        if member not in rights:
+            rights[member] = _sandbox_group_rights(member)
+        return bool(rights[member] & mask)
+    if (allowed(path, 2 | 4 | 0x40000 | 0x80000)
+            or allowed(path.parent, 0x40000 | 0x80000)
             or allowed(path.parent, 2) and (allowed(path, 0x10000) or allowed(path.parent, 0x40))):
         return True
-    # Renaming a non-root enclosing directory can replace the executable.
-    # DELETE on a volume-root child can be inherited solely from the volume's
-    # DELETE_CHILD. It is not evidence that the worker can replace that tree.
     for directory in path.parents:
         if directory.parent == directory:
             continue
-        # At the volume boundary use object-only DELETE, because CreateFile
-        # may succeed solely through the root's DELETE_CHILD right.
-        delete = (_object_delete_access(directory) or bool(_sandbox_group_rights(directory) & 0x10000)
-                  if directory.parent.parent == directory.parent else allowed(directory, 0x10000))
-        if (delete or any(allowed(directory, access) for access in (0x40000, 0x80000))) and allowed(directory.parent, 4):
+        # Object DACL rights exclude DELETE_CHILD granted on the volume root.
+        if allowed(directory, 0x10000 | 0x40000 | 0x80000) and allowed(directory.parent, 4):
             return True
     return False
 
@@ -640,7 +585,7 @@ def _github_executable(root):
         if not resolved.is_file() or not _native_executable(resolved):
             raise ValidationError('GITHUB_AUTH_UNAVAILABLE: gh must be a native executable binary')
         if _worker_writable(resolved):
-            raise ValidationError('GITHUB_AUTH_UNAVAILABLE: current token or sandbox group can modify or replace gh; '
+            raise ValidationError('GITHUB_AUTH_UNAVAILABLE: sandbox principal can modify or replace gh; '
                                   'install a native gh outside worktrees and deny worker file writes and directory replacement rights')
         return str(resolved)
     except OSError:

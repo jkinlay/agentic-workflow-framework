@@ -44,7 +44,7 @@ def record_fixture_owner_confirmation(case, root, governance, value):
     created = now_text()
     record = dict(format='awf-owner-proposal-1', request_id=str(uuid.uuid4()),
         binding=dict(project_id=governance['project']['id'],
-            git_common_identity=admission.git_common_identity(root),
+            git_common_identity=admission._git_metadata_identity(root),
             project_location_hash=sha256(str(Path(root).resolve()).encode()),
             repository={key: governance['github'][key]
                         for key in ('host', 'repository_id', 'repository', 'base_branch')}),
