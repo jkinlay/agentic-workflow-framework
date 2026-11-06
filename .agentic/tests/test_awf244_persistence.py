@@ -1,7 +1,9 @@
 """Persisted calendar settings; trusted host observations are offline fixtures."""
 from copy import deepcopy
+from contextlib import closing, contextmanager
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -201,6 +203,8 @@ class CalendarPersistenceTests(unittest.TestCase):
     def test_mixed_admissions_share_one_recoverable_operating_event(self):
         from agentic.budget_enrollment import EnrollmentRegistry
         budget_registry = EnrollmentRegistry(Path(self.temp.name) / 'budget.sqlite', FixtureHost(), (self.root,))
+        budget_registry.host.audit = dict(actor_id=7, login='fixture-owner', type='User', digest='a' * 64,
+            request_id='12345678-1234-4234-8234-123456789012', confirmed_at='2026-11-06T10:00:00Z')
         original = op._new
         def interrupt(tree, name, raw):
             if name.startswith(op.STATE + '/changes/'):
@@ -211,7 +215,11 @@ class CalendarPersistenceTests(unittest.TestCase):
                 ['budgeting.max_tokens_per_ticket=5000000', 'operating_calendar.eod.time=18:00'],
                 budget_registry=budget_registry, calendar_registry=self.registry())
         pin = sha256((self.root / op.JOURNAL).read_bytes())
+        self.assertEqual([budget_registry.host.identity],
+                         self.consumed(budget_registry, 'budget_owner_observations'))
+        self.assertEqual([self.host.identity], self.consumed(self.registry(), 'calendar_owner_observations'))
         recovered = op.recover_operating(self.root, self.gov, pin)
+        self.assertEqual(recovered, op.read_operating(self.root, self.gov))
         self.assertEqual(recovered.config['budgeting']['max_tokens_per_ticket'], 5000000)
         self.assertFalse(recovered.config['budgeting']['accounting_enabled'])
         self.assertEqual(effective_calendar(recovered.config)['eod']['time'], '18:00')
@@ -220,7 +228,151 @@ class CalendarPersistenceTests(unittest.TestCase):
         event = json.loads(events[0].read_text())
         self.assertIn('budget_owner_observation', event)
         self.assertIn('calendar_owner_observation', event)
+        self.assertEqual(budget_registry.host.audit, event['owner_admission'])
+        self.assertEqual({'budgeting.max_tokens_per_ticket', 'operating_calendar.eod.time', 'source'},
+                         {change['path'] for change in event['changes']})
         self.assertEqual(len(self.host.calls), 1)
+
+    def budget_registry(self, path=None):
+        from agentic.budget_enrollment import EnrollmentRegistry
+        return EnrollmentRegistry(path or Path(self.temp.name) / 'budget.sqlite',
+                                  FixtureHost(), (self.root,))
+
+    def consumed(self, registry, table):
+        if not registry.path.exists():
+            return []
+        with closing(sqlite3.connect(registry.path)) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
+                return []
+            return [row[0] for row in db.execute('SELECT observation_id FROM ' + table)]
+
+    def mixed(self, budget, calendar):
+        # No production CLI/confirm path injects a calendar registry yet. Exercise
+        # the supported set entry point with trusted-infrastructure fixture registries.
+        return op.set_operating(self.root, self.gov, 'fixture mixed direction',
+            ['budgeting.max_tokens_per_ticket=5000000', 'operating_calendar.eod.time=18:00'],
+            budget_registry=budget, calendar_registry=calendar)
+
+    def assert_no_operating_change(self, raw):
+        self.assertEqual(raw, (self.root / op.CONFIG).read_bytes())
+        self.assertEqual(self.value, op.read_operating(self.root, self.gov).config)
+        self.assertFalse((self.root / op.JOURNAL).exists())
+        self.assertEqual([], list((self.root / op.STATE / 'changes').glob('*.json')))
+
+    def test_mixed_budget_replay_preserves_calendar_for_retry(self):
+        from agentic.budget_enrollment import DDL
+        budget, calendar = self.budget_registry(), self.registry()
+        with budget.transaction(DDL) as db:
+            db.execute('INSERT INTO budget_owner_observations VALUES (?,?)',
+                       (budget.host.identity, '{}'))
+        raw = (self.root / op.CONFIG).read_bytes()
+        with self.assertRaisesRegex(ValidationError, 'already consumed'):
+            self.mixed(budget, calendar)
+        self.assert_no_operating_change(raw)
+        self.assertEqual([], self.consumed(calendar, 'calendar_owner_observations'))
+        self.assertEqual([budget.host.identity], self.consumed(budget, 'budget_owner_observations'))
+        budget.host.identity = 'fixture-fresh-budget'
+        updated = self.mixed(budget, calendar)
+        self.assertEqual(updated, op.read_operating(self.root, self.gov))
+        self.assertEqual('18:00', effective_calendar(updated.config)['eod']['time'])
+        self.assertEqual(5000000, updated.config['budgeting']['max_tokens_per_ticket'])
+        self.assertEqual([self.host.identity], self.consumed(calendar, 'calendar_owner_observations'))
+
+    def test_mixed_unavailable_budget_storage_preserves_calendar_for_retry(self):
+        blocked = Path(self.temp.name) / 'not-a-directory'
+        blocked.write_text('fixture')
+        budget, calendar = self.budget_registry(blocked / 'budget.sqlite'), self.registry()
+        raw = (self.root / op.CONFIG).read_bytes()
+        with self.assertRaises(OSError):
+            self.mixed(budget, calendar)
+        self.assert_no_operating_change(raw)
+        self.assertEqual([], self.consumed(calendar, 'calendar_owner_observations'))
+        updated = self.mixed(self.budget_registry(), calendar)
+        self.assertEqual(updated, op.read_operating(self.root, self.gov))
+        self.assertEqual([self.host.identity], self.consumed(calendar, 'calendar_owner_observations'))
+
+    def test_mixed_budget_consumption_failure_rolls_back_both_admissions(self):
+        budget, calendar = self.budget_registry(), self.registry()
+        def refuse(observed, db):
+            # A host's additional replay state must participate in the same rollback.
+            db.execute('CREATE TABLE fixture_consumption(observation_id TEXT)')
+            db.execute('INSERT INTO fixture_consumption VALUES (?)', (observed['observation_id'],))
+            raise ValidationError('fixture consumption refused')
+        budget.host.consume_owner_direction = refuse
+        raw = (self.root / op.CONFIG).read_bytes()
+        with self.assertRaisesRegex(ValidationError, 'fixture consumption refused'):
+            self.mixed(budget, calendar)
+        self.assert_no_operating_change(raw)
+        self.assertEqual([], self.consumed(calendar, 'calendar_owner_observations'))
+        self.assertEqual([], self.consumed(budget, 'budget_owner_observations'))
+        with closing(sqlite3.connect(budget.path)) as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='fixture_consumption'").fetchone())
+        del budget.host.consume_owner_direction
+        self.mixed(budget, calendar)
+
+    def test_mixed_calendar_replay_does_not_consume_budget(self):
+        calendar, budget = self.registry(), self.budget_registry()
+        self.set_calendar('operating_calendar.eod.time=19:00')
+        raw = (self.root / op.CONFIG).read_bytes()
+        with self.assertRaisesRegex(ValidationError, 'already consumed'):
+            self.mixed(budget, calendar)
+        self.assertEqual(raw, (self.root / op.CONFIG).read_bytes())
+        self.assertFalse((self.root / op.JOURNAL).exists())
+        self.assertEqual([], self.consumed(budget, 'budget_owner_observations'))
+        self.assertEqual([self.host.identity], self.consumed(calendar, 'calendar_owner_observations'))
+
+    def test_mixed_commit_refusal_rolls_back_both_admissions(self):
+        budget, calendar = self.budget_registry(), self.registry()
+        transaction = budget.transaction
+        @contextmanager
+        def refuse_commit(ddl):
+            with transaction(ddl) as db:
+                yield db
+                raise sqlite3.OperationalError('fixture commit refused')
+        raw = (self.root / op.CONFIG).read_bytes()
+        with patch.object(budget, 'transaction', refuse_commit), \
+                self.assertRaisesRegex(sqlite3.OperationalError, 'fixture commit refused'):
+            self.mixed(budget, calendar)
+        self.assert_no_operating_change(raw)
+        self.assertEqual([], self.consumed(calendar, 'calendar_owner_observations'))
+        self.assertEqual([], self.consumed(budget, 'budget_owner_observations'))
+        self.mixed(budget, calendar)
+
+    def test_mixed_registries_can_share_one_database(self):
+        calendar = self.registry()
+        budget = self.budget_registry(calendar.path)
+        updated = self.mixed(budget, calendar)
+        self.assertEqual(updated, op.read_operating(self.root, self.gov))
+        self.assertEqual([budget.host.identity], self.consumed(budget, 'budget_owner_observations'))
+        self.assertEqual([self.host.identity], self.consumed(calendar, 'calendar_owner_observations'))
+        self.assertEqual(1, len(list((self.root / op.STATE / 'changes').glob('*.json'))))
+
+    def test_mixed_wal_storage_refuses_before_consuming_either_domain(self):
+        budget, calendar = self.budget_registry(), self.registry()
+        with closing(sqlite3.connect(calendar.path)) as db:
+            self.assertEqual('wal', db.execute('PRAGMA journal_mode=WAL').fetchone()[0])
+        raw = (self.root / op.CONFIG).read_bytes()
+        with self.assertRaisesRegex(ValidationError, 'durable rollback-journal'):
+            self.mixed(budget, calendar)
+        self.assert_no_operating_change(raw)
+        self.assertEqual([], self.consumed(calendar, 'calendar_owner_observations'))
+        self.assertEqual([], self.consumed(budget, 'budget_owner_observations'))
+        with closing(sqlite3.connect(calendar.path)) as db:
+            self.assertEqual('delete', db.execute('PRAGMA journal_mode=DELETE').fetchone()[0])
+        self.mixed(budget, calendar)
+
+    def test_cli_mixed_change_refuses_without_trusted_calendar_registry(self):
+        import subprocess
+        import sys
+        script = Path(__file__).resolve().parents[1] / 'scripts/workflow.py'
+        raw = (self.root / op.CONFIG).read_bytes()
+        result = subprocess.run([sys.executable, '-B', str(script), '--root', str(self.root),
+            'operating', 'set', '--instruction', 'fixture mixed direction',
+            '--set', 'budgeting.max_tokens_per_ticket=5000000',
+            '--set', 'operating_calendar.eod.time=18:00'], capture_output=True, text=True)
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertIn('Trusted-host owner observer required', result.stdout + result.stderr)
+        self.assert_no_operating_change(raw)
 
 
 if __name__ == '__main__':

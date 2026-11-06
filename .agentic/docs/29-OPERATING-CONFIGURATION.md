@@ -1,16 +1,16 @@
 # Operating configuration
 
-Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, not ACTIVE/adapters.
+Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings, budgets, allowlists, floors, escalation, shared critic; legacy per-stream routes accepted. Review changes; see [controller](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
 Show/status/`operating.state` share `effective_ceiling`: minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, enabled `execution.host_broker.max_workers`. Disabled brokers/heavy/GPU limits never constrain streams. Availability remains unproven.
 
-`effective_ceiling_governance_path`: binding path, project wins ties, null means default; `effective_ceiling_sources`: ties. Check slots/ownership/spawn.
+`effective_ceiling_governance_path`: binding path, project wins ties, null=default; `effective_ceiling_sources`: ties. Check slots/ownership/spawn.
 
 `produce_planning_resource_observation` requires reauthenticated host capacities; operator values refuse. Capacity: 0–1000; zero selects none (`safe_lane_count == 0`).
 
-Schemas: `streams.count`/optional `execution.max_lanes` 1–12, routes A–L. Omitted `max_lanes`: six. Lower parallel-ticket/enabled-broker limits bind. Raise protected ceilings through review. Schemas grant no dispatch authority.
+Schemas: `streams.count` 1–12 with A–L routes; optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ Schemas: `streams.count`/optional `execution.max_lanes` 1–12, routes A–L. Om
 
 `independent_reviewers.allocation: shared_critic` uses slot. Legacy `one_per_stream` and fixed counts bind. `--propose-operating-capacity` proposes ceiling change.
 
-Authenticated, audited `fixed` refuses unsafe counts; `max` limits recommendations. Neither raises capacity. Replans await round boundaries; preserve reservations/triggers. Durable plans constrain admission.
+Authenticated, audited `fixed` refuses counts above sealed safe capacity; `max` limits recommendations. Neither raises capacity. Replans await round boundaries; preserve reservations/triggers. Durable plans constrain admission.
 
 Authenticated readers trim/casefold, collapse whitespace/ASCII-hyphens: `To Do` → `ready`, `In Progress` → `in_progress`, `Done` → `closed`. Vocabulary: ready `open`/`ready`/`backlog`; active `in_flight`/`working`/`dispatched`/`in_progress`; closed `closed`/`done`/`merged`/`cancelled`/`canceled`. Unknowns require reviewed mappings, granting no admission/closure. Graph callers supply canonical vocabulary.
 
@@ -66,16 +66,15 @@ Defaults unpinned; preserve pins/floors/rows/replay checks.
 
 Commit `.agentic-state/operating/changes/` with settings; audits retain instructions/hashes/changes/source. Bootstrap preserves outside `.gitignore` bytes; see `MIGRATION-v1.9.4-to-v1.9.5.md`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
 
-Publish flushed journal/audit without replacement. Preserve conflicts/interrupted staging within bounds. Recovery requires independently inspected journal SHA-256; unsupported primitives refuse.
+Publish flushed journal/audit without replacement; preserve bounded conflicts/interrupted staging. Recovery requires independently inspected journal SHA-256; unsupported primitives refuse.
 
 Dispatch/reservation/settlement retain `operating_hash`/`policy_hash`; settlement uses reservation hash. Historical absent/null hashes remain unobserved. Host authenticates instructions/routes; records establish consistency.
 
 
-Generated `OPERATING_CONFIG.yaml` includes `budgeting`:
+Generated `OPERATING_CONFIG.yaml` `budgeting`:
 accounting/enforcement `false`; dormant ticket limit `4000000`; lifetime-project
-limit `1000000000`. Older missing fields retain legacy budgeting. Limits enable
-neither switch; accounting OFF disables enforcement. Epic overrides cannot alter
-budget settings.
+limit `1000000000`. Missing fields retain legacy budgeting. Limits enable
+neither switch; accounting OFF disables enforcement. No Epic budget overrides.
 
 Supported paths: `budgeting.accounting_enabled`,
 `budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` and
@@ -90,16 +89,15 @@ numeric ID in reviewed `merge_gate.trusted_owner_ids`; empty refuses
 environment variables, foreign GH_HOST and noninteractive stdin/stdout refuse.
 Project/repository/governance/prior-settings/exact-change mismatches/replay
 refuse. Under lock: validate, consume, journal, audit, readback.
-This proves stored GitHub login and terminal. It
-does not defend against a process with the owner's full rights and a terminal
-of its own. Other settings retain behavior.
+Stored GitHub login/terminal cannot defend against processes with the owner's
+full rights and their own terminal. Other settings retain behavior.
 See [budgeting](39-BUDGETING.md) for host integration, UNKNOWN attribution,
 canonical totals, preserved reservations and versioned upgrade decision.
 
 ## Operating calendar
 
-Optional `operating_calendar` resolves defaults without rewriting legacy bytes/hashes: `continuous` work, `Europe/London`; `review_batching` enabled, weekdays `[1,2,3,4,5]`, presentation `07:00`, cutoff `17:00`; `eod` daily `17:00`.
+Optional `operating_calendar` defaults preserve legacy bytes/hashes: `continuous` work, `Europe/London`; `review_batching` enabled, weekdays `[1,2,3,4,5]`, presentation `07:00`, cutoff `17:00`; `eod` daily `17:00`.
 
-Dotted paths: `timezone`, `work_mode`, `review_batching.enabled`, `.weekdays`, `.presentation_time`, `.cutoff_time`, `eod.time`, `eod.weekdays`, prefixed `operating_calendar.`. Weekdays: JSON lists. Unknown/null fields, invalid IANA zones/times/days, presentation >= cutoff refuse atomically. No Epic overrides. Show separates effective/persisted settings.
+Dotted paths: `timezone`, `work_mode`, `review_batching.enabled`, `.weekdays`, `.presentation_time`, `.cutoff_time`, `eod.time`, `eod.weekdays`, prefixed `operating_calendar.`. Weekdays: JSON lists. Unknown/null fields, invalid IANA zones/times/days, presentation >= cutoff refuse atomically. No Epic overrides. Show: effective/persisted settings.
 
-Trusted infrastructure injects `CalendarSettingsRegistry` through `calendar_registry`; words authenticate nobody. Full transaction validation precedes consumption under lock; journal/audit/pinned recovery applies. Calendar enables no reporting/budgeting/chat/adapters. Shared calendar confirmation remains deferred. See [calendar](operating-calendar.md).
+Trusted infrastructure injects `CalendarSettingsRegistry` through `calendar_registry`; words authenticate nobody. Validate fully, consume admissions together under lock; journal/audit/pinned recovery applies. Calendar enables no reporting/budgeting/chat/adapters. Shared confirmation deferred. See [calendar](operating-calendar.md).

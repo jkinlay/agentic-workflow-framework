@@ -963,15 +963,13 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                    if _get(snapshot.config, p) != _get(value, p)]
         change_time = now_text() if budget_changes or calendar_changes else None
 
-        def admit_calendar(budget_observation=None):
+        def admit_calendar():
             nonlocal calendar_admitted
             if not calendar_changes:
                 return
             def validate_calendar_admission(observed):
                 _prepare_commit(tree, governance, before, value, instruction, changes, 'chat',
-                    created_at=change_time, budget_owner_observation=budget_observation,
-                    calendar_owner_observation=observed,
-                    owner_admission=getattr(budget_registry.host, 'audit', None) if budget_changes else None)
+                    created_at=change_time, calendar_owner_observation=observed)
             calendar_admitted = calendar_registry.admit_owner_direction(
                 governance['project']['id'], effective_calendar(snapshot.config), calendar_changes,
                 validate_observation=validate_calendar_admission)
@@ -998,9 +996,23 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                 _prepare_commit(tree, governance, before, value, instruction, changes, 'chat',
                                 created_at=change_time, budget_owner_observation=observed,
                                 owner_admission=getattr(budget_registry.host, 'audit', None))
-                admit_calendar(observed)
-            admitted = budget_registry.admit_owner_direction(governance['project']['id'], current_budget, budget_changes,
-                                                             validate_observation=validate_admission)
+            if calendar_changes:
+                def validate_joint_admission(budget_admission, calendar_admission):
+                    if budget_admission['settings'] != value['budgeting']:
+                        fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
+                    if calendar_admission['settings'] != effective_calendar(value):
+                        fail('$.operating_calendar', 'Trusted-host calendar admission differs from validated settings')
+                    _prepare_commit(tree, governance, before, value, instruction, changes, 'chat',
+                        created_at=change_time, budget_owner_observation=budget_admission['observation'],
+                        calendar_owner_observation=calendar_admission['observation'],
+                        owner_admission=getattr(budget_registry.host, 'audit', None))
+                admitted, calendar_admitted = calendar_registry.admit_with_budget(
+                    budget_registry, governance['project']['id'], current_budget, budget_changes,
+                    effective_calendar(snapshot.config), calendar_changes,
+                    validate_observations=validate_joint_admission)
+            else:
+                admitted = budget_registry.admit_owner_direction(governance['project']['id'], current_budget, budget_changes,
+                                                                 validate_observation=validate_admission)
             if admitted['settings'] != value['budgeting']:
                 fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
         elif calendar_changes:
