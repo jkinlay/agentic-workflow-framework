@@ -11,6 +11,7 @@ import re
 
 from .. import ValidationError
 from .delivery import delivery_intent, require, validate_binding
+from .safety import safe_report
 
 
 class PlatformReportingAdapter:
@@ -55,7 +56,7 @@ class PlatformReportingAdapter:
                 raw = self.transport.send(deepcopy(intent), attempt_id, secret)
             from .delivery import DeliveryOutbox
             safe = DeliveryOutbox._rejection(raw, intent, attempt_id)
-            if safe is not None and secret not in str(safe):
+            if safe is not None and safe_report(safe, trusted_keys=True, credentials=(secret,)) == safe:
                 safe.update(delivery_id=intent['delivery_id'], destination=self.binding['destination'],
                             platform=self.platform, payload_sha256=intent['payload_sha256'])
                 return safe
@@ -73,7 +74,7 @@ class PlatformReportingAdapter:
             # in a normally safe message identity. Never retain raw SDK objects.
             from .delivery import DeliveryOutbox
             safe = DeliveryOutbox._observation(raw, intent, attempts)
-            if secret in str(safe):
+            if safe_report(safe, trusted_keys=True, credentials=(secret,)) != safe:
                 return dict(status='UNKNOWN')
             if safe['status'] == 'DELIVERED':
                 safe['status'] = 'VISIBLE'

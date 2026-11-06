@@ -25,6 +25,8 @@ _send_start = ContextVar('report_send_start', default=None)
 class DeliveryBudget:
     def __init__(self):
         self.deadline = monotonic() + DESTINATION_SECONDS
+        self.stage_deadline = self.deadline + HTTP_TIMEOUT_SECONDS
+        self.cancelled = False
         self.counts = {}
         self.http_counts = {}
         self.reconciliations = {}
@@ -32,7 +34,7 @@ class DeliveryBudget:
 
     def admit(self, platform, *, reconciliation=False):
         with self.lock:
-            if monotonic() >= self.deadline or self.counts.get(platform, 0) >= MAX_ADVANCES:
+            if self.cancelled or monotonic() >= self.deadline or self.counts.get(platform, 0) >= MAX_ADVANCES:
                 return False
             if reconciliation and self.reconciliations.get(platform, 0) >= MAX_RECONCILIATIONS:
                 return False
@@ -43,10 +45,14 @@ class DeliveryBudget:
 
     def http(self, platform):
         with self.lock:
-            if monotonic() >= self.deadline or self.http_counts.get(platform, 0) >= MAX_HTTP_CALLS:
+            if self.cancelled or monotonic() >= self.deadline or self.http_counts.get(platform, 0) >= MAX_HTTP_CALLS:
                 raise ValidationError('REPORT_DESTINATION_BUDGET')
             self.http_counts[platform] = self.http_counts.get(platform, 0) + 1
             return min(HTTP_TIMEOUT_SECONDS, self.deadline - monotonic())
+
+    def cancel(self):
+        with self.lock:
+            self.cancelled = True
 
     @contextmanager
     def destination(self, platform):

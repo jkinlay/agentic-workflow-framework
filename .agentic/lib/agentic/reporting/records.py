@@ -12,6 +12,7 @@ from .. import ValidationError
 from ..canonical import MAX_DOCUMENT_BYTES, canonical, fingerprint, timestamp
 from .delivery import require
 from .metrics import project_metrics
+from .safety import safe_report
 
 REPORT_TYPES = {'on-demand', 'owner-action', 'backlog-review', 'implementation-ready',
                 'hourly', 'eod', 'correction'}
@@ -113,7 +114,7 @@ def _values(request, admission):
         authority='REPORT_ONLY; readiness, owner approval, merge and reconciled Done remain separate')
 
 
-def prepare_snapshot(request, accepted_binding, *, verify_sources=None):
+def prepare_snapshot(request, accepted_binding, *, verify_sources=None, credentials=()):
     request = deepcopy(request)
     validate_request(request, accepted_binding)
     admission = 'UNVERIFIED'
@@ -124,6 +125,8 @@ def prepare_snapshot(request, accepted_binding, *, verify_sources=None):
             raise ValidationError('REPORT_SOURCE_VERIFIER_FAILED') from None
         require(observed == request, 'REPORT_SOURCE_VERIFIER_MISMATCH')
         admission = 'VERIFIED'
+    request = safe_report(request, trusted_keys=True, credentials=credentials)
+    validate_request(request, accepted_binding)
     return dict(format='awf-status-report-record-2', record_id=request['record_id'],
         project_id=request['binding']['project'], created_at=request['created_at'], inputs=request,
         inputs_sha256=fingerprint('report-snapshot-2', request), admission=admission,
@@ -131,6 +134,7 @@ def prepare_snapshot(request, accepted_binding, *, verify_sources=None):
 
 
 def replay_snapshot(record):
+    require(safe_report(record, trusted_keys=True) == record, 'REPORT_CREDENTIAL_WITHHELD')
     require(isinstance(record, dict) and set(record) == {'format', 'record_id', 'project_id', 'created_at',
         'inputs', 'inputs_sha256', 'admission', 'values'} and record['format'] == 'awf-status-report-record-2',
         'REPORT_RECORD_FORMAT')

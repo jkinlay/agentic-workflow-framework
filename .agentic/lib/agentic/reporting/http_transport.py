@@ -14,11 +14,13 @@ import re
 from time import sleep
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 from .. import ValidationError
 from ..canonical import fingerprint
-from .delivery import require
+from .delivery import require, valid_message_id
+from .safety import safe_report
+from .deadline import RequestDeadline, DeadlineHTTPSHandler
 
 MAX_RESPONSE = 2 * 1024 * 1024
 # These responses reject the request; timeouts, conflicts and server errors
@@ -45,11 +47,20 @@ def http_json(method, url, headers, payload, *, timeout=15):
     require(urlsplit(url).scheme == 'https' and urlsplit(url).hostname in {'slack.com', 'graph.microsoft.com'},
             'REPORT_HTTP_ORIGIN')
     try:
-        data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        request = Request(url, data=data, method=method, headers=headers)
-        with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
-            require(200 <= response.status < 300, 'REPORT_HTTP_FAILURE')
-            raw = response.read(MAX_RESPONSE + 1)
+        with RequestDeadline(timeout) as deadline:
+            data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
+            request = Request(url, data=data, method=method, headers=headers)
+            # Direct TLS keeps origin and socket ownership explicit; ambient
+            # proxy settings cannot bypass the request deadline.
+            with build_opener(NoRedirect(), ProxyHandler({}), DeadlineHTTPSHandler(deadline)).open(
+                    request, timeout=timeout) as response:
+                require(200 <= response.status < 300, 'REPORT_HTTP_FAILURE')
+                # Also watch an HTTPResponse supplied by a network test port.
+                sock = getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None)
+                if sock is not None:
+                    deadline.watch(sock)
+                raw = response.read(MAX_RESPONSE + 1)
+                deadline.remaining()
         require(len(raw) <= MAX_RESPONSE, 'REPORT_HTTP_RESPONSE_SIZE')
         value = json.loads(raw)
         require(isinstance(value, dict), 'REPORT_HTTP_RESPONSE_SHAPE')
@@ -136,11 +147,14 @@ class BaseTransport:
         return teams_html(value) if self.platform == 'teams' else value
 
     def evidence(self, intent, attempts, message_id):
+        require(valid_message_id(self.platform, message_id), 'REPORT_PROVIDER_ID_INVALID')
         observed = self.clock()
-        return dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', delivery_id=intent['delivery_id'],
+        evidence = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', delivery_id=intent['delivery_id'],
                     platform=self.platform, destination=intent['binding']['destination'],
                     payload_sha256=intent['payload_sha256'], attempt_ids=list(attempts), message_id=message_id,
                     observed_at=observed, observation_id=fingerprint('report-readback-1', [intent['delivery_id'], message_id, observed]))
+        require(safe_report(evidence, trusted_keys=True) == evidence, 'REPORT_CREDENTIAL_WITHHELD')
+        return evidence
 
     def rejection(self, intent, attempt_id):
         observed = self.clock()

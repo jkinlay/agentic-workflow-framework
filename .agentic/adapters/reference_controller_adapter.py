@@ -1690,12 +1690,16 @@ def _build(config):
 		_require(comment.get('created_at') == comment.get('updated_at') == owner_source.get('created_at'), 'GitHub owner comment was edited or differs from its recorded time')
 		return {'status': 'VERIFIED', 'actor_id': request['actor_id'], 'binding': deepcopy(request['binding']), 'raw_body_sha256': request['raw_body_sha256'], 'source_id': 'github-comment:' + comment['node_id'], 'observed_at': _clock_text(clock)}
 
+	reporting_secret_refs = []
 	def configure_reporting(operating, binding):
 		from agentic.reporting.platform import build_reporting_providers
 		accepted = dict(project=github['project_id'], repository=str(github['repository_id']), scope_revision=github['scope_sha256'])
 		_require(binding == accepted, 'REPORT_SCOPE_BINDING_MISMATCH')
-		return build_reporting_providers(config.get('reporting'), operating, binding,
+		providers = build_reporting_providers(config.get('reporting'), operating, binding,
 			http=config.get('_reporting_http'), clock=lambda: _clock_text(clock))
+		# Keep admitted references only; never cache resolved credential bytes.
+		reporting_secret_refs[:] = [p.binding['secret_ref'] for p in providers.values()]
+		return providers
 
 	def reporting_request(request):
 		_require(isinstance(request, dict) and set(request) == {'binding', 'observed_at'}, 'REPORT_SOURCE_ENVELOPE_INVALID')
@@ -1736,6 +1740,8 @@ def _build(config):
 			sources=[dict(field='tickets', observed_at=inventory['observed_at'], stale=False,
 				source='controller-inventory:' + inventory['inventory_sha256'])])
 		body = dict(binding=deepcopy(request['binding']), observed_at=request['observed_at'], records=records, owner_actions=actions)
+		from agentic.reporting.safety import safe_report
+		body = safe_report(body, trusted_keys=True, secret_refs=reporting_secret_refs)
 		evidence_id, _digest = retain_planning_evidence('reporting', dict(kind='reporting', request=request, snapshot=body))
 		return dict(**deepcopy(body), authentication={'evidence_id': evidence_id})
 

@@ -79,7 +79,7 @@ class AdapterTests(unittest.TestCase):
                 return {'http_status': 202}
             def reconcile(self, intent, attempts, secret):
                 p = Provider()
-                p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='fake-visible')
+                p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id=('1355517523.000005' if intent['binding']['platform'] == 'slack' else '1616990032035'))
                 return p.reconcile(intent, attempts)
         for platform in ('teams', 'slack'):
             module = importlib.import_module(platform + '_reporting_adapter')

@@ -277,7 +277,7 @@ class BodyTests(unittest.TestCase):
         from agentic.reporting.bodies import prepare_body, render_body, render_detail
         data = dict(project='Example', observed_at='2026-11-05T12:00:00Z', timezone='Europe/London',
                     scope='s', candidate='c', summary='Idle; implementation has not started.', sections={},
-                    current=[dict(key='T-1', title='Unicode ✓', stage='PAUSED')], next=[],
+                    current=[dict(key='T-1', title='Unicode âœ“', stage='PAUSED')], next=[],
                     detail_url='https://example.invalid/report', catch_up=True)
         body = prepare_body('hourly', data, verify_link=lambda u: True)
         for platform in ('slack', 'teams'):
@@ -392,7 +392,7 @@ class HTTPTests(unittest.TestCase):
             calls.append(url)
             if 'cursor=next' not in url:
                 return dict(ok=True, messages=[], response_metadata=dict(next_cursor='next'))
-            return dict(ok=True, messages=[dict(user='sender', ts='m', text=transport.wire_text(intent))])
+            return dict(ok=True, messages=[dict(user='sender', ts='1355517523.000005', text=transport.wire_text(intent))])
         transport.http = pages
         self.assertEqual(transport.reconcile(intent, ['a'], 'secret')['status'], 'VISIBLE')
         self.assertEqual(len(calls), 2)
@@ -415,7 +415,7 @@ class HTTPTests(unittest.TestCase):
                 if 'conversations.info' in url:
                     return dict(ok=True, channel=dict(id='C1', is_member=True))
                 if 'conversations.history' in url:
-                    return dict(ok=True, messages=[dict(ts='1.0', text=marker, user='sender')], has_more=False)
+                    return dict(ok=True, messages=[dict(ts='1.000001', text=marker, user='sender')], has_more=False)
                 if '/members' in url:
                     return dict(value=[dict(userId='sender')])
                 if '/me?' in url:

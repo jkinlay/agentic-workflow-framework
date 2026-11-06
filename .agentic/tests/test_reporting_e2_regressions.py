@@ -39,12 +39,10 @@ class ReportingNetwork:
     def __call__(self, method, url, headers, payload):
         platform = 'slack' if 'slack.com' in url else 'teams'
         if method == 'POST':
-            if platform == 'slack' and self.slow:
-                self.entered.wait(.3)
             self.posts.append((platform, deepcopy(payload)))
             if platform == 'teams' and self.slow:
                 self.entered.set()
-                if not self.block.wait(.3):
+                if not self.block.wait(5):
                     self.remote_pending.append(deepcopy(payload))
                     raise TimeoutError('synthetic ambiguous POST timeout')
             self.messages[platform].append(deepcopy(payload))
@@ -60,9 +58,9 @@ class ReportingNetwork:
             self.history_reads += 1
             if self.slow_readback:
                 self.entered.set()
-                if not self.block.wait(.3):
+                if not self.block.wait(5):
                     raise TimeoutError('synthetic delayed readback timeout')
-            return dict(ok=True, messages=[dict(text=m['text'], user='sender', ts=str(i+1))
+            return dict(ok=True, messages=[dict(text=m['text'], user='sender', ts=str(i+1) + '.000001')
                                           for i, m in enumerate(self.messages['slack'])])
         if '/me?' in url:
             return dict(id='sender')
@@ -171,11 +169,49 @@ class ReportingE2Regressions(unittest.TestCase):
                        check=True, capture_output=True)
         self.repository['repository_root'] = clean
         self.network.slow = True
+        from agentic.reporting import runtime
+        from agentic.reporting.bounded import DESTINATION_SECONDS, HTTP_TIMEOUT_SECONDS
+        timing = {}
+        original_drain = runtime.drain
+        original_http = ReportingNetwork.__call__
+        original_finish = self.helper.store.finish_dispatch
+
+        def finish_dispatch(*args, **kwargs):
+            receipt = original_finish(*args, **kwargs)
+            timing['dispatch_complete'] = time.monotonic()
+            return receipt
+
+        def drain(*args, **kwargs):
+            timing['delivery_start'] = time.monotonic()
+            # Require actual persisted dispatch completion before network work.
+            self.assertIn('dispatch_complete', timing)
+            self.assertLessEqual(timing['dispatch_complete'], timing['delivery_start'])
+            return original_drain(*args, **kwargs)
+
+        def http(network, method, url, headers, payload):
+            response = original_http(network, method, url, headers, payload)
+            if 'slack.com' in url:
+                if method == 'POST' and 'Hourly progress' in str(payload):
+                    timing['slack_post'] = time.monotonic()
+                if 'conversations.history' in url and 'slack_post' in timing:
+                    timing['slack_readback'] = time.monotonic()
+            return response
+
         started = time.monotonic()
-        result = self.cycle('2026-11-07T18:00:00Z')
-        self.assertLess(time.monotonic() - started, 1.5)
+        with patch.object(self.helper.store, 'finish_dispatch', finish_dispatch), \
+             patch.object(runtime, 'drain', drain), \
+             patch.object(ReportingNetwork, '__call__', http):
+            result = self.cycle('2026-11-07T18:00:00Z', [ticket('EX-2', 1, paths=['first.txt'])])
+        self.assertEqual(len(result['dispatch_receipts']), 1)
+        for event in ('slack_post', 'slack_readback'):
+            self.assertLess(timing[event] - timing['delivery_start'], 1.5)
+        # Joined delivery may hold the next cycle, within the documented bound.
+        self.assertGreaterEqual(time.monotonic() - timing['delivery_start'], 5)
+        self.assertLess(time.monotonic() - started, DESTINATION_SECONDS + HTTP_TIMEOUT_SECONDS)
+        self.assertFalse(any(t.name.startswith('awf-report-') for t in threading.enumerate()))
+        self.assertEqual({d['status'] for d in self.status()['deliveries'] if d['platform'] == 'slack'}, {'DELIVERED'})
         self.assertTrue(self.network.entered.is_set())
-        self.assertEqual([p for p, _ in self.network.posts], ['teams', 'slack'])
+        self.assertCountEqual([p for p, _ in self.network.posts], ['teams', 'slack'])
         self.assertEqual(result['reporting']['state'], 'ENABLED')
         self.assertEqual({d['status'] for d in self.status()['deliveries'] if d['platform'] == 'teams'}, {'UNKNOWN'})
         started = time.monotonic()
@@ -199,15 +235,14 @@ class ReportingE2Regressions(unittest.TestCase):
             actor='owner', reason='Owner access required', next_action='Grant access'))
         result = self.cycle('2026-11-10T16:59:59Z')
         self.assertEqual(result['errors'], [])
-        self.assertEqual({p for p, _ in self.network.posts[:2]}, {'teams', 'slack'})
-        for _, payload in self.network.posts[:2]:
-            self.assertIn('Owner action', payload.get('text', payload.get('body', {}).get('content', '')))
         for platform in ('teams', 'slack'):
             posts = [p for name, p in self.network.posts if name == platform]
             self.assertGreaterEqual(len(posts), 2)
             self.assertLessEqual(len(posts), 4)
             text = posts[0].get('text', posts[0].get('body', {}).get('content', ''))
             self.assertIn('Owner action', text)
+            text = posts[1].get('text', posts[1].get('body', {}).get('content', ''))
+            self.assertIn('Hourly progress', text)
             catchup = [r for r in self.status()['reports'] if r.get('catch_up_periods')]
             self.assertEqual(len(catchup), 1)
             self.assertEqual(len([p for p in catchup[0]['catch_up_periods'] if p['kind'] == 'hourly']), 72)

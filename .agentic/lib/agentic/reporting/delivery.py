@@ -8,15 +8,23 @@ No lease expiration authorizes another send. Crash reservations consume attempts
 """
 from copy import deepcopy
 import hashlib
+import re
 import uuid
 
 from .. import ValidationError
 from ..canonical import canonical, fingerprint, loads, timestamp
+from .safety import safe_report
 
 
 def require(condition, reason):
     if not condition:
         raise ValidationError(reason)
+
+
+def valid_message_id(platform, value):
+    pattern = r'[0-9]{1,16}\.[0-9]{6}' if platform == 'slack' else r'[0-9]{1,20}'
+    return (platform in {'slack', 'teams'} and isinstance(value, str)
+            and re.fullmatch(pattern, value) is not None and safe_report(value) == value)
 
 
 def validate_binding(binding):
@@ -30,8 +38,10 @@ def validate_binding(binding):
 
 def delivery_intent(report_id, binding, payload):
     binding = validate_binding(binding)
+    require(safe_report(binding, trusted_keys=True) == binding, 'REPORT_CREDENTIAL_WITHHELD')
     require(isinstance(report_id, str) and 0 < len(report_id) <= 256, 'REPORT_ID_REQUIRED')
     require(isinstance(payload, str) and 0 < len(payload.encode('utf-8')) <= 65536, 'REPORT_PAYLOAD_SIZE')
+    require(safe_report(report_id) == report_id, 'REPORT_CREDENTIAL_WITHHELD')
     # Destination/configuration changes cannot reset the report/platform ceiling.
     identity = [binding['project'], binding['repository'], report_id, binding['platform']]
     return dict(delivery_id=fingerprint('report-delivery-1', identity), report_id=report_id,
@@ -111,6 +121,7 @@ class DeliveryOutbox:
 
     @staticmethod
     def _save(db, delivery_id, state):
+        require(safe_report(state, trusted_keys=True) == state, 'REPORT_CREDENTIAL_WITHHELD')
         db.execute('UPDATE controller_report_delivery SET state_json=? WHERE delivery_id=?',
                    (canonical(state).decode(), delivery_id))
 
@@ -121,7 +132,7 @@ class DeliveryOutbox:
     @staticmethod
     def _rejection(raw, intent, attempt_id):
         """A trusted send port's terminal non-acceptance, bound to one attempt."""
-        if not isinstance(raw, dict) or any(raw.get(k) != v for k, v in dict(
+        if not isinstance(raw, dict) or safe_report(raw, trusted_keys=True) != raw or any(raw.get(k) != v for k, v in dict(
                 status='REJECTED', terminal=True, evidence_kind='PROVIDER_REJECTION',
                 delivery_id=intent['delivery_id'], destination=intent['binding']['destination'],
                 platform=intent['binding']['platform'], payload_sha256=intent['payload_sha256'],
@@ -141,7 +152,7 @@ class DeliveryOutbox:
     def _observation(raw, intent, attempts):
         """Retain only closed safe fields; provider error bodies never enter state."""
         unknown = dict(status='UNKNOWN', reason='CHANNEL_EVIDENCE_UNAVAILABLE')
-        if not isinstance(raw, dict):
+        if not isinstance(raw, dict) or safe_report(raw, trusted_keys=True) != raw:
             return unknown
         if any(raw.get(k) != v for k, v in dict(delivery_id=intent['delivery_id'],
                 destination=intent['binding']['destination'], platform=intent['binding']['platform'],
@@ -161,7 +172,7 @@ class DeliveryOutbox:
                         attempt_ids=attempts, observation_id=observation_id, observed_at=raw['observed_at'])
         if raw.get('status') == 'VISIBLE':
             mid = raw.get('message_id')
-            if not isinstance(mid, str) or not 0 < len(mid) <= 256 or any(ord(c) < 32 for c in mid):
+            if not valid_message_id(intent['binding']['platform'], mid):
                 return unknown
             return dict(status='DELIVERED', evidence_kind='CHANNEL_READBACK', message_id=mid,
                         observed_at=raw['observed_at'], attempt_ids=attempts, observation_id=observation_id)

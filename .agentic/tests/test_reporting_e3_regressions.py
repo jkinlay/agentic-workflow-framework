@@ -211,7 +211,7 @@ class ReportingE3Regressions(unittest.TestCase):
 CLI_ADAPTERS = {}
 
 
-def cli_probe(latency):
+def cli_probe(latency, *, prepare=None, inspect=None):
     """Actual CLI parsing, pinned adapter loading, real cycle and JSON output.
 
     Reuse the established trusted host/planning fixtures. Only outbound HTTP
@@ -242,6 +242,8 @@ def cli_probe(latency):
         case.adapters = case.namespace['build_adapters'](config)
         case.runner.inventory[0]['body'] = json.dumps(dict(json.loads(case.runner.inventory[0]['body']),
             disposition='BLOCKED', actor='controller', reason='Owner access required', next_action='Grant access'))
+        if prepare is not None:
+            prepare(case, net)
         inventory = case.adapters['observe_inventory'](now)
         inputs = planning_fixture_inputs(inventory['tickets'], case.helper.store, 3,
             binding=inventory_binding, now=now)
@@ -282,6 +284,8 @@ def cli_probe(latency):
         assert result['errors'] == [], result['errors']
         from agentic.continuous_controller import ContinuousControllerStore
         case.helper.store = ContinuousControllerStore(case.helper.path, ['A', 'B', 'C'], cadence_seconds=3600)
+        if inspect is not None:
+            inspect(case, result, output.getvalue())
         states = case.status()['deliveries']
         # Hourly and owner alert, independently delivered to each platform.
         periodic = {r['report_id'] for r in case.status()['reports'] if r['kind'] == ('eod' if evidence_probe else 'hourly')}

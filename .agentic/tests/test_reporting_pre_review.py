@@ -121,9 +121,9 @@ class DeliveryRegressions(unittest.TestCase):
                     raise HTTPError(url, 403, 'SECRET_DIAGNOSTIC', {}, None)
                 if outcome == 'timeout':
                     raise TimeoutError('SECRET_DIAGNOSTIC')
-                messages.append(dict(ts='message', user='sender', text=transport.wire_text(intent)) if platform == 'slack'
-                    else dict(id='message', body=dict(content=transport.wire_text(intent)), **{'from': dict(user=dict(id='sender'))}))
-                return dict(ok=True, id='message')
+                messages.append(dict(ts='1355517523.000005', user='sender', text=transport.wire_text(intent)) if platform == 'slack'
+                    else dict(id='1616990032035', body=dict(content=transport.wire_text(intent)), **{'from': dict(user=dict(id='sender'))}))
+                return dict(ok=True, id='1616990032035')
             if 'auth.test' in url:
                 return dict(ok=True, team_id='context', user_id='sender')
             if 'conversations.info' in url:
@@ -228,9 +228,9 @@ class DeliveryRegressions(unittest.TestCase):
                     reads.append(url)
                     if len(reads) == 3:
                         text = adapter.transport.wire_text(intent)
-                        return (dict(ok=True, messages=[dict(ts='delayed', user='sender', text=text)])
+                        return (dict(ok=True, messages=[dict(ts='1355517523.000006', user='sender', text=text)])
                                 if platform == 'slack' else
-                                dict(value=[dict(id='delayed', body=dict(content=text), **{'from': dict(user=dict(id='sender'))})]))
+                                dict(value=[dict(id='1616990032036', body=dict(content=text), **{'from': dict(user=dict(id='sender'))})]))
                 return original(method, url, headers, payload)
             adapter.transport.http = delayed
             result = self.store.advance(intent['delivery_id'], adapter)
@@ -284,7 +284,7 @@ class DeliveryRegressions(unittest.TestCase):
         candidate = dict(project='p', repository='r', pr=1, head='a'*40, base='b'*40, scope_revision='s',
                          gate='g', stage='READY_FOR_OWNER_AUTHORIZATION', critic=True, specialists=True, final_gate=True)
         state, identities, provider = {}, [], Provider()
-        provider.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='observed')
+        provider.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='1355517523.000005')
         for current in ([candidate], [dict(candidate, final_gate=False)], [candidate], [candidate], [], [], [candidate]):
             notices, state = readiness_events(current, loads(canonical(state).decode()))
             for notice in notices:

@@ -69,7 +69,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_acceptance_and_local_receipt_never_prove_channel_delivery(self):
         p = Provider()
-        p.observation = dict(status='VISIBLE', evidence_kind='LOCAL_RECEIPT', message_id='local')
+        p.observation = dict(status='VISIBLE', evidence_kind='LOCAL_RECEIPT', message_id='1355517523.000005')
         result = self.store.advance(self.intent['delivery_id'], p)
         self.assertEqual(result['status'], 'UNKNOWN')
         self.assertEqual(p.calls, 1)
@@ -91,7 +91,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_visible_requires_exact_destination_payload_and_stable_readback(self):
         p = Provider()
-        p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='message-1',
+        p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='1355517523.000005',
                              observed_at='2026-11-05T12:00:00Z')
         result = self.store.advance(self.intent['delivery_id'], p)
         self.assertEqual(result['status'], 'DELIVERED')
@@ -106,7 +106,7 @@ class DeliveryTests(unittest.TestCase):
             raise TimeoutError('secret must not be retained')
         p.send = timeout
         self.assertEqual(self.store.advance(self.intent['delivery_id'], p)['status'], 'UNKNOWN')
-        p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='found',
+        p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='1355517523.000006',
                              observed_at='2026-11-05T12:00:00Z')
         result = self.api.DeliveryOutbox(self.db).advance(self.intent['delivery_id'], p)
         self.assertEqual(result['status'], 'DELIVERED')
@@ -122,7 +122,7 @@ class DeliveryTests(unittest.TestCase):
         teams = self.api.delivery_intent('report-1', binding('teams'), 'payload')
         self.store.enqueue(teams)
         q = Provider()
-        q.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='teams-message',
+        q.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='1616990032035',
                              observed_at='2026-11-05T12:00:00Z')
         self.assertEqual(other.advance(teams['delivery_id'], q)['status'], 'DELIVERED')
         self.assertEqual(other.get(self.intent['delivery_id'])['status'], 'UNKNOWN')
@@ -134,7 +134,7 @@ class DeliveryTests(unittest.TestCase):
     def test_wrong_destination_and_nonterminal_absence_never_retry(self):
         p = Provider()
         original = p.reconcile
-        p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='wrong',
+        p.observation = dict(status='VISIBLE', evidence_kind='CHANNEL_READBACK', message_id='1355517523.000005',
                              observed_at='2026-11-05T12:00:00Z')
         p.reconcile = lambda intent, attempts: dict(original(intent, attempts), destination='foreign')
         self.assertEqual(self.store.advance(self.intent['delivery_id'], p)['status'], 'UNKNOWN')

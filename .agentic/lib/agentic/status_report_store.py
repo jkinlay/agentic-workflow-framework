@@ -349,7 +349,9 @@ class ReportStore(Store):
         finally:
             db.close()
 
-    def append(self, record):
+    def append(self, record, *, credentials=()):
+        from .reporting.safety import safe_report
+        _require(safe_report(record, trusted_keys=True, credentials=credentials) == record, 'REPORT_CREDENTIAL_WITHHELD')
         raw = canonical(record)
         _require(len(raw) <= MAX_DOCUMENT_BYTES, 'Report record exceeds 8 MiB')
         record = loads(raw.decode('utf-8'))

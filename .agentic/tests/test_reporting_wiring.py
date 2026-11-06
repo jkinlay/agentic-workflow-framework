@@ -138,7 +138,8 @@ class ReportingRuntimeTests(unittest.TestCase):
                     evidence_kind='CHANNEL_READBACK', delivery_id=intent['delivery_id'],
                     destination=intent['binding']['destination'], platform=intent['binding']['platform'],
                     payload_sha256=intent['payload_sha256'], attempt_ids=attempts,
-                    observation_id='read-' + intent['delivery_id'], observed_at='2026-11-07T19:00:00Z', message_id='visible')
+                    observation_id='read-' + intent['delivery_id'], observed_at='2026-11-07T19:00:00Z',
+                    message_id='1355517523.000005' if intent['binding']['platform'] == 'slack' else '1616990032035')
         self.providers = {p: Provider() for p in ('teams', 'slack')}
 
     def cycle(self, now, **kwargs):
