@@ -75,6 +75,9 @@ class ProductionPreA5Tests(unittest.TestCase):
         for index, (enabled, role) in enumerate(((True, 'critic'), (False, 'critic'),
                                                (True, 'specialist'), (False, 'specialist'))):
             with self.subTest(accounting=enabled, role=role):
+                # Security quarantine is project-wide and intentionally remains
+                # unresolved at the end of each independent scenario.
+                self.gov['project']['id'] = str(uuid.uuid4())
                 ticket, state = 'EX-' + str(20 + index), str(uuid.uuid4())
                 ledger_path = self.root / state / 'project.sqlite'
                 self.value['budgeting']['accounting_enabled'] = False

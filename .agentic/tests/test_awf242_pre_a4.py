@@ -177,6 +177,9 @@ class ProductionPreA4Tests(unittest.TestCase):
     def test_all_candidate_worker_contexts_excluded_across_modes_and_restart(self):
         for enabled, role in ((True, 'critic'), (False, 'critic'), (True, 'specialist'), (False, 'specialist')):
             with self.subTest(accounting=enabled, role=role):
+                # Each scenario deliberately ends with an unresolved security
+                # quarantine, so it needs a separate project identity.
+                self.gov['project']['id'] = str(uuid.uuid4())
                 state = str(uuid.uuid4())
                 ledger_path = self.root / state / 'project.sqlite'
                 self.value['budgeting']['accounting_enabled'] = False

@@ -1519,7 +1519,9 @@ class RoutingLedger:
         for row in connection.execute('SELECT r.*,f.run_id AS resolved_run FROM model_runs r '
                 'LEFT JOIN model_failure_resolutions f ON f.run_id=r.run_id WHERE r.project_id=?', (project_id,)):
             outcome = json.loads(row['outcome'] or '{}')
-            if row['status'] not in ('settled', 'quarantined', 'reconciled') or outcome.get('success', True):
+            security = [v for v in outcome.get('violations', []) if v not in
+                        ('host token ceiling overrun', 'host cost ceiling overrun')] if row['status'] == 'quarantined' else []
+            if row['status'] not in ('settled', 'quarantined', 'reconciled') or (outcome.get('success', True) and not security):
                 continue
             request = json.loads(row['request'])
             binding = request.get('_budget_binding') or dict(project_id=project_id, ticket_id=row['ticket_id'],
@@ -1529,7 +1531,8 @@ class RoutingLedger:
                 ('project_id', project_id), ('ticket_id', row['ticket_id']), ('run_id', row['run_id']), ('role', row['role']))),
                 'Recovery migration differs from retained execution identity')
             records.append(dict(binding=binding, context_id=(outcome.get('actual_context_id')
-                if outcome.get('actual_context_observed', True) else None), resolved=row['resolved_run'] is not None))
+                if outcome.get('actual_context_observed', True) else None), resolved=row['resolved_run'] is not None,
+                quarantine_reasons=security))
         operations.import_recovery(project_id, records, retry_limit)
         return {'status': 'migrated', 'project_id': project_id, 'failures': len(records),
                 'resolutions': sum(record['resolved'] for record in records), 'budgets_refunded': False}

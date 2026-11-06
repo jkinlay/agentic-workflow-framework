@@ -215,22 +215,23 @@ class ControllerBudgeting:
         # dependency. Copy a readable protected ceiling into operational state;
         # once recorded, that reduction survives loss/corruption of this source.
         # No usage, failures, enrollment or accounting schema is read/created.
-        import sqlite3
-        from .model_routing import _current_retry_ceiling
         try:
+            from .model_routing import _current_retry_ceiling
             db = self._recovery_database()
-        except (sqlite3.Error, OSError):
-            db = None
-        if db is not None:
-            try:
+            if db is not None:
                 try:
                     ceiling = _current_retry_ceiling(db, self.governance['project']['id'])
-                except sqlite3.Error:
-                    ceiling = None
-            finally:
-                db.close()
-            if ceiling is not None:
-                return ceiling['retry_limit']
+                    if ceiling is not None:
+                        require(type(ceiling['retry_limit']) is int and ceiling['retry_limit'] >= 0,
+                                'Optional protected retry ceiling is invalid')
+                        return ceiling['retry_limit']
+                finally:
+                    db.close()
+        except Exception:
+            # This entire source (including path validation, decoding, query
+            # and close) is optional. Required operational state is validated
+            # separately and never passes through this availability fallback.
+            pass
         return None
 
     def start_execution(self, binding):
@@ -348,7 +349,8 @@ class ControllerBudgeting:
         finally:
             db.close()
 
-    def complete(self, admission, observation):
+    def complete(self, admission, observation, *, failed=False):
+        require(type(failed) is bool, 'Operational failure classification must be boolean')
         if admission is None:
             return None
         observer = getattr(self.host, 'observe_budget_outcome', None)
@@ -356,6 +358,8 @@ class ControllerBudgeting:
         outcome = observer(deepcopy(admission), deepcopy(observation))
         require(isinstance(outcome, dict), 'Budget outcome observation is malformed')
         outcome = deepcopy(outcome)
+        if failed and outcome.get('success') is True:
+            outcome.update(success=False, failure_kind='unknown')
         outcome.setdefault('actual_tokens', None)  # RoutingLedger's UNKNOWN normalization.
         require(text_id(outcome.get('observation_id')), 'Budget outcome needs an immutable usage observation')
         binding = admission['binding']
@@ -373,11 +377,18 @@ class ControllerBudgeting:
                         {k: v for k, v in outcome.items() if k not in derived}
                         and ('operating_hash' not in outcome or outcome['operating_hash'] == row['operating_hash']),
                         'Budget completion replay differs from retained observation')
-                return {'status': row['status'], 'run_id': binding['run_id'],
+                result = {'status': row['status'], 'run_id': binding['run_id'],
                         'accepted': not saved['violations'], 'violations': saved['violations'],
                         'operating_hash': row['operating_hash'], 'policy_sha256': row['policy_hash'],
                         'actual_model': saved['actual_model'], 'actual_reasoning_effort': saved['actual_reasoning_effort']}
-        return ledger.settle(binding['run_id'], outcome)
+            else:
+                result = None
+        result = result if result is not None else ledger.settle(binding['run_id'], outcome)
+        security = [v for v in result['violations'] if v not in
+                    ('host token ceiling overrun', 'host cost ceiling overrun')]
+        if security:
+            self.operations.quarantine(binding, security)
+        return result
 
 
 def require_unused_usage_observation(db, observation_id):

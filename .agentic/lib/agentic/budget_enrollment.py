@@ -177,16 +177,18 @@ class EnrollmentRegistry(ProtectedDatabase):
 
 
 OPERATIONAL_DDL = '''
-CREATE TABLE IF NOT EXISTS execution_identity(identity TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS execution_identity(identity TEXT PRIMARY KEY, security_schema INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS execution_intents(run_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_contexts(run_id TEXT PRIMARY KEY, context_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_outcomes(run_id TEXT PRIMARY KEY, success INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_resolutions(run_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_retry_limits(project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_retry_authorizations(operation_id TEXT PRIMARY KEY, record TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_quarantines(run_id TEXT PRIMARY KEY, reasons TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_remediations(run_id TEXT PRIMARY KEY, evidence TEXT NOT NULL);
 '''
 for _table in ('execution_intents', 'execution_contexts', 'execution_outcomes', 'execution_resolutions',
-               'execution_retry_authorizations'):
+               'execution_retry_authorizations', 'execution_quarantines', 'execution_remediations'):
     for _action in ('UPDATE', 'DELETE'):
         OPERATIONAL_DDL += (f'CREATE TRIGGER IF NOT EXISTS {_table}_no_{_action} BEFORE {_action} ON {_table} '
                             "BEGIN SELECT RAISE(ABORT,'immutable execution evidence'); END;")
@@ -243,11 +245,16 @@ class OperationalRegistry(ProtectedDatabase):
                     tables = {row[0] for row in prior.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                     required = {'execution_intents', 'execution_contexts', 'execution_outcomes',
                                 'execution_resolutions', 'execution_retry_limits'}
+                    if 'execution_identity' in tables and any(row[1] == 'security_schema'
+                            for row in prior.execute('PRAGMA table_info(execution_identity)')):
+                        required.update({'execution_quarantines', 'execution_remediations'})
                     require(required <= tables and (initialized or 'execution_identity' in tables),
                             'Worker independence unknown: protected shared execution evidence incomplete; restore verified host state')
             with super().transaction(ddl) as db:
+                if not any(row['name'] == 'security_schema' for row in db.execute('PRAGMA table_info(execution_identity)')):
+                    db.execute('ALTER TABLE execution_identity ADD COLUMN security_schema INTEGER NOT NULL DEFAULT 1')
                 if initialized:
-                    db.execute('INSERT INTO execution_identity VALUES (?)', (identity,))
+                    db.execute('INSERT INTO execution_identity(identity) VALUES (?)', (identity,))
                 require([row['identity'] for row in db.execute('SELECT identity FROM execution_identity')] == [identity],
                         'Worker independence unknown: protected shared execution evidence identity lost; restore verified host state')
                 if observe_configuration:
@@ -274,6 +281,13 @@ class OperationalRegistry(ProtectedDatabase):
         return binding
 
     def _admit(self, db, binding):
+        for row in db.execute('SELECT i.binding FROM execution_intents i '
+                              'JOIN execution_quarantines q ON q.run_id=i.run_id '
+                              'LEFT JOIN execution_remediations r ON r.run_id=i.run_id '
+                              'WHERE r.run_id IS NULL'):
+            prior = validate_binding(json.loads(row['binding']))
+            if prior['project_id'] == binding['project_id']:
+                raise ValidationError('Operational security quarantine requires explicit remediation: ' + prior['run_id'])
         for row in db.execute('SELECT i.binding FROM execution_intents i '
                               'JOIN execution_outcomes o ON o.run_id=i.run_id '
                               'LEFT JOIN execution_resolutions r ON r.run_id=i.run_id '
@@ -362,6 +376,9 @@ class OperationalRegistry(ProtectedDatabase):
                     old = db.execute('SELECT context_id FROM execution_contexts WHERE run_id=?', (binding['run_id'],)).fetchone()
                     require(old is None or old['context_id'] == context, 'Operational context identity changed')
                     db.execute('INSERT OR IGNORE INTO execution_contexts VALUES (?,?)', (binding['run_id'], context))
+                if record.get('quarantine_reasons'):
+                    db.execute('INSERT OR IGNORE INTO execution_quarantines VALUES (?,?)',
+                               (binding['run_id'], encoded(record['quarantine_reasons'])))
                 if record['resolved']:
                     db.execute('INSERT OR IGNORE INTO execution_resolutions VALUES (?,?)', (binding['run_id'], encoded(binding)))
 
@@ -395,15 +412,69 @@ class OperationalRegistry(ProtectedDatabase):
             require(row is None or row['context_id'] == context_id, 'Operational context identity changed')
             db.execute('INSERT OR IGNORE INTO execution_contexts VALUES (?,?)', (binding['run_id'], context_id))
 
+    def validate_completion(self, binding, context_id):
+        self._completion(binding, context_id, False, record_outcome=False)
+
     def finish(self, binding, context_id, success):
+        self._completion(binding, context_id, success, record_outcome=True)
+
+    def _completion(self, binding, context_id, success, *, record_outcome):
         require(type(success) is bool, 'Operational terminal outcome must be observed')
-        if context_id is not None:
-            self.context(binding, context_id)
+        violations = []
         with self.transaction(OPERATIONAL_DDL) as db:
             self._binding(db, binding)
-            row = db.execute('SELECT success FROM execution_outcomes WHERE run_id=?', (binding['run_id'],)).fetchone()
-            require(row is None or bool(row['success']) == success, 'Operational terminal outcome changed')
-            db.execute('INSERT OR IGNORE INTO execution_outcomes VALUES (?,?)', (binding['run_id'], int(success)))
+            if context_id is not None:
+                require(text_id(context_id), 'Observed context is invalid')
+                prior = db.execute('SELECT context_id FROM execution_contexts WHERE run_id=?', (binding['run_id'],)).fetchone()
+                if prior is not None and prior['context_id'] != context_id:
+                    violations.append('Operational context identity changed')
+                else:
+                    db.execute('INSERT OR IGNORE INTO execution_contexts VALUES (?,?)', (binding['run_id'], context_id))
+                if binding['role'] in ('critic', 'specialist'):
+                    for row in db.execute('SELECT i.binding,c.context_id FROM execution_intents i '
+                                          'LEFT JOIN execution_contexts c ON c.run_id=i.run_id'):
+                        worker = validate_binding(json.loads(row['binding']))
+                        if (all(worker[key] == binding[key] for key in ('project_id', 'ticket_id'))
+                                and worker['role'] in ('worker', 'fix')
+                                and (row['context_id'] is None or row['context_id'] == context_id)):
+                            violations.append('host review context is not independent')
+                            break
+            if violations:
+                db.execute('INSERT OR IGNORE INTO execution_quarantines VALUES (?,?)',
+                           (binding['run_id'], encoded(violations)))
+                success = False
+            if record_outcome:
+                row = db.execute('SELECT success FROM execution_outcomes WHERE run_id=?', (binding['run_id'],)).fetchone()
+                require(row is None or bool(row['success']) == success, 'Operational terminal outcome changed')
+                db.execute('INSERT OR IGNORE INTO execution_outcomes VALUES (?,?)', (binding['run_id'], int(success)))
+        # Raise after committing the failure and security stop. Never roll back
+        # terminal evidence merely because the completion itself is invalid.
+        require(not violations, 'Operational security quarantined: ' + '; '.join(violations))
+
+    def quarantine(self, binding, reasons):
+        require(isinstance(reasons, list) and reasons and all(text_id(v) for v in reasons),
+                'Operational quarantine requires observed reasons')
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._binding(db, binding)
+            db.execute('INSERT OR IGNORE INTO execution_quarantines VALUES (?,?)',
+                       (binding['run_id'], encoded(reasons)))
+
+    def remediate(self, binding, observation):
+        """Trusted host records explicit verified security remediation, not retry.
+
+        As with operational recovery, the trusted caller authenticates evidence;
+        worker data and ordinary resolve() cannot authorize this operation.
+        """
+        require(isinstance(observation, dict) and set(observation) == {'verified', 'evidence_ref', 'reason'}
+                and observation['verified'] is True and text_id(observation['evidence_ref'])
+                and text_id(observation['reason']), 'Explicit verified security remediation evidence required')
+        with self.transaction(OPERATIONAL_DDL) as db:
+            self._binding(db, binding)
+            require(db.execute('SELECT 1 FROM execution_quarantines WHERE run_id=?', (binding['run_id'],)).fetchone(),
+                    'Security remediation requires an observed quarantine')
+            prior = db.execute('SELECT evidence FROM execution_remediations WHERE run_id=?', (binding['run_id'],)).fetchone()
+            require(prior is None or prior['evidence'] == encoded(observation), 'Security remediation evidence changed')
+            db.execute('INSERT OR IGNORE INTO execution_remediations VALUES (?,?)', (binding['run_id'], encoded(observation)))
 
     def worker_contexts(self, binding):
         validate_binding(binding)

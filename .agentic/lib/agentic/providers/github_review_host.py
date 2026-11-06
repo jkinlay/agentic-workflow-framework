@@ -5,6 +5,7 @@ Jira write, API-key provisioning, approval bypass or automatic force-push exists
 """
 from __future__ import annotations
 from dataclasses import replace
+from functools import wraps
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -44,6 +45,35 @@ CODEX_RESULT_LIMIT = 1024 * 1024
 MANIFEST_PATHS = ('MANIFEST.json', 'MANIFEST.md')
 ROUTING_SOURCE = '.agentic/defaults/routing.yaml'
 _SUBPROCESS_RUN = subprocess.run
+
+
+def _terminal_agent_call(method):
+    """Seal a launch only after its outermost caller validates the result.
+
+    review/amend call agent, so their checkout, identity and scope checks share
+    the same terminal boundary. Direct agent and first-draft calls are covered
+    as well. Process exit and schema acceptance alone never seal success.
+    """
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        outer = getattr(self, '_pending_agent_outcomes', None) is None
+        if outer:
+            self._pending_agent_outcomes = []
+        failure = None
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            if outer:
+                pending, self._pending_agent_outcomes = self._pending_agent_outcomes, None
+                kind = getattr(failure, 'failure_kind', None) or ('cancelled' if isinstance(
+                    failure, (KeyboardInterrupt, SystemExit, subprocess.TimeoutExpired)) or
+                    str(failure).startswith(('SUBPROCESS_CANCELLED:', 'SUBPROCESS_TIMEOUT:')) else 'unknown')
+                for run, admission, binding in pending:
+                    self._agent_outcome(run, admission, binding, success=failure is None, failure_kind=kind)
+    return call
 
 
 class _ReleaseSourceConfigs(dict):
@@ -982,6 +1012,10 @@ class HostDriver:
             require(isinstance(event, dict), 'Codex execution event must be an object')
             if event.get('type') == 'thread.started':
                 threads.append(event.get('thread_id'))
+        if len(threads) > 1:
+            error = ValidationError('Codex execution must contain exactly one thread.started identity')
+            error.security_violation = True
+            raise error
         require(len(threads) == 1,
                 'Codex execution must contain exactly one thread.started identity')
         # The formatter is the canonical UUID validator used by Writer trailers.
@@ -1662,30 +1696,50 @@ class HostDriver:
     def _agent_outcome(self, run, admission, binding, *, success, failure_kind='unknown'):
         """One terminal boundary; operational state never requires accounting."""
         log = run / 'codex.jsonl'
-        session = self._terminal_context(log)
-        identity_missing = success and binding is not None and session is None
-        if identity_missing:
-            success, failure_kind = False, 'unknown'
-        if binding is not None:
-            self.budgeting.operations.finish(binding, session, success)
+        session, error, identity_missing = None, None, False
         try:
-            if admission is not None:
-                settled = self.budgeting.complete(admission,
-                    dict(session_id=session, success=success, failure_kind=failure_kind))
-                require(settled['accepted'], 'Review budget routing settlement quarantined the run')
+            try:
+                session = self._terminal_context(log, binding=binding)
+                identity_missing = success and binding is not None and session is None
+                if identity_missing:
+                    success, failure_kind = False, 'unknown'
+                if binding is not None:
+                    self.budgeting.operations.validate_completion(binding, session)
+            except BaseException:
+                success, failure_kind = False, 'unknown'
+                raise
+            finally:
+                if admission is not None:
+                    settled = self.budgeting.complete(admission,
+                        dict(session_id=session, success=success, failure_kind=failure_kind))
+                    require(settled['accepted'], 'Review budget routing settlement quarantined the run')
+        except BaseException as exc:
+            error = exc
+            success, failure_kind = False, 'unknown'
+            raise
         finally:
-            with Tree(run) as tree:
-                tree.write('execution-outcome.json', canonical(dict(binding=binding,
-                    success=success, failure_kind=None if success else failure_kind,
-                    budgeted=admission is not None)))
+            try:
+                if binding is not None:
+                    self.budgeting.operations.finish(binding, session, success)
+            except BaseException:
+                success, failure_kind = False, 'unknown'
+                if error is None:
+                    raise
+            finally:
+                with Tree(run) as tree:
+                    tree.write('execution-outcome.json', canonical(dict(binding=binding,
+                        success=success, failure_kind=None if success else failure_kind,
+                        budgeted=admission is not None)))
         require(not identity_missing, 'Terminal execution lacks an unambiguous observed context')
         return session
 
-    def _terminal_context(self, log):
+    def _terminal_context(self, log, *, binding=None):
         """Missing/ambiguous context is UNKNOWN for failure accounting."""
         try:
             return self._codex_thread_id(log)
-        except (OSError, UnicodeError, ValidationError):
+        except (OSError, UnicodeError, ValidationError) as exc:
+            if binding is not None and getattr(exc, 'security_violation', False):
+                self.budgeting.operations.quarantine(binding, ['Ambiguous host context identity'])
             return None
 
     def _launch_agent(self, role, run, args, prompt, *, enrolled=True, first_draft_run=None):
@@ -1701,21 +1755,13 @@ class HostDriver:
                 tree.write('first-draft-attempt.json', canonical(dict(
                     controller_run_id=first_draft_run, binding=binding,
                     directory='.' if run.name == first_draft_run else run.name)))
-        try:
-            self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
-            # Exit zero observes process termination, not a usable agent result.
-            # Protocol failures consume the same operational recovery allowance
-            # in OFF, accounting and legacy modes, before any success is sealed.
-            output = Path(args[args.index('--output-last-message') + 1])
-            schema = Path(args[args.index('--output-schema') + 1])
-            raw_result, value = self._validated_agent_result(output, run, schema)
-        except BaseException as exc:
-            kind = getattr(exc, 'failure_kind', None) or ('cancelled' if isinstance(
-                exc, (KeyboardInterrupt, SystemExit, subprocess.TimeoutExpired)) or str(exc).startswith(
-                ('SUBPROCESS_CANCELLED:', 'SUBPROCESS_TIMEOUT:')) else 'unknown')
-            self._agent_outcome(run, admission, binding, success=False, failure_kind=kind)
-            raise
-        session = self._agent_outcome(run, admission, binding, success=True)
+        require(self._pending_agent_outcomes is not None, 'Agent launch requires a terminal validation boundary')
+        self._pending_agent_outcomes.append((run, admission, binding))
+        self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
+        output = Path(args[args.index('--output-last-message') + 1])
+        schema = Path(args[args.index('--output-schema') + 1])
+        raw_result, value = self._validated_agent_result(output, run, schema)
+        session = self._terminal_context(run / 'codex.jsonl')
         return session, binding, raw_result, value
 
     def _validated_agent_result(self, output, run, schema):
@@ -1730,6 +1776,7 @@ class HostDriver:
         Draft202012Validator(loads(schema.read_text())).validate(value)
         return raw, value
 
+    @_terminal_agent_call
     def agent(self, role, candidate, findings, run_id, files=None):
         require(role in {'worker', 'critic', 'specialist'}, 'Controller and independent runs are not review sub-agents')
         template_role = 'critic' if role == 'specialist' else role
@@ -1764,15 +1811,23 @@ class HostDriver:
             'codex_config_overrides': overrides}, sort_keys=True), encoding='utf-8')
         budgeting = getattr(self, 'budgeting', None)
         session, binding, raw_result, value = self._launch_agent(role, run, args, prompt)
+        if reviewer:
+            from ..review_loop import validate_review
+            validate_review(value, candidate, findings, files)
+        else:
+            require(value['candidate'] == candidate, 'Worker reported a different candidate')
         if reviewer and budgeting is not None and 'legacy_behavior' not in budgeting.settings:
             session = self._codex_thread_id(run / 'codex.jsonl')
             contexts = self._worker_contexts(binding, candidate)
+            if session in {row['context_id'] for row in contexts}:
+                budgeting.operations.quarantine(binding, ['host review context is not independent'])
             require(session not in {row['context_id'] for row in contexts},
                     'Review context is not independent of candidate worker contexts')
         if role == 'worker':
             self._record_codex_identity(run_id, run, run, output)
         return value
 
+    @_terminal_agent_call
     def qualification_agent(self, role, record_id, probe):
         """Run one live isolation probe with the production child controls."""
         require(role in {'critic', 'worker'}, 'Invalid qualification probe role')
@@ -1889,6 +1944,7 @@ class HostDriver:
         require(self.repository_git_controls(self.worker) == expected,
                 'Worker changed Git configuration, remote routing or hooks; reconcile before publication')
 
+    @_terminal_agent_call
     def first_draft_worker(self, *, run_id=None, expected_git_controls=None):
         """Run the pinned worker against the configured first-draft checkout."""
         run_id = run_id or str(uuid.uuid4())
@@ -1928,10 +1984,13 @@ class HostDriver:
         (run / 'input.json').write_bytes(canonical(dict(candidate=None,
             allowed_amendment_paths=self.c['allowed_paths'], contract=contract)))
         _, _, raw_result, value = self._launch_agent('worker', run, args, prompt, first_draft_run=run_id)
+        from ..review_first_draft import validate_worker_receipt
+        validate_worker_receipt(value, allowed_paths=self.c['allowed_paths'])
         self.require_first_draft_git_controls(git_controls)
         self._record_codex_identity(run_id, run_root, run, output)
         return value
 
+    @_terminal_agent_call
     def review(self, candidate, findings, run_id, files):
         self._controller_run_id(run_id)
         observation = self.collect_provenance_observation()
@@ -1981,6 +2040,7 @@ class HostDriver:
         require(self.git(self.critic,'rev-parse','HEAD') == candidate['head'] and not self.git(self.critic,'status','--porcelain','--untracked-files=all'), 'Critic mutated its checkout')
         return report
 
+    @_terminal_agent_call
     def amend(self, candidate, findings, run_id):
         self._controller_run_id(run_id)
         self.preflight(candidate)

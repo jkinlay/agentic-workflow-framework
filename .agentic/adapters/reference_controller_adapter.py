@@ -115,9 +115,9 @@ class _SubprocessRunner:
 		_require(proof == observation and proof.get('terminal') is True
 			and (success or proof.get('status') in {'COMPLETED', 'FAILED', 'TIMED_OUT'})
 			and proof.get('pid') == record.get('pid') and proof.get('launch_nonce') == binding['run_id']
-			and (context_known or not success and session is None)
-			and record.get('session_id', session) == session,
+			and (context_known or not success and session is None),
 			'Budget usage differs from observed process/session completion')
+		success = success and record.get('session_id', session) == session
 		argv = record['argv']
 		model = argv[argv.index('--model') + 1]
 		efforts = [item.split('=', 1)[1] for item in argv if item.startswith('model_reasoning_effort=')]
@@ -668,19 +668,37 @@ def _build(config):
 		return budgeting
 
 	def complete_run(record, result, *, failed=False):
-		"""One terminal outcome boundary, independent of the accounting mode."""
+		"""Settle terminal proof even when identity completion itself refuses."""
 		admission = record.get('budget_admission')
-		if budgeting is not None and record.get('operational_binding'):
-			budgeting.operations.finish(record['operational_binding'], result.get('session_id'), not failed)
+		error = None
 		try:
-			if admission is not None:
-				_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
-				settlement = budgeting.complete(admission, result)
-				_require(settlement['accepted'], 'Budget routing settlement quarantined this dispatch')
+			try:
+				if budgeting is not None and record.get('operational_binding'):
+					budgeting.operations.validate_completion(record['operational_binding'], result.get('session_id'))
+			except BaseException:
+				failed = True
+				raise
+			finally:
+				if admission is not None:
+					_require(budgeting is not None, 'Retained budget admission requires its canonical budget context')
+					settlement = budgeting.complete(admission, result, failed=failed)
+					_require(settlement['accepted'], 'Budget routing settlement quarantined this dispatch')
+		except BaseException as exc:
+			error = exc
+			failed = True
+			raise
 		finally:
-			if failed:
-				record.update(status='FAILED', terminal_failure=result, observed_at=_clock_text(clock))
-				_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
+			try:
+				if budgeting is not None and record.get('operational_binding'):
+					budgeting.operations.finish(record['operational_binding'], result.get('session_id'), not failed)
+			except BaseException:
+				failed = True
+				if error is None:
+					raise
+			finally:
+				if failed:
+					record.update(status='FAILED', terminal_failure=result, observed_at=_clock_text(clock))
+					_write_record(record_dir / (record['dispatch_id'] + '.json'), record)
 
 	def admit_run(record, selected):
 		"""Shared admission for writers, critics and explicitly unbudgeted probes.
@@ -728,12 +746,15 @@ def _build(config):
 			complete_run(record, exc.observation, failed=True)
 			raise
 		binding = record.get('operational_binding')
+		if result.get('terminal') is True:
+			complete_run(record, result)
 		if binding is not None and result.get('session_id') is not None:
 			_require(budgeting is not None, 'Operational identity requires its protected project context')
 			budgeting.operations.context(binding, result['session_id'])
 			if binding['role'] == 'critic':
 				contexts = budgeting.operations.worker_contexts(binding)
 				if result['session_id'] in {row['context_id'] for row in contexts}:
+					budgeting.operations.quarantine(binding, ['host review context is not independent'])
 					if result.get('terminal') is True:
 						complete_run(record, result)
 					raise ValidationError('Dispatch context is not independent of project worker contexts')
