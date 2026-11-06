@@ -10,7 +10,7 @@ Show/status/`operating.state` share `effective_ceiling`: minimum of `execution.m
 
 Bound cycles use `produce_planning_resource_observation`. Planning reauthenticates evidence/capacities; unauthenticated/operator values fail closed. Capacity: 0–1000; zero selects none (`safe_lane_count == 0`).
 
-Schemas accept `streams.count` and optional `execution.max_lanes` 1–12, routes A–L. Omitted `max_lanes` retains six. Lower parallel-ticket/enabled-broker limits bind. Raise protected ceilings through review. Schema acceptance grants no dispatch authority.
+Schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
@@ -26,11 +26,11 @@ Schemas accept `streams.count` and optional `execution.max_lanes` 1–12, routes
 
 `independent_reviewers.allocation: shared_critic` uses slot. Legacy `one_per_stream` and fixed counts bind. `--propose-operating-capacity` proposes ceiling change.
 
-Owner overrides require authenticated `fixed`/`max` decisions and audit: `fixed` selects count or refuses unsafe; `max` limits recommendations. Neither raises capacity. Replans await round boundaries; preserve reservations/triggers. Durable plans constrain admission.
+Owner overrides require authenticated `fixed`/`max` decisions and audit: `fixed` selects count or refuses unsafe; `max` limits recommendations. Neither raises sealed safe capacity. Replans await round boundaries; preserve reservations/triggers. Durable plans constrain admission.
 
 Authenticated readers trim/casefold and collapse whitespace/ASCII-hyphen runs: `To Do`/`To-Do` → `ready`, `In Progress`/`In-Progress` → `in_progress`, `Done` → `closed`. Vocabulary: ready `open`/`ready`/`backlog`; active `in_flight`/`working`/`dispatched`/`in_progress`; closed `closed`/`done`/`merged`/`cancelled`/`canceled`. Unknown names grant neither admission nor closed dependencies; reviewed mappings required. Graph callers supply canonical vocabulary.
 
-Ordinary choices: translate, echo, execute:
+Translate, echo, execute:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
@@ -62,7 +62,7 @@ Read Jira; save IDs/paths in `operating-epics.schema.json`:
 
 Inventory: `data/`, `data/**`, `data/*` are equivalent prefixes; other globs refuse by Epic/value. Unknown/overlapping scopes group work; refusals name Epic/value. Risk/specialist triggers raise routes; no Epics: keep/custom.
 
-Table; wait for adoption/keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Recompute stale hashes.
+Table; await adoption/keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Recompute stale hashes.
 
 Defaults unpinned; adoption preserves pins/floors. Stored rows/replay checks remain.
 
@@ -79,7 +79,7 @@ limit `1000000000`. Older missing fields retain legacy budgeting. Limits enable
 neither switch; accounting OFF disables enforcement. Epic overrides cannot alter
 budget settings.
 
-Supported paths: `budgeting.accounting_enabled`,
+Paths: `budgeting.accounting_enabled`,
 `budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` and
 `budgeting.max_tokens_per_project`. `set` validates/stores a protected proposal,
 prints exact changes/digest, exits 3 `PENDING_OWNER_CONFIRMATION`; settings stay
@@ -92,8 +92,7 @@ numeric ID in reviewed `merge_gate.trusted_owner_ids`; empty refuses
 environment variables, foreign GH_HOST and noninteractive stdin/stdout refuse.
 Project/repository/governance/prior-settings/exact-change mismatches and replay
 refuse. Under lock: validate, consume, journal, audit, readback.
-This proves the machine's stored GitHub login and an interactive terminal. It
-does not defend against a process with the owner's full rights and a terminal
-of its own. Other settings retain behavior.
+Confirmation proves stored GitHub login and terminal access; a process with the
+owner's full rights and terminal can bypass it. Other settings retain behavior.
 See [budgeting](39-BUDGETING.md) for host integration, UNKNOWN attribution,
 canonical totals, preserved reservations and versioned upgrade decision.

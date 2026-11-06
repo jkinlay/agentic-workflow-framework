@@ -1,5 +1,6 @@
 """Real local Python process coverage for the routing CLI; no live model calls."""
 import json
+import os
 from contextlib import closing
 from pathlib import Path
 import shutil
@@ -29,6 +30,9 @@ class RoutingCLITests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-routing-cli-")
         self.addCleanup(self.temp.cleanup)
+        environment = patch.dict(os.environ, {"AWF_STATE_HOME": self.temp.name})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.root = Path(self.temp.name)
         self.project = self.root / "project"
         self.project.mkdir()

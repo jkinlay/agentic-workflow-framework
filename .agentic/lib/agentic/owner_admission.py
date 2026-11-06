@@ -21,6 +21,7 @@ from . import ValidationError
 from .budget_enrollment import EnrollmentRegistry, ProtectedDatabase, require
 from .budgeting import project_ledger_path
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
+from .child_process import child_env
 
 TOKEN_VARIABLES = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN')
 TTL_SECONDS = 15 * 60
@@ -182,14 +183,14 @@ def observe_github_owner(governance, root):
     require(executable is not None, 'GITHUB_AUTH_UNAVAILABLE: install gh and sign in with the owner account')
     try:
         status = subprocess.run([executable, 'auth', 'status', '--hostname', 'github.com', '--active'],
-                                capture_output=True, text=True, timeout=30, check=False)
+                                capture_output=True, text=True, timeout=30, check=False, env=child_env())
         status_text = status.stdout + '\n' + status.stderr
         account = re.search(r'Logged in to github\.com account ([A-Za-z0-9-]+)(?:\s|$)', status_text)
         require(status.returncode == 0 and account is not None
                 and re.search(r'Active account:\s*true\b', status_text) is not None,
                 'GITHUB_AUTH_UNAVAILABLE: stored active github.com login was not observed')
         identity = subprocess.run([executable, 'api', '--hostname', 'github.com', '--method', 'GET', 'user'],
-                                  capture_output=True, text=True, timeout=30, check=False)
+                                  capture_output=True, text=True, timeout=30, check=False, env=child_env())
         require(identity.returncode == 0, 'GITHUB_AUTH_UNAVAILABLE: GitHub user lookup failed')
         user = loads(identity.stdout)
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:

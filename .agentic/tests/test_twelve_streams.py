@@ -2,10 +2,12 @@
 from copy import deepcopy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
@@ -20,6 +22,11 @@ from agentic.streams import LABELS
 
 class TwelveStreamTests(unittest.TestCase):
     def setUp(self):
+        state_home = tempfile.TemporaryDirectory(prefix="awf-twelve-host-")
+        self.addCleanup(state_home.cleanup)
+        environment = patch.dict(os.environ, {"AWF_STATE_HOME": state_home.name})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.policy = default_policy(ROOT / ".agentic/defaults/routing.yaml")
         self.gov = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.gov["execution"].update(max_lanes=12, max_parallel_tickets=12)

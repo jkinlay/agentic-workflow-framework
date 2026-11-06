@@ -60,10 +60,11 @@ class OwnerAdmissionTests(unittest.TestCase):
         self.identity.write_text(json.dumps(dict(id=1001, login='owner', type='User')))
         fake = self.bin / 'fake_gh.py'
         fake.write_text(
-            'import json,sys\nfrom pathlib import Path\n'
+            'import json,os,sys\nfrom pathlib import Path\n'
             f'p=Path({str(self.identity)!r}); calls=Path({str(self.calls)!r})\n'
             'with calls.open("a") as s: s.write(json.dumps(sys.argv[1:])+"\\n")\n'
             'v=json.loads(p.read_text())\n'
+            'if any(k in os.environ for k in v.get("forbidden_environment", [])): sys.exit(9)\n'
             'if "status" in sys.argv:\n'
             ' print(v.get("status", "github.com\\n  Logged in to github.com account owner (keyring)\\n  - Active account: true"))\n'
             ' sys.exit(v.get("exit",0))\n'
@@ -163,6 +164,16 @@ class OwnerAdmissionTests(unittest.TestCase):
 
     def test_enterprise_host_refused(self):
         self.refused(self.pending(), 'GITHUB_HOST_REFUSED', env={**self.env, 'GH_HOST': 'enterprise.invalid'})
+
+    def test_gh_children_strip_provider_keys_and_configured_extra_variables(self):
+        self.gov['execution']['child_env_strip_extra'] = ['AWF_FIXTURE_PRIVATE']
+        self.save_governance()
+        self.identity.write_text(json.dumps(dict(id=1001, login='owner', type='User',
+            forbidden_environment=['OPENAI_API_KEY', 'AWF_FIXTURE_PRIVATE'])))
+        digest = self.pending()
+        result = self.confirm(digest, env={**self.env, 'OPENAI_API_KEY': 'synthetic-unusable',
+                                          'AWF_FIXTURE_PRIVATE': 'synthetic-unusable'})
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_empty_owner_gate_names_configuration(self):
         self.gov['merge_gate']['trusted_owner_ids'] = []
