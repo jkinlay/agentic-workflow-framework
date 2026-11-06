@@ -608,6 +608,29 @@ def _operating_binding(operating, governance, policy):
                               "operating_provenance": deepcopy(operating.provenance)}
 
 
+def _normalized_operating(config):
+    """Ignore only empty optional additions and explicit false pins."""
+    return {key: _normalized_operating(value) if isinstance(value, dict) else value
+            for key, value in config.items()
+            if not (key == "pinned" and value is False)
+            and not (key == "epic_overrides" and value == {})}
+
+
+def _generated_operating_defaults(config):
+    """Require whole generated content, including simple work and stream count."""
+    if not config or config.get("source") != "default":
+        return False
+    from .operating import default_operating
+
+    normalized = _normalized_operating(config)
+    # Exact matches have identical stored routes and therefore identical
+    # substitutions through current policy, even if several baselines match.
+    # Catalog identity has no part in this decision.
+    return any(normalized == _normalized_operating(default_operating(
+        default_policy(source), count=config["streams"]["count"]))
+        for source in (RELEASE_ROUTING_SOURCE, LEGACY_ROUTING_SOURCE))
+
+
 def select_route(policy, request, capabilities, *, operating=None, governance=None):
     """Read-only proposal with explicit legacy attribution or a validated snapshot."""
     config, binding = _operating_binding(operating, governance, policy)
@@ -642,39 +665,22 @@ def _select_route(policy, request, capabilities, operating_config):
     simple = all(request[x] == "low" for x in ("risk", "complexity", "uncertainty")) and request["verification"] == "strong" and not risk_flags
     selected = deepcopy(policy["role_defaults"][policy_role])
     reasons = ["balanced role default"]
-    default_operating = bool(operating_config and operating_config.get("source") == "default")
-    baselines = ([default_policy(RELEASE_ROUTING_SOURCE), default_policy(LEGACY_ROUTING_SOURCE)]
-                 if default_operating else [])
-    # The retained generated simple-worker pair identifies the template's
-    # defaults independently of edits to the current routing catalog or floors.
-    release_defaults = next((baseline for baseline in baselines
-                             if all(operating_config["simple_worker"].get(key) == baseline["simple_worker"][key]
-                                    for key in ("model", "reasoning_effort"))), None)
-    default_operating = default_operating and release_defaults is not None
+    default_operating = _generated_operating_defaults(operating_config)
 
-    def effective_default(route, policy_route, *released_routes):
+    def effective_default(route, policy_route):
         """Resolve unpinned generated defaults through current routing policy."""
-        released_pair = bool(default_operating and route is not None and any(
-            all(route.get(key) == pair.get(key) for key in ("model", "reasoning_effort"))
-            for pair in released_routes))
-        if released_pair and not route.get("pinned", False):
+        if default_operating and route is not None and not route.get("pinned", False):
             return deepcopy(policy_route)
         return route
 
     role_route = operating_config.get(role) if operating_config and role in ("controller", "specialist") else None
-    role_route = effective_default(
-        role_route, policy["role_defaults"][policy_role],
-        release_defaults["role_defaults"][policy_role] if release_defaults else {})
+    role_route = effective_default(role_route, policy["role_defaults"][policy_role])
     if role_route:
         selected = {k: role_route[k] for k in ("model", "reasoning_effort")}
         reasons = ["operating role default"]
     simple_route = operating_config["simple_worker"] if operating_config else policy["simple_worker"]
-    if (default_operating
-            and all(simple_route.get(key) == release_defaults["simple_worker"][key]
-                    for key in ("model", "reasoning_effort"))
-            and not simple_route.get("pinned", False)):
-        simple_route = {"enabled": simple_route.get("enabled", True),
-                        **deepcopy(policy["simple_worker"])}
+    simple_route = effective_default(simple_route, {"enabled": simple_route.get("enabled", True),
+                                                    **policy["simple_worker"]})
     simple_enabled = simple_route.get("enabled", True)
     if role in ("worker", "fix") and simple and simple_enabled:
         selected = {k: simple_route[k] for k in ("model", "reasoning_effort")}
@@ -692,9 +698,7 @@ def _select_route(policy, request, capabilities, operating_config):
         stream_route = (_critic_route(operating_config.get("critic"), stream_config.get("reviewer"))
                         if role == "critic" else stream_config.get("worker"))
         _require(stream_route is not None, "Requested stream has no retained operating route; reconcile stream ownership")
-        stream_route = effective_default(
-            stream_route, policy["role_defaults"][policy_role],
-            release_defaults["role_defaults"][policy_role] if release_defaults else {})
+        stream_route = effective_default(stream_route, policy["role_defaults"][policy_role])
         # An ordinary unpinned stream route is the normal-work default. Keeping
         # the simple option effective avoids overriding Luna with default Terra.
         ordinary_default = all(stream_route[k] == policy["role_defaults"][policy_role][k]
