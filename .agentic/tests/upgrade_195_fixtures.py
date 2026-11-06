@@ -146,3 +146,39 @@ finally:
     connection.close()
 print('{}')
 """, project)
+
+
+def generate_budget_history(source, destination, project_id):
+    """Generate history through published 1.9.5 APIs, with no direct SQL writes.
+
+    Synthetic runs are not adopter evidence. NULL usage is produced by leaving
+    a published reservation outstanding, never by fabricating a settlement.
+    """
+    return published_call(source, """
+from agentic.store import Store
+from agentic.model_routing import RoutingLedger, default_policy
+destination = Path(sys.argv[3])
+project_id = sys.argv[4]
+destination.mkdir(parents=True)
+store = Store(destination / 'state.sqlite', project_id)
+store.control('RUNNING', 'Synthetic disposable fixture reconciliation', reconciled=True)
+limits = dict(runs=20, tokens=10000, cost=10000, daily_cost=10000)
+for run_id in ('22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'):
+    store.reserve_budget(run_id, 'EX-195', '2026-10-01T00:00:00Z', 100, 10, limits)
+store.settle_budget('33333333-3333-4333-8333-333333333333', 20, 2)
+store.control('PAUSED', 'Synthetic disposable fixture complete')
+overrun = Store(destination / 'overrun.sqlite', project_id)
+overrun.control('RUNNING', 'Synthetic disposable reconciliation', reconciled=True)
+overrun.reserve_budget('44444444-4444-4444-8444-444444444444', 'EX-195',
+    '2026-10-01T00:00:00Z', 100, 10, limits)
+overrun.settle_budget('44444444-4444-4444-8444-444444444444', 120, 12)
+ledger = RoutingLedger(destination / 'host.sqlite')
+policy = default_policy()
+request = dict(ticket_id='EX-195', role='worker', agent_id='fixture-worker',
+    context_id='fixture-context', phase='implementation', task_class='unit-fix',
+    complexity='medium', risk='low', uncertainty='low', verification='strong',
+    risk_flags=[], reservation_tokens=100, reservation_cost_microusd=None)
+capabilities = {'models': {m: v['reasoning_efforts'] for m, v in policy['models'].items()}}
+route = ledger.reserve(project_id, policy, request, capabilities)
+print(json.dumps({'routing_run_id': route['run_id']}))
+""", destination, project_id)

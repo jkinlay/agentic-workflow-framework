@@ -309,7 +309,10 @@ def _ledger_projection(raw, columns=None):
 
     connection = sqlite3.connect(':memory:')
     try:
-        connection.deserialize(raw)
+        # A fully checkpointed WAL image has no sidecar but retains mode 2.
+        # Deserialize an in-memory rollback-mode copy; do not rewrite history.
+        memory_raw = raw[:18] + b'\x01\x01' + raw[20:] if raw[18:20] == b'\x02\x02' else raw
+        connection.deserialize(memory_raw)
         connection.execute('PRAGMA query_only=ON')
         if columns is None:
             columns = {}
@@ -363,6 +366,155 @@ def _check_state_continuity(historical, expected_paths, read):
     return failures
 
 
+def prepare_budget_import(sources, *, project_id):
+    """Independent query-only BEFORE evidence, never invoking migration code.
+
+    Preserve privately: contains historical identities/rows. Public reports carry
+    only hashes and counts. Inputs must be exclusive, checkpointed snapshots.
+    """
+    if not isinstance(sources, dict) or not sources or not isinstance(project_id, str) or not project_id:
+        raise ValueError('Pinned budget sources and project identity are required')
+    baseline = {'format': 'awf-budget-import-continuity-1', 'project_id': project_id, 'sources': {}}
+    for label, spec in sorted(sources.items()):
+        path = Path(spec['path'])
+        if Path(str(path) + '-wal').exists():
+            raise ValueError('Budget snapshot must be quiescent and checkpointed')
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != spec['sha256']:
+            raise ValueError('Budget snapshot digest mismatch')
+        db = sqlite3.connect(':memory:')
+        db.row_factory = sqlite3.Row
+        try:
+            memory_raw = raw[:18] + b'\x01\x01' + raw[20:] if raw[18:20] == b'\x02\x02' else raw
+            db.deserialize(memory_raw)
+            db.execute('PRAGMA query_only=ON')
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            charges = []
+            for table in ('reservations', 'model_runs', 'budget_charges'):
+                if table not in tables:
+                    continue
+                if table == 'reservations':
+                    identity = db.execute("SELECT value FROM meta WHERE key='project'").fetchone()
+                    if identity is None or identity[0] != project_id:
+                        raise ValueError('State-store project mismatch')
+                for row in db.execute('SELECT rowid AS _source_id,* FROM "' + table + '"'):
+                    value = dict(row)
+                    source_id = str(value.pop('_source_id'))
+                    if table != 'reservations' and value['project_id'] != project_id:
+                        raise ValueError('Routing budget project mismatch')
+                    charges.append({'table': table, 'source_id': source_id, 'row': value})
+            if not tables & {'reservations', 'model_runs', 'budget_charges'}:
+                raise ValueError('No recognized historical budget table')
+            projection = _ledger_projection(raw)
+            auxiliary = ({table: [name for name in item['columns'] if name != 'rowid']
+                          for table, item in projection.items()
+                          if table not in {'model_runs', 'budget_charges', 'budget_history_imports', 'sqlite_sequence'}}
+                         if 'model_runs' in tables or 'budget_charges' in tables else {})
+            baseline['sources'][label] = {'sha256': digest, 'tables': projection, 'charges': charges,
+                                         'canonical_tables': _ledger_projection(raw, auxiliary)}
+        except sqlite3.DatabaseError as exc:
+            raise ValueError('Budget snapshot unreadable') from exc
+        finally:
+            db.close()
+    return baseline
+
+
+def check_budget_import(baseline, sources, canonical):
+    """Verify source continuity AND every canonical charge without the importer.
+
+    A matching migration receipt or digest cannot excuse a dropped charge. This
+    check compares actual rows, usage/UNKNOWN and dedup identities independently.
+    """
+    failures = []
+    checked = 0
+    expected_ids = set()
+    db = sqlite3.connect(':memory:')
+    db.row_factory = sqlite3.Row
+    try:
+        if (not isinstance(baseline, dict) or baseline.get('format') != 'awf-budget-import-continuity-1'
+                or not sources or set(baseline['sources']) != set(sources)):
+            raise ValueError('Budget import baseline missing')
+        canonical_raw = Path(canonical).read_bytes()
+        memory_raw = (canonical_raw[:18] + b'\x01\x01' + canonical_raw[20:]
+                      if canonical_raw[18:20] == b'\x02\x02' else canonical_raw)
+        db.deserialize(memory_raw)
+        db.execute('PRAGMA query_only=ON')
+        for label, snapshot in baseline['sources'].items():
+            raw = Path(sources[label]['path']).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != snapshot['sha256']:
+                failures.append('budget source continuity mismatch: ' + label)
+            expected_tables = snapshot['canonical_tables']
+            current_tables = _ledger_projection(canonical_raw,
+                {table: item['columns'] for table, item in expected_tables.items()})
+            if any(Counter(item['rows']) - Counter(current_tables[table]['rows'])
+                   for table, item in expected_tables.items()):
+                failures.append('imported per-host recovery history differs: ' + label)
+            for item in snapshot['charges']:
+                old = item['row']
+                identity = old['run_id']
+                expected_ids.add(identity)
+                checked += 1
+                current = db.execute('SELECT * FROM model_runs WHERE run_id=?', (identity,)).fetchone()
+                if current is None:
+                    failures.append('imported budget charge missing: ' + label)
+                    continue
+                current = dict(current)
+                if item['table'] == 'model_runs':
+                    valid = all(_json_identity(current.get(k)) == _json_identity(v) for k, v in old.items())
+                else:
+                    state = item['table'] == 'reservations'
+                    expected = {'project_id': baseline['project_id'],
+                        'ticket_id': old['ticket'] if state else old['ticket_id'],
+                        'reserved_tokens': old['tokens'] if state else old['reserved_tokens'],
+                        'actual_tokens': old['actual_tokens']}
+                    if state:
+                        expected.update(reserved_cost=old['cost'], actual_cost=old['actual_cost'], day=old['day'],
+                                        role='UNKNOWN', agent_id='UNKNOWN', created_at='UNKNOWN')
+                    valid = all(_json_identity(current.get(k)) == _json_identity(v)
+                                for k, v in expected.items())
+                    if old['status'] == 'RESERVED':
+                        valid = valid and current['status'] == 'reserved'
+                    else:
+                        valid = valid and current['status'] != 'reserved'
+                    if state:
+                        request = json.loads(current['request'])
+                        valid = (valid and '_budgeting' not in request and '_budget_binding' not in request
+                                 and request.get('_legacy_status') == old['status'])
+                        overrun = any(old[actual] is not None and old[reserved] is not None
+                                      and old[actual] > old[reserved] for actual, reserved in
+                                      (('actual_tokens', 'tokens'), ('actual_cost', 'cost')))
+                        if old['status'] != 'RESERVED':
+                            valid = valid and current['status'] == ('quarantined' if overrun else 'settled')
+                # No retrospective zero or refusal-to-count flag is permissible.
+                if not valid:
+                    failures.append('imported budget charge differs: ' + label)
+                proof = db.execute('SELECT * FROM budget_history_imports WHERE source_sha256=? '
+                    'AND source_table=? AND source_id=?',
+                    (snapshot['sha256'], item['table'], item['source_id'])).fetchone()
+                if proof is None or proof['run_id'] != identity:
+                    failures.append('budget deduplication proof missing: ' + label)
+                else:
+                    source_typed = {k: [type(v).__name__, v] for k, v in old.items()}
+                    source_digest = hashlib.sha256(_json_identity(source_typed).encode()).hexdigest()
+                    if source_digest != proof['source_row_sha256']:
+                        failures.append('budget deduplication source-row proof mismatch: ' + label)
+                    typed = {k: [type(v).__name__, v] for k, v in current.items()}
+                    digest = hashlib.sha256(_json_identity(typed).encode()).hexdigest()
+                    if digest != proof['canonical_row_sha256']:
+                        failures.append('budget deduplication proof differs from charge: ' + label)
+        actual_ids = [r[0] for r in db.execute('SELECT run_id FROM model_runs')]
+        if any(actual_ids.count(identity) != 1 for identity in expected_ids):
+            failures.append('budget import is not exactly once')
+    except (ValueError, KeyError, TypeError, OSError, sqlite3.DatabaseError):
+        failures.append('budget import continuity evidence missing or unreadable')
+    finally:
+        db.close()
+    return {'preserved': not failures, 'violations': failures, 'charges_checked': checked,
+            'distinct_imported_runs': len(expected_ids), 'execution_authority': False,
+            'evidence_scope': 'BUDGET_IMPORT_CONTINUITY_ONLY'}
+
+
 def prepare_upgrade(source, project, pin, before):
     """Derive a closed migration policy from verified release and baseline bytes.
 
@@ -408,6 +560,22 @@ def prepare_upgrade(source, project, pin, before):
     files = {path: {'sha256': digest, 'size': len(content[path]), 'rule': 'target-manifest',
                     'manifest_sha256': verified_pin}
              for path, digest in immutable.items()}
+    # This compatibility record is derived independently of the installer helper.
+    # It grants no import/adoption or permission to alter the operating file.
+    operating_raw = operating.read_bytes() if operating.exists() else None
+    settings = load_yaml(operating_raw).get('budgeting') if operating_raw is not None else None
+    disposition = {'format': 'awf-budget-upgrade-1', 'source_version': '1.9.5', 'target_version': '1.9.6',
+        'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
+        'operating_sha256': hashlib.sha256(operating_raw).hexdigest() if operating_raw is not None else None,
+        'settings': settings,
+        'legacy_policy_sha256': hashlib.sha256(_json_identity(load_yaml(config_raw)['execution']).encode()).hexdigest(),
+        'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED', 'owner_adoption_required': settings is None}
+    disposition_raw = (json.dumps(disposition, indent=2, ensure_ascii=False) + '\n').encode()
+    disposition_path = '.agentic-state/upgrade/budgeting-1.9.6.json'
+    if disposition_path in state and state[disposition_path] != disposition_raw:
+        raise ValueError('Conflicting budget compatibility disposition')
+    files[disposition_path] = {'sha256': hashlib.sha256(disposition_raw).hexdigest(),
+                              'size': len(disposition_raw), 'rule': 'budget-legacy-compatibility-disposition'}
     for path, raw in bundle.state.items():
         if raw == state[path]:
             continue
@@ -729,6 +897,7 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
     historical = materialize_published(source, work_dir / 'published')
     project = work_dir / 'project'
     migration_policy = None
+    budget_baseline = None
     for stage, release, pin, mode in (('baseline', historical, PUBLISHED_PIN, 'install'),
                                      ('upgrade', candidate, target_pin, 'upgrade')):
         wheels = work_dir / (stage + '-wheels')
@@ -763,6 +932,11 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             if not owner.exists():
                 with owner.open('xb') as stream:
                     stream.write(b'Synthetic owner customization; not adopter evidence.\n')
+            try:
+                budget_baseline = _prepare_qualification_budget(historical, project, work_dir)
+            except (ValueError, AssertionError, OSError):
+                report['failed_stage'] = 'budget_baseline'
+                return report
             report['before'] = inventory(project)
             try:
                 migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
@@ -779,9 +953,62 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
                         for name in REQUIRED_CHECKS)):
                 report['failed_stage'] = 'preservation'
                 return report
+    report['budget_import'] = _qualify_budget_import(budget_baseline, project, work_dir, execute)
+    if report['budget_import'].get('preserved') is not True:
+        report['failed_stage'] = 'budget_import'
+        return report
     report['status'] = 'QUALIFIED_DISPOSABLE_UPGRADE'
     report['active'] = False
     return report
+
+
+def _prepare_qualification_budget(historical, project, work_dir):
+    # Historical fixture generation executes ONLY the verified published runtime.
+    # It supplies genuine reserve/settle rows, not hand-authored ledger inserts.
+    from upgrade_195_fixtures import generate_budget_history
+    project_id = load_yaml((project / CONFIG).read_bytes())['project']['id']
+    destination = work_dir / 'budget-sources'
+    generate_budget_history(historical, destination, project_id)
+    sources = {label: {'path': destination / filename,
+                       'sha256': hashlib.sha256((destination / filename).read_bytes()).hexdigest()}
+               for label, filename in (('state', 'state.sqlite'), ('host', 'host.sqlite'), ('overrun', 'overrun.sqlite'))}
+    return {'sources': sources, 'before': prepare_budget_import(sources, project_id=project_id)}
+
+
+def _qualify_budget_import(baseline, project, work_dir, execute):
+    sources = baseline['sources']
+    canonical = work_dir / 'budget-canonical/routing.sqlite'
+    runtime = project / '.agentic/.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    code = '''import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from agentic.upgrade import import_budget_history
+sources = json.loads(sys.argv[3])
+print(json.dumps(import_budget_history(sys.argv[2], sources,
+    project_id=sys.argv[4], worktree_roots=[sys.argv[5]]), sort_keys=True))
+'''
+    arguments = [str(runtime), '-B', '-I', '-c', code, str(project / '.agentic/lib'), str(canonical),
+        json.dumps({label: {**spec, 'path': str(spec['path'])} for label, spec in sources.items()}),
+        baseline['before']['project_id'], str(project)]
+    for stage in ('budget_import', 'budget_import_replay'):
+        child = execute(stage, arguments)
+        if child.returncode != 0:
+            return {'preserved': False, 'violations': ['Installed budget import command failed'],
+                    'failed_stage': stage}
+        try:
+            receipt = json.loads(child.stdout)
+            if receipt['status'] != 'IMPORTED' or receipt['budget_mode_changed'] is not False:
+                raise ValueError('Invalid import receipt')
+            if stage.endswith('replay') and receipt['imported_rows'] != 0:
+                raise ValueError('Import replay charged again')
+        except (ValueError, KeyError, TypeError):
+            return {'preserved': False, 'violations': ['Installed budget import receipt refused']}
+        result = check_budget_import(baseline['before'], sources, canonical)
+        if not result['preserved']:
+            return result
+    result['replay_imported_rows'] = receipt['imported_rows']
+    result['baseline_sha256'] = hashlib.sha256(_json_identity(baseline['before']).encode()).hexdigest()
+    return result
 
 
 def main(argv=None):

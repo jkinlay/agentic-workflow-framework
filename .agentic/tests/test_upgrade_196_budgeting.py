@@ -1,0 +1,198 @@
+"""Explicit budget adoption using authentic published 1.9.5 execution history."""
+import hashlib
+from contextlib import closing
+import json
+from pathlib import Path
+import shutil
+import sqlite3
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / '.agentic/lib'))
+sys.path.insert(0, str(ROOT / '.agentic/tests'))
+sys.path.insert(0, str(ROOT / 'scripts'))
+from agentic import ValidationError, upgrade
+from source_only import skip_unless_source_repo
+from upgrade_195_fixtures import (materialize_published, generate_budget_history,
+    materialize_candidate, install_baseline)
+import qualify_upgrade
+
+PROJECT = '11111111-1111-4111-8111-111111111111'
+
+
+@skip_unless_source_repo('requires authentic published v1.9.5 Git objects', '.git')
+class BudgetUpgradeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.base = Path(cls.temporary.name)
+        cls.source = materialize_published(ROOT, cls.base / 'published')
+        cls.generated = cls.base / 'generated'
+        cls.routing_run = generate_budget_history(cls.source, cls.generated, PROJECT)['routing_run_id']
+        cls.candidate = materialize_candidate(ROOT, cls.base / 'candidate')
+        cls.pin = hashlib.sha256((cls.candidate / 'MANIFEST.json').read_bytes()).hexdigest()
+
+    def setUp(self):
+        self.work = self.base / self._testMethodName
+        self.work.mkdir()
+        self.sources = {}
+        for name in ('state', 'host'):
+            path = self.work / (name + '.sqlite')
+            shutil.copyfile(self.generated / path.name, path)
+            self.sources[name] = {'path': path, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        self.target = self.work / 'canonical.sqlite'
+
+    def migrate(self):
+        return upgrade.import_budget_history(self.target, self.sources, project_id=PROJECT)
+
+    def rows(self):
+        with closing(sqlite3.connect(self.target)) as db, db:
+            return db.execute('SELECT run_id,status,reserved_tokens,actual_tokens FROM model_runs ORDER BY run_id').fetchall()
+
+    def test_import_preserves_sources_unknown_usage_and_exact_deduplication(self):
+        before = {name: item['path'].read_bytes() for name, item in self.sources.items()}
+        report = self.migrate()
+        self.assertEqual(3, len(self.rows()))
+        self.assertIn(('22222222-2222-4222-8222-222222222222', 'reserved', 100, None), self.rows())
+        self.assertIn(('33333333-3333-4333-8333-333333333333', 'settled', 100, 20), self.rows())
+        self.assertEqual('IMPORTED', report['status'])
+        # A second per-host copy of the very same run proves deduplication,
+        # rather than assuming equal totals or a ticket imply equal identities.
+        self.assertEqual(3, self.migrate()['deduplicated_rows'])
+        self.sources['host-copy'] = dict(self.sources['host'])
+        original = self.target.read_bytes()
+        self.assertEqual(4, self.migrate()['deduplicated_rows'])
+        self.assertEqual(original, self.target.read_bytes())
+        self.assertEqual(before, {name: self.sources[name]['path'].read_bytes() for name in before})
+        from agentic.budgeting import admit_totals
+        with closing(sqlite3.connect(self.target)) as db, db:
+            db.row_factory = sqlite3.Row
+            admit_totals(db, PROJECT, 'EX-195', dict(max_tokens_per_project=221, max_tokens_per_ticket=221), 1)
+            with self.assertRaisesRegex(ValidationError, 'budget exhausted'):
+                admit_totals(db, PROJECT, 'EX-195', dict(max_tokens_per_project=220, max_tokens_per_ticket=220), 1)
+
+    def test_interruption_rolls_back_rows_and_import_proofs_then_recovers(self):
+        original = upgrade._import_budget_row
+        count = 0
+        def interrupt(*args, **kwargs):
+            nonlocal count
+            count += 1
+            result = original(*args, **kwargs)
+            if count == 2:
+                raise OSError('synthetic interrupted import')
+            return result
+        with patch.object(upgrade, '_import_budget_row', side_effect=interrupt):
+            with self.assertRaisesRegex(OSError, 'interrupted'):
+                self.migrate()
+        with closing(sqlite3.connect(self.target)) as db, db:
+            self.assertEqual([], db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='budget_history_imports'").fetchall())
+        self.migrate()
+        self.assertEqual(3, len(self.rows()))
+        self.assertEqual(3, self.migrate()['deduplicated_rows'])
+
+    def test_changed_source_or_foreign_project_refuses_without_partial_import(self):
+        self.sources['host']['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValidationError, 'digest'):
+            self.migrate()
+        self.assertFalse(self.target.exists())
+        self.sources['host']['sha256'] = hashlib.sha256(self.sources['host']['path'].read_bytes()).hexdigest()
+        with self.assertRaisesRegex(ValidationError, 'project'):
+            upgrade.import_budget_history(self.target, self.sources, project_id='foreign')
+        with closing(sqlite3.connect(self.target)) as db:
+            self.assertEqual([], db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
+
+    def test_conflicting_canonical_identity_never_refunds_or_duplicates(self):
+        self.migrate()
+        with closing(sqlite3.connect(self.target)) as db, db:
+            db.execute("UPDATE model_runs SET actual_tokens=0 WHERE run_id='33333333-3333-4333-8333-333333333333'")
+        damaged = self.target.read_bytes()
+        with self.assertRaisesRegex(ValidationError, 'conflict'):
+            self.migrate()
+        self.assertEqual(damaged, self.target.read_bytes())
+
+    def test_independent_import_oracle_rejects_lost_charge_even_with_matching_proof(self):
+        before = qualify_upgrade.prepare_budget_import(self.sources, project_id=PROJECT)
+        self.migrate()
+        with patch.object(upgrade, 'import_budget_history', side_effect=AssertionError('migration called')):
+            self.assertTrue(qualify_upgrade.check_budget_import(before, self.sources, self.target)['preserved'])
+            with closing(sqlite3.connect(self.target)) as db, db:
+                db.execute("DELETE FROM model_runs WHERE run_id='33333333-3333-4333-8333-333333333333'")
+            result = qualify_upgrade.check_budget_import(before, self.sources, self.target)
+            self.assertFalse(result['preserved'], result)
+            self.assertTrue(any('charge' in v for v in result['violations']))
+
+    def test_faulty_importer_cannot_approve_its_own_lost_row(self):
+        before = qualify_upgrade.prepare_budget_import(self.sources, project_id=PROJECT)
+        original = upgrade._import_budget_row
+        def lose_settlement(db, row, *args):
+            if row['run_id'] == '33333333-3333-4333-8333-333333333333':
+                return False  # Fault injection, never a change to published history.
+            return original(db, row, *args)
+        with patch.object(upgrade, '_import_budget_row', side_effect=lose_settlement):
+            self.migrate()
+        self.assertFalse(qualify_upgrade.check_budget_import(before, self.sources, self.target)['preserved'])
+
+    def test_independent_oracle_rejects_forged_source_row_proof(self):
+        before = qualify_upgrade.prepare_budget_import(self.sources, project_id=PROJECT)
+        self.migrate()
+        with closing(sqlite3.connect(self.target)) as db, db:
+            # Fault injection into the disposable result, never published bytes.
+            db.execute('DROP TRIGGER budget_import_no_update')
+            db.execute("UPDATE budget_history_imports SET source_row_sha256=?", ('0' * 64,))
+        self.assertFalse(qualify_upgrade.check_budget_import(before, self.sources, self.target)['preserved'])
+
+    def test_import_proofs_cannot_be_replaced_or_rewritten(self):
+        self.migrate()
+        with closing(sqlite3.connect(self.target)) as db, db:
+            proof = db.execute('SELECT * FROM budget_history_imports LIMIT 1').fetchone()
+            for sql, values in (
+                ('UPDATE budget_history_imports SET source_row_sha256=?', ('0' * 64,)),
+                ('DELETE FROM budget_history_imports', ()),
+                ('INSERT OR REPLACE INTO budget_history_imports VALUES (?,?,?,?,?,?)',
+                 (*proof[:3], '0' * 64, *proof[4:]))):
+                with self.subTest(sql=sql), self.assertRaises(sqlite3.IntegrityError):
+                    db.execute(sql, values)
+        self.assertEqual(3, self.migrate()['deduplicated_rows'])
+
+    def test_concurrent_importers_charge_each_identity_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            reports = list(pool.map(lambda _: self.migrate(), range(2)))
+        self.assertEqual([0, 3], sorted(r['imported_rows'] for r in reports))
+        self.assertEqual(3, len(self.rows()))
+
+    def test_imported_overrun_remains_charged_and_blocks_enforcement(self):
+        path = self.generated / 'overrun.sqlite'
+        self.sources = {'overrun': {'path': path, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}}
+        before = qualify_upgrade.prepare_budget_import(self.sources, project_id=PROJECT)
+        self.migrate()
+        self.assertEqual([('44444444-4444-4444-8444-444444444444', 'quarantined', 100, 120)], self.rows())
+        self.assertTrue(qualify_upgrade.check_budget_import(before, self.sources, self.target)['preserved'])
+        from agentic.budgeting import admit_totals
+        with closing(sqlite3.connect(self.target)) as db:
+            db.row_factory = sqlite3.Row
+            with self.assertRaisesRegex(ValidationError, 'Unresolved budget overrun'):
+                admit_totals(db, PROJECT, 'EX-195', dict(max_tokens_per_project=10000, max_tokens_per_ticket=10000), 1)
+
+    def test_upgrade_records_legacy_disposition_without_adding_off_settings(self):
+        from agentic.installer import install
+        from agentic.canonical import load_yaml
+        project = self.work / 'project'
+        install_baseline(self.source, project)
+        original = (project / 'OPERATING_CONFIG.yaml').read_bytes()
+        plan = install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False, dry_run=True)
+        self.assertEqual('LEGACY_RETAINED', plan['upgrade']['budgeting']['disposition'])
+        result = install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
+        self.assertEqual('LEGACY_RETAINED', result['upgrade']['budgeting']['disposition'])
+        self.assertEqual(original, (project / 'OPERATING_CONFIG.yaml').read_bytes())
+        self.assertNotIn('budgeting', load_yaml(original))
+        record = project / '.agentic-state/upgrade/budgeting-1.9.6.json'
+        self.assertEqual('LEGACY_RETAINED', json.loads(record.read_bytes())['disposition'])
+
+
+if __name__ == '__main__':
+    unittest.main()

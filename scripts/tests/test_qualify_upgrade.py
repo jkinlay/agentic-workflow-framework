@@ -15,6 +15,14 @@ from copy import deepcopy
 
 
 class PreservationReportTests(unittest.TestCase):
+    def test_budget_import_continuity_requires_baseline_and_real_sources(self):
+        from qualify_upgrade import prepare_budget_import, check_budget_import
+        with self.assertRaises(ValueError):
+            prepare_budget_import({}, project_id='project')
+        result = check_budget_import(None, {}, self.root / 'missing.sqlite')
+        self.assertFalse(result['preserved'])
+        self.assertFalse((self.root / 'missing.sqlite').exists())
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -255,7 +263,7 @@ class PreservationReportTests(unittest.TestCase):
         self.assertNotIn('S-1-', rendered)
         self.assertNotIn(str(self.root), rendered)
 
-    def qualification_with_unit_children(self, mutation, *, omit_checks=False):
+    def qualification_with_unit_children(self, mutation, *, omit_checks=False, budget_preserved=True):
         # Mocked child receipts exercise orchestration only, never installed evidence.
         from types import SimpleNamespace
         sys.path.insert(0, str(ROOT / '.agentic/tests'))
@@ -288,6 +296,8 @@ class PreservationReportTests(unittest.TestCase):
                 patch('qualify_upgrade.run_bounded', side_effect=child), \
                 patch('qualify_upgrade.prepare_upgrade', return_value='unit policy') as prepare, \
                 patch('qualify_upgrade.compare_upgrade', side_effect=comparison) as preservation, \
+                patch('qualify_upgrade._prepare_qualification_budget', return_value='unit budget baseline', create=True), \
+                patch('qualify_upgrade._qualify_budget_import', return_value={'preserved': budget_preserved}, create=True), \
                 patch('qualify_upgrade.checked_bootstrap', return_value={'status': 'CONFIGURED'}):
             result = qualify(ROOT, work)
             prepare.assert_called_once()
@@ -312,6 +322,11 @@ class PreservationReportTests(unittest.TestCase):
         result = self.qualification_with_unit_children(lambda project: None, omit_checks=True)
         self.assertEqual('NOT_QUALIFIED', result['status'])
         self.assertEqual('preservation', result['failed_stage'])
+
+    def test_qualification_cannot_pass_a_lost_budget_import(self):
+        result = self.qualification_with_unit_children(lambda project: None, budget_preserved=False)
+        self.assertEqual('NOT_QUALIFIED', result['status'])
+        self.assertEqual('budget_import', result['failed_stage'])
 
     def test_qualification_cannot_pass_unverified_permissions(self):
         with patch('qualify_upgrade._permissions', return_value={

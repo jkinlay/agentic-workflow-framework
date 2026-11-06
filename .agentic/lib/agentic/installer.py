@@ -1873,6 +1873,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         digest, content = verify_release(src, expected_digest, allow_source_checkout=True)
         source_manifest_json = src.read(MANIFEST).decode("utf-8")
     from .upgrade import (OPERATING, apply_chain, config_diff,
+                          BUDGET_DISPOSITION, budget_upgrade_disposition,
                           identify_installation, immutable_from_source_manifest,
                           load_known_versions, state_archive_plan)
     known_versions = load_known_versions(content[KNOWN_VERSIONS]) if KNOWN_VERSIONS in content else None
@@ -2066,6 +2067,13 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                               "state_migrations": state_actions,
                               "new_required_settings": [setting for step in step_reports for setting in step["new_required_settings"]],
                               "single_reviewed_change_set": True}
+            if identity['version'] != VERSION and VERSION == '1.9.6':
+                disposition = budget_upgrade_disposition(existing_config, operating, identity['version'])
+                prior_disposition = _exists_read(dst, BUDGET_DISPOSITION)
+                if prior_disposition is not None and prior_disposition != json_bytes(disposition):
+                    raise ValidationError('Budget upgrade disposition already exists with different bytes; reconcile before upgrade')
+                planned[BUDGET_DISPOSITION] = json_bytes(disposition)
+                upgrade_report['budgeting'] = disposition
         if configure:
             configure_plan(planned[CONFIG] if mode == "upgrade" else existing_config, existing_receipt)
         from .operating import inspect_operating, operating_applicability, plan_initialize_operating

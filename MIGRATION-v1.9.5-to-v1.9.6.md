@@ -26,9 +26,50 @@ rehash corruption, edit receipts or reinstall over the installation. Re-run both
 canonical installed checks after recovery. Never infer CONFIGURED/ACTIVE from a
 rollback result or a successful library-only check.
 
-The accounting/budget compatibility migration remains dependent on the approved
-AWF-242 implementation and final integrated qualification. Preserve historical
-rows/reservations and explicit settings, keep new opt-in controls OFF, and report
-unsupported settings to the owner rather than silently replacing them. This
-document does not assert that all seven deliverables have passed release review
-or authorize any live upgrade, activation or adapter enablement.
+Budget adoption is explicit. Missing `budgeting` settings retain the legacy
+engine and reviewed limits; upgrading never silently switches budgeting OFF.
+Existing explicit settings remain unchanged. The upgrade report and
+`.agentic-state/upgrade/budgeting-1.9.6.json` record `LEGACY_RETAINED` or
+`EXPLICIT_SETTINGS_RETAINED`, prior operating/policy hashes and outstanding import
+requirements. Neither disposition certifies history completeness or owner adoption.
+
+Before adopting the new controls:
+
+1. Stop legacy dispatch/settlement across every host and worktree. Inventory all
+   state-store, routing and per-host budget databases. Checkpoint WALs, retain
+   immutable snapshots and pin their SHA-256 digests. Never remove reservations,
+   UNKNOWN usage or archives to make admission pass.
+2. Select one protected canonical project ledger outside worker/reviewer
+   worktrees; configure both controller and review host to use that same path.
+   Have the trusted operator call installed `agentic.upgrade.import_budget_history`
+   with that destination, exact project ID, complete worktree roots and a mapping
+   of source labels to `{path, sha256}`. This is an explicit host API, not an
+   automatically enabled adapter. Import every old per-host ledger, even if its
+   rows appear duplicated. Exact identities/rows deduplicate with retained proofs;
+   conflicts refuse for reconciliation. Retain original databases unchanged.
+3. Capture `prepare_budget_import` evidence before import and run
+   `check_budget_import` from `scripts/qualify_upgrade.py` afterwards. These
+   independent query-only checks compare source continuity, actual canonical
+   charges and deduplication proofs. Keep private baseline rows outside upstream;
+   publish only sanitized hashes/counts. A receipt alone cannot excuse lost usage.
+4. If interrupted, replay the identical pinned sources and destination. Import
+   charges/proofs commit together; replay never refunds or double-charges.
+   Changed sources, unknown usage or conflicting recovery state require
+   investigation. Preserve UNKNOWN as unknown, never a retrospective zero.
+5. Through the authenticated owner/host operating boundary, explicitly adopt
+   accounting/enforcement settings. New dormant limits are 4,000,000 tokens per
+   ticket and 1,000,000,000 per project lifetime. A limit alone enables neither
+   switch; enforcement requires accounting. Verify persisted settings and totals
+   before resuming. Legacy state-store enforcement retains its refusal until its
+   runtime integration validates the canonical import; never bypass that guard.
+
+Jira identity also requires an explicit upgraded-project adoption step. Using the
+controller's identity-adoption operation, the operator states the expected
+project ID and repository ID and verifies the observed binding. Jira writes
+refuse until that step succeeds; retaining an old project key, configuration or
+upgrade receipt does not authorize writes. Disabled Jira stays disabled. This
+identity step does not enable an adapter or authorize a controller launch.
+
+Final integrated qualification, independent review and owner release/adopter
+acceptance remain outstanding until actually observed. This guide authorizes no
+live upgrade or activation.

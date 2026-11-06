@@ -89,12 +89,16 @@ rules/hashes/`approved_changes`, exact `changes`, baseline/manifest bindings.
   paths match installer modes/inheritance through disposable probes leaving baseline
   inventories identical. Managed removals cannot discard streams.
 
-External deltas cannot bypass policy. Authentic-library regressions require clean
-preservation and refusals for owner/instruction deletion/change, managed mismatch,
-unexpected files/archives/objects, configuration/prior-archive/ACL/CODEOWNERS/routing/operating/receipt/provenance
-changes; reproduce newly-managed owner collisions, injected settled-row deletion
-and owner-stream deletion across upgrade. Synthetic faults prove no production loss.
-Run focused suites on the final tree; orchestrator runs installed qualification/review.
+External deltas cannot bypass policy. Reproduce owner/managed/configuration/history/
+permission/receipt/provenance loss, collisions and stream deletion. Budget disposition
+preserves legacy behavior. Explicit `import_budget_history` merges pinned
+state-store/per-host history into one shared ledger. Independently capture
+`prepare_budget_import`; `check_budget_import` verifies sources, canonical
+charges/UNKNOWN values and deduplication proofs. Test published API-generated
+history, lost-row injection, interruption/replay and concurrency. Installed
+qualification requires this import/check/replay. Follow
+[owner adoption](../../MIGRATION-v1.9.5-to-v1.9.6.md), including Jira identity.
+Orchestrator owns final installed qualification/review; synthetic faults prove no production loss.
 
 ## Recovery and final gates
 

@@ -1,4 +1,4 @@
-"""Data-driven historical installation identification and pure migrations."""
+"""Historical installation identification, pure migrations and explicit ledger import."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,6 +21,205 @@ OPERATING = "OPERATING_CONFIG.yaml"
 ARCHIVE_ROOT = f".agentic-state/archive/upgrade-to-{VERSION}"
 _ARCHIVE_PREFIXES = (".agentic-state/archive/",)
 CURRENT_RECEIPT_SCHEMA = "awf-installed-receipt-embedded-manifest-1"
+BUDGET_DISPOSITION = ".agentic-state/upgrade/budgeting-1.9.6.json"
+
+
+def budget_upgrade_disposition(config, operating, previous):
+    """Record compatibility, never adopt fresh OFF defaults over an upgrade."""
+    settings = load_yaml(operating).get('budgeting') if operating is not None else None
+    return {'format': 'awf-budget-upgrade-1', 'source_version': previous,
+            'target_version': '1.9.6',
+            'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
+            'operating_sha256': sha256(operating) if operating is not None else None,
+            'settings': settings,
+            'legacy_policy_sha256': sha256(_canonical_manifest(load_yaml(config)['execution'])),
+            'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED',
+            'owner_adoption_required': settings is None}
+
+
+def _budget_row_hash(row):
+    # Bind SQLite types too: a retrospective 0/False or integer/text substitution
+    # is a different row, even when Python equality would conflate values.
+    return sha256(_canonical_manifest({key: [type(value).__name__, value]
+                                      for key, value in dict(row).items()}))
+
+
+def _import_budget_row(db, row, source_hash, source_table, source_id, source_row_hash):
+    columns = tuple(row)
+    old = db.execute('SELECT * FROM model_runs WHERE run_id=?', (row['run_id'],)).fetchone()
+    if old is not None:
+        if _budget_row_hash(old) != _budget_row_hash(row):
+            raise ValidationError('Budget history identity conflict; retain both sources and reconcile')
+    else:
+        db.execute('INSERT INTO model_runs (' + ','.join(map(_quoted, columns)) + ') VALUES (' +
+                   ','.join('?' for _ in columns) + ')', tuple(row.values()))
+    proof = (source_hash, source_table, str(source_id), source_row_hash,
+             row['run_id'], _budget_row_hash(row))
+    saved = db.execute('SELECT * FROM budget_history_imports WHERE source_sha256=? AND '
+                       'source_table=? AND source_id=?', proof[:3]).fetchone()
+    if saved is not None and tuple(saved) != proof:
+        raise ValidationError('Budget import proof conflict; source history must not be rebound')
+    if saved is None:
+        db.execute('INSERT INTO budget_history_imports VALUES (?,?,?,?,?,?)', proof)
+    return old is not None
+
+
+def import_budget_history(canonical_path, sources, *, project_id, worktree_roots=()):
+    """Explicit owner/operator migration into the shared protected project ledger.
+
+    ``sources`` maps stable labels to {path, sha256} for quiescent checkpointed
+    source databases. No source is opened for write. The host must stop legacy
+    writers, retain the pinned snapshots and select the SAME destination for all
+    adapters. One transaction includes imported charges, recovery state and proofs;
+    an interruption rolls everything back, and exact replay never charges twice.
+    This operation neither authenticates owner adoption nor changes budget modes.
+    """
+    from .budget_enrollment import ProtectedDatabase, require, text_id
+    from .model_routing import initialize_routing_ledger
+    from .safeio import Tree
+    require(text_id(project_id) and isinstance(sources, dict) and bool(sources),
+            'Explicit project and pinned budget sources are required')
+    snapshots = []
+    for name, spec in sorted(sources.items()):
+        require(text_id(name) and isinstance(spec, dict) and set(spec) == {'path', 'sha256'},
+                'Invalid pinned budget source')
+        path = Path(spec['path']).absolute()
+        require(path != Path(canonical_path).absolute(), 'Budget source cannot be the canonical destination')
+        with Tree(path.parent) as tree:
+            # A database file without its live WAL is not a complete snapshot.
+            require(tree.inspect(path.name + '-wal') is None,
+                    'Budget source has a WAL; quiesce and checkpoint before pinning')
+            raw = tree.read(path.name)
+        require(sha256(raw) == spec['sha256'], 'Budget source digest mismatch; no import performed')
+        require(raw.startswith(b'SQLite format 3\0'), 'Budget source is not SQLite')
+        snapshots.append((spec['sha256'], raw))
+    imported = deduplicated = 0
+    with ProtectedDatabase(canonical_path, worktree_roots).transaction('') as db:
+        initialize_routing_ledger(db)
+        require(db.execute('SELECT 1 FROM model_runs WHERE project_id != ? LIMIT 1',
+                           (project_id,)).fetchone() is None, 'Canonical budget ledger project mismatch')
+        for statement in (
+            '''CREATE TABLE IF NOT EXISTS budget_history_imports (
+               source_sha256 TEXT NOT NULL, source_table TEXT NOT NULL, source_id TEXT NOT NULL,
+               source_row_sha256 TEXT NOT NULL, run_id TEXT NOT NULL, canonical_row_sha256 TEXT NOT NULL,
+               PRIMARY KEY(source_sha256,source_table,source_id))''',
+            *[f"CREATE TRIGGER IF NOT EXISTS budget_import_no_{op.lower()} BEFORE {op} ON budget_history_imports "
+              "BEGIN SELECT RAISE(ABORT,'immutable budget import proof'); END" for op in ('UPDATE', 'DELETE')],
+            '''CREATE TRIGGER IF NOT EXISTS budget_import_no_replace BEFORE INSERT ON budget_history_imports
+               WHEN EXISTS(SELECT 1 FROM budget_history_imports WHERE
+                 (source_sha256=NEW.source_sha256 AND source_table=NEW.source_table AND source_id=NEW.source_id)
+                 OR rowid=NEW.rowid)
+               BEGIN SELECT RAISE(ABORT,'immutable budget import proof'); END'''):
+            db.execute(statement)
+        for source_hash, raw in snapshots:
+            source = sqlite3.connect(':memory:')
+            source.row_factory = sqlite3.Row
+            try:
+                # Checkpointed WAL databases retain WAL format header bytes.
+                # SQLite deserialize cannot attach WALs to :memory:. Change
+                # only that copy's read/write-mode flags, never source pages.
+                memory_raw = raw[:18] + b'\x01\x01' + raw[20:] if raw[18:20] == b'\x02\x02' else raw
+                source.deserialize(memory_raw)
+                require(source.execute('PRAGMA quick_check').fetchone()[0] == 'ok', 'Invalid budget source')
+                tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                require(bool(tables & {'model_runs', 'reservations', 'budget_charges'}),
+                        'Unsupported budget source; retain history for explicit reconciliation')
+                if 'reservations' in tables:
+                    identity = source.execute("SELECT value FROM meta WHERE key='project'").fetchone()
+                    require(identity is not None and identity[0] == project_id, 'Budget source project mismatch')
+                    for entry in source.execute('SELECT rowid AS _source_id,* FROM reservations'):
+                        legacy = dict(entry)
+                        require(legacy['status'] in ('RESERVED', 'SETTLED', 'UNKNOWN'), 'Unsupported legacy budget status')
+                        require(all(legacy[k] is None or type(legacy[k]) is int and legacy[k] >= 0
+                                    for k in ('tokens', 'cost', 'actual_tokens', 'actual_cost')),
+                                'Invalid legacy usage; UNKNOWN must stay NULL')
+                        violations = []
+                        for actual, reserved, message in (
+                            ('actual_tokens', 'tokens', 'host token ceiling overrun'),
+                            ('actual_cost', 'cost', 'host cost ceiling overrun')):
+                            if legacy[actual] is not None and legacy[reserved] is not None and legacy[actual] > legacy[reserved]:
+                                violations.append(message)
+                        # No invented enrollment, model, timestamp or observed usage.
+                        # Existing legacy quotas continue to count unattributed history.
+                        row = {r['name']: None for r in db.execute('PRAGMA table_info(model_runs)')}
+                        row.update(run_id=legacy['run_id'], project_id=project_id, ticket_id=legacy['ticket'],
+                            role='UNKNOWN', agent_id='UNKNOWN', phase='legacy-state-store', created_at='UNKNOWN',
+                            day=legacy['day'], policy_hash='legacy-state-store',
+                            status='reserved' if legacy['status'] == 'RESERVED' else 'quarantined' if violations else 'settled',
+                            reserved_tokens=legacy['tokens'] if legacy['tokens'] is not None else 0,
+                            reserved_cost=legacy['cost'], actual_tokens=legacy['actual_tokens'],
+                            actual_cost=legacy['actual_cost'], escalated=0,
+                            request=json.dumps({'_legacy_attribution': 'UNKNOWN',
+                                '_legacy_status': legacy['status'],
+                                '_reservation_unknown': legacy['tokens'] is None}, sort_keys=True),
+                            route='{}', outcome=None if legacy['status'] == 'RESERVED' else
+                                json.dumps({'historical_time': 'UNKNOWN', 'violations': violations,
+                                            'budget_overrun': bool(violations)}, sort_keys=True),
+                            operating_hash=legacy.get('operating_hash'))
+                        duplicate = _import_budget_row(db, row, source_hash, 'reservations',
+                            legacy['_source_id'], _budget_row_hash({k: v for k, v in legacy.items() if k != '_source_id'}))
+                        deduplicated += duplicate
+                        imported += not duplicate
+                if tables & {'model_runs', 'budget_charges'}:
+                    original_runs = {}
+                    if 'model_runs' in tables:
+                        for entry in source.execute('SELECT rowid AS _source_id,* FROM model_runs'):
+                            original = dict(entry)
+                            source_id = original.pop('_source_id')
+                            original_runs[original['run_id']] = (source_id, _budget_row_hash(original))
+                    # Transform only an in-memory copy. This retains stage-one
+                    # UNKNOWN values and preserves the source's sealed bytes.
+                    initialize_routing_ledger(source)
+                    tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    for entry in source.execute('SELECT rowid AS _source_id,* FROM model_runs'):
+                        row = dict(entry)
+                        row.pop('_source_id')
+                        require(row['project_id'] == project_id, 'Budget source project mismatch')
+                        if row['run_id'] not in original_runs:
+                            # A bridge-created row is proved by its original
+                            # budget_charges row below, never a fictitious source
+                            # model_runs row or post-migration column digest.
+                            continue
+                        source_id, source_row_hash = original_runs[row['run_id']]
+                        duplicate = _import_budget_row(db, row, source_hash, 'model_runs', source_id, source_row_hash)
+                        deduplicated += duplicate
+                        imported += not duplicate
+                    if 'budget_charges' in tables:
+                        for entry in source.execute('SELECT rowid AS _source_id,* FROM budget_charges'):
+                            legacy = dict(entry)
+                            source_id = legacy.pop('_source_id')
+                            row = dict(source.execute('SELECT * FROM model_runs WHERE run_id=?', (legacy['run_id'],)).fetchone())
+                            duplicate = _import_budget_row(db, row, source_hash, 'budget_charges', source_id, _budget_row_hash(legacy))
+                            deduplicated += duplicate
+                            imported += not duplicate
+                    # Recovery ceilings, incidents, provenance and authorizations
+                    # cannot disappear when a per-host routing ledger is retired.
+                    for table in sorted(tables - {'model_runs', 'budget_charges', 'sqlite_sequence', 'budget_history_imports'}):
+                        available = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                        entries = source.execute('SELECT * FROM ' + _quoted(table)).fetchall()
+                        require(table in available or not entries, 'Unsupported per-host history; reconcile before import')
+                        for entry in entries:
+                            value = dict(entry)
+                            names = tuple(value)
+                            matches = db.execute('SELECT * FROM ' + _quoted(table) + ' WHERE ' +
+                                ' AND '.join(_quoted(k) + ' IS ?' for k in names), tuple(value.values())).fetchall()
+                            if matches:
+                                continue
+                            try:
+                                db.execute('INSERT INTO ' + _quoted(table) + ' (' + ','.join(map(_quoted, names)) +
+                                    ') VALUES (' + ','.join('?' for _ in names) + ')', tuple(value.values()))
+                            except sqlite3.IntegrityError as exc:
+                                raise ValidationError('Per-host recovery history conflict; explicit reconciliation required') from exc
+            finally:
+                source.close()
+        for spec in sources.values():
+            path = Path(spec['path']).absolute()
+            with Tree(path.parent) as tree:
+                require(tree.inspect(path.name + '-wal') is None and sha256(tree.read(path.name)) == spec['sha256'],
+                        'Budget source changed during import; transaction rolled back')
+    return {'status': 'IMPORTED', 'project_id': project_id, 'source_sha256': sorted(set(h for h, _ in snapshots)),
+            'imported_rows': imported, 'deduplicated_rows': deduplicated, 'sources_retained': True,
+            'budget_mode_changed': False}
 
 
 def _canonical_manifest(value):
