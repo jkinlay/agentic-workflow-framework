@@ -431,7 +431,39 @@ class BudgetLedger(ProtectedDatabase):
             pass
         return RoutingLedger(self.path)
 
-    def reserve(self, binding, settings, tokens):
+    @staticmethod
+    def validate_legacy_imports(db, project_id, reservations):
+        """Validate retained source rows and their actual canonical charges.
+
+        The caller holds both the source snapshot lock and the canonical write
+        lock through admission. Proofs are protected import records, not owner
+        authorization or independent release provenance. Never trust a proof's
+        claimed canonical digest without deriving the charge from the source.
+        """
+        import re
+        from .upgrade import _budget_row_hash, _legacy_reservation_row
+        if not reservations:
+            return
+        message = ('Unproven legacy reservation import; preserve/import all retained '
+                   'state-store reservations into the canonical routing ledger before admission')
+        require(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='budget_history_imports'").fetchone()
+                is not None, message)
+        columns = [r['name'] for r in db.execute('PRAGMA table_info(model_runs)')]
+        for entry in reservations:
+            legacy = dict(entry)
+            source_id = str(legacy.pop('_source_id'))
+            source_digest = _budget_row_hash(legacy)
+            expected_digest = _budget_row_hash(_legacy_reservation_row(legacy, project_id, columns))
+            actual = db.execute('SELECT * FROM model_runs WHERE run_id=?', (legacy['run_id'],)).fetchone()
+            require(actual is not None and _budget_row_hash(actual) == expected_digest, message)
+            proofs = db.execute("SELECT * FROM budget_history_imports WHERE source_table='reservations' "
+                'AND source_id=? AND run_id=?', (source_id, legacy['run_id'])).fetchall()
+            require(any(isinstance(p['source_sha256'], str) and
+                        re.fullmatch('[0-9a-f]{64}', p['source_sha256']) and
+                        p['source_row_sha256'] == source_digest and
+                        p['canonical_row_sha256'] == expected_digest for p in proofs), message)
+
+    def reserve(self, binding, settings, tokens, *, legacy_reservations=()):
         from datetime import datetime, timezone
         settings = validate_settings(settings)
         if not settings['accounting_enabled']:
@@ -443,6 +475,7 @@ class BudgetLedger(ProtectedDatabase):
                 'Enforcement requires a positive token reservation; accounting estimates may be UNKNOWN')
         stored_tokens = 0 if unknown else tokens
         with self._routing()._transaction() as db:
+            self.validate_legacy_imports(db, binding['project_id'], legacy_reservations)
             old = db.execute('SELECT * FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
             if old is not None:
                 request = json.loads(old['request'])

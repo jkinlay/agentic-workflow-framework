@@ -482,10 +482,12 @@ class Store:
             if budget_binding is not None and (budget_binding.get('run_id') != run_id or
                     budget_binding.get('ticket_id') != ticket or budget_binding.get('project_id') != self.project_id):
                 raise ValidationError('Budget enrollment differs from state-store reservation')
-            with self.connection() as db:
-                if settings['enforcement_enabled'] and db.execute('SELECT 1 FROM reservations LIMIT 1').fetchone():
-                    raise ValidationError('Preserve/import legacy state-store reservations into the canonical routing ledger before enabling enforcement')
-            return budget_ledger.reserve(budget_binding, settings, tokens)['status']
+            # Freeze retained history until canonical proof validation and the
+            # new reservation commit. Legacy settlement cannot race admission.
+            with self.transaction() as db:
+                retained = db.execute('SELECT rowid AS _source_id,* FROM reservations').fetchall()
+                return budget_ledger.reserve(budget_binding, settings, tokens,
+                    legacy_reservations=retained)['status']
         uuid.UUID(run_id)
         if operating_hash is not None and (not isinstance(operating_hash, str) or not re.fullmatch('[0-9a-f]{64}', operating_hash)):
             raise ValidationError("operating_hash must be a validated snapshot SHA256 or null for legacy callers")

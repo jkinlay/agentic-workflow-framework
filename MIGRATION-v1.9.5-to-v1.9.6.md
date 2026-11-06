@@ -60,8 +60,12 @@ Before adopting the new controls:
    accounting/enforcement settings. New dormant limits are 4,000,000 tokens per
    ticket and 1,000,000,000 per project lifetime. A limit alone enables neither
    switch; enforcement requires accounting. Verify persisted settings and totals
-   before resuming. Legacy state-store enforcement retains its refusal until its
-   runtime integration validates the canonical import; never bypass that guard.
+   before resuming. Enabled state-store admission validates every retained legacy
+   row against its import proof and exact canonical charge, including project,
+   ticket, usage and reservation identity. Missing/mismatched proofs or changed
+   legacy rows refuse; retain sources and reconcile rather than bypassing the
+   guard. Exact admission replay never double-charges. Explicit OFF needs no
+   import; `LEGACY_RETAINED` continues using the original engine and limits.
 
 Jira identity also requires an explicit upgraded-project adoption step. Using the
 controller's identity-adoption operation, the operator states the expected

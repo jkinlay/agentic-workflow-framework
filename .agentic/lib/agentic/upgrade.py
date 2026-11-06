@@ -44,6 +44,39 @@ def _budget_row_hash(row):
                                       for key, value in dict(row).items()}))
 
 
+def _legacy_reservation_row(legacy, project_id, columns):
+    """Exact, conservative state-store projection used by import and admission."""
+    from .budget_enrollment import require
+    require(legacy['status'] in ('RESERVED', 'SETTLED', 'UNKNOWN'), 'Unsupported legacy budget status')
+    require(all(legacy[k] is None or type(legacy[k]) is int and legacy[k] >= 0
+                for k in ('tokens', 'cost', 'actual_tokens', 'actual_cost')),
+            'Invalid legacy usage; UNKNOWN must stay NULL')
+    violations = []
+    for actual, reserved, message in (
+        ('actual_tokens', 'tokens', 'host token ceiling overrun'),
+        ('actual_cost', 'cost', 'host cost ceiling overrun')):
+        if legacy[actual] is not None and legacy[reserved] is not None and legacy[actual] > legacy[reserved]:
+            violations.append(message)
+    # No invented enrollment, model, timestamp or observed usage.
+    # Existing legacy quotas continue to count unattributed history.
+    row = dict.fromkeys(columns)
+    row.update(run_id=legacy['run_id'], project_id=project_id, ticket_id=legacy['ticket'],
+        role='UNKNOWN', agent_id='UNKNOWN', phase='legacy-state-store', created_at='UNKNOWN',
+        day=legacy['day'], policy_hash='legacy-state-store',
+        status='reserved' if legacy['status'] == 'RESERVED' else 'quarantined' if violations else 'settled',
+        reserved_tokens=legacy['tokens'] if legacy['tokens'] is not None else 0,
+        reserved_cost=legacy['cost'], actual_tokens=legacy['actual_tokens'],
+        actual_cost=legacy['actual_cost'], escalated=0,
+        request=json.dumps({'_legacy_attribution': 'UNKNOWN',
+            '_legacy_status': legacy['status'],
+            '_reservation_unknown': legacy['tokens'] is None}, sort_keys=True),
+        route='{}', outcome=None if legacy['status'] == 'RESERVED' else
+            json.dumps({'historical_time': 'UNKNOWN', 'violations': violations,
+                        'budget_overrun': bool(violations)}, sort_keys=True),
+        operating_hash=legacy.get('operating_hash'))
+    return row
+
+
 def _import_budget_row(db, row, source_hash, source_table, source_id, source_row_hash):
     columns = tuple(row)
     old = db.execute('SELECT * FROM model_runs WHERE run_id=?', (row['run_id'],)).fetchone()
@@ -129,33 +162,8 @@ def import_budget_history(canonical_path, sources, *, project_id, worktree_roots
                     require(identity is not None and identity[0] == project_id, 'Budget source project mismatch')
                     for entry in source.execute('SELECT rowid AS _source_id,* FROM reservations'):
                         legacy = dict(entry)
-                        require(legacy['status'] in ('RESERVED', 'SETTLED', 'UNKNOWN'), 'Unsupported legacy budget status')
-                        require(all(legacy[k] is None or type(legacy[k]) is int and legacy[k] >= 0
-                                    for k in ('tokens', 'cost', 'actual_tokens', 'actual_cost')),
-                                'Invalid legacy usage; UNKNOWN must stay NULL')
-                        violations = []
-                        for actual, reserved, message in (
-                            ('actual_tokens', 'tokens', 'host token ceiling overrun'),
-                            ('actual_cost', 'cost', 'host cost ceiling overrun')):
-                            if legacy[actual] is not None and legacy[reserved] is not None and legacy[actual] > legacy[reserved]:
-                                violations.append(message)
-                        # No invented enrollment, model, timestamp or observed usage.
-                        # Existing legacy quotas continue to count unattributed history.
-                        row = {r['name']: None for r in db.execute('PRAGMA table_info(model_runs)')}
-                        row.update(run_id=legacy['run_id'], project_id=project_id, ticket_id=legacy['ticket'],
-                            role='UNKNOWN', agent_id='UNKNOWN', phase='legacy-state-store', created_at='UNKNOWN',
-                            day=legacy['day'], policy_hash='legacy-state-store',
-                            status='reserved' if legacy['status'] == 'RESERVED' else 'quarantined' if violations else 'settled',
-                            reserved_tokens=legacy['tokens'] if legacy['tokens'] is not None else 0,
-                            reserved_cost=legacy['cost'], actual_tokens=legacy['actual_tokens'],
-                            actual_cost=legacy['actual_cost'], escalated=0,
-                            request=json.dumps({'_legacy_attribution': 'UNKNOWN',
-                                '_legacy_status': legacy['status'],
-                                '_reservation_unknown': legacy['tokens'] is None}, sort_keys=True),
-                            route='{}', outcome=None if legacy['status'] == 'RESERVED' else
-                                json.dumps({'historical_time': 'UNKNOWN', 'violations': violations,
-                                            'budget_overrun': bool(violations)}, sort_keys=True),
-                            operating_hash=legacy.get('operating_hash'))
+                        row = _legacy_reservation_row(legacy, project_id,
+                            (r['name'] for r in db.execute('PRAGMA table_info(model_runs)')))
                         duplicate = _import_budget_row(db, row, source_hash, 'reservations',
                             legacy['_source_id'], _budget_row_hash({k: v for k, v in legacy.items() if k != '_source_id'}))
                         deduplicated += duplicate

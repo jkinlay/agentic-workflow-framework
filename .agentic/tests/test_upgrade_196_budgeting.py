@@ -53,6 +53,107 @@ class BudgetUpgradeTests(unittest.TestCase):
         with closing(sqlite3.connect(self.target)) as db, db:
             return db.execute('SELECT run_id,status,reserved_tokens,actual_tokens FROM model_runs ORDER BY run_id').fetchall()
 
+    def adoption(self, *, enforcement=True):
+        from agentic.budgeting import BudgetLedger, fresh_settings
+        from agentic.budget_enrollment import EnrollmentRegistry
+        from agentic.store import Store
+        from test_awf242_budgeting import FixtureHost
+        store = Store(self.sources['state']['path'], PROJECT)
+        host = FixtureHost()
+        binding = dict(project_id=PROJECT, ticket_id='EX-NEW',
+            run_id='55555555-5555-4555-8555-555555555555', dispatch_id='new-dispatch',
+            session_id='new-session', role='worker')
+        registry = EnrollmentRegistry(self.work / 'enrollment.sqlite', host)
+        host.enrollment = dict(binding)
+        registry.enroll(binding)
+        ledger = BudgetLedger(self.target, registry)
+        settings = dict(fresh_settings(), accounting_enabled=True, enforcement_enabled=enforcement)
+        return store, ledger, binding, settings
+
+    def reserve_adopted(self, store, ledger, binding, settings):
+        return store.reserve_budget(binding['run_id'], binding['ticket_id'],
+            '2026-11-01T00:00:00Z', 10, None, {}, budgeting=settings,
+            budget_ledger=ledger, budget_binding=binding)
+
+    def test_completed_import_admits_new_work_and_replays_without_recharging(self):
+        self.migrate()
+        store, ledger, binding, settings = self.adoption()
+        with store.connection() as db:
+            retained = [tuple(r) for r in db.execute('SELECT * FROM reservations')]
+        self.assertEqual('RESERVED', self.reserve_adopted(store, ledger, binding, settings))
+        self.assertEqual('RESERVED', self.reserve_adopted(store, ledger, binding, settings))
+        self.assertEqual(4, ledger.summary(PROJECT)['reservations'])
+        self.assertEqual(210, ledger.summary(PROJECT)['reserved_tokens'])
+        self.assertEqual(20, ledger.summary(PROJECT)['known_tokens'])
+        with store.connection() as db:
+            self.assertEqual(retained, [tuple(r) for r in db.execute('SELECT * FROM reservations')])
+
+    def test_unimported_legacy_reservations_refuse_even_accounting_only(self):
+        for enforcement in (False, True):
+            with self.subTest(enforcement=enforcement):
+                store, ledger, binding, settings = self.adoption(enforcement=enforcement)
+                with self.assertRaisesRegex(ValidationError, 'legacy.*import|import.*legacy'):
+                    self.reserve_adopted(store, ledger, binding, settings)
+                self.assertEqual(0, ledger.summary(PROJECT)['reservations'])
+
+    def test_forged_or_mismatched_import_proofs_refuse_without_new_charge(self):
+        # Tamper only disposable imported state. A matching forged canonical
+        # digest cannot excuse a lost charge or a foreign project/ticket.
+        mutations = (
+            "DELETE FROM budget_history_imports WHERE source_table='reservations'",
+            "UPDATE budget_history_imports SET source_row_sha256='forged' WHERE source_table='reservations'",
+            "UPDATE budget_history_imports SET canonical_row_sha256='forged' WHERE source_table='reservations'",
+            "UPDATE budget_history_imports SET run_id='forged' WHERE source_table='reservations'",
+            "UPDATE budget_history_imports SET source_id='999' || source_id WHERE source_table='reservations'",
+            "UPDATE budget_history_imports SET source_table='model_runs' WHERE source_table='reservations'",
+            "UPDATE budget_history_imports SET source_sha256='forged' WHERE source_table='reservations'",
+            "DELETE FROM model_runs WHERE phase='legacy-state-store'",
+            "UPDATE model_runs SET actual_tokens=0 WHERE phase='legacy-state-store'",
+            "UPDATE model_runs SET project_id='foreign' WHERE phase='legacy-state-store'",
+            "UPDATE model_runs SET ticket_id='foreign' WHERE phase='legacy-state-store'",
+        )
+        self.migrate()
+        original = self.target.read_bytes()
+        store, ledger, binding, settings = self.adoption(enforcement=False)
+        for sql in mutations:
+            with self.subTest(sql=sql):
+                self.target.write_bytes(original)
+                with closing(sqlite3.connect(self.target)) as db, db:
+                    db.execute('DROP TRIGGER budget_import_no_update')
+                    db.execute('DROP TRIGGER budget_import_no_delete')
+                    db.execute(sql)
+                    for row in db.execute("SELECT * FROM model_runs WHERE phase='legacy-state-store'").fetchall():
+                        db.row_factory = sqlite3.Row
+                        current = db.execute('SELECT * FROM model_runs WHERE run_id=?', (row[0],)).fetchone()
+                        if sql.startswith('UPDATE model_runs'):
+                            db.execute('UPDATE budget_history_imports SET canonical_row_sha256=? WHERE run_id=?',
+                                (upgrade._budget_row_hash(current), row[0]))
+                with self.assertRaisesRegex(ValidationError, 'legacy.*import|import.*legacy'):
+                    self.reserve_adopted(store, ledger, binding, settings)
+                with closing(sqlite3.connect(self.target)) as db:
+                    self.assertIsNone(db.execute('SELECT 1 FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone())
+
+    def test_changed_retained_reservation_requires_new_import(self):
+        self.migrate()
+        store, ledger, binding, settings = self.adoption(enforcement=False)
+        store.settle_budget('22222222-2222-4222-8222-222222222222', 30, 3)
+        with self.assertRaisesRegex(ValidationError, 'legacy.*import|import.*legacy'):
+            self.reserve_adopted(store, ledger, binding, settings)
+
+    def test_off_needs_no_import_and_legacy_mode_keeps_original_limits(self):
+        from agentic.budgeting import fresh_settings
+        store, ledger, binding, _ = self.adoption()
+        with patch.object(ledger, 'reserve', side_effect=AssertionError('OFF opened ledger')):
+            self.assertEqual('OFF', self.reserve_adopted(store, None, binding, fresh_settings()))
+        self.assertFalse(self.target.exists())
+        store.control('RUNNING', 'Disposable legacy admission test', reconciled=True)
+        limits = dict(runs=2, tokens=10000, cost=10000, daily_cost=10000)
+        with self.assertRaisesRegex(ValidationError, 'hard limit'):
+            store.reserve_budget(binding['run_id'], 'EX-195', '2026-11-01T00:00:00Z', 1, 1, limits)
+        limits['runs'] = 3
+        self.assertEqual('RESERVED', store.reserve_budget(binding['run_id'], 'EX-195',
+            '2026-11-01T00:00:00Z', 1, 1, limits))
+
     def test_import_preserves_sources_unknown_usage_and_exact_deduplication(self):
         before = {name: item['path'].read_bytes() for name, item in self.sources.items()}
         report = self.migrate()
