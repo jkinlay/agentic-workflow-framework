@@ -33,8 +33,9 @@ class ProductionPreA5Tests(unittest.TestCase):
         def cli(name, argv, **kwargs):
             self.launched = True
             run = Path(kwargs['log']).parent
-            (run / 'result.json').write_text(json.dumps(dict(outcome='COMPLETE',
-                changes=['fixture.txt'], tested_tree='c'*40, ignored_untracked=[], summary='Fixture')))
+            (run / 'result.json').write_text(json.dumps(dict(outcome='CHANGED',
+                changes=[dict(path='fixture.txt', action='modified')],
+                tested_tree='c'*40, ignored_untracked=[], summary='Fixture')))
             events = [dict(type='thread.started', thread_id=str(uuid.uuid4())),
                 dict(type='turn.completed', usage=dict(input_tokens=70, output_tokens=30))]
             (run / 'codex.jsonl').write_text('\n'.join(map(json.dumps, events)))

@@ -384,7 +384,8 @@ class RetryAuthorityTests(unittest.TestCase):
 
     def test_reduction_survives_outstanding_quarantine_budget_and_cost_denials(self):
         for kind in ("outstanding", "quarantine", "budget", "missing-cost"):
-            with self.subTest(kind=kind):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="awf-retry-scenario-") as state, \
+                    patch.dict("os.environ", {"AWF_STATE_HOME": state}):
                 ledger = RoutingLedger(Path(self.temp.name) / (kind+".sqlite"))
                 policy = deepcopy(self.policy)
                 first = ledger.reserve("project", policy, request(), capabilities())

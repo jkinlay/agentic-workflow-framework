@@ -1703,6 +1703,12 @@ class HostDriver:
                     directory='.' if run.name == first_draft_run else run.name)))
         try:
             self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
+            # Exit zero observes process termination, not a usable agent result.
+            # Protocol failures consume the same operational recovery allowance
+            # in OFF, accounting and legacy modes, before any success is sealed.
+            output = Path(args[args.index('--output-last-message') + 1])
+            schema = Path(args[args.index('--output-schema') + 1])
+            raw_result, value = self._validated_agent_result(output, run, schema)
         except BaseException as exc:
             kind = getattr(exc, 'failure_kind', None) or ('cancelled' if isinstance(
                 exc, (KeyboardInterrupt, SystemExit, subprocess.TimeoutExpired)) or str(exc).startswith(
@@ -1710,7 +1716,19 @@ class HostDriver:
             self._agent_outcome(run, admission, binding, success=False, failure_kind=kind)
             raise
         session = self._agent_outcome(run, admission, binding, success=True)
-        return session, binding
+        return session, binding, raw_result, value
+
+    def _validated_agent_result(self, output, run, schema):
+        raw, value = self._bounded_result(output, run)
+        # Retained fixtures/reports predate nullable finding lineage fields.
+        if isinstance(value, dict) and isinstance(value.get('findings'), list):
+            for finding in value['findings']:
+                if isinstance(finding, dict):
+                    finding.setdefault('basis', None)
+                    finding.setdefault('supersedes', None)
+        from jsonschema import Draft202012Validator
+        Draft202012Validator(loads(schema.read_text())).validate(value)
+        return raw, value
 
     def agent(self, role, candidate, findings, run_id, files=None):
         require(role in {'worker', 'critic', 'specialist'}, 'Controller and independent runs are not review sub-agents')
@@ -1745,23 +1763,12 @@ class HostDriver:
             'sandbox': cli_sandbox, 'cli_sandbox': cli_sandbox,
             'codex_config_overrides': overrides}, sort_keys=True), encoding='utf-8')
         budgeting = getattr(self, 'budgeting', None)
-        session, binding = self._launch_agent(role, run, args, prompt)
+        session, binding, raw_result, value = self._launch_agent(role, run, args, prompt)
         if reviewer and budgeting is not None and 'legacy_behavior' not in budgeting.settings:
             session = self._codex_thread_id(run / 'codex.jsonl')
             contexts = self._worker_contexts(binding, candidate)
             require(session not in {row['context_id'] for row in contexts},
                     'Review context is not independent of candidate worker contexts')
-        raw_result, value = self._bounded_result(output, run)
-        # Older host fixtures and retained reports predate the nullable lineage
-        # fields.  Migrate those records before strict validation; live Codex
-        # output is still constrained by the required-key schema above.
-        if isinstance(value, dict) and isinstance(value.get('findings'), list):
-            for finding in value['findings']:
-                if isinstance(finding, dict):
-                    finding.setdefault('basis', None)
-                    finding.setdefault('supersedes', None)
-        from jsonschema import Draft202012Validator
-        Draft202012Validator(loads((self.root / f'.agentic/review-loop/{template_role}-result.schema.json').read_text())).validate(value)
         if role == 'worker':
             self._record_codex_identity(run_id, run, run, output)
         return value
@@ -1809,13 +1816,9 @@ class HostDriver:
         self._qualification_probe = True
         try:
             # Isolation probes have no ticket and are not AWF ticket runs.
-            self._launch_agent(role, run, args, prompt, enrolled=False)
+            _, _, raw_result, value = self._launch_agent(role, run, args, prompt, enrolled=False)
         finally:
             self._qualification_probe = False
-        raw_result, value = self._bounded_result(output, run)
-        from jsonschema import Draft202012Validator
-        schema = loads((self.root / '.agentic/review-loop/qualification-probe-result.schema.json').read_text())
-        Draft202012Validator(schema).validate(value)
         return {
             'result': value,
             'artifacts': {
@@ -1924,9 +1927,8 @@ class HostDriver:
         self.require_clean_first_draft_checkout()
         (run / 'input.json').write_bytes(canonical(dict(candidate=None,
             allowed_amendment_paths=self.c['allowed_paths'], contract=contract)))
-        self._launch_agent('worker', run, args, prompt, first_draft_run=run_id)
+        _, _, raw_result, value = self._launch_agent('worker', run, args, prompt, first_draft_run=run_id)
         self.require_first_draft_git_controls(git_controls)
-        raw_result, value = self._bounded_result(output, run)
         self._record_codex_identity(run_id, run_root, run, output)
         return value
 

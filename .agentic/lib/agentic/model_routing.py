@@ -1117,9 +1117,11 @@ class RoutingLedger:
         error = None
         with self._transaction() as connection:
             retry_limit = policy.get("reconciliation", {}).get("max_reconciled_incident_retries_per_ticket", 2)
-            ceiling_state = self._retry_ceiling(connection, project_id, retry_limit, policy)
+            ceiling_state = self._retry_ceiling(connection, project_id, retry_limit, policy,
+                worktree_roots=self.worktree_roots)
             ceiling = ceiling_state["retry_limit"]
-            if retry_limit > ceiling:
+            from .budget_enrollment import recovery_ceiling, OperationalRegistry
+            if recovery_ceiling(retry_limit, ceiling)['code']:
                 return {"status": "blocked", "code": "RETRY_LIMIT_INCREASE_REQUIRES_AUTHORIZATION",
                         "reason": "configured retry cap exceeds the protected ledger ceiling; a trusted host must record explicit human direction",
                         "project_id": project_id, "configured_retry_limit": retry_limit,
@@ -1134,6 +1136,8 @@ class RoutingLedger:
                     "attempted_run_id": run_id, "request_sha256": request_hash,
                     "run_binding": "admission attempt only; a model_runs row with this ID establishes reservation",
                     "provenance": "validated configuration observed before admission; caller identity is a host assertion"})
+                # Keep the mode-independent ceiling even when admission refuses.
+                OperationalRegistry.for_project(project_id, self.worktree_roots).retain_retry_ceiling(project_id, retry_limit)
             connection.execute("SAVEPOINT model_admission")
             try:
                 result = self._admit(connection, project_id, policy, request, capabilities, retry_limit, now, day, run_id,
@@ -1290,14 +1294,22 @@ class RoutingLedger:
                                      observation)
 
     @staticmethod
-    def _retry_ceiling(connection, project_id, configured_limit, policy):
+    def _retry_ceiling(connection, project_id, configured_limit, policy, *, worktree_roots=()):
+        from .budget_enrollment import OperationalRegistry, recovery_ceiling
         row = RoutingLedger._current_retry_ceiling(connection, project_id)
         if row is None:
             # Neither an edited policy nor an old hash can bootstrap a raised cap.
             row = RoutingLedger._append_retry_ceiling(connection, project_id, None,
-                                                       min(2, configured_limit), "seed", {
+                                                       recovery_ceiling(configured_limit)['retry_limit'], "seed", {
                 "policy_sha256": _fingerprint(policy), "configured_retry_limit": configured_limit,
                 "provenance": "conservative initial admission ceiling"})
+        # Operational capacity is project-wide across all host/accounting modes.
+        # Reconcile by minimum; neither source may restore a retained reduction.
+        operations = OperationalRegistry.for_project(project_id, worktree_roots)
+        ceiling = operations.retain_retry_ceiling(project_id, row['retry_limit'])
+        if ceiling < row['retry_limit']:
+            row = RoutingLedger._append_retry_ceiling(connection, project_id, row, ceiling,
+                'operational_reduction', {'provenance': 'protected project operational ceiling'})
         return row
 
     def authorize_retry_limit(self, project_id, policy, observation):
@@ -1389,6 +1401,9 @@ class RoutingLedger:
             references = sorted({_approval_reference(observation[field]) for field in ("authorization_ref", "evidence_ref")})
             ceiling_state = self._current_retry_ceiling(connection, project_id)
             _require(ceiling_state is not None, "initialize the ceiling through admission before authorizing an increase")
+            ceiling_state = self._retry_ceiling(connection, project_id,
+                settings.get('max_reconciled_incident_retries_per_ticket', 2), policy,
+                worktree_roots=self.worktree_roots)
             ceiling = ceiling_state["retry_limit"]
             _require(ceiling == observation["expected_limit"] and ceiling_state["revision"] == observation["expected_revision"],
                      "retry-limit ceiling changed; obtain a current authorization")
@@ -1524,7 +1539,8 @@ class RoutingLedger:
 
         Replays retain exact identities, consumed resolutions and the minimum
         historical retry ceiling. Source usage, charges and ledger bytes remain
-        unchanged. OFF hosts never discover or read an optional ledger.
+        unchanged. OFF hosts read only an available ceiling; importing legacy
+        failure/usage history remains an explicit quiescent migration.
         """
         from .budget_enrollment import OperationalRegistry
         _name(project_id, 'project_id')

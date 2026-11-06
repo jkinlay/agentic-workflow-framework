@@ -31,6 +31,20 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
+def recovery_ceiling(configured_limit, protected_limit=None):
+    """Shared admission rule: conservative seed, reductions, explicit increases.
+
+    A verified retained ceiling may exceed two only after trusted authorization;
+    configuration alone can never initialize or restore such an increase.
+    """
+    require(type(configured_limit) is int and configured_limit >= 0, 'Operational retry limit is invalid')
+    require(protected_limit is None or type(protected_limit) is int and protected_limit >= 0,
+            'Protected retry ceiling is invalid')
+    ceiling = min(2, configured_limit) if protected_limit is None else min(protected_limit, configured_limit)
+    return dict(retry_limit=ceiling, code=('RETRY_LIMIT_INCREASE_REQUIRES_AUTHORIZATION'
+        if configured_limit > ceiling else None))
+
+
 BINDING_KEYS = frozenset({'project_id', 'ticket_id', 'run_id', 'dispatch_id', 'session_id', 'role'})
 
 
@@ -198,7 +212,7 @@ class OperationalRegistry(ProtectedDatabase):
         return instance
 
     @contextmanager
-    def transaction(self, ddl):
+    def transaction(self, ddl, *, observe_configuration=True):
         try:
             # Publish a separate durable witness *before* initializing the DB.
             # A crash or loss of either established identity is never fresh state.
@@ -236,8 +250,13 @@ class OperationalRegistry(ProtectedDatabase):
                     db.execute('INSERT INTO execution_identity VALUES (?)', (identity,))
                 require([row['identity'] for row in db.execute('SELECT identity FROM execution_identity')] == [identity],
                         'Worker independence unknown: protected shared execution evidence identity lost; restore verified host state')
-                if getattr(self, 'retry_limit', None) is not None:
-                    self._limit(db, self.project_id, self.retry_limit)
+                if observe_configuration:
+                    source = getattr(self, 'ceiling_source', None)
+                    ceiling = source() if source is not None else None
+                    if ceiling is not None:
+                        self._retain_retry_ceiling(db, self.project_id, ceiling)
+                    if getattr(self, 'retry_limit', None) is not None:
+                        self._limit(db, self.project_id, self.retry_limit)
                     # A refusal must not erase an observed ceiling reduction.
                     # Keep allowance consumption in the subsequent transaction.
                     db.execute('COMMIT')
@@ -266,18 +285,51 @@ class OperationalRegistry(ProtectedDatabase):
     def admit(self, binding):
         binding = validate_binding(binding)
         with self.transaction(OPERATIONAL_DDL) as db:
+            self._require_retry_ceiling(db, binding)
             self._admit(db, binding)
 
     @staticmethod
     def _limit(db, project_id, retry_limit):
+        row = db.execute('SELECT retry_limit FROM execution_retry_limits WHERE project_id=?', (project_id,)).fetchone()
+        state = recovery_ceiling(retry_limit, None if row is None else row['retry_limit'])
         db.execute('INSERT INTO execution_retry_limits VALUES (?,?) ON CONFLICT(project_id) DO UPDATE '
-                   'SET retry_limit=min(retry_limit,excluded.retry_limit)', (project_id, retry_limit))
+                   'SET retry_limit=min(retry_limit,excluded.retry_limit)', (project_id, state['retry_limit']))
+        return state
+
+    def retain_retry_ceiling(self, project_id, retry_limit):
+        """Reconcile a verified protected source, never raise retained capacity.
+
+        The operational record is authoritative across modes. A source reduction
+        is copied durably before recovery/admission; subsequent missing/corrupt
+        optional accounting history cannot erase it. This imports no usage or
+        failure history. Only apply_retry_authorization may raise an existing row.
+        """
+        require(type(retry_limit) is int and retry_limit >= 0, 'Protected retry ceiling is invalid')
+        with self.transaction(OPERATIONAL_DDL, observe_configuration=False) as db:
+            self._retain_retry_ceiling(db, project_id, retry_limit)
+            return db.execute('SELECT retry_limit FROM execution_retry_limits WHERE project_id=?',
+                (project_id,)).fetchone()['retry_limit']
+
+    @staticmethod
+    def _retain_retry_ceiling(db, project_id, retry_limit):
+        require(type(retry_limit) is int and retry_limit >= 0, 'Protected retry ceiling is invalid')
+        db.execute('INSERT INTO execution_retry_limits VALUES (?,?) ON CONFLICT(project_id) DO UPDATE '
+            'SET retry_limit=min(retry_limit,excluded.retry_limit)', (project_id, retry_limit))
+
+    def _require_retry_ceiling(self, db, binding):
+        configured = getattr(self, 'retry_limit', None)
+        if configured is not None:
+            row = db.execute('SELECT retry_limit FROM execution_retry_limits WHERE project_id=?',
+                (binding['project_id'],)).fetchone()
+            state = recovery_ceiling(configured, None if row is None else row['retry_limit'])
+            require(state['code'] is None, str(state['code']) + ': configured retry cap exceeds protected ceiling')
 
     def begin(self, binding, retry_limit):
         binding = validate_binding(binding)
         require(type(retry_limit) is int and retry_limit >= 0, 'Operational retry limit is invalid')
         self.project_id, self.retry_limit = binding['project_id'], retry_limit
         with self.transaction(OPERATIONAL_DDL) as db:
+            self._require_retry_ceiling(db, binding)
             self._admit(db, binding)
             row = db.execute('SELECT binding FROM execution_intents WHERE run_id=?', (binding['run_id'],)).fetchone()
             require(row is None or row['binding'] == encoded(binding), 'Operational execution cannot be rebound')
@@ -292,8 +344,8 @@ class OperationalRegistry(ProtectedDatabase):
         current ceiling. Neither replay nor migration can raise that ceiling.
         """
         require(type(retry_limit) is int and retry_limit >= 0, 'Operational retry limit is invalid')
+        self.retain_retry_ceiling(project_id, retry_limit)
         with self.transaction(OPERATIONAL_DDL) as db:
-            self._limit(db, project_id, retry_limit)
             for record in records:
                 binding = validate_binding(record['binding'])
                 require(binding['project_id'] == project_id, 'Recovery migration project differs')
@@ -385,4 +437,5 @@ class OperationalRegistry(ProtectedDatabase):
             count = sum(all(json.loads(row['binding'])[key] == binding[key] for key in ('project_id', 'ticket_id'))
                         for row in db.execute('SELECT binding FROM execution_resolutions'))
             require(limit is not None and count < limit['retry_limit'], 'Operational recovery retry limit exhausted')
+            self._require_retry_ceiling(db, binding)
             db.execute('INSERT INTO execution_resolutions VALUES (?,?)', (binding['run_id'], encoded(binding)))

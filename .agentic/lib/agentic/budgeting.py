@@ -205,8 +205,33 @@ class ControllerBudgeting:
     @property
     def operations(self):
         from .budget_enrollment import OperationalRegistry
-        return OperationalRegistry.for_project(self.governance['project']['id'], self.worktree_roots,
+        operations = OperationalRegistry.for_project(self.governance['project']['id'], self.worktree_roots,
             retry_limit=self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket'])
+        operations.ceiling_source = self._operational_retry_ceiling
+        return operations
+
+    def _operational_retry_ceiling(self):
+        # An optional ledger is a ceiling source, never an OFF availability
+        # dependency. Copy a readable protected ceiling into operational state;
+        # once recorded, that reduction survives loss/corruption of this source.
+        # No usage, failures, enrollment or accounting schema is read/created.
+        import sqlite3
+        from .model_routing import _current_retry_ceiling
+        try:
+            db = self._recovery_database()
+        except (sqlite3.Error, OSError):
+            db = None
+        if db is not None:
+            try:
+                try:
+                    ceiling = _current_retry_ceiling(db, self.governance['project']['id'])
+                except sqlite3.Error:
+                    ceiling = None
+            finally:
+                db.close()
+            if ceiling is not None:
+                return ceiling['retry_limit']
+        return None
 
     def start_execution(self, binding):
         limit = self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket']
