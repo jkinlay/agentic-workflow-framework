@@ -143,7 +143,7 @@ class EnrollmentRegistry(ProtectedDatabase):
             old = db.execute('SELECT binding FROM budget_enrollments WHERE run_id=?', (binding['run_id'],)).fetchone()
             return old is not None and old['binding'] == encoded(binding)
 
-    def admit_owner_direction(self, project_id, current, changes):
+    def admit_owner_direction(self, project_id, current, changes, *, validate_observation=None):
         """Consume a host observation before operating's atomic mutation.
 
         Host must independently verify a current, authorized owner direction,
@@ -167,12 +167,17 @@ class EnrollmentRegistry(ProtectedDatabase):
         require(observed['project_id'] == project_id and observed['prior_settings_hash'] == prior
                 and encoded(observed['changes']) == encoded(changes),
                 'Owner observation must bind project, exact changes and prior settings hash')
+        if validate_observation is not None:
+            validate_observation(deepcopy(observed))
         with self.transaction(DDL) as db:
             require(db.execute('SELECT 1 FROM budget_owner_observations WHERE observation_id=?',
                                (observed['observation_id'],)).fetchone() is None,
                     'Owner observation already consumed')
             db.execute('INSERT INTO budget_owner_observations VALUES (?,?)',
                        (observed['observation_id'], encoded(observed)))
+            consume = getattr(self.host, 'consume_owner_direction', None)
+            if consume is not None:
+                consume(deepcopy(observed), db)
         return {'settings': result, 'observation': deepcopy(observed)}
 
 

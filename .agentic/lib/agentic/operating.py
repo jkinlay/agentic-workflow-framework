@@ -590,7 +590,8 @@ def _new(tree, name, raw):
             pass
 
 
-def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None):
+def _prepare_commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, owner_admission=None):
+    """Validate complete transaction bytes before consuming any owner admission."""
     after = validate_operating(value, _bound_governance(tree, governance))
     events = _events(tree)
     if _read(tree, JOURNAL) is not None:
@@ -607,6 +608,8 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
              "previous_change_id": events[-1]["id"] if events else None, "governance_hash": after.governance_hash}
     if budget_owner_observation is not None:
         event['budget_owner_observation'] = deepcopy(budget_owner_observation)
+    if owner_admission is not None:
+        event['owner_admission'] = deepcopy(owner_admission)
     errors = _schema("operating-change", event)
     if errors:
         raise OperatingError(errors)
@@ -617,6 +620,13 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     for path, data in (("$.configuration", raw), ("$.event", event_raw), ("$.journal", journal_raw)):
         if len(data) > MAX_BYTES:
             fail(path, "Serialized operating transaction member exceeds its 1 MiB read/recovery limit; reduce the change or use a reviewed migration")
+    return event, raw, event_raw, journal_raw
+
+
+def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None, budget_owner_observation=None, owner_admission=None):
+    event, raw, event_raw, journal_raw = _prepare_commit(
+        tree, governance, before, value, instruction, changed, applied_from,
+        created_at=created_at, budget_owner_observation=budget_owner_observation, owner_admission=owner_admission)
     _new(tree, JOURNAL, journal_raw)
     # On any interruption retain the WAL. Never claim config/audit are a single rename.
     if _read(tree, CONFIG) != before:
@@ -897,8 +907,6 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         budget_changes = {p[10:]: v for p, v in selected.items() if p.startswith('budgeting.')}
         if budget_changes:
             from .budgeting import transition_settings
-            if budget_registry is None:
-                fail('$.budgeting', 'Trusted-host owner observer required; chat words and source:user do not authenticate an owner')
             current_budget = snapshot.config.get('budgeting')
             if current_budget is None:
                 fail('$.budgeting', 'Legacy budgeting requires versioned adoption with an explicit budget disposition')
@@ -919,15 +927,38 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             _put(value, path, choice)
         value["source"] = source
         validate_operating(value, governance)
-        if budget_changes:
-            admitted = budget_registry.admit_owner_direction(governance['project']['id'], current_budget, budget_changes)
-            if admitted['settings'] != value['budgeting']:
-                fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
         paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
+        if budget_changes:
+            change_time = now_text()
+            _prepare_commit(tree, governance, before, value, instruction, changes, 'chat', created_at=change_time)
+            intent = dict(assignments=list(assignments), recommendation_id=recommendation_id,
+                          accept=accept, initialize=initialize, epic_id=epic_id)
+            if budget_registry is None:
+                from .owner_admission import PendingOwnerConfirmation, propose
+                try:
+                    proposal = propose(project_root, governance, snapshot, instruction, intent, changes)
+                except ValidationError as exc:
+                    fail('$.budgeting', 'Trusted-host owner admission unavailable: ' + str(exc))
+                raise PendingOwnerConfirmation(proposal)
+            observer = getattr(budget_registry.host, 'validate_operating_change', None)
+            if observer is not None:
+                from .budgeting import settings_hash
+                observer(governance, snapshot, instruction, intent, changes,
+                         settings_hash(current_budget), budget_changes)
+            def validate_admission(observed):
+                _prepare_commit(tree, governance, before, value, instruction, changes, 'chat',
+                                created_at=change_time, budget_owner_observation=observed,
+                                owner_admission=getattr(budget_registry.host, 'audit', None))
+            admitted = budget_registry.admit_owner_direction(governance['project']['id'], current_budget, budget_changes,
+                                                             validate_observation=validate_admission)
+            if admitted['settings'] != value['budgeting']:
+                fail('$.budgeting', 'Trusted-host budget admission differs from validated settings')
         return _commit(tree, governance, before, value, instruction, changes, "chat",
-                       budget_owner_observation=admitted['observation'] if budget_changes else None)
+                       created_at=change_time if budget_changes else None,
+                       budget_owner_observation=admitted['observation'] if budget_changes else None,
+                       owner_admission=getattr(budget_registry.host, 'audit', None) if budget_changes else None)
 
 
 def _scope(paths, epic_id):
@@ -1260,6 +1291,7 @@ def _local_state(root, governance):
 
 
 def main(argv=None, default_root=None, *, budget_registry=None):
+    from .owner_admission import PendingOwnerConfirmation, confirm
     from .contracts import Contracts
     from .output import configure_streams, json_text
     configure_streams()
@@ -1276,6 +1308,9 @@ def main(argv=None, default_root=None, *, budget_registry=None):
     setter.add_argument("--epic", help="Exact observed Epic ID; scope only the selected stream/role routes")
     setter.add_argument("--initialize", action="store_true", help="Explicitly start from Balanced defaults only when the root file is absent; validate all selected changes first")
     setter.add_argument("--json", action="store_true")
+    confirmer = sub.add_parser('confirm', help='Owner confirms an exact pending proposal in their own terminal')
+    confirmer.add_argument('--digest', required=True)
+    confirmer.add_argument('--json', action='store_true')
     recommend = sub.add_parser("recommend")
     recommend.add_argument("--epics", required=True, type=Path)
     recommend.add_argument("--inventory", type=Path)
@@ -1296,6 +1331,8 @@ def main(argv=None, default_root=None, *, budget_registry=None):
             snapshot = set_operating(args.root, governance, args.instruction, args.assignments,
                                      recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic,
                                      budget_registry=budget_registry)
+        elif args.command == 'confirm':
+            snapshot = confirm(args.root, governance, args.digest)
         elif args.command == "recover":
             snapshot = recover_operating(args.root, governance, args.expected_journal_sha256)
         else:
@@ -1308,6 +1345,9 @@ def main(argv=None, default_root=None, *, budget_registry=None):
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
         print(json_text(result) if args.json else result["table"])
         return 0
+    except PendingOwnerConfirmation as exc:
+        print(json_text(exc.report))
+        return 3
     except (ValidationError, OSError, ValueError, UnicodeError) as exc:
         if isinstance(exc, OSError):
             from .activation import access_diagnostic

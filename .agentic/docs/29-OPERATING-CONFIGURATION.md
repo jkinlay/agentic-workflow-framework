@@ -4,13 +4,13 @@ Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' 
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings, budgets, allowlists, floors, escalation and shared critic route; legacy per-stream routes accepted. Review changes; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
-Show/status/`operating.state` share `effective_ceiling`: minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. Disabled brokers do not bind; heavy/GPU limits are not stream counts; configuration cannot prove host/reviewer availability.
+Show/status/`operating.state` share `effective_ceiling`: minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, enabled `execution.host_broker.max_workers`. Disabled brokers/heavy/GPU limits do not constrain streams. Configuration proves no availability.
 
-`effective_ceiling_governance_path`: binding path, project wins ties; null means only omitted six-lane default binds. `effective_ceiling_sources`: ties. Planning checks slots/ownership/spawn.
+`effective_ceiling_governance_path`: binding path; project wins ties; null: omitted default binds. `effective_ceiling_sources`: ties. Check slots/ownership/spawn.
 
-Bound cycles accept trusted host callback capacities via `produce_planning_resource_observation`. Planning reauthenticates closed evidence/capacities; missing authentication, self-digests and operator values fail closed. Observed capacity: 0–1000; zero selects none (`safe_lane_count == 0`).
+Bound cycles use `produce_planning_resource_observation`. Planning reauthenticates evidence/capacities; unauthenticated/operator values fail closed. Capacity: 0–1000; zero selects none (`safe_lane_count == 0`).
 
-Schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
+Schemas accept `streams.count` and optional `execution.max_lanes` 1–12, routes A–L. Omitted `max_lanes` retains six. Lower parallel-ticket/enabled-broker limits bind. Raise protected ceilings through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
@@ -26,19 +26,19 @@ Schemas accept `streams.count` 1–12 with A–L routes and optional project `ex
 
 `independent_reviewers.allocation: shared_critic` uses slot. Legacy `one_per_stream` and fixed counts bind. `--propose-operating-capacity` proposes ceiling change.
 
-Owner overrides require authenticated `fixed`/`max` decisions and audited history. sealed safe capacity: `fixed` selects count or refuses unsafe; `max` limits recommendations. Neither raises governance/observed capacity. Replans await round boundaries; assignments retain reservations. Triggers persist; durable plans constrain admission at start.
+Owner overrides require authenticated `fixed`/`max` decisions and audit: `fixed` selects count or refuses unsafe; `max` limits recommendations. Neither raises capacity. Replans await round boundaries; preserve reservations/triggers. Durable plans constrain admission.
 
 Authenticated readers trim/casefold and collapse whitespace/ASCII-hyphen runs: `To Do`/`To-Do` → `ready`, `In Progress`/`In-Progress` → `in_progress`, `Done` → `closed`. Vocabulary: ready `open`/`ready`/`backlog`; active `in_flight`/`working`/`dispatched`/`in_progress`; closed `closed`/`done`/`merged`/`cancelled`/`canceled`. Unknown names grant neither admission nor closed dependencies; reviewed mappings required. Graph callers supply canonical vocabulary.
 
-Translate, echo and execute without reconfirmation:
+Ordinary choices: translate, echo, execute:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
 ```
 
-Show results; escalation pins; floors prevail.
+Show; retain pins/floors.
 
-Refusals exit 2 with path, value, remedy; never clamp or partially apply mixed changes.
+Refusals exit 2: path/value/remedy; never clamp/partially apply.
 
 Above-cap upgrades refuse; use `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Use three streams" --set streams.count=3` to repair four under cap three; surplus drains.
 
@@ -64,11 +64,11 @@ Inventory: `data/`, `data/**`, `data/*` are equivalent prefixes; other globs ref
 
 Table; wait for adoption/keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Recompute stale hashes.
 
-Defaults unpinned; unchanged pins share footnote. Stored/named rows and replay checks remain. Adoption preserves pins/floors; custom instructions change them.
+Defaults unpinned; adoption preserves pins/floors. Stored rows/replay checks remain.
 
 Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`; audits retain instructions, hashes, changes and source. Bootstrap creates/appends/replaces AWF `.gitignore` block, preserving outside bytes; `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries and `added_lines`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
 
-Publish flushed journal/audit writes without replacement. Preserve conflicts/interrupted staging files outside audit chain within bounds. Recovery requires independently inspected journal SHA-256; unsupported primitives fail closed.
+Publish flushed journal/audit without replacement. Preserve conflicts/interrupted staging within bounds. Recovery requires independently inspected journal SHA-256; unsupported primitives refuse.
 
 Dispatch/reservation/settlement retain separate `operating_hash`/`policy_hash`; settlement uses its reservation hash. Absent/null historical hashes remain unobserved. Host authenticates instructions/routes; records establish consistency.
 
@@ -81,11 +81,19 @@ budget settings.
 
 Supported paths: `budgeting.accounting_enabled`,
 `budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` and
-`budgeting.max_tokens_per_project`. Mutations require trusted host registry
-injected into `set_operating` or `operating.main`; the standalone CLI lacks an
-authenticated owner observer and refuses them. Consume it under the operating
-lock after validation. Settings and owner observation share a journal and
-append-only audit, including pinned recovery after interruption. Show/status
-display persisted effective settings.
+`budgeting.max_tokens_per_project`. `set` validates/stores a protected proposal,
+prints exact changes/digest, exits 3 `PENDING_OWNER_CONFIRMATION`; settings stay
+unchanged. Owner runs `workflow.py operating confirm --digest D` in their
+terminal within 15 minutes, typing its first eight characters. Skills never run
+confirm; after owner-reported completion, run `show` for persistence.
+Confirmation observes the machine's stored GitHub User login and requires its
+numeric ID in reviewed `merge_gate.trusted_owner_ids`; empty refuses
+`OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`. Token
+environment variables, foreign GH_HOST and noninteractive stdin/stdout refuse.
+Project/repository/governance/prior-settings/exact-change mismatches and replay
+refuse. Under lock: validate, consume, journal, audit, readback.
+This proves the machine's stored GitHub login and an interactive terminal. It
+does not defend against a process with the owner's full rights and a terminal
+of its own. Other settings retain behavior.
 See [budgeting](39-BUDGETING.md) for host integration, UNKNOWN attribution,
 canonical totals, preserved reservations and versioned upgrade decision.
