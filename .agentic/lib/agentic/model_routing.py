@@ -645,9 +645,11 @@ def _select_route(policy, request, capabilities, operating_config):
     default_operating = bool(operating_config and operating_config.get("source") == "default")
     baselines = ([default_policy(RELEASE_ROUTING_SOURCE), default_policy(LEGACY_ROUTING_SOURCE)]
                  if default_operating else [])
+    # The retained generated simple-worker pair identifies the template's
+    # defaults independently of edits to the current routing catalog or floors.
     release_defaults = next((baseline for baseline in baselines
-                             if baseline["model_order"] == policy["model_order"]
-                             and baseline["models"] == policy["models"]), None)
+                             if all(operating_config["simple_worker"].get(key) == baseline["simple_worker"][key]
+                                    for key in ("model", "reasoning_effort"))), None)
     default_operating = default_operating and release_defaults is not None
 
     def effective_default(route, policy_route, *released_routes):
