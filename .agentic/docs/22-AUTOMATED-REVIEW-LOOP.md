@@ -54,10 +54,10 @@ the original title.
 From the trusted runtime, substitute paths:
 
 ```text
-python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json check
-python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json enroll
-python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json tick
-python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json status
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json check
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json enroll
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json tick
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json status
 ```
 
 For Jonathan's later live check against a disposable AWF PR on the 4090, prepare separate pinned runtime/state/worker/critic directories and run from the trusted runtime (the writer does not run this):
@@ -93,7 +93,7 @@ Defaults allow three amendment attempts (plus at most `max_cap_extensions` owner
 Preview Windows registration, then repeat with `-Create` within existing host authority:
 
 ```powershell
-& .agentic/scripts/register_review_loop.ps1 -RuntimeRoot C:/awf-runtime -Python C:/awf-venv/Scripts/python.exe -Config C:/awf-state/config.json -TaskName AWF-Example-7
+& .agentic/scripts/register_review_loop.ps1 -RuntimeRoot ABSOLUTE_RUNTIME -Python ABSOLUTE_PYTHON -Config ABSOLUTE_STATE_DIR/config.json -TaskName AWF-Example-7
 ```
 
 The default five-minute schedule requires the user logged in. Verify an actual scheduled execution and its retained report. Other scheduler integrations are unqualified. `status` is read-only; [scheduled_tick.py](../scripts/scheduled_tick.py) runs work and records outcomes, without delivering chat notifications.
@@ -102,13 +102,13 @@ Before maintenance, disable wakeups and pause:
 
 ```powershell
 Disable-ScheduledTask -TaskName AWF-Example-7
-python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json pause --reason "Maintenance"
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json pause --reason "Maintenance"
 ```
 
 Disabling scheduling does not stop an active process. After timeout/crash/uncertain push, inspect retained `runs/RUN_ID` inputs/results/logs, remote state, local commits and surviving descendants. Preserve changes; never replay an uncertain push or create another database to reset limits. Once processes and Git are reconciled:
 
 ```text
-python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json resume --reconciled-run EXACT_RETAINED_UUID_OR_none
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json resume --reconciled-run EXACT_RETAINED_UUID_OR_none
 ```
 
 Resume starts full review; re-enable scheduling afterward. Retire/migrate manually with stopped processes and preserved state. Run the [adoption checks](20-NEW-PROJECT-SETUP.md) and relevant project tests. Offline process fixtures are not live host qualification; retain separate observed scheduler, credential and permission evidence.

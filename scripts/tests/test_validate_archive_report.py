@@ -17,9 +17,12 @@ class ArchiveReportTests(unittest.TestCase):
         tree = ast.parse(SCRIPT.read_text(encoding='utf-8'), filename=str(SCRIPT))
         validate = next(node for node in tree.body
                         if isinstance(node, ast.FunctionDef) and node.name == 'validate')
-        start = next(index + 1 for index, node in enumerate(validate.body)
-                     if isinstance(node, ast.Expr)
-                     and 'ZIP byte-for-byte reproducibility' in ast.unparse(node))
+        starts = [index for index, node in enumerate(validate.body)
+                  if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == 'extracted_tests'
+                          for target in node.targets)]
+        self.assertEqual(1, len(starts), 'Expected one direct report-assembly start')
+        start = starts[0]
         end = next(index for index, node in enumerate(validate.body)
                    if isinstance(node, ast.Expr)
                    and ast.unparse(node).startswith('OUTPUT.parent.mkdir('))

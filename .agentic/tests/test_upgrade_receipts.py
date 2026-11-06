@@ -16,7 +16,7 @@ from agentic import ValidationError  # noqa: E402
 from agentic.canonical import sha256  # noqa: E402
 from agentic.installer import CONFIG, INSTALLED, PROVENANCE, install, verify_installed  # noqa: E402
 from agentic.upgrade import immutable_from_source_manifest, load_known_versions  # noqa: E402
-from source_only import skip_unless_source_repo  # noqa: E402
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo  # noqa: E402
 
 
 HERMES_COMMIT = "1f5f146352ff0a8222a6be1ef9186e4609b11033"
@@ -50,6 +50,8 @@ def tree_digest(root):
 )
 class UpgradeReceiptTests(unittest.TestCase):
     def setUp(self):
+        if committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         self.destination = Path(tempfile.gettempdir()) / ("awf-upgrade-receipt-" + uuid.uuid4().hex)
         self.destination.mkdir()
         self.addCleanup(self.cleanup_destination)

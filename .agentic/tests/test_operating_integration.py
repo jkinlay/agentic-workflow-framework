@@ -15,29 +15,32 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
+from agentic.lane_labels import STREAM_LABELS
 from agentic import operating as op
 from agentic.canonical import canonical, load, sha256
-from agentic.model_routing import MODELS, RoutingLedger, default_policy, policy_from_config, select_route
+from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, select_route
 from agentic.operating import default_operating, validate_operating
 from agentic.store import Store
 from agentic.streams import DEFAULT_NATIVE_EXECUTION, _antichain, plan_inventory, recommendation_groups
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-11T10:00:00Z"
+MODELS = tuple(fixture_policy()["model_order"])
 
 
 def governance():
-    policy = default_policy()
+    policy = fixture_policy()
     return {"project": {"id": "synthetic-operating-project"}, "execution": {
         **deepcopy(DEFAULT_NATIVE_EXECUTION), "model_routing": policy,
         "roles": {role: {**pair, "approved_model_ids": list(MODELS)} for role, pair in policy["role_defaults"].items()}}}
 
 
 def configuration(count=3):
-    result = default_operating()
+    result = default_operating(fixture_policy())
     result["streams"]["count"] = count
-    for label in "ABCDEF"[:count]:
+    for label in STREAM_LABELS[:count]:
         result["streams"].setdefault(label, deepcopy(result["streams"]["A"]))
     return result
 
@@ -51,7 +54,7 @@ def request(**changes):
 
 
 def capabilities():
-    return {"models": {model: data["reasoning_efforts"] for model, data in default_policy()["models"].items()}}
+    return {"models": {model: data["reasoning_efforts"] for model, data in fixture_policy()["models"].items()}}
 
 
 def outcome(run, **changes):
@@ -238,7 +241,7 @@ class OperatingRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "ledger.sqlite"
             ledger = RoutingLedger(path)
-            run = ledger.reserve("synthetic", default_policy(), request(), capabilities())
+            run = ledger.reserve("synthetic", fixture_policy(), request(), capabilities())
             ledger.settle(run["run_id"], outcome(run))
             with closing(sqlite3.connect(path)) as connection:
                 before = connection.execute("SELECT policy_hash,request,route,outcome FROM model_runs").fetchone()
@@ -248,7 +251,7 @@ class OperatingRoutingTests(unittest.TestCase):
             with closing(sqlite3.connect(path)) as connection:
                 self.assertEqual(connection.execute("SELECT policy_hash,request,route,outcome FROM model_runs").fetchone(), before)
                 self.assertIsNone(connection.execute("SELECT operating_hash FROM model_runs").fetchone()[0])
-            self.assertIsNone(again.evidence("synthetic", default_policy())["groups"][0]["operating_hash"])
+            self.assertIsNone(again.evidence("synthetic", fixture_policy())["groups"][0]["operating_hash"])
 
     def test_reference_budget_events_inherit_reserved_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -264,6 +267,32 @@ class OperatingRoutingTests(unittest.TestCase):
                 events = [json.loads(row[0]) for row in connection.execute("SELECT payload FROM events WHERE event_type LIKE 'BUDGET_%'")]
             self.assertEqual([event["operating_hash"] for event in events], ["a" * 64, "a" * 64])
             store.verify_chain()
+
+    def test_upper_streams_continue_only_retained_ticket_and_owner_after_settlement(self):
+        self.governance["execution"].update(max_lanes=12, max_parallel_tickets=12)
+        original = validate_operating(configuration(12), self.governance)
+        reduced_value = configuration(12)
+        reduced_value["streams"]["count"] = 6
+        reduced = validate_operating(reduced_value, self.governance)
+        policy = policy_from_config(self.governance)
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = RoutingLedger(Path(temporary) / "ledger.sqlite")
+            for stream in STREAM_LABELS[6:]:
+                with self.subTest(stream=stream):
+                    req = request(stream=stream, ticket_id="DEMO-" + str(STREAM_LABELS.index(stream) + 100),
+                                  agent_id="synthetic-" + stream)
+                    first = ledger.reserve("synthetic", policy, req, capabilities(), operating=original, governance=self.governance)
+                    ledger.settle(first["run_id"], outcome(first))
+                    for changed in ({"ticket_id": "NEW-1"}, {"agent_id": "replacement"}):
+                        with self.assertRaisesRegex(ValidationError, "[Dd]raining"):
+                            ledger.reserve("synthetic", policy, {**req, **changed, "phase": "amendment"}, capabilities(),
+                                           operating=reduced, governance=self.governance)
+                    continued = ledger.reserve("synthetic", policy, {**req, "phase": "amendment"}, capabilities(),
+                                               operating=reduced, governance=self.governance)
+                    self.assertTrue(continued["draining"])
+                    self.assertEqual(reduced.operating_hash, continued["operating_hash"])
+                    settled = ledger.settle(continued["run_id"], outcome(continued))
+                    self.assertEqual(reduced.operating_hash, settled["operating_hash"])
 
     def test_draining_reservation_requires_retained_ticket_and_worker(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -372,6 +401,70 @@ class OperatingPlanningTests(unittest.TestCase):
         snapshot = validate_operating(configuration(count), self.governance)
         return plan_inventory(raw, sha256(raw), NOW, True, previous, execution=self.governance["execution"],
                               host_writer_capacity=host, operating=snapshot, governance=self.governance)
+
+    def test_twelve_stream_host_boundary_and_upper_paused_owners(self):
+        self.governance["execution"].update(max_lanes=12, max_parallel_tickets=12)
+        self.value = inventory(12)
+        for host in (2, 8, 13, 14):
+            with self.subTest(host=host):
+                plan = self.plan(12, host=host)
+                self.assertEqual(2, plan["capacity"]["host_reserved_non_worker_slots"])
+                self.assertEqual(host - 2, len(plan["dispatch_packets"]))
+                self.assertEqual(14 - host, len(plan["deferred_dispatch_packets"]))
+        prior = self.plan(12, host=14)
+        for ticket in self.value["tickets"]:
+            label = prior["tickets"][ticket["id"]]["stream"]
+            if label in STREAM_LABELS[6:]:
+                ticket.update(status="in_progress", history=[{"at": NOW, "actor": "synthetic", "summary": "Retain upper owner"}],
+                              ownership={"stream": label, "agent_id": "synthetic-" + label, "worktree": "synthetic/" + label,
+                                         "state": "paused" if label == "L" else "active", "evidence": "synthetic:accepted-owner"})
+        running = self.plan(12, host=14, previous=prior)
+        reduced = self.plan(6, host=14, previous=running)
+        self.assertEqual(list(STREAM_LABELS[6:]), reduced["capacity"]["draining_streams"])
+        self.assertEqual(1, reduced["capacity"]["observed_paused_writer_count"])
+        self.assertEqual(0, reduced["capacity"]["selected_new_writer_count"])
+        self.assertTrue(all(p["action"] == "continue_existing_agent" for p in reduced["dispatch_packets"]))
+        self.assertEqual(set(STREAM_LABELS[6:]), {s["label"] for s in reduced["streams"] if s["existing_writer"]})
+        finished = next(t for t in self.value["tickets"] if t["ownership"] and t["ownership"]["stream"] == "L")
+        finished["status"] = "done"
+        finished["ownership"]["state"] = "released"
+        finished["history"].append({"at": NOW, "actor": "synthetic", "summary": "Finished retained work"})
+        released = self.plan(6, host=14, previous=reduced)
+        self.assertFalse(any(p["stream"] == "L" for p in released["dispatch_packets"]))
+        self.assertTrue(all(p["stream"] in STREAM_LABELS[:6] or p["action"] == "continue_existing_agent"
+                            for p in released["dispatch_packets"]))
+
+    def test_twelve_labels_do_not_override_project_or_broker_ceilings(self):
+        self.governance["execution"].update(max_lanes=12, max_parallel_tickets=12)
+        self.value = inventory(12)
+        self.governance["execution"]["max_parallel_tickets"] = 9
+        project = self.plan(9, host=14)
+        self.assertEqual(9, len(project["dispatch_packets"]))
+        self.assertIn("$.execution.max_parallel_tickets", project["capacity"]["effective_ceiling_sources"])
+        with self.assertRaises(ValidationError):
+            self.plan(12, host=14)
+        self.governance["execution"]["host_broker"] = {"enabled": True, "max_workers": 7}
+        broker = self.plan(7, host=14)
+        self.assertEqual(7, len(broker["dispatch_packets"]))
+        self.assertIn("$.execution.host_broker.max_workers", broker["capacity"]["effective_ceiling_sources"])
+        with self.assertRaises(ValidationError):
+            self.plan(9, host=14)
+
+    def test_upper_workers_share_one_exclusive_resource_without_capacity_bypass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = Store(Path(temporary) / "leases.sqlite", str(uuid.uuid4()))
+            store.control("RUNNING", "synthetic trusted-host resource observation", reconciled=True)
+            held = store.acquire_lease(str(uuid.uuid4()), "synthetic-G", 1, 0, 0, NOW, 60, [12, 0, 0],
+                                       resources={"analysis_tool": 1}, resource_limits={"analysis_tool": 1})
+            for label in STREAM_LABELS[7:]:
+                with self.subTest(label=label), self.assertRaisesRegex(ValidationError, "analysis_tool.*no free slot"):
+                    store.acquire_lease(str(uuid.uuid4()), "synthetic-" + label, 1, 0, 0, NOW, 60, [12, 0, 0],
+                                        resources={"analysis_tool": 1}, resource_limits={"analysis_tool": 1})
+            store.release_lease(held["lease_id"], "synthetic-G")
+            admitted = store.acquire_lease(str(uuid.uuid4()), "synthetic-L", 1, 0, 0, NOW, 60, [12, 0, 0],
+                                          resources={"analysis_tool": 1}, resource_limits={"analysis_tool": 1})
+            self.assertEqual({"analysis_tool": 1}, admitted["resources_held"])
+            store.verify_chain()
 
     def test_default_three_and_explicit_six_have_distinct_operating_not_governance_hashes(self):
         three, six = self.plan(), self.plan(6)

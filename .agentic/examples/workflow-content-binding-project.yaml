@@ -1,7 +1,7 @@
 {
   "version": 3,
   "template": {
-    "expected_workflow_version": "1.9.5"
+    "expected_workflow_version": "1.9.6"
   },
   "project": {
     "id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
@@ -183,7 +183,92 @@
       "resources": {}
     },
     "model_routing": {
-      "routing": ".agentic/routing.yaml",
+      "schema_version": 1,
+      "profile": "balanced",
+      "model_order": [
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-6.1-sol"
+      ],
+      "models": {
+        "gpt-5.6-luna": {
+          "reasoning_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "gpt-5.6-sol": {
+          "reasoning_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        "gpt-6.1-sol": {
+          "reasoning_efforts": [
+            "medium",
+            "high"
+          ]
+        }
+      },
+      "role_defaults": {
+        "controller": {
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "medium"
+        },
+        "worker": {
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium"
+        },
+        "critic": {
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "medium"
+        },
+        "specialist": {
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "medium"
+        }
+      },
+      "role_allowed_models": {
+        "controller": [
+          "gpt-5.6-luna",
+          "gpt-5.6-sol",
+          "gpt-6.1-sol"
+        ],
+        "worker": [
+          "gpt-5.6-luna",
+          "gpt-5.6-sol",
+          "gpt-6.1-sol"
+        ],
+        "critic": [
+          "gpt-5.6-luna",
+          "gpt-5.6-sol",
+          "gpt-6.1-sol"
+        ],
+        "specialist": [
+          "gpt-5.6-luna",
+          "gpt-5.6-sol",
+          "gpt-6.1-sol"
+        ]
+      },
+      "simple_worker": {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "low"
+      },
+      "review_floor": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "medium"
+      },
+      "risk_route": {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "medium"
+      },
       "high_risk_flags": [
         "security",
         "permissions",
@@ -236,7 +321,7 @@
         "workflow_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "min_tests_executed": 1,
         "verifies_history": false,
-        "workflow_blob_sha": "002d976fc2406f1af41861ff5a84f8f97cfb8a85"
+        "workflow_blob_sha": "a7640f681e4c197e830ba4d8aa4ddcfd5be79256"
       }
     ],
     "max_evidence_age_seconds": 1800,

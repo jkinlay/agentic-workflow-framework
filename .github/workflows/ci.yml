@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,7 +97,7 @@ jobs:
           esac
 
   installed-runtime-self-test:
-    name: Windows installed-runtime self-test
+    name: Windows installed-runtime self-test (Python ${{ matrix.python-version }})
     needs: [windows_runtime_paths]
     if: >-
       always() && (github.event_name == 'push' ||
@@ -107,6 +107,10 @@ jobs:
       github.event.pull_request.draft == false)))
     runs-on: windows-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12.10", "3.13.3"]
     steps:
       - name: Initialize installed-runtime evidence paths
         shell: pwsh
@@ -124,7 +128,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13.3"
+          python-version: ${{ matrix.python-version }}
       - name: Install hash-locked dependencies
         run: |
           python -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
@@ -223,7 +227,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installed-runtime-self-test-${{ github.run_attempt }}
+          name: windows-installed-runtime-self-test-${{ matrix.python-version }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}\awf-installed-self-test-artifacts\self-test.json
             ${{ runner.temp }}\awf-installed-self-test-artifacts\installer.log
@@ -236,7 +240,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8]
     defaults:
       run:

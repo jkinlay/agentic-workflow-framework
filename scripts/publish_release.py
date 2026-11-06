@@ -41,6 +41,7 @@ RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 GENERATORS = (
     ("scripts/generate_contracts.py",),
     ("scripts/generate_examples.py",),
+    ("scripts/generate_rules_activation.py",),
     ("scripts/generate_prompts.py",),
     ("scripts/generate_review_loop.py",),
     ("scripts/generate_interaction.py",),

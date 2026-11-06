@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
 
 
@@ -439,7 +440,7 @@ class OptInReportTests(unittest.TestCase):
             if case == 'jira_actor': request['jira_connections'][0]['account_id'] = 'foreign'
             if case == 'github_access': request['github_identity']['readable'] = False
             if case == 'jira_access': request['jira_connections'][0]['projects'][0]['browse'] = False
-            operating = validate_operating(default_operating(), config)
+            operating = validate_operating(default_operating(fixture_policy()), config)
             original = copy.deepcopy((config, request, operating.config))
             reason = self.module()._identity(config, request)
             with self.subTest(case=case):
@@ -624,7 +625,7 @@ class OptInReportTests(unittest.TestCase):
         config, request = admitted_fixture()
         request['inventory'] = snapshot()['inventory']
         request['merge_train'] = snapshot()['merge_train']
-        operating = validate_operating(default_operating(), config)
+        operating = validate_operating(default_operating(fixture_policy()), config)
         original = copy.deepcopy((config, request, operating.config))
         results = []
         for trigger in ['activation', 'on-demand']:
@@ -700,7 +701,7 @@ class OptInReportTests(unittest.TestCase):
     def test_models_per_agent_type_from_defaults_and_overrides_with_source(self):
         from agentic.operating import default_operating, validate_operating
         config, request = admitted_fixture()
-        operating = default_operating()
+        operating = default_operating(fixture_policy())
         operating['streams']['A']['worker'] = dict(model='gpt-5.6-sol', reasoning_effort='high')
         checked = validate_operating(operating, config)
         result = self.module().prepare_report(config, request, operating=checked)
@@ -761,7 +762,7 @@ class OptInReportTests(unittest.TestCase):
         from agentic.operating import default_operating, validate_operating
         from agentic.planning_graph import build_ticket_plan
         config, request = admitted_fixture()
-        operating = validate_operating(default_operating(), config)
+        operating = validate_operating(default_operating(fixture_policy()), config)
         ticket = dict(key='AWF-1', dependencies=[], write_paths=['docs/example.md'],
             duration_minutes=20, risk_tier=1, round_cap=1, owner_review_window=None,
             lane_class='feeder', owner_lane='A', blockers=[], idle_lane_reason=None,
@@ -838,7 +839,7 @@ def override_report_fixture(mode, value):
     from agentic.operating import default_operating, validate_operating
     from agentic.planning import change_owner_override, owner_override_command, verify_plan_record
     config, request = admitted_fixture()
-    operating = validate_operating(default_operating(), config)
+    operating = validate_operating(default_operating(fixture_policy()), config)
     request['inventory'] = dict(status='KNOWN', source='fixture/provider', tickets=[
         dict(key='AWF-1', status='Ready'), dict(key='AWF-2', status='Ready'),
         dict(key='AWF-3', status='Done'), dict(key='AWF-4', status='Cancelled')])

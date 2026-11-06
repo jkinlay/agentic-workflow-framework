@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from source_only import skip_unless_source_repo  # noqa: E402
+from source_only import skip_unless_source_assets, skip_unless_source_repo  # noqa: E402
 
 from agentic.publication import (
     _COMMIT_BOUND_CLOSED_HISTORICAL_SELF_REFERENCES,
@@ -100,10 +100,15 @@ def audited_75fc9bac_message_line():
 
 @skip_unless_source_repo()
 class RegisteredSqliteFixtureTests(unittest.TestCase):
+    @property
+    def specimen(self):
+        return load_pinned_specimen_bytes()
+
     def setUp(self):
-        self.specimen = load_pinned_specimen_bytes()
         self.detectors, self.allows = _detectors({}, {})
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_pinned_specimen_passes_validation_and_scan_views(self):
         self.assertEqual(REGISTERED_SIZE, len(self.specimen))
         self.assertEqual(REGISTERED_SHA256, hashlib.sha256(self.specimen).hexdigest())
@@ -118,6 +123,8 @@ class RegisteredSqliteFixtureTests(unittest.TestCase):
                                    detectors=self.detectors, allows=self.allows)
         self.assertEqual([], findings)
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_one_byte_mutation_blocks(self):
         mutated = bytearray(self.specimen)
         mutated[-1] = (mutated[-1] + 1) % 256
@@ -152,6 +159,8 @@ class RegisteredSqliteFixtureTests(unittest.TestCase):
         self.assertIsNone(views)
         self.assertEqual("malformed", reason)
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_utf16_marker_blocks(self):
         raw = bytearray(self.specimen)
         raw[16:18] = b"\xfe\xff"
@@ -161,6 +170,8 @@ class RegisteredSqliteFixtureTests(unittest.TestCase):
         self.assertIsNone(views)
         self.assertEqual("utf16", reason)
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_budget_overrun_blocks(self):
         raw = self.specimen + b"\x00" * 64
         views, reason = validate_registered_sqlite_fixture(
@@ -169,6 +180,8 @@ class RegisteredSqliteFixtureTests(unittest.TestCase):
         self.assertIsNone(views)
         self.assertEqual("budget-overrun", reason)
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_slack_deny_token_blocks(self):
         token = "C" + ":" + "\\" + "Users" + "\\" + "fixture-user" + "\\" + "secret.txt"
         raw = bytearray(self.specimen)
@@ -204,6 +217,8 @@ class RegisteredSqliteFixtureTests(unittest.TestCase):
         self.assertTrue(any(item.get("path") == "opaque.bin" and item.get("reason") == "binary"
                             for item in result["unscanned"]))
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_pinned_specimen_in_repo_scan_is_not_unscanned(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -309,8 +324,11 @@ class CommitBoundHistoricalMessageTests(unittest.TestCase):
 class BothSideBinaryCoverageTests(unittest.TestCase):
     """MAJOR2: old-side binary/invalid/oversize coverage is never dropped."""
 
+    @property
+    def specimen(self):
+        return load_pinned_specimen_bytes()
+
     def setUp(self):
-        self.specimen = load_pinned_specimen_bytes()
         self.cas = content_addressed_blob_path(REGISTERED_SHA256)
         self.opaque = b"opaque\x00\xff\xfeSECRET\x00"
 
@@ -320,6 +338,8 @@ class BothSideBinaryCoverageTests(unittest.TestCase):
             result.get("blocking_findings") or result.get("unscanned_count"),
             result)
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_opaque_base_replaced_by_specimen_stays_blocked(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -356,6 +376,8 @@ class BothSideBinaryCoverageTests(unittest.TestCase):
         self.assertTrue(any(item.get("path") == "notes.txt" and item.get("reason") == "invalid-utf8"
                             for item in result["unscanned"]), result["unscanned"])
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_oversize_preimage_stays_unscanned(self):
         from agentic import publication as pub
         temp = tempfile.TemporaryDirectory()
@@ -398,6 +420,8 @@ class BothSideBinaryCoverageTests(unittest.TestCase):
         result = scan_repository(repo.path, mid, head)
         self._blocked(result)
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_rename_specimen_away_stays_blocked(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -412,6 +436,8 @@ class BothSideBinaryCoverageTests(unittest.TestCase):
         result = scan_repository(repo.path, mid, head)
         self._blocked(result)
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_clean_add_of_pinned_specimen_is_not_unscanned_binary(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -422,6 +448,8 @@ class BothSideBinaryCoverageTests(unittest.TestCase):
         self.assertFalse(any(item.get("path") == self.cas and item.get("reason") == "binary"
                              for item in result["unscanned"]), result["unscanned"])
 
+    @skip_unless_source_assets("needs excluded pinned SQLite specimen",
+                               ".agentic/tests/fixtures/upgrades/blobs/" + REGISTERED_SHA256)
     def test_publisher_still_requires_zero_blockers_and_zero_unscanned(self):
         # publish_release.py must remain unchanged and still refuse non-0/0.
         root = Path(__file__).resolve().parents[2]

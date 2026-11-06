@@ -9,10 +9,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 import build_release  # noqa: E402
-from agentic import ValidationError  # noqa: E402
+from agentic import ValidationError, VERSION  # noqa: E402
 from agentic.canonical import sha256  # noqa: E402
 from agentic.installer import (INSTALL_OWNED_PATHS, SOURCE_CONFIG_PATHS,  # noqa: E402
-                               SOURCE_CONFIG_PREFIX)
+                               SOURCE_CONFIG_PREFIX, verify_release)
 
 
 class FakeTree:
@@ -59,6 +59,23 @@ class AdoptableReleaseBuildTests(unittest.TestCase):
             self.assertIn(target, paths)
             self.assertNotIn(source, paths)
             self.assertEqual(tree.data[source], build_release.release_bytes(tree, target))
+
+    def test_fresh_operating_seed_is_hash_checked_even_when_operator_copy_changes(self):
+        tree = FakeTree()
+        seed = ".agentic/defaults/OPERATING_CONFIG.yaml"
+        tree.data = {seed: b'{"streams":{"count":12}}',
+                     "OPERATING_CONFIG.yaml": b'{"streams":{"count":12}}'}
+        files = {path: sha256(data) for path, data in tree.data.items()}
+        tree.data["MANIFEST.json"] = json.dumps({
+            "format": "awf-manifest-1", "template_version": VERSION,
+            "files": files,
+        }).encode()
+        tree.data["OPERATING_CONFIG.yaml"] = b'{"streams":{"count":1}}'
+        _, content = verify_release(tree)
+        self.assertEqual(b'{"streams":{"count":12}}', content[seed])
+        tree.data[seed] = b'{"streams":{"count":1}}'
+        with self.assertRaisesRegex(ValidationError, "Source digest mismatch"):
+            verify_release(tree)
 
     def test_virtual_release_rejects_case_colliding_paths(self):
         tree = FakeTree()

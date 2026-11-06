@@ -108,7 +108,8 @@ class HostProcessTests(unittest.TestCase):
         cls.addClassCleanup(cls.shared.cleanup)
         cls.launchers = Path(cls.shared.name)
         if os.name == 'nt':
-            compiler = Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+            compiler = Path(os.environ.get('WINDIR') or os.path.join(
+                os.environ.get('SystemDrive', 'C:'), os.sep, 'Windows')) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
             if not compiler.is_file():
                 raise unittest.SkipTest('Native synthetic process fixtures need the Windows .NET C# compiler')
             # This native launcher preserves stdin/out/err and exit code. The

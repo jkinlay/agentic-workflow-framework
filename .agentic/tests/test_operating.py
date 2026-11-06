@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
 from agentic import operating as op
 from agentic.canonical import canonical, load, sha256
@@ -22,9 +23,9 @@ def governance():
     value = load(ROOT / ".agentic/examples/unconfigured-project.yaml")
     value["execution"]["max_parallel_tickets"] = 6
     value["execution"]["independent_reviewers"].pop("count", None)
-    value["execution"]["model_routing"] = default_policy()
+    value["execution"]["model_routing"] = fixture_policy()
     for role in ("worker", "critic", "controller", "specialist"):
-        value["execution"]["roles"][role]["approved_model_ids"] = list(default_policy()["models"])
+        value["execution"]["roles"][role]["approved_model_ids"] = list(fixture_policy()["models"])
     return value
 
 
@@ -46,11 +47,11 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any(r["path"] == path and r["governance_path"] == binding for r in caught.exception.refusals), caught.exception.refusals)
 
     def test_exact_balanced_defaults_and_separate_fingerprint(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         self.assertEqual(3, value["streams"]["count"])
         self.assertEqual({"count", "A", "B", "C"}, set(value["streams"]))
         self.assertEqual("gpt-5.6-luna", value["streams"]["A"]["worker"]["model"])
-        self.assertEqual(default_policy()["role_defaults"]["critic"]["model"], value["critic"]["model"])
+        self.assertEqual(fixture_policy()["role_defaults"]["critic"]["model"], value["critic"]["model"])
         self.assertNotIn("reviewer", value["streams"]["A"])
         snapshot = op.validate_operating(value, self.gov)
         current = canonical(self.gov)
@@ -62,17 +63,17 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(3, snapshot.count)
 
     def test_count_ceiling_and_legacy_reviewer_disagreement(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["streams"]["count"] = 7
         self.refuse(value, "$.streams.count", "$.execution.max_parallel_tickets")
         self.gov["execution"]["max_parallel_tickets"] = 2
-        self.refuse(op.default_operating(), "$.streams.count", "$.execution.max_parallel_tickets")
+        self.refuse(op.default_operating(fixture_policy()), "$.streams.count", "$.execution.max_parallel_tickets")
         self.gov["execution"]["max_parallel_tickets"] = 6
         self.gov["execution"]["independent_reviewers"]["count"] = 2
-        self.refuse(op.default_operating(), "$.streams.count", "$.execution.independent_reviewers.count")
+        self.refuse(op.default_operating(fixture_policy()), "$.streams.count", "$.execution.independent_reviewers.count")
 
     def test_shared_and_legacy_reviewer_routes_and_epic_critic_override_are_preserved(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value.pop("critic")
         for label in "ABC":
             value["streams"][label]["worker"] = op._pair("gpt-5.6-sol", "medium")
@@ -83,12 +84,12 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(op._pair("gpt-6.1-sol", "high"), snapshot.config["epic_overrides"]["FIX-1"]["critic"])
 
     def test_missing_shared_critic_requires_a_legacy_reviewer_for_every_active_stream(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value.pop("critic")
         self.refuse(value, "$.streams.A.reviewer", None)
 
     def test_both_model_allowlists_bind_exact_path(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         self.gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-5.6-luna")
         self.refuse(value, "$.streams.C.worker.model", "$.execution.model_routing.role_allowed_models.worker")
         self.gov = governance()
@@ -96,7 +97,7 @@ class ValidationTests(unittest.TestCase):
         self.refuse(value, "$.streams.C.worker.model", "$.execution.roles.worker.approved_model_ids")
 
     def test_effective_ceiling_ignores_disabled_broker_and_binds_enabled_workers(self):
-        current = op.default_operating()
+        current = op.default_operating(fixture_policy())
         current["streams"].update(count=4, D=op._stream())
         self.gov["execution"]["host_broker"].update(enabled=False, max_workers=3)
         before = canonical(self.gov)
@@ -109,7 +110,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_lower_structural_ceiling_rejects_every_retained_higher_label(self):
         self.gov["execution"]["max_lanes"] = 3
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["streams"]["F"] = {"worker": op._pair("definitely-unapproved", "medium")}
         with self.assertRaises(op.OperatingError) as caught:
             op.validate_operating(value, self.gov)
@@ -118,7 +119,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_configured_ceiling_above_six_is_honoured_end_to_end(self):
         self.gov["execution"].update(max_parallel_tickets=12, max_lanes=10)
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["streams"]["count"] = 8
         for label in op.stream_labels(8):
             value["streams"].setdefault(label, op._stream())
@@ -143,7 +144,7 @@ class ValidationTests(unittest.TestCase):
         capacity = op.operating_ceiling(self.gov)
         self.assertEqual(7, capacity["effective_ceiling"])
         self.assertEqual("$.execution.host_broker.max_workers", capacity["effective_ceiling_governance_path"])
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["streams"]["J"] = op._stream()
         self.assertIn("J", op.validate_operating(value, self.gov).config["streams"])
 
@@ -163,15 +164,15 @@ class ValidationTests(unittest.TestCase):
                 op.operating_ceiling(self.gov)
 
     def test_effort_and_review_floor_bind(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["streams"]["C"]["worker"]["reasoning_effort"] = "invalid"
         self.refuse(value, "$.streams.C.worker.reasoning_effort", "$.execution.model_routing.models.gpt-5.6-luna.reasoning_efforts")
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["critic"] = op._pair("gpt-5.6-sol", "medium")
         self.refuse(value, "$.critic", "$.execution.model_routing.review_floor")
 
     def test_all_routes_support_explicit_pin_and_inactive_routes_survive(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         for role in ("controller", "specialist", "simple_worker"):
             value[role]["pinned"] = True
         value["streams"]["F"] = op._stream()
@@ -179,24 +180,24 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("F", checked.config["streams"])
 
     def test_missing_active_route_and_unknown_scoped_paths_refuse(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["streams"]["count"] = 4
         self.refuse(value, "$.streams.D", None)
         for path in ("epics.FIX-1.worker", "execution.max_parallel_tickets"):
             with self.subTest(path=path), self.assertRaises(op.OperatingError):
                 op._path(path)
         self.assertEqual("streams.G.worker", op._path("streams.G.worker"))
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["streams"]["G"] = op._stream()
         self.refuse(value, "$.streams", None)
 
     def test_malformed_operating_structures_are_typed_refusals(self):
-        for value in (None, [], {"streams": None}, {**op.default_operating(), "streams": []}):
+        for value in (None, [], {"streams": None}, {**op.default_operating(fixture_policy()), "streams": []}):
             with self.subTest(value=value), self.assertRaises(op.OperatingError):
                 op.validate_operating(value, self.gov)
 
     def test_epic_routes_obey_both_allowlists_and_review_floor(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         value["epic_overrides"] = {"FIX-1": {"streams": {"B": {"worker": op._pair("gpt-5.6-sol", "xhigh")}},
                                             "specialist": op._pair("gpt-6.1-sol", "high")}}
         op.validate_operating(value, self.gov)
@@ -220,13 +221,13 @@ class ValidationTests(unittest.TestCase):
                  ("FIX-1", {"simple_worker": {"enabled": False}}),
                  ("FIX-1", {})]
         for identifier, entry in cases:
-            value = op.default_operating()
+            value = op.default_operating(fixture_policy())
             value["epic_overrides"] = {identifier: entry}
             with self.subTest(identifier=identifier, entry=entry), self.assertRaises(op.OperatingError):
                 op.validate_operating(value, self.gov)
 
     def test_snapshot_hash_and_governance_forgery_refuse(self):
-        original = op.validate_operating(op.default_operating(), self.gov)
+        original = op.validate_operating(op.default_operating(fixture_policy()), self.gov)
         forged = op.replace(original, operating_hash="0" * 64)
         with self.assertRaises(op.OperatingError):
             op.validate_snapshot(forged, self.gov)
@@ -237,8 +238,8 @@ class ValidationTests(unittest.TestCase):
 
     def test_all_schemas_closed_and_registered(self):
         contracts = Contracts(ROOT / ".agentic/schemas")
-        contracts.validate("operating-config", op.default_operating())
-        value = op.default_operating()
+        contracts.validate("operating-config", op.default_operating(fixture_policy()))
+        value = op.default_operating(fixture_policy())
         value["governance"] = {"ceiling": 100}
         with self.assertRaises(ValidationError):
             contracts.validate("operating-config", value)
@@ -270,7 +271,7 @@ class LaneCeilingRegressionTests(unittest.TestCase):
                 self.assert_lane_refusal(caught.exception, configured)
 
     def test_dynamic_schema_rejects_invalid_ceiling_before_label_generation(self):
-        value = op.default_operating()
+        value = op.default_operating(fixture_policy())
         for configured in self.invalid_ceilings:
             with self.subTest(configured=configured), patch.object(
                     op, "stream_labels", side_effect=AssertionError("Invalid ceiling reached label generation")) as labels:
@@ -282,7 +283,7 @@ class LaneCeilingRegressionTests(unittest.TestCase):
     def test_dynamic_schema_preserves_valid_route_closure_and_reviewers(self):
         for ceiling in (1, 6, 12):
             gov = self.lane_governance(ceiling)
-            value = op.default_operating()
+            value = op.default_operating(fixture_policy())
             value["streams"] = {"count": ceiling, **{
                 label: op._stream() for label in op.stream_labels(ceiling)}}
             value["epic_overrides"] = {"FIX-1": {"streams": {
@@ -315,7 +316,7 @@ class LaneCeilingRegressionTests(unittest.TestCase):
                 op.initialize_operating(root, gov)
                 gov["execution"]["max_lanes"] = configured
                 (root / op.GOVERNANCE).write_bytes(op._json(gov))
-                value = op.default_operating()
+                value = op.default_operating(fixture_policy())
                 if configured in (13, 20):
                     value["streams"] = {"count": configured, **{
                         label: op._stream() for label in op.stream_labels(configured)}}
@@ -355,7 +356,7 @@ class LaneCeilingRegressionTests(unittest.TestCase):
 class RecommendationTests(unittest.TestCase):
     def setUp(self):
         self.gov = governance()
-        self.snapshot = op.validate_operating(op.default_operating(), self.gov)
+        self.snapshot = op.validate_operating(op.default_operating(fixture_policy()), self.gov)
 
     def recommend(self, epics):
         return op.recommend_operating(epic_bytes(epics), self.snapshot, self.gov, now="2026-09-15T12:00:00Z")
@@ -367,7 +368,7 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(first, self.recommend(epics))
         rows = {r["path"]: r["recommended"] for r in first["rows"]}
         self.assertEqual(4, rows["streams.count"])
-        self.assertEqual(default_policy()["risk_route"]["model"], rows["streams.B.worker"]["model"])
+        self.assertEqual(fixture_policy()["risk_route"]["model"], rows["streams.B.worker"]["model"])
         self.assertNotIn("critic", rows)  # shared Sol/high route already satisfies the floor
         self.assertIn("streams.D.worker", rows)
         self.assertFalse(first["execution_authority"])
@@ -393,7 +394,7 @@ class RecommendationTests(unittest.TestCase):
         rows = {row["path"]: row["recommended"] for row in expected}
         self.assertEqual(4, rows["streams.count"])
         self.assertNotIn("critic", rows)  # already Sol/high
-        self.assertEqual(default_policy()["risk_route"]["model"], rows["streams.D.worker"]["model"])
+        self.assertEqual(fixture_policy()["risk_route"]["model"], rows["streams.D.worker"]["model"])
 
     def test_unknown_scope_reason_identifies_epic_and_value(self):
         windows_root = "C:" + "/root"
@@ -440,7 +441,7 @@ class RecommendationTests(unittest.TestCase):
         policy["role_defaults"]["controller"] = op._pair("gpt-5.6-sol", "high")
         policy["role_defaults"]["specialist"] = op._pair("gpt-6.1-sol", "high")
         policy["role_defaults"]["critic"] = op._pair("gpt-6.1-sol", "high")
-        self.snapshot = op.validate_operating(op.default_operating(), self.gov)
+        self.snapshot = op.validate_operating(op.default_operating(fixture_policy()), self.gov)
         rows = {row["path"]: row for row in self.recommend([epic(1, ["data/**"])])["rows"]}
         for path, role in (("streams.A.worker", "worker"), ("critic", "critic"),
                            ("controller", "controller")):
@@ -487,7 +488,7 @@ class RecommendationTests(unittest.TestCase):
             "phase": "review", "task_class": "independent-review", "complexity": "medium",
             "risk": "low", "uncertainty": "low", "verification": "strong", "risk_flags": [],
             "stream": "A", "reservation_tokens": 1000, "reservation_cost_microusd": None},
-            {"models": {model: info["reasoning_efforts"] for model, info in default_policy()["models"].items()}},
+            {"models": {model: info["reasoning_efforts"] for model, info in fixture_policy()["models"].items()}},
             operating=self.snapshot, governance=self.gov)
         self.assertEqual((route["model"], route["reasoning_effort"]), ("gpt-6.1-sol", "high"))
         self.assertTrue(route["pinned"])
@@ -518,7 +519,7 @@ class RecommendationTests(unittest.TestCase):
         rows = {r["path"]: r["recommended"] for r in record["rows"]}
         self.assertEqual(6, rows["streams.count"])
         self.assertEqual("high", rows["controller"]["reasoning_effort"])
-        self.assertEqual(default_policy()["risk_route"]["model"], rows["streams.A.worker"]["model"])
+        self.assertEqual(fixture_policy()["risk_route"]["model"], rows["streams.A.worker"]["model"])
 
     def test_rendered_state_is_supplied_not_invented(self):
         table = op.render_operating(self.snapshot, self.gov, state="UNVERIFIED", version="1.8.9")
@@ -530,14 +531,14 @@ class RecommendationTests(unittest.TestCase):
         value = load(ROOT / ".agentic/examples/stream-input.json")
         self.gov["github"]["repository"] = value["project"]["repository"]
         value["tickets"][0]["risk_flags"] = ["concurrency"]
-        snapshot = op.validate_operating(op.default_operating(), self.gov)
+        snapshot = op.validate_operating(op.default_operating(fixture_policy()), self.gov)
         epics = [{"id": e["id"], "title": e["title"], "scope": [f"component{i}/"]} for i, e in enumerate(value["epics"])]
         raw = canonical(value)
         record = op.recommend_operating(epic_bytes(epics), snapshot, self.gov, inventory_raw=raw,
                                         now=value["inventory"]["captured_at"])
         self.assertEqual(sha256(raw), record["inputs"]["inventory"])
         self.assertEqual(4, record["ticket_count"])
-        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == default_policy()["risk_route"]["model"] for row in record["rows"]))
+        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == fixture_policy()["risk_route"]["model"] for row in record["rows"]))
         value["project"]["repository"] = "other/repository"
         with self.assertRaises(op.OperatingError):
             op.recommend_operating(epic_bytes(epics), snapshot, self.gov, inventory_raw=canonical(value),
@@ -550,11 +551,11 @@ class RecommendationTests(unittest.TestCase):
                  for i, e in enumerate(value["epics"])]
         for item in value["epics"]:
             item["risk_flags"] = ["concurrency"]
-        record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(), self.gov), self.gov,
+        record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(fixture_policy()), self.gov), self.gov,
                                         inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
-        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == default_policy()["risk_route"]["model"]
+        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == fixture_policy()["risk_route"]["model"]
                             for row in record["rows"]), record["rows"])
-        self.assertEqual(default_policy()["role_defaults"]["critic"], self.snapshot.config["critic"])
+        self.assertEqual(fixture_policy()["role_defaults"]["critic"], self.snapshot.config["critic"])
 
     def test_sparse_inventory_epics_preserve_observed_simple_markers(self):
         value = load(ROOT / ".agentic/examples/stream-input.json")
@@ -565,7 +566,7 @@ class RecommendationTests(unittest.TestCase):
         for item in value["tickets"]:
             item.update(markers)
             item["risk_flags"] = []
-        current = op.default_operating()
+        current = op.default_operating(fixture_policy())
         current["simple_worker"]["enabled"] = False
         record = op.recommend_operating(epic_bytes(epics), op.validate_operating(current, self.gov), self.gov,
                                         inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
@@ -580,10 +581,10 @@ class RecommendationTests(unittest.TestCase):
                      for i, e in enumerate(value["epics"])]
             for item in value[source]:
                 item["scope"] = "Rotate authentication credentials and validate secrets handling."
-            record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(), self.gov), self.gov,
+            record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(fixture_policy()), self.gov), self.gov,
                                             inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
             with self.subTest(source=source):
-                self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == default_policy()["risk_route"]["model"]
+                self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == fixture_policy()["risk_route"]["model"]
                                     and "Specialist triggers" in row["reason"] for row in record["rows"]), record["rows"])
 
     def test_planner_completed_inventory_recommends_no_new_work(self):
@@ -594,14 +595,14 @@ class RecommendationTests(unittest.TestCase):
             ticket["history"] = [{"at": value["inventory"]["captured_at"], "actor": "synthetic", "summary": "Synthetic completed fixture"}]
             ticket["dependencies"] = []
         epics = [{"id": e["id"], "title": e["title"], "scope": []} for e in value["epics"]]
-        record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(), self.gov), self.gov,
+        record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(fixture_policy()), self.gov), self.gov,
                                         inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
         self.assertEqual([], record["rows"])
 
     def test_higher_review_floor_and_invalid_recommendations_are_not_clamped(self):
         self.gov["execution"]["model_routing"]["review_floor"]["reasoning_effort"] = "high"
         self.gov["execution"]["model_routing"]["risk_route"]["reasoning_effort"] = "high"
-        current = op.default_operating()
+        current = op.default_operating(fixture_policy())
         for label in "ABC":
             current["critic"]["reasoning_effort"] = "high"
         current["specialist"]["reasoning_effort"] = "high"
@@ -799,7 +800,7 @@ class OperatingFileTests(unittest.TestCase):
         event = next(item for item in self.events() if item["id"] == repaired.last_change_id)
         removals = {change["path"]: change for change in event["changes"] if change["after"] is None}
         self.assertEqual({"streams.G", "streams.H"}, set(removals))
-        self.assertTrue(all(change["before"] == op._stream() for change in removals.values()))
+        self.assertTrue(all(change["before"] == op._stream(fixture_policy()) for change in removals.values()))
 
     def test_lowered_max_lanes_prunes_retained_routes_on_any_audited_change(self):
         op.set_operating(self.root, self.gov, "use all six streams", ["streams.count=6"])
@@ -822,7 +823,7 @@ class OperatingFileTests(unittest.TestCase):
             root = Path(directory)
             (root / ".agentic").mkdir()
             (root / op.GOVERNANCE).write_bytes(op._json(self.gov))
-            raw = json.dumps(op.default_operating(), separators=(",", ":")).encode()
+            raw = json.dumps(op.default_operating(fixture_policy()), separators=(",", ":")).encode()
             (root / op.CONFIG).write_bytes(raw)
             op.initialize_operating(root, self.gov)
             self.assertEqual(raw, (root / op.CONFIG).read_bytes())
@@ -832,7 +833,7 @@ class OperatingFileTests(unittest.TestCase):
             root = Path(directory)
             (root / ".agentic").mkdir()
             (root / op.GOVERNANCE).write_bytes(op._json(self.gov))
-            value = op.default_operating()
+            value = op.default_operating(fixture_policy())
             value["streams"]["count"] = 7
             raw = op._json(value)
             (root / op.CONFIG).write_bytes(raw)

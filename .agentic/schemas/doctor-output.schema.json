@@ -17,7 +17,7 @@
       "const": "awf-doctor-1"
     },
     "template_version": {
-      "const": "1.9.5"
+      "const": "1.9.6"
     },
     "root": {
       "type": "string",

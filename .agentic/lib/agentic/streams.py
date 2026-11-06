@@ -15,13 +15,14 @@ import os
 from pathlib import Path
 import re
 
+from .lane_labels import STREAM_LABELS
 from . import VERSION, ValidationError
 from .canonical import canonical, fingerprint, fresh, loads, sha256, timestamp
 from .interaction import next_step
 from .operating import filesystem_reader, is_awf_source_repository
 from .safeio import Tree, relative_parts
 
-LABELS = tuple("ABCDEF")
+LABELS = STREAM_LABELS
 PLANNER_WRITER_LIMIT = len(LABELS)
 FINAL = {"done", "cancelled"}
 PLAN = "STREAMS.json"
@@ -545,6 +546,8 @@ def native_execution_policy(execution=None):
     from .operating import operating_ceiling
     operating_ceiling({"execution": value})
     result = {name: deepcopy(reviewers if name == "independent_reviewers" else value[name]) for name in DEFAULT_NATIVE_EXECUTION}
+    if "max_lanes" in value:
+        result["max_lanes"] = value["max_lanes"]
     if "host_broker" in value:
         result["host_broker"] = deepcopy(value["host_broker"])
     return result
@@ -675,13 +678,13 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     if not enabled:
         reasons.append("Native streams are disabled by the supplied execution policy; preserve existing owners and do not issue new native assignments.")
     if policy["max_parallel_tickets"] > PLANNER_WRITER_LIMIT:
-        reasons.append(f"The A–F planner has a structural limit of {PLANNER_WRITER_LIMIT} writers; execution.max_parallel_tickets remains configured as {policy['max_parallel_tickets']}.")
+        reasons.append(f"The A–L planner has a structural limit of {PLANNER_WRITER_LIMIT} writers; execution.max_parallel_tickets remains configured as {policy['max_parallel_tickets']}.")
     if policy["max_parallel_tickets"] < PLANNER_WRITER_LIMIT:
         reasons.append(f"Project execution.max_parallel_tickets limits total writers to {policy['max_parallel_tickets']}.")
     if policy.get("host_broker", {}).get("enabled"):
         reasons.append(f"Enabled execution.host_broker.max_workers limits configured writers to {policy['host_broker']['max_workers']}; observed host slots remain separate.")
     if policy["max_parallel_tickets_per_stream"] != 1:
-        reasons.append("The A–F planner keeps one writer per stream even when the broader configuration permits more.")
+        reasons.append("The A–L planner keeps one writer per stream even when the broader configuration permits more.")
     reasons.append(f"Operating count {operating_count} limits new stream admissions independently of the governance ceiling.")
     if draining_labels:
         reasons.append("Surplus streams " + ", ".join(draining_labels) + " retain current owners and finish their current tickets; no new ticket is assigned while they drain.")
@@ -1235,7 +1238,7 @@ def render_markdown(plan):
     effective = capacity["effective_writer_capacity"]
     lines.extend(["## Effective native writer capacity", "",
                   f"Configured project writer limit: {capacity['project_writer_limit']}. Effective per-stream limit: 1. Native streams enabled: {str(capacity['native_streams_enabled']).lower()}.", "",
-                  f"Planner structural writer limit: {capacity['planner_writer_limit']} (streams A–F). Operating count: {capacity['operating_count']}; attribution: {capacity['operating_state']}. Binding capacity source(s): {', '.join(capacity['limiting_sources'])}.", "",
+                  f"Planner structural writer limit: {capacity['planner_writer_limit']} (streams A–L). Operating count: {capacity['operating_count']}; attribution: {capacity['operating_state']}. Binding capacity source(s): {', '.join(capacity['limiting_sources'])}.", "",
                   f"Operating hash: `{capacity['operating_hash']}`. Draining streams: {', '.join(capacity['draining_streams']) or 'none'}.", "",
                   "Observed host total writer capacity, including the coordinator: " + (str(capacity["host_writer_capacity"]) if capacity["host_capacity_observed"] else "not yet observed") + ".", "",
                   "Effective writer capacity: " + (str(effective) if effective is not None else "unverified; planning ceiling " + str(capacity["planning_writer_capacity"])) + ".", "",

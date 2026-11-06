@@ -67,6 +67,26 @@ class OwnerPublicationTests(unittest.TestCase):
                              "complete": True, "count": 0, "sha256": comments_sha},
                 "streams": streams}
 
+    def test_twelve_stream_owner_handoff_retains_every_identity(self):
+        request = copy.deepcopy(self.request)
+        template = request["streams"][0]
+        request["streams"] = []
+        for index, stream in enumerate("ABCDEFGHIJKL", 1):
+            item = copy.deepcopy(template)
+            item.update(stream=stream, ticket=f"EX-{index}",
+                        branch=f"codex/EX-{index}-fixture", head=f"{index:040x}",
+                        completed_result_sha256=f"{index:064x}")
+            request["streams"].append(item)
+        authorization = self.authorization_for(request)
+        for index, item in enumerate(authorization["streams"], 1):
+            item["tree_sha"] = f"{index:040x}"
+            for kind in ("publication_scan", "private_deny_scan"):
+                item[kind]["tree_sha"] = item["tree_sha"]
+                item[kind]["receipt_sha256"] = f"{index:064x}"
+        prepared = self.store.prepare(self.config, request, authorization, now=NOW)
+        retained = self.store.snapshot(prepared["batch_id"], self.config)
+        self.assertEqual(list("ABCDEFGHIJKL"), [item["stream"] for item in retained["operations"]])
+
     def heads(self, snapshot):
         return {"source": "host_observation", "host": "https://github.com", "repository": "fixture/example",
                 "repository_id": 101, "observed_at": NOW, "complete": True,

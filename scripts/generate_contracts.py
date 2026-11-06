@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
+from agentic.lane_labels import MAX_LANES, STREAM_LABELS
 
 
 def obj(properties, **extra):
@@ -392,11 +393,11 @@ def catalog(*, include_ticket_plan=True):
         "additionalProperties": False,
     }
     operating_streams = obj({
-        "count": integer(1, maximum=12),
-        **{label: operating_stream for label in "ABCDEFGHIJKL"},
+        "count": integer(1, maximum=MAX_LANES),
+        **{label: operating_stream for label in STREAM_LABELS},
     }, required=["count"])
     reviewer_requirements = []
-    for count, label in enumerate("ABCDEFGHIJKL", 1):
+    for count, label in enumerate(STREAM_LABELS, 1):
         reviewer_requirements.append({
             "if": {"properties": {"streams": {"properties": {
                 "count": {"minimum": count},
@@ -973,7 +974,7 @@ def catalog(*, include_ticket_plan=True):
            "base_branch": text(), "branch_pattern": text(), "merge_method": enum("merge", "squash", "rebase"),
            "draft_pr_first": TRUE, "one_repository_per_controller": TRUE}),
         "execution": obj({"profile": const("manual_reference"), "max_parallel_tickets": capacity(1),
-           "max_lanes": integer(1, maximum=12),
+           "max_lanes": integer(1, maximum=MAX_LANES),
            "child_env_strip_extra": arr(text(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), 0, uniqueItems=True),
            "native_streams": obj({"enabled": BOOL, "dispatch_policy": const("ready_independent")}),
            "max_parallel_tickets_per_stream": capacity(1), "max_agent_runs_per_ticket": integer(1),
@@ -1217,7 +1218,7 @@ def catalog(*, include_ticket_plan=True):
     schemas["posting-collector-registration"].update({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "urn:awf:1.2:posting-collector-registration",
-        "title": "Agentic Workflow 1.9.5 — posting-collector-registration",
+        "title": f"Agentic Workflow {VERSION} — posting-collector-registration",
     })
     return schemas
 

@@ -4,6 +4,7 @@ Each rejection uses real CLI parsing, source integrity and filesystem boundaries
 Synthetic sealed runtimes avoid depending on a mutable developer manifest.
 """
 import hashlib
+from datetime import datetime, timezone
 from contextlib import redirect_stdout
 import io
 import json
@@ -29,6 +30,66 @@ def snapshot(root):
 
 
 class ValidatorCommandContractTests(unittest.TestCase):
+    def test_archive_launcher_passes_the_real_environment_scrubbing_gate(self):
+        from agentic.launch_surfaces import python_launch_findings
+        with tempfile.TemporaryDirectory(prefix='awf-archive-launch-surface-') as raw:
+            owned = Path(raw)
+            script = owned / 'scripts/validate_archive.py'
+            script.parent.mkdir()
+            script.write_bytes((ROOT / 'scripts/validate_archive.py').read_bytes())
+            self.assertEqual([], python_launch_findings(owned))
+
+    def test_example_configuration_cli_uses_matching_owned_operating_fixture(self):
+        from agentic.child_process import child_env
+        source_operating = (ROOT / 'OPERATING_CONFIG.yaml').read_bytes()
+        example_operating = (ROOT / '.agentic/examples/OPERATING_CONFIG.yaml').read_bytes()
+        with tempfile.TemporaryDirectory(prefix='awf-example-configuration-') as raw:
+            fixture = Path(raw).resolve() / 'project'
+            config = validate_archive.example_configuration_fixture(ROOT, fixture)
+            self.assertEqual(example_operating, (fixture / 'OPERATING_CONFIG.yaml').read_bytes())
+            self.assertEqual((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_bytes(), config.read_bytes())
+            done = subprocess.run([sys.executable, '-B', str(fixture / '.agentic/scripts/workflow.py'),
+                                   '--root', str(fixture), 'validate-config', '--config', str(config)],
+                                  cwd=fixture, env=child_env(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+            self.assertEqual('ACCEPTED', json.loads(done.stdout)['status'])
+        self.assertEqual(source_operating, (ROOT / 'OPERATING_CONFIG.yaml').read_bytes())
+
+    def test_offline_evaluation_cli_refuses_unobserved_provenance_and_posting(self):
+        from agentic.child_process import child_env
+        with tempfile.TemporaryDirectory(prefix='awf-offline-evaluation-') as raw:
+            state = Path(raw).resolve() / 'assignment.json'
+            validate_archive.write_evaluation_assignment_state(ROOT, state, '2026-09-09T11:00:00Z')
+            args = validate_archive.evaluation_command(
+                ROOT / '.agentic/scripts/workflow.py',
+                ROOT / '.agentic/examples/evidence-bundle.json',
+                ROOT / '.agentic/examples/PROJECT_CONFIG.yaml', state, '2026-09-09T12:00:00Z')
+            done = subprocess.run([sys.executable, '-B', *map(str, args)],
+                                  cwd=ROOT, env=child_env(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+            gate = json.loads(done.stdout)
+            self.assertEqual('NOT_READY', gate['conclusion'])
+            self.assertFalse(gate['execution_authority'])
+            self.assertEqual({'verdict_posting', 'provenance'},
+                             {name for name, result in gate['gates'].items()
+                              if result['result'] not in {'PASS', 'N_A'}})
+            self.assertTrue(any('Commit provenance runtime inputs are missing' in risk
+                                for risk in gate['residual_risks']))
+
+    def test_git_checkout_api_resolves_its_trusted_archive_helper(self):
+        from agentic.child_process import child_env
+        program = (
+            "from pathlib import Path; import sys; "
+            "root=Path(sys.argv[1]); sys.path.insert(0,str(root)); "
+            "import scripts.validate_git_checkout; import validate_archive; "
+            "assert Path(validate_archive.__file__).resolve()==root/'scripts/validate_archive.py'"
+        )
+        with tempfile.TemporaryDirectory(prefix='awf-checkout-api-import-') as raw:
+            done = subprocess.run([sys.executable, '-B', '-I', '-c', program, str(ROOT)],
+                                  cwd=Path(raw).resolve(), env=child_env(),
+                                  capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+
     def test_expected_installed_commands_are_canonical_and_noninstalling(self):
         destination = ROOT / '.tmp-tests' / 'nonexistent project with spaces'
         expected_root, expected_interpreter, expected_entry = validate_archive.installed_paths(destination)
@@ -62,6 +123,60 @@ class ValidatorCommandContractTests(unittest.TestCase):
         windows_path = chr(92).join((".agentic", ".venv", "bin", "python"))
         self.assertFalse(managed(windows_path))
 
+    def test_installed_inventory_prunes_only_the_exact_plain_runtime(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-inventory-') as raw:
+            root = Path(raw).resolve()
+            runtime = root / '.agentic/.venv'
+            runtime.mkdir(parents=True)
+            (runtime / 'python.stub').write_bytes(b'Ignored owned runtime')
+            (root / '.agentic/managed.txt').write_bytes(b'Managed')
+            sibling = root / '.agentic/.venv-backup'
+            sibling.mkdir()
+            (sibling / 'retained.txt').write_bytes(b'Not the canonical runtime')
+            self.assertEqual({'.agentic/managed.txt': b'Managed',
+                              '.agentic/.venv-backup/retained.txt': b'Not the canonical runtime'},
+                             validate_git_checkout._files(root, installed_runtime=True))
+            self.assertIn('.agentic/.venv/python.stub', validate_git_checkout._files(root))
+
+    def test_installed_inventory_rejects_a_runtime_file_boundary(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-file-') as raw:
+            root = Path(raw).resolve()
+            (root / '.agentic').mkdir()
+            (root / '.agentic/.venv').write_bytes(b'Invalid directory boundary')
+            with self.assertRaisesRegex(ValueError, 'not a directory'):
+                validate_git_checkout._files(root, installed_runtime=True)
+
+    def test_installed_inventory_prunes_runtime_alias_contents_but_source_stays_strict(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-alias-') as raw:
+            root = Path(raw).resolve()
+            runtime = root / '.agentic/.venv'
+            (runtime / 'lib').mkdir(parents=True)
+            try:
+                (runtime / 'lib64').symlink_to('lib', target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest('Symlink creation unavailable: ' + str(error))
+            self.assertEqual({}, validate_git_checkout._files(root, installed_runtime=True))
+            with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
+                validate_git_checkout._files(root)
+
+    def test_installed_inventory_rejects_runtime_boundary_and_outside_aliases(self):
+        with tempfile.TemporaryDirectory(prefix='awf-runtime-boundary-alias-') as raw:
+            base = Path(raw).resolve()
+            root, outside = base / 'project', base / 'outside'
+            (root / '.agentic').mkdir(parents=True)
+            outside.mkdir()
+            alias = root / '.agentic/.venv'
+            try:
+                alias.symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest('Symlink creation unavailable: ' + str(error))
+            with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
+                validate_git_checkout._files(root, installed_runtime=True)
+            alias.unlink()
+            (root / '.agentic/other-alias').symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
+                validate_git_checkout._files(root, installed_runtime=True)
+
     def test_installed_clone_runtime_provisioner_uses_target_and_pinned_wheelhouse(self):
         destination = ROOT / '.tmp-tests' / 'pure clone selector'
         wheelhouse = ROOT / '.tmp-tests' / 'pinned wheelhouse'
@@ -72,6 +187,204 @@ class ValidatorCommandContractTests(unittest.TestCase):
         ensure.assert_called_once_with(destination, wheelhouse=wheelhouse)
         self.assertFalse(destination.exists())
         self.assertFalse(wheelhouse.exists())
+
+
+class ArchiveRebuildMetadataTests(unittest.TestCase):
+    """Real ZIP metadata/encoding regressions, not full release acceptance."""
+    timestamp = (2026, 10, 29, 12, 34, 56)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='awf-archive-metadata-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def archive(self, mutate=None, archive_comment=b''):
+        files = {'MANIFEST.json': (0o100644, b'{}\n'),
+                 'MANIFEST.md': (0o100644, b'Metadata fixture\n'),
+                 'shebang.py': (0o100644, b'#!/usr/bin/env python\n'),
+                 'worker.py': (0o100755, b'print(1)\n')}
+        path = self.root / 'source.zip'
+        with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_STORED) as archive:
+            archive.comment = archive_comment
+            for name, (mode, raw) in sorted(files.items()):
+                entry = zipfile.ZipInfo(PREFIX + name, date_time=self.timestamp)
+                entry.create_system = 3
+                entry.external_attr = mode << 16
+                if mutate is not None:
+                    mutate(name, entry)
+                archive.writestr(entry, raw)
+        return path, files
+
+    def test_closed_archive_rebuild_preserves_approved_modes_timestamp_and_bytes(self):
+        import build_release
+        import release_modes
+        path, files = self.archive()
+        with zipfile.ZipFile(path) as archive:
+            metadata, epoch = validate_archive.archive_rebuild_metadata(archive)
+        self.assertEqual(int(datetime(*self.timestamp, tzinfo=timezone.utc).timestamp()), epoch)
+        self.assertEqual('100644', metadata['files']['shebang.py'])
+        self.assertEqual('100755', metadata['files']['worker.py'])
+        source = self.root / 'closed-source'
+        source.mkdir()
+        for name, (_, raw) in files.items():
+            (source / name).write_bytes(raw)
+        self.assertFalse((source / '.git').exists())
+        mode_manifest = self.root / 'modes.json'
+        mode_manifest.write_text(json.dumps(metadata), encoding='utf-8')
+        rebuilt = self.root / 'rebuilt.zip'
+        # Run the real builder ZIP writer on a small metadata fixture. Catalog
+        # discovery/sealing is outside this unit's scope, not labelled accepted.
+        with mock.patch.object(build_release, 'ROOT', source), \
+                mock.patch.object(build_release, 'manifest', return_value='0' * 64), \
+                mock.patch.object(build_release, 'release_paths', return_value=sorted(files)), \
+                mock.patch.object(release_modes, '_git_modes', side_effect=AssertionError('closed ZIP must not need Git')), \
+                mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': str(epoch)}), \
+                mock.patch.object(sys, 'argv', ['build_release.py', '--output', str(rebuilt),
+                                               '--git-mode-manifest', str(mode_manifest)]), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(0, build_release.main())
+        self.assertEqual(path.read_bytes(), rebuilt.read_bytes())
+
+    def test_noncanonical_modes_compression_and_metadata_fail_before_outputs(self):
+        mutations = {
+            'missing_regular_type': lambda entry: setattr(entry, 'external_attr', 0o644 << 16),
+            'symlink': lambda entry: setattr(entry, 'external_attr', 0o120777 << 16),
+            'unsupported_permissions': lambda entry: setattr(entry, 'external_attr', 0o100600 << 16),
+            'dos_flags': lambda entry: setattr(entry, 'external_attr', entry.external_attr | 1),
+            'non_unix': lambda entry: setattr(entry, 'create_system', 0),
+            'compressed': lambda entry: setattr(entry, 'compress_type', zipfile.ZIP_DEFLATED),
+            'extra': lambda entry: setattr(entry, 'extra', b'\xfe\xca\x00\x00'),
+            'comment': lambda entry: setattr(entry, 'comment', b'noncanonical'),
+        }
+        for label, mutation in mutations.items():
+            with self.subTest(label=label):
+                path, _ = self.archive(lambda name, entry: mutation(entry) if name == 'worker.py' else None)
+                before = snapshot(self.root)
+                with self.assertRaisesRegex(ValueError, 'canonical'):
+                    preflight(path, hashlib.sha256(path.read_bytes()).hexdigest(),
+                              self.root / 'work', self.root / 'report.json')
+                self.assertEqual(before, snapshot(self.root))
+        path, _ = self.archive(archive_comment=b'noncanonical')
+        with self.assertRaisesRegex(ValueError, 'empty archive comment'):
+            preflight(path, hashlib.sha256(path.read_bytes()).hexdigest(),
+                      self.root / 'work', self.root / 'report.json')
+        self.assertFalse((self.root / 'work').exists())
+
+    def test_inconsistent_approved_timestamps_are_not_replaced_with_an_invented_epoch(self):
+        path, _ = self.archive(lambda name, entry: setattr(entry, 'date_time', (2026, 10, 29, 12, 35, 0))
+                               if name == 'worker.py' else None)
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(ValueError, 'one canonical UTC DOS timestamp'):
+            preflight(path, hashlib.sha256(path.read_bytes()).hexdigest(),
+                      self.root / 'work', self.root / 'report.json')
+        self.assertEqual(before, snapshot(self.root))
+
+
+class ArchiveFixtureSafetyTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='awf-archive-fixture-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def source(self):
+        source = self.root / 'source'
+        (source / '.agentic/templates').mkdir(parents=True)
+        files = {}
+        for logical in validate_archive.SOURCE_CONFIG_PATHS:
+            raw = json.dumps({'synthetic_logical_member': logical}).encode('utf-8') + b'\n'
+            (source / logical).write_bytes(raw)
+            files[logical] = hashlib.sha256(raw).hexdigest()
+        (source / 'MANIFEST.json').write_text(json.dumps({'files': files}), encoding='utf-8')
+        return source
+
+    def test_all_three_generator_seeds_copy_pinned_logical_bytes_without_changing_them(self):
+        source = self.source()
+        before = snapshot(source)
+        records = validate_archive.seed_source_configuration(source)
+        self.assertEqual(3, len(records))
+        for item in records:
+            self.assertEqual(before[item['logical_member']], (source / item['fixture']).read_bytes())
+            self.assertEqual(hashlib.sha256(before[item['logical_member']]).hexdigest(), item['sha256'])
+        self.assertTrue((source / '.agentic/templates/source-config/workflow-version.yaml').is_file())
+        for path, raw in before.items():
+            self.assertEqual(raw, (source / path).read_bytes())
+
+    def test_corrupt_or_existing_seed_inputs_refuse_without_overwriting(self):
+        source = self.source()
+        operating = source / 'OPERATING_CONFIG.yaml'
+        original = operating.read_bytes()
+        operating.write_bytes(b'changed logical bytes')
+        before = snapshot(source)
+        with self.assertRaisesRegex(ValueError, 'approved logical member'):
+            validate_archive.seed_source_configuration(source)
+        self.assertEqual(before, snapshot(source))
+        self.assertFalse((source / '.agentic/templates/source-config').exists())
+        operating.write_bytes(original)
+        prefix = source / '.agentic/templates/source-config'
+        prefix.mkdir()
+        (prefix / 'owner.txt').write_bytes(b'preserve existing fixture')
+        before = snapshot(source)
+        with self.assertRaisesRegex(ValueError, 'already contains'):
+            validate_archive.seed_source_configuration(source)
+        self.assertEqual(before, snapshot(source))
+
+    def test_real_installed_fixture_is_unborn_and_ignores_inherited_git_overrides(self):
+        root = self.root / 'installed'
+        root.mkdir()
+        (root / 'owner.txt').write_bytes(b'owned')
+        forbidden = self.root / 'not-the-fixture'
+        environment = dict(os.environ, GIT_DIR=str(forbidden), GIT_WORK_TREE=str(forbidden))
+        validate_archive.initialize_unborn_fixture(root, environment)
+        self.assertTrue((root / '.git').is_dir())
+        self.assertFalse(forbidden.exists())
+        self.assertEqual(b'owned', (root / 'owner.txt').read_bytes())
+        before = snapshot(root)
+        with self.assertRaisesRegex(ValueError, 'already has Git metadata'):
+            validate_archive.initialize_unborn_fixture(root, environment)
+        self.assertEqual(before, snapshot(root))
+
+    def test_known_auxiliary_trees_are_preserved_outside_closed_source(self):
+        run = self.root / 'run'
+        source = run / 'source'
+        source.mkdir(parents=True)
+        (source / 'owner.txt').write_bytes(b'keep')
+        for relative in ('.tmp-tests', '.agentic/templates/source-config'):
+            candidate = source / relative
+            (candidate / 'nested').mkdir(parents=True)
+            (candidate / 'nested/evidence.json').write_bytes(b'{"retained":true}\n')
+            before = snapshot(candidate)
+            retained = validate_archive.quarantine_source_auxiliary(source, run, relative)
+            self.assertEqual(before, snapshot(retained))
+            self.assertEqual(run, retained.parent)
+            self.assertFalse(candidate.exists())
+        self.assertEqual(b'keep', (source / 'owner.txt').read_bytes())
+
+    def test_auxiliary_quarantine_refuses_unknown_outside_existing_and_nondirectory_paths(self):
+        run = self.root / 'run'
+        source = run / 'source'
+        source.mkdir(parents=True)
+        candidate = source / '.tmp-tests'
+        candidate.mkdir()
+        (candidate / 'evidence.txt').write_bytes(b'retain')
+        before = snapshot(run)
+        with self.assertRaisesRegex(ValueError, 'recognized'):
+            validate_archive.quarantine_source_auxiliary(source, run, 'owner-data')
+        with self.assertRaisesRegex(ValueError, 'owned validation run'):
+            validate_archive.quarantine_source_auxiliary(source, self.root, '.tmp-tests')
+        self.assertEqual(before, snapshot(run))
+        retained = run / 'retained-source-self-test-diagnostics'
+        retained.mkdir()
+        (retained / 'prior.txt').write_bytes(b'prior evidence')
+        before = snapshot(run)
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            validate_archive.quarantine_source_auxiliary(source, run, '.tmp-tests')
+        self.assertEqual(before, snapshot(run))
+        file_source = run / 'file-source'
+        file_source.mkdir()
+        (file_source / '.tmp-tests').write_bytes(b'not a directory')
+        with self.assertRaisesRegex(ValueError, 'noncanonical'):
+            validate_archive.quarantine_source_auxiliary(file_source, run, '.tmp-tests')
+        self.assertEqual(b'not a directory', (file_source / '.tmp-tests').read_bytes())
 
 
 class CliFailurePathTests(unittest.TestCase):
@@ -110,9 +423,18 @@ class CliFailurePathTests(unittest.TestCase):
 
     def archive(self, entries=None):
         path = self.root / 'release.zip'
+        if entries is None:
+            logical = {name: b'{}\n' for name in validate_archive.SOURCE_CONFIG_PATHS}
+            logical['.agentic/templates/fixture.txt'] = b'Synthetic template directory fixture\n'
+            manifest = {'format': 'awf-manifest-1', 'template_version': VERSION,
+                        'files': {name: hashlib.sha256(raw).hexdigest() for name, raw in logical.items()}}
+            entries = {PREFIX + name: raw for name, raw in logical.items()}
+            entries[PREFIX + 'MANIFEST.json'] = json.dumps(manifest).encode('utf-8')
         with zipfile.ZipFile(path, 'w') as archive:
-            for name, data in (entries or {PREFIX + 'MANIFEST.json': b'{}'}).items():
-                entry = zipfile.ZipInfo(name)
+            for name, data in entries.items():
+                entry = zipfile.ZipInfo(name, date_time=(2026, 10, 29, 12, 34, 56))
+                entry.create_system = 3
+                entry.external_attr = 0o100644 << 16
                 # ZipInfo normalizes backslashes on Windows; force raw inventory
                 # to exercise the actual foreign/malformed ZIP boundary.
                 entry.filename = name
@@ -352,7 +674,10 @@ class CliFailurePathTests(unittest.TestCase):
                 self.assertTrue(Path(data['run_directory'], PREFIX.rstrip('/'), 'MANIFEST.json').is_file())
                 self.assertIn('Synthetic partial stdout', Path(data['partial_log']).read_text())
                 self.assertIn('Synthetic partial stderr', Path(data['partial_log']).read_text())
-                self.assertEqual(['PASS','FAILED'],[check['status'] for check in data['checks']])
+                self.assertEqual(['PASS','PASS','PASS','FAILED'],[check['status'] for check in data['checks']])
+                modes = Path(data['run_directory']) / 'rebuild-git-modes.json'
+                self.assertEqual(hashlib.sha256(modes.read_bytes()).hexdigest(),
+                                 data['checks'][0]['raw_mode_manifest_sha256'])
                 self.assertEqual(data, json.loads(stdout.getvalue()))
                 self.assertEqual(archive_before, archive.read_bytes())
 

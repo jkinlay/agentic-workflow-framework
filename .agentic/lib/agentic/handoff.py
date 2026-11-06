@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
+from .lane_labels import STREAM_LABELS
 from . import VERSION
 from .canonical import fingerprint, load, loads, now_text, timestamp
 from .child_process import child_env
@@ -141,7 +142,7 @@ def _operating_routes(root, governance):
     if isinstance(streams, dict):
         selected = {}
         for key, stream in streams.items():
-            if not isinstance(key, str) or key not in "ABCDEF" or not isinstance(stream, dict):
+            if not isinstance(key, str) or key not in STREAM_LABELS or not isinstance(stream, dict):
                 continue
             entry = {name: route for name in ("worker", "reviewer")
                      if (route := _route(stream.get(name)))}
@@ -161,7 +162,7 @@ def _operating_routes(root, governance):
             if isinstance(streams, dict):
                 scoped = {}
                 for key, stream in streams.items():
-                    if not isinstance(key, str) or key not in "ABCDEF" or not isinstance(stream, dict):
+                    if not isinstance(key, str) or key not in STREAM_LABELS or not isinstance(stream, dict):
                         continue
                     routes_for_stream = {name: route for name in ("worker", "reviewer")
                                          if (route := _route(stream.get(name)))}
@@ -407,7 +408,7 @@ def _route_set(value):
         if not isinstance(streams, dict) or not streams:
             return False
         for name, routes in streams.items():
-            if name not in "ABCDEF" or not isinstance(routes, dict) or not routes or not set(routes) <= {"worker", "reviewer"}:
+            if name not in STREAM_LABELS or not isinstance(routes, dict) or not routes or not set(routes) <= {"worker", "reviewer"}:
                 return False
             if any(not _route_value(route) for route in routes.values()):
                 return False

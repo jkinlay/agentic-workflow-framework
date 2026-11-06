@@ -27,7 +27,7 @@ SOURCE_CONFIGS = {
     PROVENANCE: SOURCE_CONFIG_PREFIX + "workflow-version.yaml",
     "OPERATING_CONFIG.yaml": SOURCE_CONFIG_PREFIX + "OPERATING_CONFIG.yaml",
 }
-ROUTING_SOURCE = ".agentic/tests/fixtures/routing/valid.yaml"
+ROUTING_SOURCE = ".agentic/defaults/routing.yaml"
 
 ADVISORY_ROW = re.compile(r'^\| `(?P<path>.+)` \| `(?P<digest>[0-9a-f]{64})` \|$')
 

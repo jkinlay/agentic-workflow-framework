@@ -13,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from routing_fixtures import fixture_policy
 from agentic.model_routing import default_policy, load_routing
 from agentic.canonical import canonical
 from agentic.operating import set_operating
@@ -31,7 +32,7 @@ class RoutingCLITests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.project = self.root / "project"
         self.project.mkdir()
-        self.policy = default_policy()
+        self.policy = fixture_policy()
         self.config = {"project": {"id": "cli-project"}, "execution": {"model_routing": self.policy}}
         self.request = {"ticket_id": "LOCAL-1", "role": "worker", "agent_id": "worker-1", "context_id": None,
                         "phase": "implementation", "task_class": "cli-regression", "complexity": "medium", "risk": "low",

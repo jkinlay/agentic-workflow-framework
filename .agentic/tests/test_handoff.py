@@ -21,7 +21,8 @@ from agentic.contracts import Contracts
 from agentic.handoff import (BASES, REQUIRED_FIELDS, build_snapshot, compare_snapshot,
                              render_markdown, safe_origin)
 from agentic.lifecycle import definition
-from agentic.operating import read_operating
+from agentic.operating import default_operating, read_operating
+from routing_fixtures import fixture_policy
 from agentic.store import Store
 
 STATUS = {"project_state": "ACTIVE", "integrity_valid": True, "adoption": "MERGED",
@@ -56,7 +57,7 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.config_report = inspect_config(self.config, definition(), contracts)
         self.assertEqual(self.config_report["status"], "ACCEPTED", self.config_report)
         (self.root / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(self.config), encoding="utf-8")
-        self.operating_config = json.loads((ROOT / "OPERATING_CONFIG.yaml").read_text(encoding="utf-8"))
+        self.operating_config = default_operating(fixture_policy())
         (self.root / "OPERATING_CONFIG.yaml").write_text(json.dumps(self.operating_config), encoding="utf-8")
         git(self.root, "commit", "-q", "--allow-empty", "-m", "base")
         git(self.root, "commit", "-q", "--allow-empty", "-m", "complete SYN-7")
@@ -245,6 +246,38 @@ class HandoffSnapshotTests(unittest.TestCase):
         result = compare_snapshot(malformed, self.snapshot())
         self.assertEqual(result["status"], "REJECTED")
         self.assertIn("operating.routes", result["invalid_fields"])
+
+    def test_upper_global_and_epic_routes_round_trip_and_reject_unknown_labels(self):
+        from copy import deepcopy
+        from agentic.lane_labels import STREAM_LABELS
+        self.config["execution"].update(max_lanes=12, max_parallel_tickets=12)
+        self.config["execution"]["host_broker"]["max_workers"] = 12
+        self.operating_config = default_operating(fixture_policy(), count=12)
+        upper = {label: {"worker": {**self.operating_config["streams"][label]["worker"], "pinned": True},
+                         "reviewer": {**self.operating_config["critic"], "pinned": True}}
+                 for label in STREAM_LABELS[6:]}
+        self.operating_config["streams"].update(deepcopy(upper))
+        self.operating_config["epic_overrides"] = {"SYN-1": {"streams": deepcopy(upper)}}
+        (self.root / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(self.config), encoding="utf-8")
+        (self.root / "OPERATING_CONFIG.yaml").write_text(json.dumps(self.operating_config), encoding="utf-8")
+        self.operating_hash = read_operating(self.root, self.config).operating_hash
+        snapshot = self.snapshot()
+        routes = snapshot["operating"]["routes"]["value"]
+        self.assertEqual("verified", snapshot["operating"]["routes"]["basis"])
+        for label in STREAM_LABELS[6:]:
+            self.assertEqual(upper[label], routes["streams"][label])
+            self.assertEqual(upper[label], routes["epic_overrides"]["SYN-1"]["streams"][label])
+        self.assertEqual("MATCH", compare_snapshot(snapshot, self.snapshot())["status"])
+        for scoped in (False, True):
+            for label in ("M", "", "LL"):
+                with self.subTest(scoped=scoped, label=label):
+                    malformed = deepcopy(snapshot)
+                    routes = malformed["operating"]["routes"]["value"]
+                    streams = routes["epic_overrides"]["SYN-1"]["streams"] if scoped else routes["streams"]
+                    streams[label] = deepcopy(upper["L"])
+                    result = compare_snapshot(malformed, snapshot)
+                    self.assertEqual("REJECTED", result["status"])
+                    self.assertIn("operating.routes", result["invalid_fields"])
 
     def test_routes_are_hash_bound_and_credential_free(self):
         unsafe_config = json.loads(json.dumps(self.operating_config))

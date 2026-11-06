@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 import sys
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
+from routing_fixtures import fixture_policy
 from agentic import CapabilityUnavailable, ValidationError
 from agentic.authorization import make_request, parse_text, render_request, verify_record, verify_webhook
 from agentic.canonical import canonical, fingerprint, load, loads, sha256, timestamp
@@ -117,7 +118,7 @@ class ConfigTests(Fixture):
 
     def test_three_native_writers_without_reference_activation(self):
         from agentic.operating import default_operating
-        self.assertEqual(default_operating()["streams"]["count"], 3)
+        self.assertEqual(default_operating(fixture_policy())["streams"]["count"], 3)
         for config in [self.config, load(ROOT / ".agentic/examples/unconfigured-project.yaml")]:
             with self.subTest(project=config["project"]["name"]):
                 execution = config["execution"]

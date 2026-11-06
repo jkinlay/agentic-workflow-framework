@@ -15,6 +15,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from routing_fixtures import fixture_policy
 from agentic import ValidationError
 from agentic.model_routing import RoutingLedger, default_policy, _fingerprint, _raw_fingerprint
 from test_model_routing import capabilities, outcome, request
@@ -26,7 +27,7 @@ class RetryAuthorityTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "routing.sqlite"
         self.ledger = RoutingLedger(self.path)
-        self.policy = default_policy()
+        self.policy = fixture_policy()
         self.policy["reconciliation"].update(enabled=True, authorized_operator_ids=["owner-host"])
 
     def reserve(self, **changes):

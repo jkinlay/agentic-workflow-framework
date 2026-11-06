@@ -88,16 +88,11 @@ class ApprovedModelsAwf82Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "unsupported policy model/effort combination"):
             select_route(policy, request(), {"models": {MODEL: ["ultra"]}})
 
-    def test_gpt_5_6_sol_remains_allowed_and_defaults_are_unchanged(self):
+    def test_legacy_sol_remains_allowed_with_fresh_sol_high_defaults(self):
         execution = self.config["execution"]
         policy = self.policy()
         self.assertIn(ROLLBACK_MODEL, self.routing["catalog"])
-        expected_defaults = {
-            "controller": (ROLLBACK_MODEL, "high"),
-            "worker": ("gpt-5.6-luna", "medium"),
-            "critic": (ROLLBACK_MODEL, "high"),
-            "specialist": (ROLLBACK_MODEL, "high"),
-        }
+        expected_defaults = {role: (MODEL, "high") for role in ROLES}
         for role, expected in expected_defaults.items():
             with self.subTest(role=role):
                 self.assertIn(ROLLBACK_MODEL, execution["roles"][role]["approved_model_ids"])

@@ -310,7 +310,7 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		self.reservation_patch = patch('agentic.continuous_controller.canonical_reservation_sources', return_value=[])
 		self.reservation_patch.start()
 		self.addCleanup(self.reservation_patch.stop)
-		self.skill_patch = patch('agentic.codex_skill.observe_codex_awf_skills', return_value={'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.5', 'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill', 'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})
+		self.skill_patch = patch('agentic.codex_skill.observe_codex_awf_skills', return_value={'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.6', 'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill', 'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})
 		self.skill_patch.start()
 		self.addCleanup(self.skill_patch.stop)
 
@@ -448,7 +448,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			 lambda items, *_: (items, {'repository_root': '/fixture', 'head_sha': 'a' * 40,
 								'tree_sha': 'b' * 40, 'git_path_count': 0})),
 			('agentic.codex_skill.observe_codex_awf_skills',
-			 {'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.5',
+			 {'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.6',
 			  'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill',
 			  'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []}),
 			('agentic.continuous_controller.canonical_reservation_sources', lambda *_args, **_kwargs: [])):
@@ -1427,7 +1427,7 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
             mock = patch(target, side_effect=value)
             mock.start()
             self.addCleanup(mock.stop)
-        mock = patch('agentic.codex_skill.observe_codex_awf_skills', return_value={'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.5', 'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill', 'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})
+        mock = patch('agentic.codex_skill.observe_codex_awf_skills', return_value={'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.6', 'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill', 'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})
         mock.start()
         self.addCleanup(mock.stop)
 

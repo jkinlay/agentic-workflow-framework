@@ -1,7 +1,7 @@
 """Manifest-verified, journaled installation of managed workflow files."""
 from __future__ import annotations
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -1708,7 +1708,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         raise ValidationError("Known-versions table target differs from the release")
     planned = {path: data for path, data in content.items() if managed(path)}
     if ROUTING in content:
-        planned[ROUTING] = content[ROUTING]
+        planned[ROUTING] = content.get(".agentic/defaults/routing.yaml", content[ROUTING])
+    from .model_routing import routing_context
     release_immutable = {path: data for path, data in planned.items()
                          if path not in {CONFIG, PROVENANCE, CODEOWNERS} | OPERATOR_CONFIG_PATHS}
     if CODEOWNERS in planned:
@@ -1758,7 +1759,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         planned[CONFIG] = json_bytes(cfg)
     if dry_run and not destination.exists():
         # Pin the existing parent without creating the destination.
-        with Tree(destination.parent):
+        with Tree(destination.parent), (routing_context(planned[ROUTING], ROUTING)
+                                       if ROUTING in planned else nullcontext()):
             if configure:
                 configure_plan()
             ignore_plan()
@@ -1768,13 +1770,15 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     "installed": False, "configuration": configuration_report, "governance_proposal": governance_proposal,
                     "gitignore": ignore_report, "codeowners": owner_report,
                     "operating": operating_report, **rules_report()}
-    with Tree(destination, create=not dry_run) as dst:
+    with Tree(destination, create=not dry_run) as dst, ExitStack() as planning_context:
         if dst.inspect(JOURNAL) is not None or dst.inspect(MARKER) is not None:
             raise ValidationError("An interrupted installation requires --recover")
         existing_config = _exists_read(dst, CONFIG)
         existing_routing = _exists_read(dst, ROUTING)
         if existing_routing is not None and ROUTING in content:
             planned[ROUTING] = existing_routing
+        if ROUTING in planned:
+            planning_context.enter_context(routing_context(planned[ROUTING], ROUTING))
         receipt_raw = _exists_read(dst, INSTALLED)
         try:
             existing_receipt = loads(receipt_raw.decode()) if receipt_raw is not None else None
@@ -1884,7 +1888,10 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         if applicability["status"] == "NOT_APPLICABLE":
             operating_plan = {"files": {}, "actions": [], "inspection": applicability}
         else:
-            operating_plan = plan_initialize_operating(destination, governance)
+            fresh_defaults = ".agentic/defaults/OPERATING_CONFIG.yaml"
+            initial_operating = (load_yaml(content[fresh_defaults])
+                                 if mode == "install" and existing_config is None and fresh_defaults in content else None)
+            operating_plan = plan_initialize_operating(destination, governance, initial_operating=initial_operating)
         for path, data in operating_plan["files"].items():
             planned[path] = data
         if upgrade_report is not None:

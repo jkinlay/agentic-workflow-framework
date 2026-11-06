@@ -317,8 +317,14 @@ def locate(catalog_path, requested_version=None):
         raise DiscoveryError("LOCAL_FILES_UNAVAILABLE", str(exc), proof) from exc
 
 
-def managed(path):
-    return path in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", ".github/CODEOWNERS"} or path.startswith(".agentic/")
+def managed(path, version=None):
+    # Published 1.9.5 already made installed routing operator-owned.  Keep the
+    # legacy predicate when no independently verified release version is given.
+    operator_routing = (path == ".agentic/routing.yaml" and version is not None
+                        and tuple(map(int, version.split("."))) >= (1, 9, 5))
+    return not operator_routing and (path in {
+        "AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", ".github/CODEOWNERS"}
+        or path.startswith(".agentic/"))
 
 
 def inspect_project(proof, project_path, python_executable=None):
@@ -364,13 +370,18 @@ def inspect_project(proof, project_path, python_executable=None):
                     fail("FILES_CHANGED", "Source manifest changed after discovery")
                 manifest = _manifest(manifest_raw, proof["version"])
                 expected = {name: sha for name, sha in manifest["files"].items()
-                            if managed(name) and name not in {CONFIG, VERSION_FILE, ".github/CODEOWNERS"}}
+                            if managed(name, proof["version"]) and name not in {CONFIG, VERSION_FILE, ".github/CODEOWNERS"}}
                 actual = hash_map(receipt.get("immutable_files"), "installed receipt")
                 if actual != expected:
                     fail("INVALID_RECEIPT", "Receipt managed file map differs from the registered release")
                 for name, sha in expected.items():
                     if digest(read_file(project / name)) != sha:
                         fail("INSTALLED_CONTENT_MISMATCH", f"Installed managed bytes differ: {name}")
+                # Mutable routing still needs a regular, nonlinked file.  Its
+                # contents remain project-owned and are not configuration proof.
+                routing = ".agentic/routing.yaml"
+                if routing in manifest["files"] and not managed(routing, proof["version"]):
+                    read_file(project / routing)
                 version = parse_json(raw_files[VERSION_FILE] or b"null", VERSION_FILE)
                 if not isinstance(version, dict) or not isinstance(version.get("template"), dict) or \
                         not isinstance(version.get("installation"), dict) or \

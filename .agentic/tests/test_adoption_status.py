@@ -19,7 +19,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo  # noqa: E402
+from source_only import (AWF_SOURCE_REPOSITORY, COMMITTED_GIT_REASON,
+                         committed_git_tuple, skip_unless_source_repo)  # noqa: E402
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
 from agentic.providers import github, github_status as status
@@ -305,6 +306,8 @@ class AdoptionStatusTests(unittest.TestCase):
 
     @skip_unless_source_repo()
     def test_ac34_installed_host_skill_establishes_durable_trust_and_active(self):
+        if committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         with tempfile.TemporaryDirectory(prefix='awf-ac34-profile-') as raw:
             profile = Path(raw)
             codex_home = profile / 'codex-home'
