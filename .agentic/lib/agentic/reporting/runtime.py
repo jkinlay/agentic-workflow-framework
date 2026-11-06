@@ -575,8 +575,8 @@ class ReviewReportingPort:
                     all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked.values()),
                     'REPORT_REVIEW_CHECK_EXPIRED')
 
-    def deliver_review_batch(self, payload):
-        budget = self.delivery_budget or DeliveryBudget()
+    def _retain_review_batch(self, payload):
+        """Retain the exact reporting handoff without provider side effects."""
         settings, destinations = _bindings(self.operating, self.binding)
         require(settings['mode'] != 'off', 'REPORTING_OFF')
         now = self.clock()
@@ -596,6 +596,10 @@ class ReviewReportingPort:
                         extra={'review_batch': deepcopy(payload)}, senders=self.providers.values())
         from ..review_batching import ReviewBatchStore
         ReviewBatchStore(self.store).track_reporting(payload['batch_id'])
+
+    def deliver_review_batch(self, payload):
+        budget = self.delivery_budget or DeliveryBudget()
+        self._retain_review_batch(payload)
         # The controller already rechecked this claim. The mandatory port
         # recheck below runs after destination verification, immediately before
         # reservation/POST, rather than adding another identical remote read
@@ -622,6 +626,15 @@ class ReviewReportingPort:
         status = reporting_status(self.store, self.operating, self.binding, report_ids={self._id(payload)})
         reports = [r for r in status['reports'] if r['report_id'] == self._id(payload)]
         if not reports:
+            # Recover the reporting handoff before the batching cycle renders
+            # raw-send owner alerts. This readback port still never sends;
+            # resume owns fresh admission and the per-platform attempts.
+            # PREPARED claims retain AWF-244's provably-unsent release path.
+            with self.store.connection() as db:
+                phase = db.execute('SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?',
+                                   (payload['batch_id'],)).fetchone()
+            if phase is None or phase[0] == 'SENDING':
+                self._retain_review_batch(payload)
             return None
         report = reports[0]
         require(report.get('review_batch') == payload, 'REPORT_REVIEW_BATCH_MISMATCH')

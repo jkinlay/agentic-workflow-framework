@@ -143,6 +143,12 @@ class E10Tests(unittest.TestCase):
         batches = ReviewBatchStore(self.helper.store)
         batches.enqueue(self.helper.current, now, {})
         payload = batches.claim(now, {}, lambda c: self.helper.observe_candidate(c, now))
+        # Crash after the durable send boundary, before report retention.
+        # A PREPARED-only claim now has proof of no send and is released by
+        # AWF-244; this unresolved claim must retain its original identity.
+        batches.recheck(payload['batch_id'], now, {}, lambda c: self.helper.observe_candidate(c, now))
+        batches.begin_delivery(payload['batch_id'], now)
+        self.assertEqual(self.status()['reports'], [])
         self.helper.listed = []
         for second in (1, 2):
             self.restart()

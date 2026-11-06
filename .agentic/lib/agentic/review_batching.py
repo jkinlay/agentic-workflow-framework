@@ -323,9 +323,14 @@ class ReviewBatchStore:
                                (key, selected[-1]))
         with self.controller.transaction() as db:
             fenced = set()
-            for claimed in db.execute("SELECT candidate_json FROM review_presentation_intent_v1 WHERE state='CLAIMED'"):
-                value = loads(claimed['candidate_json'])
-                fenced.add((value['repository_id'], value['pull_request']))
+            # Raw unresolved sends fence their PR until terminal readback.
+            # REPORTING has transferred responsibility to the exact retained
+            # per-destination outbox: it keeps these members claimed without
+            # preventing a newer candidate from being presented independently.
+            for claimed in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='CLAIMED'"):
+                for member in self._payload(claimed)['members']:
+                    value = member['candidate']
+                    fenced.add((value['repository_id'], value['pull_request']))
             members = []
             rows = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE state IN ('PENDING','EXHAUSTED') ORDER BY intent_id").fetchall()
             if selected is not None:
