@@ -141,7 +141,7 @@ class FakeHttp:
 				posted = bool(getattr(self, 'transition_bodies', [])) or not any('?fields=project,parent,labels,components,issuetype,summary' in call[1] for call in self.calls)
 				from_status = 'In Review' if '/issue/EX-100?' in url else 'Ready'
 				status = ('Done' if '/issue/EX-100?' in url else 'In Progress') if posted else from_status
-				previous = {'id': '1', 'created': '2026-10-09T07:59:59Z', 'author': {'accountId': 'controller'}, 'items': [{'field': 'summary', 'fromString': 'Work', 'toString': 'Routine work'}]}
+				previous = {'id': '1', 'created': '2026-10-09T07:59:59Z', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': 'Backlog', 'to': from_status}]}
 				histories = [previous]
 				if posted:
 					histories = [{'id': '2', 'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'to': status, 'toString': status}]}, previous]

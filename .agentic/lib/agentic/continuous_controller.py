@@ -2152,6 +2152,41 @@ def _require_healthy_legacy_jira(row, record):
 			'Legacy SUCCEEDED row lacks a healthy retained operation receipt; identity adoption refused')
 
 
+def adopted_jira_reconciliation(store, config, request):
+	"""Read-only proof for an explicitly adopted, retained successful Done write.
+
+	Provider evidence files cannot opt into this compatibility route. Revalidate
+	the protected row, adoption pin and original receipts for each observation.
+	"""
+	_require(isinstance(store, ContinuousControllerStore), 'Adopted reconciliation needs protected controller state')
+	matches = [(row, loads(row['record_json'])) for row, _table in _jira_ticket_operations(store, request['issue_id'])
+		if loads(row['record_json']).get('record_id') == request['transition_record_id']]
+	if not matches:
+		return None
+	_require(len(matches) == 1, 'Adopted Jira reconciliation operation is ambiguous')
+	row, record = matches[0]
+	with store.connection() as db:
+		pin = db.execute('SELECT value FROM controller_meta WHERE key=?', ('jira-identity:' + row['operation_id'],)).fetchone()
+	if pin is None or 'provenance' not in loads(pin['value']):
+		return None
+	value = loads(pin['value'])
+	provenance = value['provenance']
+	_require(value == _jira_adoption_identity(config, record, provenance['adopted_at'], provenance['operator']),
+		'Adopted Jira reconciliation identity or accepted configuration changed')
+	_require_healthy_legacy_jira(row, record)
+	_require(row['operation_id'] == record['operation_id'] and row['issue_id'] == record['binding']['issue_id']
+		and row['intent_sha256'] == value['intent_sha256']
+		and record['binding'] == request['binding'] and record['jira_provider'] == request['provider_identity']
+		and record['lifecycle_event'] == 'JIRA_RECONCILED' and record['to_status_id'] == request['expected_status_id'],
+		'Adopted Jira reconciliation differs from its protected operation')
+	operation = _retained_jira_observation(row['operation_json'])
+	readback = _retained_jira_observation(row['readback_json'])
+	_require(operation is not None, 'Adopted reconciliation requires the original write receipt')
+	from .jira_lifecycle import apply_read_back
+	completed = apply_read_back(record, readback['status'], readback['actor'], readback['observed_at'])['record']
+	return {'record': completed, 'operation': operation, 'readback': readback}
+
+
 def _stop_unattempted_jira(store, operation_id, now):
 	# Persist the local no-write proof and its stop atomically. A crash between
 	# those records must not manufacture a permanently unresolved attempt.

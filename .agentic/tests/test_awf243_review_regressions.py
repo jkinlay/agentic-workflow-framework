@@ -1847,10 +1847,11 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                 value['fields']['status']['id'] = 'Done' if posts else 'In Review'
                 value['fields']['updated'] = now if posts else '2026-10-09T07:59:59Z'
                 if 'expand=changelog' in url:
-                    history = value['changelog']['histories'][0]
-                    history['items'][0].update({'from': 'In Review', 'to': 'Done'})
-                    if not posts:
-                        value['changelog']['histories'] = []
+                    for history in value['changelog']['histories']:
+                        if history['id'] == '1':
+                            history['items'][0]['to'] = 'In Review'
+                        else:
+                            history['items'][0].update({'from': 'In Review', 'to': 'Done'})
                 body = json.dumps(value)
             return status, body
         http.request = request
@@ -1907,12 +1908,10 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                             value['key'] = KEY
                             value['fields']['status']['id'] = 'In Progress' if posted else 'Ready'
                             value['fields']['updated'] = jira_now if posted else before_time
-                            if 'expand=changelog' in url:
+                            if 'expand=changelog' in url and posted:
                                 history = value['changelog']['histories'][0]
                                 history['created'] = before_time if earlier else jira_now
                                 history['items'][0]['from'] = 'Ready'
-                                if not posted:
-                                    value['changelog']['histories'] = []
                             body = json.dumps(value)
                         return status, body
                     http.request = request
@@ -2147,6 +2146,331 @@ class PreEightHistoryRegressions(unittest.TestCase):
         self.assertNotEqual('SUCCEEDED', result.get('record', {}).get('status'))
         self.assertTrue(result.get('writes_stopped', False))
         self.assertEqual(1 if scenario in ('external', 'rollback') else 0, len(posts))
+
+
+class PreNineCliRegressions(unittest.TestCase):
+    """Exercise the production CLI with the real pinned adapter and fake HTTP only."""
+    adapter_fixture = SecondLookReferenceRegressions.adapter_fixture
+
+    def fixture(self, newest_first=False):
+        import importlib.util
+        import json
+        from pathlib import Path
+        root, config, clock, http, _, policy, now = self.adapter_fixture()
+        spec = importlib.util.spec_from_file_location('awf243_pre9_cli',
+            scope_fixture.ROOT / '.agentic/scripts/continuous_controller.py')
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        self.root, self.config, self.clock, self.http = root, config, clock, http
+        self.policy, self.now, self.cli = policy, now, cli
+        self.adapter = scope_fixture.ROOT / '.agentic/adapters/reference_controller_adapter.py'
+        self.state = root / 'controller.sqlite'
+        self.binding = {'project_id': policy['project']['id'],
+            'repository_id': policy['github']['repository_id'], 'issue_id': KEY,
+            'requirements_hash': 'a' * 64, 'contract_hash': 'b' * 64, 'candidate_id': 'c' * 64}
+        from agentic.lifecycle import definition
+        from agentic.policy import policy_hash
+        self.binding['policy_hash'] = policy_hash(policy, definition())
+        self.before_status, self.after_status = 'Ready', 'In Progress'
+        self.posted, self.fail_readback, self.history_problem = [], False, None
+        self.histories = [self.history('9', '2026-10-09T07:59:58Z', 'other', 'Backlog', 'Ready')]
+        original = http.request
+        def request(method, url, **kwargs):
+            if method == 'POST':
+                self.posted.append(url)
+            status, body = original(method, url, **kwargs)
+            if method == 'GET' and '/issue/' in url and 'fields=status' in url:
+                if self.fail_readback and self.posted and 'expand=changelog' in url:
+                    raise TimeoutError('lost response after POST')
+                value = json.loads(body)
+                value['key'] = KEY
+                value['fields'].update(status={'id': self.after_status if self.posted else self.before_status},
+                    updated='2026-10-09T08:00:02Z' if self.posted else '2026-10-09T07:59:59Z')
+                histories = copy.deepcopy(self.histories)
+                if self.posted:
+                    histories.append(self.history('10', now, 'controller', self.before_status, self.after_status))
+                    if self.history_problem == 'external':
+                        intermediate = 'In Progress' if self.after_status == 'Done' else 'Done'
+                        histories.extend([self.history('11', '2026-10-09T08:00:01Z', 'other', self.after_status, intermediate),
+                            self.history('12', '2026-10-09T08:00:02Z', 'other', intermediate, self.after_status)])
+                    elif self.history_problem == 'missing':
+                        histories[-1].pop('id')
+                    elif self.history_problem == 'duplicate':
+                        histories[-1]['id'] = '09'
+                    elif self.history_problem == 'nonnumeric':
+                        histories[-1]['id'] = 'new'
+                    elif self.history_problem == 'rollback':
+                        histories[0]['created'] = '2026-10-09T08:05:01Z'
+                if newest_first:
+                    histories.reverse()
+                value['changelog'] = {'histories': histories, 'startAt': 0, 'total': len(histories)}
+                if self.history_problem == 'truncated' and self.posted:
+                    value['changelog']['total'] += 1
+                body = json.dumps(value)
+            return status, body
+        http.request = request
+        return self
+
+    @staticmethod
+    def history(identity, created, actor, old, new):
+        return dict(id=identity, created=created, author={'accountId': actor},
+            items=[{'field': 'status', 'from': old, 'to': new}])
+
+    def dump(self, name, value):
+        import json
+        path = self.root / name
+        path.write_text(json.dumps(value), encoding='utf-8')
+        return path
+
+    def run_cli(self, arguments, *, adapter=None, legacy=None):
+        import contextlib
+        import io
+        import json
+        import os
+        from agentic.canonical import sha256
+        adapter = adapter or self.adapter
+        config_path = self.dump('project.json', self.policy)
+        adapter_path = self.dump('adapter.json', self.config)
+        original_load = self.cli.load
+        def load(path):
+            value = original_load(path)
+            if path == adapter_path:
+                from test_reference_controller_adapter import FakeRunner
+                value.update(_http_transport=self.http, _clock=self.clock, _runner=FakeRunner())
+            return value
+        argv = ['--state', str(self.state), '--stream', 'A', '--worktree-root', str(scope_fixture.ROOT),
+            '--project-config', str(config_path), '--adapter-module', str(adapter),
+            '--adapter-sha256', sha256(adapter.read_bytes()), '--adapter-config', str(adapter_path), *arguments]
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}))
+            stack.enter_context(patch.object(self.cli, 'load', side_effect=load))
+            if legacy is not None:
+                stack.enter_context(patch.object(self.cli, 'ContinuousControllerStore', legacy.ContinuousControllerStore))
+                stack.enter_context(patch.object(self.cli, 'production_jira_lifecycle', legacy.production_jira_lifecycle))
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(0, self.cli.main(argv))
+        return json.loads(output.getvalue())
+
+    def lifecycle(self, event='WORKER_STARTED', **kwargs):
+        facts = {'WORKER_STARTED': {'run_registered': True, 'worktree_verified': True},
+            'PR_READY': {'draft_cleared': True}, 'JIRA_RECONCILED': {'merge_confirmed': True, 'closeout_valid': True}}
+        states = {'WORKER_STARTED': 'DISPATCHED', 'PR_READY': 'PR_DRAFT', 'JIRA_RECONCILED': 'MERGED'}
+        return self.run_cli(['jira-lifecycle', '--contract', str(self.dump('contract.json', {})),
+            '--binding', str(self.dump('binding.json', self.binding)), '--event', event,
+            '--facts', str(self.dump('facts.json', facts.get(event, {}))),
+            '--lifecycle-state', states.get(event, 'BLOCKED'), '--producer-id', 'controller',
+            '--run-id', '10000000-0000-0000-0000-000000000001', '--now', self.now,
+            '--evidence', 'urn:awf:fixture:cli-transition',
+            '--transition-id', '3', '--merge-result-id', '10000000-0000-0000-0000-000000000002'], **kwargs)
+
+    def adopt(self):
+        return self.run_cli(['jira-identity-adopt', '--expected-project-id', self.policy['project']['id'],
+            '--expected-repository-id', str(self.policy['github']['repository_id']),
+            '--operator', 'fixture-owner', '--now', self.now])
+
+    def rows(self):
+        return ContinuousControllerStore(self.state, ['A']).jira_operations(KEY)
+
+    def historical(self, revision, path, *, module=False):
+        import subprocess
+        import types
+        result = subprocess.run(['git', '-C', str(scope_fixture.ROOT), 'show', revision + ':' + path],
+            capture_output=True, check=True, timeout=30)
+        if not module:
+            import shutil
+            target = self.root / '.agentic/adapters' / (revision + '-adapter.py')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(scope_fixture.ROOT / '.agentic/schemas', self.root / '.agentic/schemas', dirs_exist_ok=True)
+            target.write_bytes(result.stdout)
+            return target
+        value = types.ModuleType('agentic._awf243_historical_controller')
+        value.__package__ = 'agentic'
+        exec(compile(result.stdout, path, 'exec'), value.__dict__)
+        return value
+
+    def test_pre9_healthy_multistatus_history_succeeds_in_both_response_orders(self):
+        for newest in (False, True):
+            with self.subTest(newest_first=newest):
+                self.fixture(newest)
+                self.assertEqual('SUCCEEDED', self.lifecycle()['record']['status'])
+                self.assertEqual(1, len(self.posted))
+
+    @skip_unless_source_repo()
+    def test_pre9_historical_unknown_never_hides_external_transitions_in_either_order(self):
+        for newest in (False, True):
+            with self.subTest(newest_first=newest):
+                self.fixture(newest)
+                self.histories = []
+                prior_adapter = self.historical('ee33a92f', '.agentic/adapters/reference_controller_adapter.py')
+                self.fail_readback = True
+                self.assertEqual('UNKNOWN', self.lifecycle(adapter=prior_adapter)['record']['status'])
+                self.fail_readback, self.history_problem = False, 'external'
+                self.clock.value = '2026-10-09T08:00:03Z'
+                self.assertTrue(self.lifecycle('BLOCK')['writes_stopped'])
+                self.assertEqual('UNKNOWN', self.rows()[0]['status'])
+                self.assertTrue(self.lifecycle('PR_READY')['writes_stopped'])
+                self.assertEqual(1, len(self.posted))
+
+    def test_pre9_ambiguous_or_truncated_history_stays_unknown_in_both_orders(self):
+        for newest in (False, True):
+            for problem in ('missing', 'duplicate', 'nonnumeric', 'rollback', 'truncated'):
+                with self.subTest(newest_first=newest, problem=problem):
+                    self.fixture(newest)
+                    self.history_problem = problem
+                    self.assertEqual('UNKNOWN', self.lifecycle()['record']['status'])
+                    self.assertTrue(self.lifecycle('BLOCK')['writes_stopped'])
+                    self.assertEqual('UNKNOWN', self.rows()[0]['status'])
+                    self.assertTrue(self.lifecycle('PR_READY')['writes_stopped'])
+                    self.assertEqual(1, len(self.posted))
+
+    def legacy_done(self, newest_first=True):
+        import json
+        from pathlib import Path
+        self.fixture(newest_first)
+        self.before_status, self.after_status = 'In Review', 'Done'
+        self.histories[0]['items'][0]['to'] = 'In Review'
+        controller = self.historical('f71ee70f32737bfb02b9b09b1e2e420529e0cc63',
+            '.agentic/lib/agentic/continuous_controller.py', module=True)
+        adapter = self.historical('f71ee70f32737bfb02b9b09b1e2e420529e0cc63',
+            '.agentic/adapters/reference_controller_adapter.py')
+        result = self.lifecycle('JIRA_RECONCILED', adapter=adapter, legacy=controller)
+        self.assertIn('record', result, result)
+        self.assertEqual('SUCCEEDED', result['record']['status'])
+        self.assertEqual([], list(Path(self.config['codex']['run_record_directory']).glob('jira-attempt-*')))
+        self.record = result['record']
+        Path(self.config['observations']['jira_transition_directory'], self.record['record_id'] + '.json').write_text(
+            json.dumps({'record': self.record}), encoding='utf-8')
+        self.prepare_closeout()
+        return self.rows()[0]
+
+    def prepare_closeout(self):
+        import subprocess
+        from pathlib import Path
+        from agentic.closeout import git
+        from agentic.canonical import canonical, sha256
+        def source_git(*args):
+            return subprocess.run(['git', '-C', str(scope_fixture.ROOT), *args],
+                capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+        head = source_git('rev-parse', 'HEAD')
+        # Borrow source objects read-only in a repository owned by this test
+        # process. Isolated closeout Git must not depend on ambient safe.directory.
+        self.repository = self.root / 'closeout.git'
+        subprocess.run(['git', 'init', '--bare', '--quiet', str(self.repository)],
+            capture_output=True, check=True, timeout=30)
+        (self.repository / 'objects/info/alternates').write_text(
+            source_git('rev-parse', '--path-format=absolute', '--git-path', 'objects') + '\n', encoding='utf-8', newline='\n')
+        path = 'LICENSE'
+        blob = git(self.repository, 'rev-parse', head + ':' + path)
+        raw = git(self.repository, 'cat-file', 'blob', blob, binary=True)
+        self.closeout = dict(schema_version=3, record_id='20000000-0000-0000-0000-000000000001',
+            created_at=self.now, producer_id='fixture-closeout', run_id='20000000-0000-0000-0000-000000000002',
+            binding=self.binding, pr_number=42, reviewed_head_sha=head, base_sha=head, merge_commit_sha=head,
+            merge_tree_sha=git(self.repository, 'rev-parse', head + '^{tree}'),
+            bound_files=[dict(path=path, blob_sha=blob, sha256=sha256(raw))],
+            gate_record_id='20000000-0000-0000-0000-000000000003',
+            review_record_ids=['20000000-0000-0000-0000-000000000004'],
+            jira_transition_record_id=self.record['record_id'], evidence=['urn:awf:fixture:closeout'])
+        Path(self.config['observations']['closeout_directory'], self.closeout['record_id'] + '.json').write_bytes(
+            canonical(dict(record=self.closeout, merge_result_id=self.record['merge_result_id'], merge_observed_at=self.now)))
+
+    def merge(self):
+        return self.run_cli(['merge-observed', '--lifecycle-state', 'MERGING',
+            '--lifecycle-facts', str(self.dump('merge-facts.json', {'merge_confirmed': True, 'candidate_matched': True})),
+            '--repository-root', str(self.repository), '--jira-progress', str(self.dump('progress.json',
+                dict(jira_enabled=True, merged_ticket=KEY, scope='project = EX', observed_at=self.now,
+                    jira_binding={'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'},
+                    count_gate={'closeout_record': self.closeout})))])
+
+    def reconcile(self):
+        # Use the real merge-observed CLI and its registered Jira observer; isolate
+        # unrelated Git closeout validation after the provider observation.
+        from agentic.integration_queue import provider_observation_receipt_sha256
+        def progress(**kwargs):
+            gate = kwargs['jira_progress']['count_gate']
+            registry = gate['jira_observer_registry']
+            registration = registry['controller']
+            request = dict(operation='JIRA_RECONCILIATION', provider_identity=self.record['jira_provider'],
+                source_identity='jira_issue_transition_and_readback', binding=self.record['binding'],
+                issue_id=KEY, transition_record_id=self.record['record_id'], expected_status_id='Done')
+            observation = registration['observer'](request)
+            self.assertEqual({'record': self.record}, observation['result'])
+            self.assertEqual(provider_observation_receipt_sha256(registration, request, observation),
+                registration['receipts'][observation['observation_id']])
+            return {'observed': observation['result']}
+        with patch.object(self.cli, 'production_merge_observed', side_effect=progress):
+            return self.run_cli(['merge-observed', '--lifecycle-state', 'MERGING',
+                '--lifecycle-facts', str(self.dump('merge-facts.json', {'merge_confirmed': True, 'candidate_matched': True})),
+                '--repository-root', str(scope_fixture.ROOT), '--jira-progress', str(self.dump('progress.json',
+                    dict(jira_enabled=True, merged_ticket=KEY, scope='project = EX', observed_at=self.now,
+                        jira_binding={'cloud_id': 'cloud-1', 'project_id': 'project-1', 'actor_id': 'controller'},
+                        count_gate={'closeout_record': self.record})))])
+
+    @skip_unless_source_repo()
+    def test_pre9_genuine_f71_success_reconciles_after_explicit_adoption_without_write(self):
+        for newest in (False, True):
+            with self.subTest(newest_first=newest):
+                row = self.legacy_done(newest)
+                with self.assertRaises(ValidationError):
+                    self.reconcile()
+                self.assertEqual('UNOBSERVED', self.merge()['jira_progress']['jira_state'])
+                self.assertEqual([row['operation_id']], self.adopt()['adopted_operations'])
+                self.assertEqual(self.record, self.reconcile()['observed']['record'])
+                merged = self.merge()
+                self.assertEqual('COUNTED', merged['jira_progress']['jira_state'], merged)
+                self.assertEqual((1, 1), (merged['jira_progress']['closed'], merged['jira_progress']['remaining_open']))
+                self.assertFalse(self.lifecycle('JIRA_RECONCILED')['planned'])
+                self.assertEqual(row, self.rows()[0])
+                self.assertEqual(1, len(self.posted))
+
+    @skip_unless_source_repo()
+    def test_pre9_adoption_never_clears_unsuccessful_or_corrupt_legacy_success(self):
+        for problem in ('UNKNOWN', 'FAILED', 'readback', 'receipt'):
+            with self.subTest(problem=problem):
+                row = self.legacy_done()
+                store = ContinuousControllerStore(self.state, ['A'])
+                with store.transaction() as db:
+                    if problem in ('UNKNOWN', 'FAILED'):
+                        db.execute('UPDATE controller_jira_operation SET status=?', (problem,))
+                    else:
+                        field = 'readback_json' if problem == 'readback' else 'operation_json'
+                        db.execute('UPDATE controller_jira_operation SET ' + field + "='{}'")
+                before = self.rows()[0]
+                with self.assertRaises(ValidationError):
+                    self.adopt()
+                with self.assertRaises(ValidationError):
+                    self.reconcile()
+                self.assertEqual(before, self.rows()[0])
+                self.assertEqual(1, len(self.posted))
+
+    @skip_unless_source_repo()
+    def test_pre9_adopted_success_revalidates_retained_and_live_evidence(self):
+        from pathlib import Path
+        for problem in ('UNKNOWN', 'FAILED', 'readback', 'receipt', 'external', 'truncated', 'missing', 'attempt'):
+            with self.subTest(problem=problem):
+                self.legacy_done()
+                self.adopt()
+                store = ContinuousControllerStore(self.state, ['A'])
+                with store.transaction() as db:
+                    if problem in ('UNKNOWN', 'FAILED'):
+                        db.execute('UPDATE controller_jira_operation SET status=?', (problem,))
+                    elif problem in ('readback', 'receipt'):
+                        field = 'readback_json' if problem == 'readback' else 'operation_json'
+                        db.execute('UPDATE controller_jira_operation SET ' + field + "='{}'")
+                    elif problem == 'attempt':
+                        intent = {key: value for key, value in self.record.items() if key not in {'status', 'read_back'}}
+                        directory = Path(self.config['codex']['run_record_directory'])
+                        directory.mkdir(exist_ok=True)
+                        Path(directory,
+                            'jira-attempt-' + fingerprint('jira-attempt-record', intent) + '.json').write_bytes(b'{}')
+                    else:
+                        self.history_problem = problem
+                before = self.rows()[0]
+                with self.assertRaises(ValidationError):
+                    self.reconcile()
+                self.assertEqual('UNOBSERVED', self.merge()['jira_progress']['jira_state'])
+                self.assertEqual(before, self.rows()[0])
+                self.assertEqual(1, len(self.posted))
 
 
 if __name__ == "__main__":

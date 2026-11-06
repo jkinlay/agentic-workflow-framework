@@ -99,7 +99,7 @@ def _adapter_observer_registration(producer_id, operation, adapter, adapter_sha2
 	registration['observer'] = observer
 	return {producer_id: registration}
 
-def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapter_sha256, observed_at):
+def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapter_sha256, observed_at, store=None):
 	if not isinstance(value, dict) or set(value) != {'closeout_record'}:
 		raise ValidationError('Production merge observation requires validated closeout gate inputs')
 	closeout_record = value['closeout_record']
@@ -127,7 +127,13 @@ def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapte
 	if jira.get('enabled') is True:
 		jira_producer = jira.get('controller_actor_id')
 		jira_identity = {'cloud_id': jira.get('cloud_id'), 'site': jira.get('site'), 'project_id': jira.get('provider_project_id'), 'project_key': jira.get('project_key'), 'controller_actor_id': jira_producer}
-		jira_registry = _adapter_observer_registration(jira_producer, 'JIRA_RECONCILIATION', adapters['observe_jira_reconciliation'], adapter_sha256, provider_identity=jira_identity)
+		def jira_observer(request):
+			from agentic.continuous_controller import adopted_jira_reconciliation
+			retained = adopted_jira_reconciliation(store, config, request) if store is not None else None
+			if retained is not None:
+				return adapters['observe_jira_reconciliation'](request, retained_success=retained)
+			return adapters['observe_jira_reconciliation'](request)
+		jira_registry = _adapter_observer_registration(jira_producer, 'JIRA_RECONCILIATION', jira_observer, adapter_sha256, provider_identity=jira_identity)
 		jira_selector = {'producer_id': jira_producer}
 	return {'closeout_record': deepcopy(closeout_record), 'repository': repository, 'project_config': config, 'contracts': contracts, 'project_config_selector': {'producer_id': project_config_producer}, 'project_config_observer_registry': project_registry, 'closeout_selector': {'producer_id': closeout_producer}, 'closeout_observer_registry': closeout_registry, 'jira_reconciliation_selector': jira_selector, 'jira_observer_registry': jira_registry, 'now': observed_at}
 
@@ -267,7 +273,7 @@ def main(argv=None, default_root=ROOT):
 		if config.get('jira', {}).get('enabled') is True:
 			gate_names.add('observe_jira_reconciliation')
 		gate_adapters = _require_adapters(adapters, gate_names)
-		count_gate = _count_gate_inputs(progress['count_gate'], config=config, repository=args.repository_root, contracts=Contracts(default_root / '.agentic/schemas'), adapters=gate_adapters, adapter_sha256=args.adapter_sha256, observed_at=progress['observed_at'])
+		count_gate = _count_gate_inputs(progress['count_gate'], config=config, repository=args.repository_root, contracts=Contracts(default_root / '.agentic/schemas'), adapters=gate_adapters, adapter_sha256=args.adapter_sha256, observed_at=progress['observed_at'], store=store)
 		if progress['jira_enabled'] is not config['jira']['enabled']:
 			raise ValidationError('Post-merge Jira enablement differs from reviewed configuration')
 		output = production_merge_observed(lifecycle_state=args.lifecycle_state, lifecycle_facts=load(args.lifecycle_facts), jira_progress={**progress, 'store': store, 'config': config, 'count_gate': count_gate, **calls})

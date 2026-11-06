@@ -1288,6 +1288,60 @@
       "regression_id": "AWF243-PRE8-HISTORICAL-FALLBACK",
       "source_finding_id": null,
       "test_id": "PreEightHistoryRegressions.test_pre8_fallback_only_for_attempts_durable_before_upgrade"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Historical UNKNOWN cannot hide later external transitions in either changelog response order",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-CHANGELOG-ORDER",
+      "source_finding_id": "AWF243-PRE9-F01",
+      "test_id": "PreNineCliRegressions.test_pre9_historical_unknown_never_hides_external_transitions_in_either_order"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Healthy new transition with prior status history succeeds in both response orders through the CLI",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-HEALTHY-ORDER",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_healthy_multistatus_history_succeeds_in_both_response_orders"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Missing duplicate nonnumeric inconsistent or explicitly truncated changelog remains UNKNOWN",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-AMBIGUOUS-HISTORY",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_ambiguous_or_truncated_history_stays_unknown_in_both_orders"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Genuine f71ee70f successful Done reconciles after explicit adoption without another write",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-ADOPTED-SUCCESS",
+      "source_finding_id": "AWF243-PRE9-F02",
+      "test_id": "PreNineCliRegressions.test_pre9_genuine_f71_success_reconciles_after_explicit_adoption_without_write"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Adoption refuses unsuccessful legacy rows and corrupt retained success receipts",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-ADOPTION-REFUSAL",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_adoption_never_clears_unsuccessful_or_corrupt_legacy_success"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Adopted success still requires unchanged healthy protected receipts and current provider history",
+      "permanent": true,
+      "regression_id": "AWF243-PRE9-ADOPTED-REVALIDATION",
+      "source_finding_id": null,
+      "test_id": "PreNineCliRegressions.test_pre9_adopted_success_revalidates_retained_and_live_evidence"
     }
   ]
 }

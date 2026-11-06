@@ -644,7 +644,7 @@ def _build(config):
 		_text(value['merge_result_id'], 'Closeout merge result identity')
 		return {'observed_at': _clock_text(clock), 'result': value}
 
-	def observe_jira_reconciliation(request):
+	def observe_jira_reconciliation(request, *, retained_success=None):
 		required = {'operation', 'provider_identity', 'source_identity', 'binding', 'issue_id', 'transition_record_id', 'expected_status_id'}
 		_require(isinstance(request, dict) and set(request) == required and (request.get('operation') == 'JIRA_RECONCILIATION') and (request.get('source_identity') == 'jira_issue_transition_and_readback'), 'Jira reconciliation observation request is invalid')
 		_accepted, _project_path, _closeout_directory, jira_directory = observation_evidence()
@@ -661,7 +661,28 @@ def _build(config):
 		_require(current_status == request['expected_status_id'], 'Jira issue is not currently at the configured terminal status')
 		read_back = record.get('read_back')
 		_require(isinstance(read_back, dict) and read_back.get('observed_status') == current_status and (read_back.get('observed_actor') == provider['controller_actor_id']) and isinstance(read_back.get('observed_at'), str), 'Jira transition record lacks the matching terminal readback')
-		jira_transition_actor(record, issue, timestamp(record['created_at']), timestamp(read_back['observed_at']))
+		if retained_success is None or jira_attempt_path(record).exists():
+			jira_transition_actor(record, issue, timestamp(record['created_at']), timestamp(read_back['observed_at']))
+		else:
+			# Only the controller's protected-state adoption verifier supplies this
+			# argument. It is never read from the provider evidence/request file.
+			_require(set(retained_success) == {'record', 'operation', 'readback'} and retained_success['record'] == record,
+				'Adopted reconciliation differs from its protected successful operation')
+			operation, retained = retained_success['operation'], retained_success['readback']
+			_require(isinstance(operation, dict) and operation.get('status') == 'ATTEMPTED'
+				and operation.get('operation_id') == record['operation_id']
+				and operation.get('issue_id') == request['issue_id'] and operation.get('jira_provider') == provider
+				and retained == {'issue_id': request['issue_id'], 'status': current_status,
+					'actor': provider['controller_actor_id'], 'observed_at': read_back['observed_at'], 'jira_provider': provider},
+				'Adopted reconciliation lacks matching retained write/readback receipts')
+			history = jira_status_history(issue)
+			_require(history, 'Adopted reconciliation has no provider status history')
+			latest = history[-1]
+			_require(timestamp(record['created_at']) <= timestamp(operation['observed_at']) <= timestamp(latest['created'])
+				<= timestamp(read_back['observed_at']) <= timestamp(issue.get('fields', {}).get('updated'))
+				and latest['from'] == record['from_status_id'] and latest['to'] == current_status
+				and latest['actor'] == provider['controller_actor_id'],
+				'Provider history does not prove the adopted successful reconciliation')
 
 		observed_at = _clock_text(clock)
 		_require(timestamp(observed_at) >= timestamp(read_back['observed_at']), 'Jira reconciliation observation predates its protected readback')
@@ -1517,12 +1538,37 @@ def _build(config):
 		_require(isinstance(status_id, str) and status_id, 'Jira issue status is missing')
 		return {'issue_id': binding['issue_id'], 'status_id': status_id, 'observed_at': observed_at, 'jira_provider': provider}
 
-	def jira_status_history(value):
-		histories = value.get('changelog', {}).get('histories')
+	def jira_history_order(histories):
 		_require(isinstance(histories, list), 'Jira transition history is unavailable')
-		result = []
+		identities = set()
 		for history in histories:
+			_require(isinstance(history, dict) and isinstance(history.get('id'), str)
+				and re.fullmatch('[0-9]+', history['id']) is not None, 'Jira history needs numeric entry identities')
+			identity = int(history['id'])
+			_require(identity not in identities, 'Jira history contains duplicate entry identities')
+			identities.add(identity)
+			timestamp(history.get('created'))
+		ordered = sorted(histories, key=lambda item: int(item['id']))
+		latest_time = None
+		for history in ordered:
+			created = timestamp(history['created'])
+			_require(latest_time is None or created >= latest_time - timedelta(seconds=300),
+				'Jira history identities disagree with created ordering beyond the 300-second tolerance')
+			latest_time = max(latest_time, created) if latest_time is not None else created
+		return ordered
+
+	def jira_status_history(value):
+		page = value.get('changelog', {})
+		histories = page.get('histories')
+		_require(isinstance(histories, list), 'Jira transition history is unavailable')
+		_require(('startAt' not in page or type(page['startAt']) is int and page['startAt'] == 0)
+			and ('total' not in page or type(page['total']) is int and page['total'] == len(histories))
+			and ('isLast' not in page or page['isLast'] is True), 'Jira transition history is truncated or malformed')
+		result = []
+		for history in jira_history_order(histories):
 			_require(isinstance(history, dict) and isinstance(history.get('items'), list), 'Jira history entry is malformed')
+			status_items = [item for item in history['items'] if isinstance(item, dict) and item.get('field') == 'status']
+			_require(len(status_items) <= 1, 'Jira history entry has ambiguous status transitions')
 			for item in history['items']:
 				if not isinstance(item, dict) or item.get('field') != 'status':
 					continue
@@ -1531,8 +1577,8 @@ def _build(config):
 				_require(isinstance(actor, str) and actor and isinstance(item.get('to'), str), 'Jira status history is incomplete')
 				result.append({'id': history.get('id'), 'created': history['created'],
 					'actor': actor, 'from': item.get('from'), 'to': item['to']})
-		# Retain provider changelog order. Never sort or filter by timestamps,
-		# actor or from-status: a later external transition must remain visible.
+		# Numeric IDs establish deterministic order in either response direction;
+		# created is a consistency check, never an actor/target novelty filter.
 		return result
 
 	def jira_transition_actor(record, value, operation_time, observation_time):
@@ -1547,7 +1593,7 @@ def _build(config):
 		latest = history[-1]
 		created = timestamp(latest['created'])
 		if attempt.get('version') == 2:
-			before = attempt['jira_history']
+			before = jira_history_order(attempt['jira_history'])
 			_require(isinstance(before, list) and history[:len(before)] == before and len(history) == len(before) + 1,
 				'Jira history changed or has ambiguous/later transitions after the original state')
 			_require(timestamp(attempt['jira_updated']) < created <= timestamp(value.get('fields', {}).get('updated')),
