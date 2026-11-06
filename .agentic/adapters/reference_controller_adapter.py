@@ -109,9 +109,11 @@ class _SubprocessRunner:
 		binding = admission['binding']
 		record = self._budget_record(binding)
 		proof = _read_record(Path(record['terminal_proof_path']))
-		success = proof.get('status') == 'COMPLETED' and proof.get('returncode') == 0
 		session = proof.get('session_id')
 		context_known = isinstance(session, str) and bool(session.strip())
+		# A zero exit proves termination, not a successful AWF startup. Retain
+		# nonce-attributed usage when no Codex thread was ever observed.
+		success = context_known and proof.get('status') == 'COMPLETED' and proof.get('returncode') == 0
 		_require(proof == observation and proof.get('terminal') is True
 			and (success or proof.get('status') in {'COMPLETED', 'FAILED', 'TIMED_OUT'})
 			and proof.get('pid') == record.get('pid') and proof.get('launch_nonce') == binding['run_id']
@@ -740,6 +742,13 @@ def _build(config):
 	def observe_run(method, record, **kwargs):
 		try:
 			result = _invoke(runner, method, record, **kwargs)
+			if result.get('terminal') is True and result.get('status') == 'COMPLETED' and result.get('returncode') == 0:
+				session_id = result.get('session_id')
+				if not (isinstance(session_id, str) and session_id.strip() and len(session_id) <= 512
+						and not any(ord(char) < 32 for char in session_id)):
+					# Classify before success/settlement in every mode, including
+					# restart observation. Terminal usage still belongs to this run.
+					raise _TerminalRunFailure('Dispatch startup did not prove an observed session identity', result)
 		except _TerminalRunFailure as exc:
 			# Failure remains an error to dispatch/recovery, but terminal usage is
 			# settled exactly once and the failed outcome survives a host restart.
