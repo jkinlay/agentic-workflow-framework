@@ -61,6 +61,9 @@ expected and observed identities without including token values.
 
 ## Jira identity and binding
 
+For reviewed credential modes, status IDs and search guarantees, see the
+[reference Jira adapter configuration](REFERENCE-JIRA-ADAPTER.md).
+
 Accepted Jira configuration pins `cloud_id`, HTTPS `site`, `provider_project_id`,
 `project_key` and `controller_actor_id`. Enumerate accessible connections first,
 then match this complete identity. A matching project key in another cloud or

@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64
 from copy import deepcopy
 from datetime import timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from email.utils import parsedate_to_datetime
 import hashlib
 import json
@@ -13,8 +14,9 @@ import sys
 import tempfile
 import time
 import uuid
-from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlsplit
+from urllib.request import Request, HTTPRedirectHandler, build_opener
+from urllib.error import URLError
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, load_yaml, now_text, sha256, timestamp, jira_timestamp
 from agentic.continuous_controller import validate_ticket_record, JiraTransitionNotAttempted
@@ -53,7 +55,8 @@ class _Clock:
 
 class _SubprocessRunner:
 
-	def __init__(self):
+	def __init__(self, credential_envs=()):
+		self._credential_envs = credential_envs
 		self._processes = {}
 		self._overlap_operations = {}
 
@@ -115,7 +118,7 @@ class _SubprocessRunner:
 				argv.append('--union')
 			argv.extend((str(path) for path in paths))
 			try:
-				result = subprocess.run(argv, cwd=directory, env=_safe_env(), shell=False,
+				result = subprocess.run(argv, cwd=directory, env=_safe_env(*self._credential_envs), shell=False,
 								capture_output=True, timeout=30)
 			except (OSError, subprocess.TimeoutExpired) as exc:
 				raise ValidationError('Three-way overlap merge failed or timed out') from exc
@@ -227,22 +230,35 @@ class _SubprocessRunner:
 			return {'status': 'RUNNING', 'terminal': False, 'pid': pid, 'launch_nonce': record.get('launch_nonce'), 'session_id': record.get('session_id')}
 		raise ValidationError('Detached dispatch terminal outcome is unobserved')
 
+class _JiraTimeout(ValidationError):
+	pass
+
+class _RefuseRedirects(HTTPRedirectHandler):
+	def redirect_request(self, req, fp, code, msg, headers, newurl):
+		raise ValidationError('Jira redirects are forbidden') from None
+
+# Keep one injectable opener entry point; never install process-global handlers.
+urlopen = build_opener(_RefuseRedirects()).open
+
 class _HttpTransport:
 
 	def request(self, method, url, *, headers, body, timeout, max_bytes):
 		request = Request(url, data=body, headers=headers, method=method)
 		try:
 			with urlopen(request, timeout=timeout) as response:
-				raw = response.read(max_bytes + 1)
 				status = response.status
+				_require(not 300 <= status < 400, 'Jira redirects are forbidden')
+				raw = response.read(max_bytes + 1)
 		except Exception as exc:
-			raise ValidationError('Jira HTTP request failed or timed out') from exc
+			if isinstance(exc, TimeoutError) or (isinstance(exc, URLError) and isinstance(exc.reason, TimeoutError)):
+				raise _JiraTimeout('Jira HTTP request timed out') from None
+			raise ValidationError('Jira HTTP request failed or timed out; redirects forbidden') from None
 		if len(raw) > max_bytes:
 			raise ValidationError('Jira response exceeded its byte bound')
 		try:
 			return (status, raw.decode('utf-8', 'strict'))
 		except UnicodeDecodeError as exc:
-			raise ValidationError('Jira response was not UTF-8') from exc
+			raise ValidationError('Jira response was not UTF-8') from None
 
 def _invoke(obj, method, *args, **kwargs):
 	function = getattr(obj, method, None)
@@ -290,11 +306,11 @@ def _clock_text(clock, value=None):
 	timestamp(value)
 	return value
 
-def _safe_env(jira_token_env=None):
+def _safe_env(*credential_envs):
 	result = dict(os.environ)
 	for key in tuple(result):
 		normalized = key.upper()
-		if key == jira_token_env or any((service in normalized for service in _CREDENTIAL_SERVICE_NAMES)) or any((marker in normalized for marker in _CREDENTIAL_NAME_MARKERS)):
+		if normalized in {name.upper() for name in credential_envs if name} or any((service in normalized for service in _CREDENTIAL_SERVICE_NAMES)) or any((marker in normalized for marker in _CREDENTIAL_NAME_MARKERS)):
 			result.pop(key, None)
 	result['GH_PROMPT_DISABLED'] = '1'
 	result['GIT_TERMINAL_PROMPT'] = '0'
@@ -555,22 +571,41 @@ def _build(config):
 	gh_page_size = github.get('page_size', 100)
 	_require(type(gh_page_size) is int and 1 <= gh_page_size <= 100, 'GitHub page_size is invalid')
 	jira = config['jira']
-	required_jira = {'enabled', 'cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id', 'token_env', 'merged_status_id', 'merged_transition_id'}
+	required_jira = {'enabled', 'cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id', 'token_env', 'credential_type', 'merged_status_id', 'merged_transition_id'}
 	_require(required_jira <= set(jira), 'Jira adapter configuration is incomplete')
 	_require(type(jira['enabled']) is bool, 'jira.enabled must be boolean')
 	for key in ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id', 'merged_status_id', 'merged_transition_id'):
 		_text(jira[key], 'jira.' + key)
 	token_env = jira['token_env']
 	_require(isinstance(token_env, str) and re.fullmatch('[A-Z][A-Z0-9_]{1,127}', token_env) and (token_env not in {'GH_TOKEN', 'GITHUB_TOKEN'}), 'jira.token_env is invalid')
-	site = jira['site'].rstrip('/')
-	_require(site.startswith('https://') and '@' not in site, 'jira.site must be a credential-free HTTPS URL')
+	credential_type = jira['credential_type']
+	_require(isinstance(credential_type, str) and credential_type in {'oauth', 'scoped_api_token', 'unscoped_api_token'}, 'jira.credential_type is unsupported')
+	email_env = jira.get('email_env')
+	if credential_type == 'oauth':
+		_require('email_env' not in jira, 'OAuth must not configure an email credential')
+	else:
+		_require(isinstance(email_env, str) and re.fullmatch('[A-Z][A-Z0-9_]{1,127}', email_env) and
+			email_env not in {token_env, 'GH_TOKEN', 'GITHUB_TOKEN'}, 'jira.email_env is missing or invalid')
+	site = jira['site']
+	try:
+		origin = urlsplit(site)
+		port = origin.port
+	except ValueError:
+		raise ValidationError('jira.site must be a credential-free HTTPS origin') from None
+	_require(origin.scheme == 'https' and origin.netloc and origin.hostname and not origin.path and
+		not any(char in site for char in '@?#\\') and not any(char.isspace() for char in site) and
+		origin.username is None and (port is None or 1 <= port <= 65535),
+		'jira.site must be a credential-free HTTPS origin without path, query or fragment')
+	rest_base = site if credential_type == 'unscoped_api_token' else 'https://api.atlassian.com/ex/jira/' + quote(jira['cloud_id'], safe='')
+	page_size = jira.get('page_size', MAX_JIRA_PAGE)
+	_require(type(page_size) is int and 1 <= page_size <= MAX_JIRA_PAGE, 'Jira page_size is invalid')
 	outbox = config['outbox']
 	_require(set(outbox) == {'directory'}, 'outbox configuration must contain only directory')
 	outbox_dir = _absolute(outbox['directory'], 'outbox.directory')
 	_require(outbox_dir != worktree_root and worktree_root not in outbox_dir.parents, 'outbox.directory must be outside codex.worktree_root')
 	_require(_disjoint(isolated_home, outbox_dir), 'codex.isolated_home must be outside the outbox')
 	default_runner = config.get('_runner') is None
-	runner = config.get('_runner') or _SubprocessRunner()
+	runner = config.get('_runner') or _SubprocessRunner((token_env, email_env))
 	http = config.get('_http_transport') or _HttpTransport()
 	clock = config.get('_clock') or _Clock()
 	_require(callable(getattr(clock, 'now', None)) and callable(getattr(clock, 'monotonic', None)), 'Clock injection is incomplete')
@@ -703,7 +738,7 @@ def _build(config):
 		_verify_executable(executable)
 		argv = [str(executable['path']), *[str(item) for item in args]]
 		_require(all((isinstance(item, str) and item for item in argv)), 'External argv is invalid')
-		env = _safe_env(token_env)
+		env = _safe_env(token_env, email_env)
 		kwargs = {}
 		if stdin is not None:
 			_require(isinstance(stdin, str) and len(stdin.encode('utf-8')) <= 2 * MAX_OUTPUT, 'External command stdin exceeded its byte bound')
@@ -824,7 +859,7 @@ def _build(config):
 			parked['evidence_sha256'] = fingerprint('controller-reservation-source', parked)
 			result.append(parked)
 		git_prefix = ['git', '--no-replace-objects', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=' + os.devnull, '-c', 'core.quotePath=false', '-C', str(reservation_root)]
-		git_env = _safe_env(token_env)
+		git_env = _safe_env(token_env, email_env)
 		git_env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1', GIT_NO_LAZY_FETCH='1', GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0')
 		changed = _invoke(runner, 'run', [*git_prefix, 'diff', '--name-only', '-z', 'HEAD', '--'], cwd=reservation_root, env=git_env, timeout=30, max_bytes=MAX_OUTPUT)
 		untracked = _invoke(runner, 'run', [*git_prefix, 'ls-files', '--others', '--exclude-standard', '-z'], cwd=reservation_root, env=git_env, timeout=30, max_bytes=MAX_OUTPUT)
@@ -1193,7 +1228,7 @@ def _build(config):
 		record = {'format': 'awf-reference-dispatch-2', 'dispatch_schema_version': 2, 'dispatch_id': payload['dispatch_id'], 'dispatch_nonce': payload['dispatch_nonce'], 'stream': payload['stream'], 'ticket': payload['ticket'], 'exact_tuple': payload['exact_tuple'], 'prepared_at': payload['prepared_at'], 'begun_at': payload['begun_at'], 'role': role, 'lifecycle_stage': payload['lifecycle_stage'], 'lane_start_waivers': list(payload['lane_start_waivers']), 'argv': argv, 'worktree': str(worktree), 'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest(), 'argv_sha256': hashlib.sha256(canonical(argv)).hexdigest(), 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_proof_path), 'terminal_proof_path': str(terminal_proof_path), 'status': 'PREPARED', 'created_at': _clock_text(clock)}
 		_write_record(record_path, record)
 		_verify_executable(codex_executable)
-		launch_env = _safe_env(token_env)
+		launch_env = _safe_env(token_env, email_env)
 		launch_env['CODEX_HOME'] = str(isolated_home)
 		launch_env['AWF_DISPATCH_NONCE'] = launch_nonce
 		try:
@@ -1334,41 +1369,65 @@ def _build(config):
 		_require(found.get('digest_sha256') == fingerprint('controller-delivery', digest), 'Status outbox readback differs from the requested digest')
 		return {'delivery_id': delivery_id, 'status': 'DELIVERED', 'observed_at': found['observed_at']}
 
-	def jira_token():
+	def jira_authorization():
 		token = os.environ.get(token_env)
-		_require(isinstance(token, str) and token, 'Configured Jira credential environment variable is absent')
-		return token
+		_require(isinstance(token, str) and token and not any(ord(c) < 32 for c in token), 'Configured Jira credential environment variable is absent or invalid')
+		if credential_type == 'oauth':
+			return 'Bearer ' + token
+		email = os.environ.get(email_env)
+		_require(isinstance(email, str) and email and ':' not in email and not any(c.isspace() or ord(c) < 32 for c in email), 'Configured Jira email credential environment variable is absent or invalid')
+		return 'Basic ' + base64.b64encode((email + ':' + token).encode('utf-8')).decode('ascii')
 
-	def jira_json(method, path, body=None):
+	def jira_json(method, path, body=None, *, tenant=False, resources=False):
 		_require(path.startswith('/'), 'Jira API path must be absolute')
-		token = jira_token()
-		headers = {'Accept': 'application/json', 'Authorization': 'Bearer ' + token}
+		headers = {'Accept': 'application/json'}
+		if not tenant:
+			headers['Authorization'] = jira_authorization()
+		url = site + '/_edge/tenant_info' if tenant else (
+			'https://api.atlassian.com/oauth/token/accessible-resources' if resources else rest_base + path)
 		data = None if body is None else canonical(body)
 		if data is not None:
 			headers['Content-Type'] = 'application/json'
+		# Injected transports and JSON decoder errors can include headers or raw
+		# bodies. Suppress the entire rendered exception chain at this boundary.
 		try:
-			result = _invoke(http, 'request', method, site + path, headers=headers, body=data, timeout=jira.get('timeout_seconds', 30), max_bytes=MAX_OUTPUT)
-		finally:
-			del token
-		if isinstance(result, tuple) and len(result) == 2:
-			status, output = result
-		elif isinstance(result, dict):
-			status, output = (result.get('status'), result.get('body', result.get('output', '')))
-		else:
-			raise ValidationError('Jira transport returned an unparsable result')
-		_require(type(status) is int and 200 <= status < 300, 'Jira returned a non-success status')
-		if output in (None, '', b''):
-			return {}
-		return _json_output(output)
+			result = _invoke(http, 'request', method, url, headers=headers, body=data, timeout=jira.get('timeout_seconds', 30), max_bytes=MAX_OUTPUT)
+			if isinstance(result, tuple) and len(result) == 2:
+				status, output = result
+			elif isinstance(result, dict):
+				status, output = result.get('status'), result.get('body', result.get('output', ''))
+			else:
+				raise ValidationError('Unparsable Jira transport result')
+			_require(type(status) is int and 200 <= status < 300, 'Jira returned a non-success status; redirects forbidden')
+			if output in (None, '', b''):
+				return {}
+			_require(isinstance(output, (str, bytes)) and len(output.encode('utf-8') if isinstance(output, str) else output) <= MAX_OUTPUT, 'Jira response exceeded its byte bound')
+			return _json_output(output)
+		except Exception as exc:
+			if isinstance(exc, (_JiraTimeout, TimeoutError)) or isinstance(exc.__cause__, TimeoutError):
+				raise _JiraTimeout('Jira request timed out') from None
+			raise ValidationError('Jira request failed, exceeded its bound or returned invalid data; redirects forbidden') from None
+
+	actor_timezone = None
 
 	def provider_identity():
+		nonlocal actor_timezone
+		# Validate credentials before even the anonymous tenant read; never guess
+		# another method or destination after a failed request.
+		jira_authorization()
+		tenant = jira_json('GET', '/_edge/tenant_info', tenant=True)
+		_require(isinstance(tenant, dict) and tenant.get('cloudId') == jira['cloud_id'], 'Jira provider identity mismatch')
+		if credential_type == 'oauth':
+			resources = jira_json('GET', '/oauth/token/accessible-resources', resources=True)
+			_require(isinstance(resources, list) and len([r for r in resources if isinstance(r, dict) and
+				r.get('id') == jira['cloud_id'] and r.get('url') == site]) == 1, 'Jira OAuth resource identity mismatch')
 		myself = jira_json('GET', '/rest/api/3/myself')
 		project = jira_json('GET', '/rest/api/3/project/' + quote(jira['project_key'], safe=''))
-		tenant = jira_json('GET', '/_edge/tenant_info')
-		observed_cloud = tenant.get('cloudId')
-		observed_site = tenant.get('siteUrl')
-		_require(myself.get('accountId') == jira['controller_actor_id'] and str(project.get('id')) == jira['provider_project_id'] and (project.get('key') == jira['project_key']) and (observed_cloud == jira['cloud_id']) and isinstance(observed_site, str) and (observed_site.rstrip('/') == site), 'Jira provider identity mismatch')
-		return {'cloud_id': observed_cloud, 'site': observed_site.rstrip('/'), 'project_id': str(project['id']), 'project_key': project['key'], 'controller_actor_id': jira['controller_actor_id']}
+		_require(isinstance(myself, dict) and isinstance(project, dict) and
+			myself.get('accountId') == jira['controller_actor_id'] and str(project.get('id')) == jira['provider_project_id'] and
+			project.get('key') == jira['project_key'], 'Jira provider identity mismatch')
+		actor_timezone = myself.get('timeZone')
+		return {'cloud_id': tenant['cloudId'], 'site': site, 'project_id': str(project['id']), 'project_key': project['key'], 'controller_actor_id': jira['controller_actor_id']}
 
 	def observe_issue_identity(issue):
 		_require(isinstance(issue, str) and re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', issue) is not None,
@@ -1550,10 +1609,8 @@ def _build(config):
 		query = '?fields=status' if closure_status is None else '?fields=status,updated&expand=changelog'
 		try:
 			value = jira_json('GET', '/rest/api/3/issue/' + quote(binding['issue_id'], safe='') + query)
-		except ValidationError as exc:
-			if isinstance(exc.__cause__, TimeoutError):
-				raise JiraTransitionNotAttempted('Jira status read timed out before any POST') from exc
-			raise
+		except _JiraTimeout:
+			raise JiraTransitionNotAttempted('Jira status read timed out before any POST') from None
 		status_id = value.get('fields', {}).get('status', {}).get('id')
 		observed_at = _clock_text(clock)
 		provider = binding.get('jira_provider') or provider_identity()
@@ -1679,6 +1736,13 @@ def _build(config):
 		_require(len(before['changelog']['histories']) < MAX_JIRA_PAGE,
 			'AWF-175 limitation: pre-write refusal at 100 changelog entries; reserve one readback entry within the 100-entry cap')
 
+		available = jira_json('GET', '/rest/api/3/issue/' + quote(issue_id, safe='') + '/transitions')
+		transitions = available.get('transitions') if isinstance(available, dict) else None
+		_require(isinstance(transitions, list), 'Jira available transitions are missing')
+		selected = [item for item in transitions if isinstance(item, dict) and item.get('id') == record['transition_id']]
+		_require(len(selected) == 1 and isinstance(selected[0].get('to'), dict) and
+			selected[0]['to'].get('id') == record.get('to_status_id'), 'Jira transition is unavailable or its destination status differs from the plan')
+
 		record_dir.mkdir(parents=True, exist_ok=True)
 		attempt_path = jira_attempt_path(record)
 		_require(not attempt_path.exists(), 'Jira transition attempt already exists; reconcile without reissuing')
@@ -1724,39 +1788,101 @@ def _build(config):
 
 	def fetch_scope_page(scope, cursor):
 		_text(scope, 'Jira scope', maximum=4096)
+		started = _invoke(clock, 'monotonic')
+		wall_started = time.monotonic()
 		observed_provider = provider_identity()
 		provider = {'cloud_id': observed_provider['cloud_id'], 'project_id': observed_provider['project_id'], 'actor_id': observed_provider['controller_actor_id']}
 		scope_sha = fingerprint('jira-progress-scope', {'scope': scope, 'binding': provider, 'include_epics': False})
-		start = 0 if cursor is None else int(cursor)
-		_require(start >= 0, 'Jira scope cursor is invalid')
-		page_size = min(jira.get('page_size', MAX_JIRA_PAGE), MAX_JIRA_PAGE)
-		snapshot = scope_snapshots.get(scope)
-		if snapshot is None:
-			_require(cursor is None, 'Jira scope continuation has no retained snapshot')
+		if cursor is None:
+			# Every new traversal observes a fresh cutoff. JQL has minute precision:
+			# exclude the current partial minute, in the authenticated user's zone.
 			observed_at = _clock_text(clock)
-			snapshot = {'observed_at': observed_at}
+			try:
+				zone = ZoneInfo(actor_timezone)
+			except (TypeError, ValueError, ZoneInfoNotFoundError):
+				raise ValidationError('Jira authenticated user timezone is missing or unsupported') from None
+			cutoff = timestamp(observed_at).replace(second=0, microsecond=0)
+			local_cutoff = cutoff.astimezone(zone)
+			_require(local_cutoff.replace(fold=0).utcoffset() == local_cutoff.replace(fold=1).utcoffset(),
+				'Jira minute cutoff is ambiguous in the authenticated user timezone')
+			snapshot = {'observed_at': observed_at, 'cutoff': cutoff,
+				'jql_cutoff': local_cutoff.strftime('%Y-%m-%d %H:%M'),
+				'timezone': actor_timezone, 'started': started, 'wall_started': wall_started,
+				'phase': 0, 'token': None, 'expected_cursor': None, 'seen_tokens': set(),
+				'baseline': {}, 'current': {}, 'pages': 0, 'bytes': 0, 'items': 0,
+				'id': fingerprint('jira-search-snapshot', {'scope': scope_sha, 'observed_at': observed_at, 'nonce': str(uuid.uuid4())})}
 			scope_snapshots[scope] = snapshot
-		bounded_scope = '(' + scope + ') AND updated <= "' + snapshot['observed_at'] + '"'
-		result = jira_json('GET', '/rest/api/3/search?jql=' + quote(bounded_scope, safe='') + '&startAt=' + str(start) + '&maxResults=' + str(page_size))
-		issues = result.get('issues')
-		total = result.get('total')
-		_require(isinstance(issues, list) and type(total) is int and (total >= 0), 'Jira scope response is incomplete')
-		if 'total' in snapshot:
-			_require(total == snapshot['total'], 'Jira scope total changed during pagination')
 		else:
-			snapshot['total'] = total
-		snapshot_id = fingerprint('jira-search-snapshot', {'scope': scope, 'binding': provider, 'observed_at': snapshot['observed_at'], 'total': total})
-		items = []
-		for issue in issues:
-			fields = issue.get('fields', {}) if isinstance(issue, dict) else {}
-			issue_type = str(fields.get('issuetype', {}).get('name', 'TASK')).upper()
-			category = str(fields.get('status', {}).get('statusCategory', {}).get('key', '')).lower()
-			_require(isinstance(issue.get('id'), str) and category in {'done', 'new', 'indeterminate'}, 'Jira scope item is incomplete')
-			items.append({'id': issue['id'], 'issue_type': 'EPIC' if issue_type == 'EPIC' else issue_type, 'status_category': 'TERMINAL' if category == 'done' else 'NON_TERMINAL'})
-		next_cursor = None if start + len(issues) >= total else str(start + len(issues))
-		complete = next_cursor is None
-		observed_at = snapshot['observed_at']
-		return {'items': items, 'next_cursor': next_cursor, 'complete': complete, 'snapshot_id': snapshot_id, 'scope_sha256': scope_sha, 'observed_at': observed_at}
+			snapshot = scope_snapshots.get(scope)
+			_require(snapshot is not None and cursor == snapshot['expected_cursor'], 'Jira scope continuation has no matching retained snapshot')
+		try:
+			def within_time():
+				_require(_invoke(clock, 'monotonic') - snapshot['started'] <= 60 and
+					time.monotonic() - snapshot['wall_started'] <= 60, 'Jira pagination exceeded its time bound')
+			within_time()
+			_require(actor_timezone == snapshot['timezone'], 'Jira authenticated user timezone changed during pagination')
+			snapshot['pages'] += 1
+			_require(snapshot['pages'] <= MAX_PAGES, 'Jira pagination exceeded its request bound; two traversals are required')
+			bounded_scope = '(' + scope + ') AND updated < "' + snapshot['jql_cutoff'] + '"'
+			path = '/rest/api/3/search/jql?jql=' + quote(bounded_scope, safe='') + '&maxResults=' + str(page_size) + '&fields=issuetype,status,updated'
+			if snapshot['token'] is not None:
+				path += '&nextPageToken=' + quote(snapshot['token'], safe='')
+			result = jira_json('GET', path)
+			within_time()
+			snapshot['bytes'] += len(canonical(result))
+			_require(snapshot['bytes'] <= 16 * 1024 * 1024, 'Jira pagination exceeded its byte bound')
+			_require(isinstance(result, dict) and isinstance(result.get('issues'), list) and
+				type(result.get('isLast')) is bool, 'Jira enhanced scope response is incomplete')
+			issues, final, token = result['issues'], result['isLast'], result.get('nextPageToken')
+			_require(len(issues) <= page_size, 'Jira pagination exceeded its page item bound')
+			if final:
+				_require(token is None, 'Final Jira page has a contradictory continuation token')
+			else:
+				_require(isinstance(token, str) and token and token not in snapshot['seen_tokens'], 'Jira pagination cursor is missing or repeated')
+				snapshot['seen_tokens'].add(token)
+			items = []
+			for issue in issues:
+				_require(isinstance(issue, dict) and isinstance(issue.get('id'), str) and issue['id'], 'Jira scope item identity is missing')
+				fields = issue.get('fields')
+				_require(isinstance(fields, dict), 'Jira scope fields are missing')
+				issue_type, status = fields.get('issuetype'), fields.get('status')
+				_require(isinstance(issue_type, dict) and isinstance(issue_type.get('name'), str) and issue_type['name'] and
+					isinstance(status, dict) and isinstance(status.get('id'), str) and status['id'] and
+					isinstance(status.get('statusCategory'), dict), 'Jira scope item type or status is missing')
+				category = status['statusCategory'].get('key')
+				_require(category in {'done', 'new', 'indeterminate'}, 'Jira scope status category is missing or unsupported')
+				updated = fields.get('updated')
+				_require(isinstance(updated, str), 'Jira scope updated is missing')
+				updated_time = jira_timestamp(updated)
+				_require(updated_time < snapshot['cutoff'], 'Jira scope item exceeds the exclusive minute cutoff')
+				_require(issue['id'] not in snapshot['current'], 'Duplicate ticket in Jira traversal')
+				snapshot['current'][issue['id']] = {'issue_type': issue_type, 'status': status, 'updated': updated}
+				snapshot['items'] += 1
+				_require(snapshot['items'] <= 10000, 'Jira scope exceeded its item bound across both traversals')
+				is_epic = issue_type['name'].upper() == 'EPIC' or issue_type.get('hierarchyLevel') == 1
+				items.append({'id': issue['id'], 'issue_type': 'EPIC' if is_epic else issue_type['name'].upper(), 'status_category': 'TERMINAL' if category == 'done' else 'NON_TERMINAL'})
+			# First traversal contributes no countable items. Its continuation is a
+			# local opaque handle binding the phase and retained provider token.
+			# Only the second traversal can finish the controller's count stream.
+			complete = final and snapshot['phase'] == 1
+			if snapshot['phase'] == 0:
+				items = []
+				if final:
+					snapshot['baseline'], snapshot['current'] = snapshot['current'], {}
+					snapshot['phase'], snapshot['seen_tokens'] = 1, set()
+			elif final:
+				_require(snapshot['baseline'] == snapshot['current'], 'Jira membership, status or updated changed between complete traversals; counts UNOBSERVED')
+			snapshot['token'] = token
+			next_cursor = None if complete else fingerprint('jira-search-cursor', {'snapshot': snapshot['id'], 'page': snapshot['pages']})
+			snapshot['expected_cursor'] = next_cursor
+			if complete:
+				scope_snapshots.pop(scope, None)
+			return {'items': items, 'next_cursor': next_cursor, 'complete': complete,
+				'snapshot_id': snapshot['id'], 'scope_sha256': scope_sha, 'observed_at': snapshot['observed_at']}
+		except Exception:
+			scope_snapshots.pop(scope, None)
+			raise
+
 	# AWF-205: planning callbacks required by the landed cycle contract.
 	# Host, backlog and event observations are authenticated; owner decisions
 	# are re-authenticated against immutable provider comments. Each observation is
