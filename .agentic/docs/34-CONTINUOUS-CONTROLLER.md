@@ -152,7 +152,7 @@ state/configuration requirements or effects.
 | `planning-state prune` | None | 145–147, 190–194 |
 
 `cycle --overlap-allowances` additionally requires `observe_overlap_allowance`:
-CLI checks flag presence, even empty loaded list.
+CLI checks presence, even an empty loaded list.
 `cycle --replan-request` additionally requires `observe_replan_trigger`.
 
 CLI forwards callbacks when callable:
