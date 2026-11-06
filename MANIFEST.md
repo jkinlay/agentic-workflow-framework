@@ -353,7 +353,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf154_large_file_allowances.py` | `f1633d7a2a3d7ffd339cfb7c0ce60b50b9cc18ca879bfd66af2aa7573f54c546` |
 | `.agentic/tests/test_awf243_jira_protocol.py` | `9971b366f0a0d19bd63ada508c81ecd2dcd4c37fb18eecdf162bfba5990dc6a7` |
 | `.agentic/tests/test_awf243_operator_recovery.py` | `5adfdc8c3c9d23811c00842fb9c0677d2615b60131542720798cd2347a35b840` |
-| `.agentic/tests/test_awf243_owner_closure_http.py` | `729df8b1dbcca0831c7a36c9b653750ec35d459271f6cc97ed7ccc7ccec36edd` |
+| `.agentic/tests/test_awf243_owner_closure_http.py` | `869ffa6bf6a95393e38e6405db8fb1465cb537e6a4fc75bf444c668b87ca1926` |
 | `.agentic/tests/test_awf243_review_regressions.py` | `f5301edc0c6e244ff1633e86e8ceb61ceb9302acf788a68e1d12db48ed99cdba` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `04fd2dea1cb378607dd8a317210f8cb35e0ea3bd132f7239f10a643e53745fc8` |
