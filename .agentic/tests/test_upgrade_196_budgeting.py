@@ -279,6 +279,42 @@ class BudgetUpgradeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, 'Unresolved budget overrun'):
                 admit_totals(db, PROJECT, 'EX-195', dict(max_tokens_per_project=10000, max_tokens_per_ticket=10000), 1)
 
+    def test_retained_budget_settings_do_not_confirm_owner_adoption(self):
+        from agentic.installer import install
+        from agentic.budgeting import fresh_settings
+        from agentic.canonical import load_yaml
+        project = self.work / 'unconfirmed-project'
+        install_baseline(self.source, project)
+        operating = project / 'OPERATING_CONFIG.yaml'
+        value = load_yaml(operating.read_bytes())
+        value['budgeting'] = fresh_settings()
+        original = (json.dumps(value, indent=2) + '\n').encode()
+        operating.write_bytes(original)
+        before = qualify_upgrade.inventory(project)
+        policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+        path = '.agentic-state/upgrade/budgeting-1.9.6.json'
+        from agentic.upgrade import budget_upgrade_disposition
+        disposition = budget_upgrade_disposition(
+            (project / '.agentic/PROJECT_CONFIG.yaml').read_bytes(), original, '1.9.5')
+        # Both independently derived records must require manual adoption. No
+        # protected owner confirmation was supplied by this disposable project.
+        expected = dict(disposition, owner_adoption_required=True)
+        self.assertEqual(expected, disposition)
+        self.assertEqual(hashlib.sha256((json.dumps(expected, indent=2,
+            ensure_ascii=False) + '\n').encode()).hexdigest(), policy['files'][path]['sha256'])
+        self.assertEqual('EXPLICIT_SETTINGS_RETAINED', disposition['disposition'])
+        self.assertEqual(value['budgeting'], disposition['settings'])
+        self.assertEqual(before, qualify_upgrade.inventory(project))
+        # An unaudited operating edit must still refuse through the real
+        # installer. A compatibility plan cannot confer owner authority.
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                with self.assertRaisesRegex(ValidationError, 'audited change'):
+                    install(self.candidate, project, self.pin, mode='upgrade',
+                            configure=True, discover=False, dry_run=dry_run)
+                self.assertEqual(before, qualify_upgrade.inventory(project))
+                self.assertEqual(original, operating.read_bytes())
+
     def test_upgrade_records_legacy_disposition_without_adding_off_settings(self):
         from agentic.installer import install
         from agentic.canonical import load_yaml

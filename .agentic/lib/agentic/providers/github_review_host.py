@@ -345,32 +345,37 @@ class HostDriver:
         Deployments share the canonical host-owned project budget ledger.
         This CLI reports usage but has no verified per-run token ceiling.
         """
+        driver = cls(config, runtime_root)
+        driver.load_project_budgeting()
+        return driver
+
+    def load_project_budgeting(self):
+        """Bind this host to installed budget policy before any CLI operation."""
         from ..budgeting import ControllerBudgeting, project_ledger_path, resolve_settings
         from ..canonical import load_yaml
         from ..operating import read_operating
-        driver = cls(config, runtime_root)
-        with Tree(driver.root) as tree:
+        with Tree(self.root) as tree:
             governance = load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
             legacy = tree.inspect('OPERATING_CONFIG.yaml') is None
         if legacy:
             # Absence never initializes fresh OFF settings over an old host.
             # Existing max_agent_runs/recovery/review controls still apply.
-            driver.budgeting = None
-            driver.budget_ticket_id = None
-            return driver
-        snapshot = read_operating(driver.root, governance)
+            self.budgeting = None
+            self.budget_ticket_id = None
+            return self
+        snapshot = read_operating(self.root, governance)
         pattern = re.escape(governance['github']['branch_pattern'])
         pattern = pattern.replace(r'\{ticket\}', r'(?P<ticket>[A-Z][A-Z0-9]*-[0-9]+)')
         pattern = pattern.replace(r'\{slug\}', r'[A-Za-z0-9_.-]+')
-        matched = re.fullmatch(pattern, config['head_branch'])
+        matched = re.fullmatch(pattern, self.c['head_branch'])
         ticket = matched.groupdict().get('ticket') if matched else None
-        path = project_ledger_path(governance['project']['id'], path=config.get('budget_ledger_path'),
+        path = project_ledger_path(governance['project']['id'], path=self.c.get('budget_ledger_path'),
             accounting_enabled=resolve_settings(snapshot.config)['accounting_enabled'],
-            worktree_roots=(driver.worker, driver.critic), previous_paths=(driver.state / 'routing.sqlite3',))
+            worktree_roots=(self.worker, self.critic), previous_paths=(self.state / 'routing.sqlite3',))
         context = ControllerBudgeting(path,
-            governance, snapshot, driver, worktree_roots=(driver.worker, driver.critic))
-        driver.configure_budgeting(context, ticket_id=ticket)
-        return driver
+            governance, snapshot, self, worktree_roots=(self.worker, self.critic))
+        self.configure_budgeting(context, ticket_id=ticket)
+        return self
 
     def observe_enrollment(self, binding):
         from ..budget_enrollment import validate_binding

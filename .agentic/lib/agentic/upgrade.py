@@ -34,7 +34,8 @@ def budget_upgrade_disposition(config, operating, previous):
             'settings': settings,
             'legacy_policy_sha256': sha256(_canonical_manifest(load_yaml(config)['execution'])),
             'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED',
-            'owner_adoption_required': settings is None}
+            # Retained working-tree settings prove no protected owner confirmation.
+            'owner_adoption_required': True}
 
 
 def _budget_row_hash(row):
