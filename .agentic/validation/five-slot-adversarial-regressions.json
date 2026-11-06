@@ -1342,6 +1342,114 @@
       "regression_id": "AWF243-PRE9-ADOPTED-REVALIDATION",
       "source_finding_id": null,
       "test_id": "PreNineCliRegressions.test_pre9_adopted_success_revalidates_retained_and_live_evidence"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Jira millisecond colonless mixed offsets complete lifecycle and read-only recovery",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-REAL-SHAPE",
+      "source_finding_id": "AWF243-SECOND-LOOK-TIMESTAMP",
+      "test_id": "RealJiraCliRegressions.test_real_shape_full_lifecycle_and_recovery"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Only Jira observation timestamps accept colonless offsets; canonical records remain strict",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-STRICT-TIME",
+      "source_finding_id": null,
+      "test_id": "RealJiraCliRegressions.test_jira_timestamp_boundary_does_not_relax_canonical_records"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Pre-POST read timeout remains unattempted and retryable through real CLI and adapter",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-PREPOST-RETRY",
+      "source_finding_id": "AWF243-SECOND-LOOK-PREPOST",
+      "test_id": "RealJiraCliRegressions.test_pre_post_timeout_is_unattempted_and_retryable"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "AWF-175 pre-write limitation reserves one readback entry within the unchanged cap",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-CHANGELOG-LIMIT",
+      "source_finding_id": null,
+      "test_id": "RealJiraCliRegressions.test_changelog_limit_reserves_space_before_post"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Concurrent changelog growth beyond the cap after POST retains UNKNOWN and never reissues",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-POSTPOST-GROWTH",
+      "source_finding_id": null,
+      "test_id": "RealJiraCliRegressions.test_concurrent_changelog_growth_after_post_remains_unknown"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Response loss after POST remains UNKNOWN until operation-bound recovery without another POST",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-POSTPOST-TIMEOUT",
+      "source_finding_id": null,
+      "test_id": "RealJiraCliRegressions.test_after_post_timeout_remains_unknown"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Healthy legacy rows adopt while each unresolved ticket and operation remains independently stopped",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-PARTIAL-ADOPTION",
+      "source_finding_id": "AWF243-SECOND-LOOK-ADOPTION",
+      "test_id": "RealJiraCliRegressions.test_adoption_skips_only_unresolved_rows_with_ticket_and_operation"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Explicit operator abandonment retains provenance and receipts without success inference or event replay",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-OPERATOR-RESOLUTION",
+      "source_finding_id": null,
+      "test_id": "RealJiraCliRegressions.test_legacy_operator_resolution_retains_uncertainty_without_replay_or_success"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Missing stream produces clear CLI refusal without traceback",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-MISSING-STREAM",
+      "source_finding_id": "AWF243-SECOND-LOOK-STREAM",
+      "test_id": "RealJiraCliRegressions.test_missing_stream_cli_refuses_without_traceback"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Issue-lock OSError cannot strand an unattempted IN_FLIGHT operation",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-ISSUE-LOCK",
+      "source_finding_id": "AWF243-SECOND-LOOK-LOCK",
+      "test_id": "RealJiraCliRegressions.test_issue_lock_oserror_releases_unattempted_claim"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Initial status read timeout cannot create a claim or stop before POST",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-INITIAL-READ",
+      "source_finding_id": null,
+      "test_id": "RealJiraCliRegressions.test_initial_status_read_timeout_is_unattempted_without_a_claim"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_review_regressions.py",
+      "name": "Operator abandonment never becomes a batch closeout replay or status-only success",
+      "permanent": true,
+      "regression_id": "AWF243-REAL-JIRA-ABANDONED-BATCH",
+      "source_finding_id": null,
+      "test_id": "BatchRecoveryRegressions.test_operator_abandoned_closeout_never_replays_or_counts_in_batch"
     }
   ]
 }

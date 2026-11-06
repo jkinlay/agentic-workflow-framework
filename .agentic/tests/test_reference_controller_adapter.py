@@ -141,11 +141,11 @@ class FakeHttp:
 				posted = bool(getattr(self, 'transition_bodies', [])) or not any('?fields=project,parent,labels,components,issuetype,summary' in call[1] for call in self.calls)
 				from_status = 'In Review' if '/issue/EX-100?' in url else 'Ready'
 				status = ('Done' if '/issue/EX-100?' in url else 'In Progress') if posted else from_status
-				previous = {'id': '1', 'created': '2026-10-09T07:59:59Z', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': 'Backlog', 'to': from_status}]}
+				previous = {'id': '1', 'created': '2026-10-09T08:59:59.000+0100', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': 'Backlog', 'to': from_status}]}
 				histories = [previous]
 				if posted:
-					histories = [{'id': '2', 'created': NOW, 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'to': status, 'toString': status}]}, previous]
-				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}, 'updated': NOW if posted else previous['created']}, 'changelog': {'histories': histories}}))
+					histories = [{'id': '2', 'created': '2026-10-09T08:00:00.000+0000', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'to': status, 'toString': status}, {'field': 'resolution', 'fieldtype': 'jira', 'fieldId': 'resolution', 'from': None, 'to': '10000'}]}, previous]
+				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}, 'updated': '2026-10-09T08:00:00.000+0000' if posted else previous['created']}, 'changelog': {'histories': histories, 'startAt': 0, 'total': len(histories), 'maxResults': len(histories)}}))
 			status = 'Ready' if self.issue_reads == 1 else 'In Progress'
 			return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status}}}))
 		if method == 'POST' and '/transitions' in url:

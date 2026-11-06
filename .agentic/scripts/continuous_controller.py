@@ -155,6 +155,17 @@ def main(argv=None, default_root=ROOT):
 	adopt.add_argument('--expected-repository-id', required=True, type=int)
 	adopt.add_argument('--operator', required=True)
 	adopt.add_argument('--now', required=True)
+	resolve = sub.add_parser('jira-operation-resolve', help='Operator abandons one stopped operation without claiming success; stop controller writers first')
+	resolve.add_argument('--issue', required=True)
+	resolve.add_argument('--operation-id', required=True)
+	resolve.add_argument('--expected-intent-sha256', required=True)
+	resolve.add_argument('--expected-project-id', required=True)
+	resolve.add_argument('--expected-repository-id', required=True, type=int)
+	resolve.add_argument('--operator', required=True)
+	resolve.add_argument('--now', required=True)
+	resolve.add_argument('--disposition', required=True, choices=['ABANDON_NO_REPLAY'])
+	resolve.add_argument('--reason', required=True)
+	resolve.add_argument('--provenance', required=True)
 	planning_state = sub.add_parser('planning-state', help='Repair primary planning state; stop all cycles using this database first')
 	prune = planning_state.add_subparsers(dest='planning_command', required=True).add_parser('prune')
 	prune.add_argument('--forget-source', action='append', default=[], help='explicitly forget a retained non-pending source after provider-owner confirmation')
@@ -205,6 +216,8 @@ def main(argv=None, default_root=ROOT):
 		output = prune_production_planning_state(args.state, worktree_roots=args.worktree_root, forget_sources=args.forget_source)
 		print(json.dumps(output, indent=2))
 		return 0
+	if not args.streams and not args.command.startswith('owner-publication-'):
+		parser.error('--stream is required for this command; supply each configured stream (for example --stream A)')
 	config_path = args.project_config or default_root / '.agentic/PROJECT_CONFIG.yaml'
 	config = load(config_path)
 	configured_cadence = config.get('controller', {}).get('status_cadence_seconds', 600)
@@ -222,6 +235,12 @@ def main(argv=None, default_root=ROOT):
 		from agentic.continuous_controller import adopt_legacy_jira_identity
 		output = adopt_legacy_jira_identity(store, config, expected_project_id=args.expected_project_id,
 			expected_repository_id=args.expected_repository_id, operator=args.operator, now=args.now)
+	elif args.command == 'jira-operation-resolve':
+		from agentic.continuous_controller import resolve_jira_operation
+		output = resolve_jira_operation(store, config, issue=args.issue, operation_id=args.operation_id,
+			expected_intent_sha256=args.expected_intent_sha256, expected_project_id=args.expected_project_id,
+			expected_repository_id=args.expected_repository_id, operator=args.operator, now=args.now,
+			disposition=args.disposition, reason=args.reason, provenance=args.provenance)
 	elif args.command == 'batch-operation':
 		request = _batch_operation_request(load(args.request))
 		calls = _require_adapters(adapters, {'batch_coordinator'})
