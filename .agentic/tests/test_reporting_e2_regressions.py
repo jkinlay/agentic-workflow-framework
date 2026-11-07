@@ -63,6 +63,17 @@ class ReportingE2Regressions(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def policy_snapshot(self):
+        from settings_pr_fixtures import accepted_fixture_snapshot
+        from test_operating import governance
+        from agentic.operating import default_operating
+        gov = governance()
+        gov['project']['id'] = self.binding['project']
+        gov['github']['repository_id'] = int(self.binding['repository'])
+        value = default_operating(gov['execution']['model_routing'])
+        value['reporting'] = deepcopy(self.settings)
+        return accepted_fixture_snapshot(self, Path(self.helper.temp.name) / 'reporting-policy', value, gov)
+
     def cycle(self, now, items=None):
         from agentic.operating import validate_operating
         self.clock.value = now
@@ -80,6 +91,66 @@ class ReportingE2Regressions(unittest.TestCase):
              patch.object(controller_fixture, 'REPOSITORY', self.repository), \
              patch('test_continuous_controller.ROOT', self.repository['repository_root']):
             return self.helper.cycle(now, items, **calls)
+
+    def test_supplied_working_and_pr_snapshot_cannot_change_reporting_decisions(self):
+        from dataclasses import replace
+        from agentic.operating import validate_operating, _json
+        from agentic.protected_settings import _git
+        import test_continuous_controller as controller
+        real = controller.real_production_controller_cycle
+        for accepted_mode, proposed_mode in (('off','both'),('both','off'),('both','both')):
+            with self.subTest(accepted=accepted_mode, proposed=proposed_mode):
+                self.settings['mode'] = accepted_mode
+                before = len(self.network.posts)
+                def supplied(*args, **kwargs):
+                    snapshot = kwargs['planning_operating_snapshot']
+                    root = Path(snapshot.provenance['path']).parent
+                    value = snapshot.config
+                    value['reporting']['mode'] = proposed_mode
+                    if proposed_mode == accepted_mode:
+                        value['reporting']['bindings'][0].update(destination='replacement', secret_ref='env:PLANTED', revision='2')
+                    (root/'OPERATING_CONFIG.yaml').write_bytes(_json(value))
+                    # A committed PR branch still cannot supply accepted policy.
+                    import subprocess, shutil
+                    from agentic.child_process import isolated_git_env
+                    def git(*argv):
+                        return subprocess.run([shutil.which('git'),'-C',str(root),*argv],env=isolated_git_env(),check=True,capture_output=True)
+                    git('checkout','-B','codex/planted');git('add','OPERATING_CONFIG.yaml')
+                    git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Proposed reporting','--allow-empty')
+                    planted = replace(validate_operating(value,kwargs['planning_config']),_provenance_json=snapshot._provenance_json)
+                    kwargs.update(planning_operating_snapshot=planted,operating_config_sha256=planted.operating_hash)
+                    return real(*args,**kwargs)
+                with patch.object(controller,'real_production_controller_cycle',supplied):
+                    result=self.cycle('2026-11-10T'+('10' if accepted_mode=='off' else '11' if proposed_mode=='off' else '12')+':00:00Z')
+                self.assertEqual([],result['errors'])
+                if accepted_mode=='off':self.assertEqual(before,len(self.network.posts))
+                else:self.assertGreater(len(self.network.posts),before)
+                self.assertFalse(any('replacement' in url for _,url in self.network.calls))
+
+    def test_unverified_or_malformed_default_policy_reaches_no_reporting_transport(self):
+        import test_continuous_controller as controller
+        from agentic.operating import _json
+        real=controller.real_production_controller_cycle
+        for malformed in (False,True):
+            before=list(self.network.calls)
+            def supplied(*args,**kwargs):
+                import subprocess,shutil
+                from agentic.child_process import isolated_git_env
+                root=Path(kwargs['planning_operating_snapshot'].provenance['path']).parent
+                def git(*argv):
+                    return subprocess.run([shutil.which('git'),'-C',str(root),*argv],env=isolated_git_env(),check=True,capture_output=True)
+                if malformed:
+                    (root/'OPERATING_CONFIG.yaml').write_bytes(b'reporting: [')
+                    git('add','OPERATING_CONFIG.yaml');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Malformed policy')
+                    git('update-ref','refs/remotes/origin/main','HEAD')
+                else:
+                    git('config','remote.origin.url','https://example.invalid/project.git')
+                    git('symbolic-ref','--delete','refs/remotes/origin/HEAD')
+                return real(*args,**kwargs)
+            with patch.object(controller,'real_production_controller_cycle',supplied), patch('agentic.reporting.platform.environment_secret',side_effect=AssertionError('secret forbidden')):
+                with self.assertRaisesRegex(ValidationError,'unverified|default.branch'):
+                    self.cycle('2026-11-10T10:00:00Z')
+            self.assertEqual(before,self.network.calls)
 
     def status(self):
         return reporting_status(self.helper.store, {'reporting': self.settings}, self.binding)

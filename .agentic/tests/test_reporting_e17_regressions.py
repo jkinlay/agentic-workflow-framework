@@ -1,3 +1,4 @@
+from test_reporting_fixtures import reporting_policy_snapshot
 """Terminal reporting ownership and input shapes through production entry points."""
 from copy import deepcopy
 from contextlib import redirect_stdout
@@ -14,7 +15,7 @@ from agentic.review_batching import ReviewBatchStore
 import test_reporting_e6_regressions as e6
 import test_reporting_e12_regressions as e12
 import test_reporting_owner_admission as owner
-import test_awf242_owner_admission as owner_fixture
+from reporting_pr_fixtures import ReportingPRFixture as owner_fixture
 
 
 class ExhaustionTests(unittest.TestCase):
@@ -84,7 +85,7 @@ class ExhaustionTests(unittest.TestCase):
             reviews.recheck(payload['batch_id'], now, {}, observe)
             reviews.begin_delivery(payload['batch_id'], now)
             if retained:
-                providers = case.adapters['configure_reporting']({'reporting': case.settings}, case.binding)
+                providers = case.adapters['configure_reporting'](reporting_policy_snapshot(case), case.binding)
                 ReviewReportingPort(case.helper.store, {'reporting': case.settings}, case.binding,
                                     providers, case.clock.now)._retain_review_batch(payload)
         before = [r for r in case.status()['reports'] if r['kind'] == 'final-human-review']
@@ -126,13 +127,13 @@ class ExhaustionTests(unittest.TestCase):
         cli = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/continuous_controller.py'))
         output = io.StringIO()
         with redirect_stdout(output):
-            code = cli['main'](['--state', str(case.helper.path), '--worktree-root', str(project),
+            code = cli['main'](['--state', str(case.helper.path), '--worktree-root', str(project / 'worker-worktrees'),
                 '--cadence-seconds', '3600', '--stream', 'A', '--stream', 'B', '--stream', 'C',
                 '--project-config', str(project / '.agentic/PROJECT_CONFIG.yaml'),
                 '--adapter-module', str(adapter), '--adapter-sha256', sha256(adapter.read_bytes()),
                 'cycle', '--inventory-binding', str(root / 'binding.json'), '--repository-root', str(project),
                 '--repository-head-sha', case.repository['repository_head_sha'],
-                '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', now, '--host-capacity', '3'])
+                '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', now, '--host-capacity', '3'], default_root=project)
         self.assertEqual(0, code, output.getvalue())
         result = json.loads(output.getvalue())
         self.assertTrue(all((e.get('operation'), e.get('state'), e.get('reason')) in {
@@ -155,10 +156,10 @@ class InputShapeTests(unittest.TestCase):
     unchanged = owner.ReportingOwnerAdmissionTests.unchanged
     bindings = owner.ReportingOwnerAdmissionTests.bindings
     assignments = owner.ReportingOwnerAdmissionTests.assignments
-    pending = owner.ReportingOwnerAdmissionTests.pending
-    confirm = owner.ReportingOwnerAdmissionTests.confirm
-    script = owner_fixture.OwnerAdmissionTests.script
-    forge_config_event = owner_fixture.OwnerAdmissionTests.forge_config_event
+    forge_config_event = owner_fixture.forge_config_event
+    write = owner_fixture.write
+    publish = owner_fixture.publish
+    refresh = owner_fixture.refresh
     def assert_refused_without_storage(self, assignments, value):
         result = self.cli('set', '--instruction', 'Reject malformed settings',
             *[part for assignment in assignments for part in ('--set', assignment)], '--json')
@@ -192,26 +193,6 @@ class InputShapeTests(unittest.TestCase):
                 self.assert_refused_without_storage((path + '=' + value,), value)
         self.assert_refused_without_storage(('operating_calendar.eod.weekdays={"' + value + '":1,"' + value + '":2}',), value)
 
-    def test_retained_unsafe_proposal_refuses_before_display_without_migration(self):
-        digest = self.pending(*self.assignments())
-        value = 'ghp_' + 'c' * 36
-        # Seed a legacy record in the disposable protected store. Production
-        # admission never writes these bytes; confirmation must leave them be.
-        seeded = self.script('', code=(
-            f'store=admission.ProposalStore.for_project(Path({str(self.root)!r}),{self.gov["project"]["id"]!r})\n'
-            f'record=store.load({digest!r})\n'
-            f'record["protected_values"]["reporting"]["bindings"][0]["revision"]={value!r}\n'
-            'print(store.save(record))\n'))
-        self.assertEqual(0, seeded.returncode, seeded.stderr)
-        database = next((self.fixture.base / 'protected').rglob('owner-admission.sqlite3'))
-        before = database.read_bytes()
-        refused = self.confirm(seeded.stdout.strip())
-        self.assertEqual(2, refused.returncode)
-        self.assertNotIn(value, refused.stdout + refused.stderr)
-        self.assertFalse(self.calls.exists())
-        self.assertEqual(before, database.read_bytes())
-        self.unchanged()
-
     def test_unsafe_hand_edit_is_withheld_and_preserved(self):
         from agentic import operating
         value = 'ghp_' + 'e' * 36
@@ -223,8 +204,8 @@ class InputShapeTests(unittest.TestCase):
         before = (self.root / operating.CONFIG).read_bytes()
         shown = self.cli('show', '--json')
         self.assertEqual(0, shown.returncode)
-        self.assertEqual('OWNER_CONFIRMATION_REQUIRED', json.loads(shown.stdout)['status'])
-        self.assertNotIn('configuration', json.loads(shown.stdout))
+        self.assertEqual('ACCEPTED', json.loads(shown.stdout)['status'])
+        self.assertEqual('off', json.loads(shown.stdout)['configuration']['reporting']['mode'])
         self.assertNotIn(value, shown.stdout + shown.stderr)
         self.assertEqual(before, (self.root / operating.CONFIG).read_bytes())
         self.assertFalse((self.fixture.base / 'protected').exists())

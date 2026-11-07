@@ -326,6 +326,10 @@ class CliTests(Probes, unittest.TestCase):
                 config['reporting'] = deepcopy(case.settings)
                 if case.budgeting: config['budgeting'] = case.budgeting
                 p.write_text(json.dumps(config), encoding='utf-8')
+                from settings_pr_fixtures import publish_fixture_settings
+                publish_fixture_settings(case, p.parent, json.loads((p.parent / '.agentic/PROJECT_CONFIG.yaml').read_text()), config, preserve_checkout=True)
+                from test_reporting_fixtures import refresh_reporting_repository
+                refresh_reporting_repository(case, p.parent)
                 p = root / 'binding.json'
                 b = json.loads(p.read_text())
                 b['scope_sha256'] = case.binding['scope_revision']
@@ -338,7 +342,7 @@ class CliTests(Probes, unittest.TestCase):
                     def script(path):
                         ns = original(path)
                         main = ns['main']
-                        ns['main'] = lambda argv: main(['--budget-ledger', str(case.ledger_path)] + argv)
+                        ns['main'] = lambda argv, **kwargs: main(['--budget-ledger', str(case.ledger_path)] + argv, **kwargs)
                         return ns
                     with patch.object(e12.runpy, 'run_path', script):
                         e12.E12CliTests.cycle(self, case, now)

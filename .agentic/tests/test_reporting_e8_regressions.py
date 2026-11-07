@@ -1,3 +1,4 @@
+from test_reporting_fixtures import reporting_policy_snapshot
 """Pre-E8: production controller/outbox, synthetic network and observations only."""
 from copy import deepcopy
 from datetime import timedelta
@@ -61,7 +62,7 @@ class E8ControllerTests(unittest.TestCase):
         for candidate in self.helper.listed:
             batches.enqueue_observed(candidate, observe(candidate, now), now, {}, repository_id='101')
         payload = batches.claim(now, {}, lambda candidate: observe(candidate, now))
-        providers = self.adapters['configure_reporting']({'reporting': self.settings}, self.binding)
+        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding)
         port = ReviewReportingPort(self.helper.store, {'reporting': self.settings}, self.binding,
                                    providers, lambda: now, observe_candidate=observe)
         self.assertIsNone(port.deliver_review_batch(payload))
@@ -94,7 +95,7 @@ class E8ControllerTests(unittest.TestCase):
         self.assertTrue(all(len(d['attempts']) == 1 for d in final))
 
     def test_public_persistence_refuses_exact_opaque_credential_in_every_intent_field(self):
-        providers = self.adapters['configure_reporting']({'reporting': self.settings}, self.binding)
+        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding)
         outbox = DeliveryOutbox(self.helper.store)
         for destination in self.settings['bindings']:
             provider = providers[destination['platform']]

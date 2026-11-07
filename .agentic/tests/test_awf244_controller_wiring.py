@@ -80,13 +80,10 @@ class ControllerBatchingTests(unittest.TestCase):
                                          now=now, repository=REPOSITORY)
         config = deepcopy(inputs['planning_operating_snapshot'].config)
         config['operating_calendar'] = deepcopy(self.calendar)
-        from owner_admission_fixtures import confirmed_fixture_snapshot
+        from settings_pr_fixtures import accepted_fixture_snapshot
         root = Path(self.temp.name) / 'project'
         root.mkdir(exist_ok=True)
-        snapshot = confirmed_fixture_snapshot(self, root, config, inputs['planning_config'])
-        (root / '.agentic').mkdir(exist_ok=True)
-        (root / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(inputs['planning_config']), encoding='utf-8')
-        (root / 'OPERATING_CONFIG.yaml').write_text(json.dumps(config), encoding='utf-8')
+        snapshot = accepted_fixture_snapshot(self, root, config, inputs['planning_config'])
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         def dispatch(payload):
             self.events.append(payload['lifecycle_stage'])
@@ -98,9 +95,12 @@ class ControllerBatchingTests(unittest.TestCase):
         calls = dict(observe_owner_ready=self.observe_ready,
                      observe_review_candidate=self.observe_candidate,
                      deliver_review_batch=self.deliver, observe_review_delivery=self.readback)
+        from settings_pr_fixtures import fixture_repository, fixture_reservations
+        repository = fixture_repository(root)
+        calls['observe_reservations'] = lambda request: fixture_reservations(root, request)
         calls.update(overrides)
         return production_controller_cycle(self.store, **inputs, now=now, host_capacity=3,
-            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            inventory_binding=INVENTORY_BINDING, **repository,
             controller_clock=lambda: self.now, observe_inventory=lambda: inventory_observation(now, items),
             dispatch_ticket=dispatch, observe_dispatch=lambda payload: dispatch_receipt(payload, now),
             deliver_status=status, **calls)

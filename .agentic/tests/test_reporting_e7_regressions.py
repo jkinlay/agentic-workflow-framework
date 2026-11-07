@@ -227,12 +227,12 @@ class E7CliTests(unittest.TestCase):
         cli = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/continuous_controller.py'))
         output = io.StringIO()
         with redirect_stdout(output):
-            code = cli['main'](['--state', str(case.helper.path), '--worktree-root', str(project),
+            code = cli['main'](['--state', str(case.helper.path), '--worktree-root', str(project / 'worker-worktrees'),
                 '--cadence-seconds', '3600', '--stream', 'A', '--stream', 'B', '--stream', 'C',
                 '--project-config', str(project / '.agentic/PROJECT_CONFIG.yaml'), '--adapter-module', str(adapter),
                 '--adapter-sha256', sha256(adapter.read_bytes()), 'cycle', '--inventory-binding', str(root / 'binding.json'),
                 '--repository-root', str(project), '--repository-head-sha', case.repository['repository_head_sha'],
-                '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', now, '--host-capacity', '3'])
+                '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', now, '--host-capacity', '3'], default_root=project)
         self.assertEqual(code, 0, output.getvalue())
         self.assertEqual(json.loads(output.getvalue())['errors'], [])
 

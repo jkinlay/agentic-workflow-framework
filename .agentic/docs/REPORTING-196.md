@@ -2,23 +2,25 @@
 
 ## Construction
 
-Reporting defaults OFF; suspension excludes disabled periods.
+Reporting defaults OFF; exclude disabled periods.
 Reports grant no chat/accounting/dispatch/Jira/merge/activation authority.
 
-Shared operating transaction `set` proposes; owner `confirm --digest D` persists
-off/teams/slack/both and project/repository/scope/platform/destination/revision/
-secret_ref bindings. Settings stay unchanged until confirmation;
-OFF/rebinding require admission. `show` reads persisted settings. Missing/duplicate/foreign bindings refuse before credentials;
-rotation cannot retarget intents/reset attempts.
+Request off/teams/slack/both and complete project/repository/scope/platform/
+destination/revision/secret_ref bindings in Codex chat. The skill validates a PR;
+the owner merges (restricted pushes use owner publication). `show` reports fetched
+default settings/commit and safe differences. Working/branch edits, including OFF,
+have no effect; merge/fetch applies next load. Unverified/malformed policy refuses.
+`operating validate --file` checks shapes offline; reachability/membership remains
+UNOBSERVED. Missing/duplicate/foreign bindings refuse before credentials.
+Never retarget corrections/reset attempts.
 
-configure_reporting requires reviewed context/sender and channel IDs.
-env:VARIABLE uses the reference resolver; other references need a host resolver.
-Configuration cannot register ports. Sender owners manage permissions/liveness/recovery/rotation.
+configure_reporting rederives accepted policy; reviewed context/sender/channel IDs required.
+env:VARIABLE is the reference resolver; other refs need reviewed hosts. Owners manage permissions/rotation.
 
 ## Sources and periods
 
 Ports reread digest-bound evidence; reporting_sources binds scope and at most 100 PRs.
-Unknown details/metrics remain unavailable; observed work stays visible.
+Unknown metrics remain unavailable.
 Periodic reports use AWF-244's read-only held/withdrawn/exhausted PR view,
 preserving candidate identities/recovery reasons.
 Accounting reads the actual setting and attributed ledger; reporting never enables
@@ -42,8 +44,7 @@ atomically. Resolved actions read resolved.
 
 ## Delivery and deadlines
 
-One controller owns snapshots/intents/transactions; migration preserves REPORT/SQLite
-protections. Dispatch precedes reporting.
+One controller owns snapshots/intents; preserve REPORT/SQLite protections. Dispatch precedes reporting.
 
 Sources have 30 seconds via source_timeout(); expiry retains PARTIAL coverage,
 unavailable totals and separate delivery admission. Delivered batches rotate:
@@ -113,10 +114,9 @@ or present a newly verified tuple.
 Restoration readback proceeds after withdrawal/cutoff; sends require fresh gates.
 Landed restorations seed withdrawal corrections. Correction/restoration chains
 retain original channel roots separately from reply receipts across restarts.
-Pending schedules are recomputed after settings recovery. WITHDRAWN/EXHAUSTED and
-terminal batches retain history and cannot revive by replay. An unavailable
-provider may require owner repair, but cannot block another destination/candidate.
+WITHDRAWN/EXHAUSTED and
+terminal batches retain history and cannot revive by replay. Unavailable providers cannot block another destination/candidate.
 
 Recovery: disable, quiesce, reconcile, back up before migration. Never delete
-intents/reset attempts. Inspect: read-only workflow.py reporting-status
---state STATE --binding BINDING. Supervised platform acceptance remains separate.
+intents/reset attempts. Inspect: workflow.py reporting-status
+--state STATE --binding BINDING. Platform acceptance remains separate.

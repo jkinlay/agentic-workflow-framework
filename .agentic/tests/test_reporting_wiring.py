@@ -1,6 +1,7 @@
 """Stage-three integration regressions; trusted ports are synthetic, never live."""
 from copy import deepcopy
 import json
+import os
 import io
 from contextlib import closing, redirect_stdout
 import sqlite3
@@ -23,41 +24,28 @@ def binding(platform='slack', project='p', repository='101', scope='s'):
 
 
 class ReportingSettingsTests(unittest.TestCase):
-    import test_reporting_owner_admission as admission_fixture
-    setUpClass = classmethod(admission_fixture.ReportingOwnerAdmissionTests.setUpClass.__func__)
-
-    def setUp(self):
-        self.admission_fixture.ReportingOwnerAdmissionTests.setUp(self)
-        from types import SimpleNamespace
-        self.temp = SimpleNamespace(name=str(self.fixture.base))
-        self.count = 0
-        # Parent-process reads must see the same disposable OS-account store as
-        # the installed subprocesses, never the real machine owner's store.
-        location = patch('agentic.owner_admission._owner_state_home', return_value=self.fixture.base / 'protected')
-        location.start()
-        self.addCleanup(location.stop)
-
-    save_governance = admission_fixture.ReportingOwnerAdmissionTests.save_governance
-    events = admission_fixture.ReportingOwnerAdmissionTests.events
-    cli = admission_fixture.ReportingOwnerAdmissionTests.cli
-    pending = admission_fixture.ReportingOwnerAdmissionTests.pending
-    confirm = admission_fixture.ReportingOwnerAdmissionTests.confirm
-    unchanged = admission_fixture.ReportingOwnerAdmissionTests.unchanged
-    recover = admission_fixture.ReportingOwnerAdmissionTests.recover
-    git = admission_fixture.ReportingOwnerAdmissionTests.git
+    from reporting_pr_fixtures import ReportingPRFixture as admission_fixture
+    setUpClass = classmethod(admission_fixture.setUpClass.__func__)
+    setUp = admission_fixture.setUp
+    save_governance = admission_fixture.save_governance
+    events = admission_fixture.events
+    cli = admission_fixture.cli
+    unchanged = admission_fixture.unchanged
+    git = admission_fixture.git
+    write = admission_fixture.write
+    publish = admission_fixture.publish
+    refresh = admission_fixture.refresh
+    apply_reporting = admission_fixture.apply_reporting
+    bindings = admission_fixture.bindings
 
     def destinations(self):
         return [binding(p, self.gov['project']['id'], str(self.gov['github']['repository_id']))
                 for p in ('teams', 'slack')]
 
     def set(self, mode, **kwargs):
-        self.before, self.audit_before = (self.root / op.CONFIG).read_bytes(), self.events()
-        digest = self.pending('reporting.mode=' + mode,
-                              'reporting.bindings=' + json.dumps(self.destinations()))
-        result = self.confirm(digest, **kwargs)
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.count += 1
-        return op.read_operating(self.root, self.gov)
+        snapshot = self.apply_reporting(mode, self.destinations())
+        self.count = getattr(self, 'count', 0) + 1
+        return snapshot
 
     def test_modes_persist_show_and_enable_no_other_feature(self):
         from agentic.reporting.settings import effective_reporting
@@ -89,29 +77,17 @@ class ReportingSettingsTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 op.set_operating(self.root, self.gov, 'Enable', assignments)
             self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
-        self.assertEqual(self.count, 0)
-        self.pending('reporting.mode=off')
-
-    def test_recovery_retains_owner_observation(self):
-        digest = self.pending('reporting.mode=both', 'reporting.bindings=' + json.dumps(self.destinations()))
-        crashed = self.confirm(digest, crash='after_config')
-        self.assertEqual(71, crashed.returncode, crashed.stdout + crashed.stderr)
-        self.count += 1
-        journal = (self.root / op.JOURNAL).read_bytes()
-        observation = json.loads(journal)['event']['owner_admission']
-        recovered = self.recover(json.loads(journal))
-        self.assertEqual(0, recovered.returncode, recovered.stdout + recovered.stderr)
-        result = op.read_operating(self.root, self.gov)
-        self.assertEqual(result.config['reporting']['mode'], 'both')
-        events = list((self.root / op.STATE / 'changes').glob('*.json'))
-        self.assertTrue(any(json.loads(p.read_bytes()).get('owner_admission') == observation for p in events))
-        self.assertEqual(self.count, 1)
+        self.assertEqual(getattr(self, 'count', 0), 0)
+        with self.assertRaisesRegex(ValidationError, 'PR'):
+            op.set_operating(self.root, self.gov, 'OFF', ['reporting.mode=off'])
 
     def test_cli_shows_effective_settings_delivery_and_coverage_without_migration(self):
         from agentic.cli import main
         from agentic.reporting.runtime import reporting_cycle
         snapshot = self.set('both')
-        controller = ContinuousControllerStore(Path(self.temp.name) / 'controller.sqlite3', ['A'])
+        state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(state_dir.cleanup)
+        controller = ContinuousControllerStore(Path(state_dir.name) / 'controller.sqlite3', ['A'])
         accepted = dict(project=self.gov['project']['id'], repository=str(self.gov['github']['repository_id']), scope_revision='s')
         reporting_cycle(controller, operating=snapshot.config, binding=accepted, now='2026-11-07T17:00:00Z')
         path = self.root / 'binding.json'
@@ -130,6 +106,9 @@ class ReportingSettingsTests(unittest.TestCase):
 
 class ReportingRuntimeTests(unittest.TestCase):
     def setUp(self):
+        secrets = patch.dict(os.environ, REPORT_TOKEN='synthetic-report-token')
+        secrets.start()
+        self.addCleanup(secrets.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / 'controller.sqlite3'

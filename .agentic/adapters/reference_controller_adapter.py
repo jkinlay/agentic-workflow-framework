@@ -838,16 +838,27 @@ def _build(config):
 		_text(value['merge_result_id'], 'Closeout merge result identity')
 		return {'observed_at': _clock_text(clock), 'result': value}
 
-	def observe_jira_reconciliation(request, *, retained_success=None):
+	def observe_jira_reconciliation(request, *, retained_success=None, retained_owner_closure=None):
 		required = {'operation', 'provider_identity', 'source_identity', 'binding', 'issue_id', 'transition_record_id', 'expected_status_id'}
 		_require(isinstance(request, dict) and set(request) == required and (request.get('operation') == 'JIRA_RECONCILIATION') and (request.get('source_identity') == 'jira_issue_transition_and_readback'), 'Jira reconciliation observation request is invalid')
 		_accepted, _project_path, _closeout_directory, jira_directory = observation_evidence()
 		provider = provider_identity()
 		_require(request['provider_identity'] == provider, 'Jira reconciliation request differs from observed provider identity')
+		if retained_owner_closure is not None:
+			from agentic.continuous_controller import validate_jira_owner_closure
+			value = deepcopy(retained_owner_closure)
+			validate_jira_owner_closure(value, request, now=_clock_text(clock))
+			live = read_current_status({'issue_id': request['issue_id'], 'jira_provider': provider,
+				'owner_closure_status_id': request['expected_status_id']})['owner_closure']
+			_require({key: item for key, item in live.items() if key != 'observed_at'} ==
+				{key: item for key, item in value['owner_closure'].items() if key != 'observed_at'},
+				'Owner closure differs from the latest actor-bound Jira transition')
+			return {'observed_at': live['observed_at'], 'result': value}
 		value = evidence_record(jira_directory, request['transition_record_id'], 'Jira transition')
 		_require(set(value) == {'record'} and isinstance(value['record'], dict), 'Jira transition evidence has a non-closed shape')
 		record = value['record']
-		_require(record.get('record_id') == request['transition_record_id'] and record.get('binding') == request['binding'] and (record.get('binding', {}).get('issue_id') == request['issue_id']) and (record.get('jira_provider') == provider) and (record.get('producer_id') == provider['controller_actor_id']) and (record.get('lifecycle_event') == 'JIRA_RECONCILED') and (record.get('status') == 'SUCCEEDED') and (record.get('to_status_id') == request['expected_status_id']), 'Jira transition evidence differs from the requested reconciliation')
+		from agentic.continuous_controller import jira_reconciliation_binding_matches
+		_require(record.get('record_id') == request['transition_record_id'] and jira_reconciliation_binding_matches(record.get('binding'), request['binding']) and (record.get('binding', {}).get('issue_id') == request['issue_id']) and (record.get('jira_provider') == provider) and (record.get('producer_id') == provider['controller_actor_id']) and (record.get('lifecycle_event') == 'JIRA_RECONCILED') and (record.get('status') == 'SUCCEEDED') and (record.get('to_status_id') == request['expected_status_id']), 'Jira transition evidence differs from the requested reconciliation')
 		issue = jira_json('GET', '/rest/api/3/issue/' + quote(request['issue_id'], safe='') + '?fields=status,updated&expand=changelog')
 		identity_field = 'key' if re.fullmatch(r'[A-Z][A-Z0-9_]*-[1-9][0-9]*', request['issue_id']) else 'id'
 		_require(issue.get(identity_field) == request['issue_id'], 'Jira reconciliation readback returned a different issue')
@@ -1652,7 +1663,11 @@ def _build(config):
 			# Independently retained historical envelope; the controller validates
 			# its exact operation, intent and invariant identity before pinning.
 			return evidence_record(directory, operation_id, 'Jira operation identity')
-		raise ValidationError('Legacy Jira identity is unavailable; use continuous_controller.py jira-identity-adopt with --expected-project-id and --expected-repository-id')
+		from agentic.continuous_controller import _jira_resolution_command
+		row = {'issue_id': record['binding']['issue_id'], 'operation_id': operation_id,
+			'intent_sha256': fingerprint('controller-jira-operation',
+				{key: value for key, value in record.items() if key != 'created_at'})}
+		raise ValidationError(f"{row['issue_id']} operation {operation_id}: historical identity envelope is unavailable; stop writers; restore independent historical evidence; healthy SUCCEEDED rows may use jira-identity-adopt; unresolved or held rows may explicitly retire without replay using " + _jira_resolution_command(jira_scope_config(), row))
 
 	def read_assignment(record):
 		from agentic.intake_assignment import verify_assignment_record
@@ -1756,8 +1771,10 @@ def _build(config):
 
 	def read_current_status(binding):
 		_require(isinstance(binding, dict) and isinstance(binding.get('issue_id'), str), 'Jira status read needs an issue identity')
+		closure_status = binding.get('owner_closure_status_id')
+		query = '?fields=status' if closure_status is None else '?fields=status,updated&expand=changelog'
 		try:
-			value = jira_json('GET', '/rest/api/3/issue/' + quote(binding['issue_id'], safe='') + '?fields=status')
+			value = jira_json('GET', '/rest/api/3/issue/' + quote(binding['issue_id'], safe='') + query)
 		except ValidationError as exc:
 			if isinstance(exc.__cause__, TimeoutError):
 				raise JiraTransitionNotAttempted('Jira status read timed out before any POST') from exc
@@ -1766,7 +1783,11 @@ def _build(config):
 		observed_at = _clock_text(clock)
 		provider = binding.get('jira_provider') or provider_identity()
 		_require(isinstance(status_id, str) and status_id, 'Jira issue status is missing')
-		return {'issue_id': binding['issue_id'], 'status_id': status_id, 'observed_at': observed_at, 'jira_provider': provider}
+		result = {'issue_id': binding['issue_id'], 'status_id': status_id, 'observed_at': observed_at, 'jira_provider': provider}
+		if closure_status is not None:
+			_require(provider == provider_identity(), 'Owner closure provider identity differs')
+			result['owner_closure'] = jira_owner_closure(value, binding['issue_id'], closure_status, provider, observed_at)
+		return result
 
 	def jira_history_order(histories):
 		_require(isinstance(histories, list), 'Jira transition history is unavailable')
@@ -1842,6 +1863,26 @@ def _build(config):
 		_require(latest['actor'] == record['jira_provider']['controller_actor_id'],
 			'Latest Jira transition belongs to another actor; suspected external automation conflict')
 		return latest['actor']
+
+	def jira_owner_closure(issue, issue_id, expected_status_id, provider, observed_at):
+		"""Read-only external Done evidence; status alone never proves owner closure."""
+		_require(issue.get('key') == issue_id
+			and issue.get('fields', {}).get('status', {}).get('id') == expected_status_id,
+			'Owner closure needs the configured Done status on the canonical issue')
+		history = jira_status_history(issue)
+		_require(history, 'Owner closure needs actor-bound status transition history')
+		latest = history[-1]
+		_require(latest['actor'] != provider['controller_actor_id'],
+			"Owner closure actor equals the controller actor; a controller sharing the owner's Jira account can't tell the two apart; owner closes in Jira using a distinct actor")
+		_require(latest['to'] == expected_status_id
+			and isinstance(latest['from'], str) and latest['from'] != latest['to'],
+			'Owner closure needs the latest Done transition by an actor other than the controller')
+		created = jira_timestamp(latest['created'])
+		_require(created <= jira_timestamp(issue.get('fields', {}).get('updated')) <= timestamp(observed_at),
+			'Owner closure transition is outside its provider observation window')
+		return {'issue_id': issue_id, 'jira_provider': provider, 'status': latest['to'],
+			'from_status': latest['from'], 'actor': latest['actor'], 'history_id': latest['id'],
+			'transition_at': created.isoformat(timespec='milliseconds' if created.microsecond and created.microsecond % 1000 == 0 else 'auto').replace('+00:00', 'Z'), 'observed_at': observed_at}
 
 	def prepare_transition(record):
 		_require(isinstance(record, dict) and isinstance(record.get('binding'), dict), 'Jira transition record is missing its binding')
@@ -2085,9 +2126,17 @@ def _build(config):
 	reporting_secret_refs = []
 	def configure_reporting(operating, binding):
 		from agentic.reporting.platform import build_reporting_providers
+		from agentic.operating import OperatingSnapshot, GOVERNANCE
+		from agentic.protected_settings import effective_snapshot, require_budget_policy
+		_require(isinstance(operating, OperatingSnapshot) and operating.provenance.get('path'),
+			'REPORT_ACCEPTED_POLICY_REQUIRED')
+		policy_root = Path(operating.provenance['path']).parent
+		governance = load_yaml((policy_root / GOVERNANCE).read_bytes())
+		operating = effective_snapshot(policy_root, governance, operating)
+		require_budget_policy(operating)
 		accepted = dict(project=github['project_id'], repository=str(github['repository_id']), scope_revision=github['scope_sha256'])
 		_require(binding == accepted, 'REPORT_SCOPE_BINDING_MISMATCH')
-		providers = build_reporting_providers(config.get('reporting'), operating, binding,
+		providers = build_reporting_providers(config.get('reporting'), operating.config, binding,
 			http=config.get('_reporting_http'), clock=lambda: _clock_text(clock))
 		# Keep admitted references only; never cache resolved credential bytes.
 		reporting_secret_refs[:] = [p.binding['secret_ref'] for p in providers.values()]

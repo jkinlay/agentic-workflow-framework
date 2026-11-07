@@ -376,6 +376,10 @@ class CliTests(unittest.TestCase):
             settings = dict(fresh_settings(), accounting_enabled=True)
             operating['budgeting'] = settings
             operating_path.write_text(json.dumps(operating), encoding='utf-8')
+            from settings_pr_fixtures import publish_fixture_settings
+            publish_fixture_settings(case, project, json.loads((project / '.agentic/PROJECT_CONFIG.yaml').read_text()), operating, preserve_checkout=True)
+            from test_reporting_fixtures import refresh_reporting_repository
+            refresh_reporting_repository(case, project)
             operating_before = operating_path.read_bytes()
             class Host:
                 def observe_enrollment(self, value): return deepcopy(value)
@@ -404,11 +408,11 @@ class CliTests(unittest.TestCase):
             output = io.StringIO()
             with redirect_stdout(output):
                 code = cli['main'](['--state', str(case.helper.path), '--budget-ledger', str(path),
-                    '--worktree-root', str(project), '--cadence-seconds', '3600', '--stream', 'A', '--stream', 'B', '--stream', 'C',
+                    '--worktree-root', str(project / 'worker-worktrees'), '--cadence-seconds', '3600', '--stream', 'A', '--stream', 'B', '--stream', 'C',
                     '--project-config', str(project / '.agentic/PROJECT_CONFIG.yaml'), '--adapter-module', str(adapter),
                     '--adapter-sha256', sha256(adapter.read_bytes()), 'cycle', '--inventory-binding', str(root / 'binding.json'),
                     '--repository-root', str(project), '--repository-head-sha', case.repository['repository_head_sha'],
-                    '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', NOW, '--host-capacity', '3'])
+                    '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', NOW, '--host-capacity', '3'], default_root=project)
             self.assertEqual(code, 0, output.getvalue())
             self.assertEqual(json.loads(output.getvalue())['errors'], [])
             body = next(r['body'] for r in reversed(case.status()['reports']) if r['kind'] == 'eod')

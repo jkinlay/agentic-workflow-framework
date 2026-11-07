@@ -12,30 +12,31 @@ TEAMS_DESTINATION = TEAM_ID + '/' + CHANNEL_ID
 
 
 def isolate_reporting_admission(case):
-    """Ordinary transport/controller fixtures assume prior owner admission.
-
-    The installed owner CLI/boundary suites exercise that admission separately.
-    Keep ordinary reporting probes independent of OS profiles, Git metadata and
-    protected stores. Preserve real configuration validation and provenance;
-    the calendar helper's snapshot factory must still use the reporting probe's
-    selected settings after its migration to the final owner boundary.
-    """
-    from dataclasses import replace
-    from pathlib import Path
+    """Publish the probe's validated settings in a disposable default ref."""
     from unittest.mock import patch
     import test_awf244_controller_wiring as calendar_fixture
-    from agentic.canonical import canonical
+    import settings_pr_fixtures
+    publish = settings_pr_fixtures.accepted_fixture_snapshot
+    def snapshot(owner, root, value, governance):
+        checked = calendar_fixture.validate_operating(value, governance)
+        return publish(owner, root, checked.config, governance)
+    boundary = patch('settings_pr_fixtures.accepted_fixture_snapshot', snapshot)
+    boundary.start()
+    case.addCleanup(boundary.stop)
 
-    def snapshot(_case, root, value, governance):
-        return replace(calendar_fixture.validate_operating(value, governance),
-                       _provenance_json=canonical({'path': str(Path(root) / 'OPERATING_CONFIG.yaml')}))
 
-    for target, replacement in (
-            ('owner_admission_fixtures.confirmed_fixture_snapshot', snapshot),
-            ('agentic.owner_admission.validate_protected_settings', lambda *args: None)):
-        boundary = patch(target, replacement)
-        boundary.start()
-        case.addCleanup(boundary.stop)
+def refresh_reporting_repository(case, root):
+    import shutil
+    import subprocess
+    from agentic.child_process import isolated_git_env
+    head, tree = subprocess.check_output([shutil.which('git'), '-C', str(root),
+        'rev-parse', 'HEAD', 'HEAD^{tree}'], env=isolated_git_env()).decode().splitlines()
+    case.repository.update(repository_root=root, repository_head_sha=head, repository_tree_sha=tree)
+
+
+def reporting_policy_snapshot(case):
+    from test_reporting_e2_regressions import ReportingE2Regressions
+    return ReportingE2Regressions.policy_snapshot(case)
 
 
 def slack_text(value):

@@ -153,14 +153,14 @@ class ReportingE3Regressions(unittest.TestCase):
         accepted = project / 'binding.json'
         accepted.write_text(json.dumps(self.binding), encoding='utf-8')
         before = self.helper.path.read_bytes()
+        from settings_pr_fixtures import publish_fixture_settings
+        publish_fixture_settings(self, project, inputs['planning_config'], config)
         # Match the parent fixture's synthetic prior admission in this fresh
         # process; this redaction test must never open the real owner store.
         entry = str(Path(__file__).resolve().parents[1] / 'scripts/workflow.py')
         args = [entry, '--root', str(project), 'reporting-status', '--state', str(self.helper.path), '--binding', str(accepted)]
         wrapper = ('import sys,runpy\n'
             f'sys.path.insert(0,{str(Path(__file__).resolve().parents[1] / "lib")!r})\n'
-            'import agentic.owner_admission as admission\n'
-            'admission.validate_protected_settings=lambda *args: None\n'
             f'sys.argv={args!r}\nrunpy.run_path({entry!r},run_name="__main__")\n')
         process = subprocess.run([sys.executable, '-B', '-c', wrapper],
             capture_output=True, text=True, timeout=30)
@@ -257,11 +257,17 @@ def cli_probe(latency, *, prepare=None, inspect=None):
         project = Path(case.helper.temp.name) / 'cli-project'
         subprocess.run(['git', 'clone', '--shared', '--quiet', str(case.repository['repository_root']), str(project)],
                        check=True, capture_output=True)
+        # This clone is a local fixture, not a remote-policy integration probe.
+        subprocess.run(['git','-C',str(project),'config','--local','--unset-all','remote.origin.url'], check=True, capture_output=True)
         gov = inputs['planning_config']
         (project / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(gov), encoding='utf-8')
         operating = deepcopy(inputs['planning_operating_snapshot'].config)
         operating['reporting'] = deepcopy(case.settings)
         (project / 'OPERATING_CONFIG.yaml').write_text(json.dumps(operating), encoding='utf-8')
+        from settings_pr_fixtures import publish_fixture_settings
+        publish_fixture_settings(case, project, gov, operating)
+        from test_reporting_fixtures import refresh_reporting_repository
+        refresh_reporting_repository(case, project)
         ports = dict(case.adapters)
         ports.update({k: v for k, v in inputs.items() if k.startswith(('observe_', 'verify_'))})
         ports.update({k: v for k, v in planning_resource_inputs(3).items() if k.startswith(('observe_', 'verify_'))})
@@ -281,11 +287,11 @@ def cli_probe(latency, *, prepare=None, inspect=None):
         case.helper.path = Path(case.helper.temp.name) / 'cli-controller.sqlite3'
         output = io.StringIO()
         with redirect_stdout(output):
-            code = cli['main'](['--state', str(case.helper.path), '--worktree-root', str(project), '--cadence-seconds', '3600', '--stream', 'A', '--stream', 'B', '--stream', 'C',
+            code = cli['main'](['--state', str(case.helper.path), '--worktree-root', str(project / 'worker-worktrees'), '--cadence-seconds', '3600', '--stream', 'A', '--stream', 'B', '--stream', 'C',
                 '--project-config', str(project / '.agentic/PROJECT_CONFIG.yaml'), '--adapter-module', str(adapter),
                 '--adapter-sha256', sha256(adapter.read_bytes()), 'cycle', '--inventory-binding', str(binding),
                 '--repository-root', str(project), '--repository-head-sha', case.repository['repository_head_sha'],
-                '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', now, '--host-capacity', '3'])
+                '--repository-tree-sha', case.repository['repository_tree_sha'], '--now', now, '--host-capacity', '3'], default_root=project)
         assert code == 0
         result = json.loads(output.getvalue())
         assert result['errors'] == [], result['errors']

@@ -1,4 +1,4 @@
-"""Default-OFF reporting choices; trusted host authenticates destination approval."""
+"""Pure default-OFF reporting normalization and field allowlists; no authentication."""
 from copy import deepcopy
 import re
 
@@ -45,12 +45,3 @@ def effective_reporting(root, *, binding=None):
     selected = {'teams', 'slack'} if result['mode'] == 'both' else {result['mode']} - {'off'}
     require(selected <= seen, 'REPORT_BINDING_REQUIRED')
     return result
-
-
-def validate_reporting_change(current, changes, effective):
-    """Pure shared-admission validator; collect no identity, secrets or state."""
-    require(isinstance(changes, dict) and bool(changes) and set(changes) <= {'mode', 'bindings'},
-            'REPORT_SETTINGS_INVALID')
-    prior = effective_reporting(current)
-    result = effective_reporting({'reporting': {**prior, **deepcopy(changes)}})
-    require(result == effective_reporting(effective), 'REPORT_SETTINGS_TRANSITION_MISMATCH')

@@ -191,40 +191,13 @@ class ModeIntegrationTests(unittest.TestCase):
         self.assertEqual(blocked['code'], 'RETRY_LIMIT_INCREASE_REQUIRES_AUTHORIZATION')
 
     def test_untrusted_budget_edit_and_invalid_mixed_change_leave_all_bytes_unchanged(self):
-        host, registry = self.prepare_operating()
+        self.prepare_operating()
         before = (self.root / op.CONFIG).read_bytes()
-        with self.assertRaisesRegex(ValidationError, 'Trusted-host'):
+        with self.assertRaisesRegex(ValidationError, 'PR'):
             op.set_operating(self.root, self.gov, 'enable', ['budgeting.accounting_enabled=true'])
         with self.assertRaises(ValidationError):
-            op.set_operating(self.root, self.gov, 'invalid mixed', ['budgeting.accounting_enabled=true', 'streams.count=999'], budget_registry=registry)
+            op.set_operating(self.root, self.gov, 'invalid mixed', ['budgeting.accounting_enabled=true', 'streams.count=999'])
         self.assertEqual((self.root / op.CONFIG).read_bytes(), before)
-        from agentic import owner_admission as admission
-        self.gov['merge_gate']['trusted_owner_ids'] = [1001]
-        (self.root / op.GOVERNANCE).write_bytes(op._json(self.gov))
-        identity = dict(id=1001, login='owner', type='User', executable_path='fixture-gh',
-                        executable_sha256=op.sha256(b'fixture-gh'))
-        state = tempfile.TemporaryDirectory()
-        self.addCleanup(state.cleanup)
-        with patch.object(admission, '_owner_state_home', return_value=Path(state.name)), \
-             patch.object(admission, 'accepted_binding', side_effect=self.owner_binding), \
-             patch.object(admission, 'require_terminal'), \
-             patch.object(admission, 'observe_github_owner', return_value=identity):
-            with self.assertRaises(admission.PendingOwnerConfirmation) as pending:
-                op.set_operating(self.root, self.gov, 'enable', ['budgeting.accounting_enabled=true'])
-            digest = pending.exception.report['digest']
-            changed = admission.confirm(self.root, self.gov, digest,
-                stdin=io.StringIO(digest[:8] + '\n'), stdout=io.StringIO())
-        self.assertTrue(changed.config['budgeting']['accounting_enabled'])
-
-    @staticmethod
-    def owner_binding(root, governance, snapshot):
-        return dict(project_id=governance['project']['id'],
-                    project_location_hash=op.sha256(str(Path(root).resolve()).encode()),
-                    repository={key: governance['github'][key]
-                        for key in ('host', 'repository_id', 'repository', 'base_branch')},
-                    governance_digest=op.fingerprint('operating-governance', governance),
-                    prior_settings_hash=snapshot.operating_hash)
-
     def test_state_store_off_has_no_reservation_and_new_modes_use_canonical_ledger(self):
         project = self.gov['project']['id']
         store = StateStore(self.root / 'state.sqlite', project)
@@ -250,53 +223,6 @@ class ModeIntegrationTests(unittest.TestCase):
         (self.root / op.GOVERNANCE).write_bytes(op._json(self.gov))
         (self.root / op.CONFIG).write_bytes(op._json(self.value))
         op.initialize_operating(self.root, self.gov)
-        host = FixtureHost()
-        registry = EnrollmentRegistry(self.root / 'protected-enrollment.sqlite', host)
-        changes = {'accounting_enabled': True}
-        host.owner = dict(observation_id='owner-1', actor_id='owner', project_id=self.gov['project']['id'],
-                          prior_settings_hash=settings_hash(self.value['budgeting']), changes=changes)
-        return host, registry
-
-    def test_budget_owner_admission_is_journalled_and_recovery_does_not_replay_owner(self):
-        from agentic import owner_admission as admission
-        from agentic.canonical import sha256
-        # This unit fixture supplies accepted-runtime/identity facts; installed
-        # subprocess coverage in test_awf242_owner_admission verifies those gates.
-        self.gov['merge_gate']['trusted_owner_ids'] = [1001]
-        self.prepare_operating()
-        state = tempfile.TemporaryDirectory()
-        self.addCleanup(state.cleanup)
-        original = op._new
-        def interrupted(tree, name, raw):
-            if '/changes/' in name:
-                raise OSError('fixture interrupted event publication')
-            return original(tree, name, raw)
-        identity = dict(id=1001, login='owner', type='User', executable_path='fixture-gh',
-                        executable_sha256=sha256(b'fixture-gh'))
-        with patch.dict(os.environ, {'AWF_STATE_HOME': state.name}, clear=True), patch.object(
-                admission, '_owner_state_home', return_value=Path(state.name)), patch.object(
-                admission, 'accepted_binding', side_effect=self.owner_binding), patch.object(
-                admission, 'require_terminal'), patch.object(admission, 'observe_github_owner', return_value=identity) as lookup:
-            with self.assertRaises(admission.PendingOwnerConfirmation) as pending:
-                op.set_operating(self.root, self.gov, 'enable accounting', ['budgeting.accounting_enabled=true'])
-            digest = pending.exception.report['digest']
-            with patch.object(op, '_new', side_effect=interrupted), self.assertRaises(OSError):
-                admission.confirm(self.root, self.gov, digest, stdin=io.StringIO(digest[:8] + '\n'), stdout=io.StringIO())
-            journal = (self.root / op.JOURNAL).read_bytes()
-            event = json.loads(journal)['event']
-            self.assertEqual(event['budget_owner_observation']['observation_id'],
-                             'github-terminal:' + event['owner_admission']['request_id'] + ':' + digest)
-            recovered = op.recover_operating(self.root, self.gov, sha256(journal))
-            self.assertTrue(recovered.config['budgeting']['accounting_enabled'])
-            self.assertIn('Budgeting', op.render_operating(recovered, self.gov, state='FIXTURE'))
-            with self.assertRaisesRegex(ValidationError, 'PROPOSAL_ALREADY_CONSUMED'):
-                admission.confirm(self.root, self.gov, digest, stdin=io.StringIO(digest[:8] + '\n'), stdout=io.StringIO())
-            self.assertEqual(1, lookup.call_count)
-            database = admission.ProposalStore.for_project(self.root, self.gov['project']['id']).path
-            with closing(sqlite3.connect(database)) as db:
-                self.assertEqual(1, db.execute('SELECT count(*) FROM owner_confirmations').fetchone()[0])
-
-
     def test_cli_off_proposal_without_ledger_is_not_a_dispatch_authorization(self):
         self.prepare_operating()
         spec = importlib.util.spec_from_file_location('awf242_route_cli', Path(__file__).resolve().parents[1] / 'scripts/route_model.py')

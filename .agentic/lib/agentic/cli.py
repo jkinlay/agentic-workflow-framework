@@ -279,6 +279,8 @@ def main(argv=None, default_root=None):
             from .reporting.observations import inspect_reporting
             config = load(args.config or root / '.agentic/PROJECT_CONFIG.yaml')
             snapshot = read_operating(root, config)
+            from .protected_settings import require_budget_policy
+            require_budget_policy(snapshot)
             binding = load(args.binding)
             if (not isinstance(binding, dict) or set(binding) != {'project', 'repository', 'scope_revision'} or
                     binding['project'] != config['project']['id'] or binding['repository'] != str(config['github']['repository_id'])):

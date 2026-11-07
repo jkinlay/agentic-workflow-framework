@@ -425,6 +425,9 @@ def catalog(*, include_ticket_plan=True):
             'secret_ref': text(maxLength=256, pattern=r'^(env|vault|secret):[A-Za-z0-9_./-]+$'),
         }), maxItems=2),
     }, required=[])
+    from agentic.reporting.settings import BINDING_PATTERNS
+    for field, pattern in BINDING_PATTERNS.items():
+        reporting['properties']['bindings']['items']['properties'][field]['pattern'] = '^(?:' + pattern + ')$'
     schemas["operating-config"] = obj({
         'reporting': reporting,
         "operating_calendar": operating_calendar,
@@ -502,6 +505,9 @@ def catalog(*, include_ticket_plan=True):
         'digest': DIGEST, 'request_id': UUID, 'confirmed_at': TIME,
         'executable_path': text(maxLength=32768), 'executable_sha256': DIGEST,
     })
+    schemas['operating-change']['properties']['unprotected_before_hash'] = {'type': ['string', 'null'], 'pattern': '^[0-9a-f]{64}$'}
+    schemas['operating-change']['properties']['unprotected_after_hash'] = DIGEST
+    schemas['operating-change']['properties']['legacy_before_configuration'] = {'type': 'object'}
     schemas["operating-epics"] = obj({
         "schema_version": const(1),
         "epics": {"type": "array", "maxItems": 1000, "items": obj({

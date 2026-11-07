@@ -1,18 +1,14 @@
 # Continuous controller
 
-1.9.6; continue until complete/blocked/owner-stopped.
-
 ## Cycle
 
 ```text
 python .agentic/scripts/workflow.py controller --help
 ```
 
-Do not use `python -B -I .agentic/scripts/workflow.py controller …` today: it
+Do not use `python -B -I .agentic/scripts/workflow.py controller ...` today:
 fails under isolated mode (AWF-207). Invoke without `-I`; `-B` may be
 retained. No fix release is promised.
-
-Protect worktree-external state; never reissue mutations.
 
 ## Planning recovery
 
@@ -69,20 +65,20 @@ and sorted, hash-matched, at-most-512-KiB critic diffs.
 `EXECUTED` binds fresh post-read UTC, provider Date/ETag heads and matching
 inventory; `UNKNOWN` reads only its retained `COMPLETED` receipt.
 
-Disabled Jira forbids access/observations. Before `merge-observed`, require `jira-lifecycle JIRA_RECONCILED`, protected records, provider/canonical-issue/scope/owner-hold/status observers and complete stable pagination. Missing/mismatched evidence refuses counts. Owner-closure tickets hold In Review. `reconcile_merged_ticket` is inert. Require [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
+Disabled Jira forbids observations. Counts require protected reconciliation/identity/scope/status/pagination evidence. Owner-closure tickets wait: **owner closes in Jira**. Re-run `jira-lifecycle JIRA_RECONCILED`: `read_current_status` validates complete history/latest Done/non-controller actor/provider time; shared owner/controller accounts stay held: indistinguishable actors. Retain actor/time; recheck history. Status alone cannot close holds; controllers never write Done. `reconcile_merged_ticket` is inert. Require [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
-Unknown/failed attempts stop only their ticket. Assignment shares admission/locking and worktree-external protected `store`; `intake_assignment_state` retains receipts/stops/identity. `jira-lifecycle BLOCK` binds `read_assignment(record)` to original ID/digest/issue/provider/labels/controller comment/fresh time. Preserve rejected receipts; synchronize intake. Issue-scoped `recover_jira_operations` requires exclusive ownership; `read_transition` validates operation/actor/provider/target. Never repeat writes or infer resolution from status. Batch closeout accepts actor-bound recovery without write receipts. Preserve success/conflict evidence.
+Unknown/failed attempts stop tickets; batch failures stop batches. Abandoned closeouts name ticket/operation. Assignment shares admission/locking/protected `store`; `intake_assignment_state` retains receipts/stops/identity. `jira-lifecycle BLOCK` binds `read_assignment(record)` to original ID/digest/issue/provider/labels/controller comment/fresh time. Synchronize intake. Exclusive `recover_jira_operations` uses `read_transition` operation/actor/provider/target evidence. Never replay/infer from status. Batch recovery accepts actor-bound evidence without write receipts. Preserve success/conflict evidence.
 
 `jira-not-attempted:<operation_id>` proves batch pre-write failures; unattempted/deferred claims resume. Malformed observations require mutation-free BLOCK. Legacy FAILED/no-receipt rows require uniquely copied predecessor readback (including JSON null), otherwise independent receipts.
 
 `jira-identity:<operation_id>` pins provider/project/repository/issue. Stop writers; run `.agentic/scripts/continuous_controller.py --state DB --stream A --worktree-root WORKTREE --project-config CONFIG jira-identity-adopt --expected-project-id PROJECT_ID --expected-repository-id REPOSITORY_ID --operator OPERATOR --now TIME`.
-Match accepted-configuration IDs; idempotent adoption preserves rows/receipts/hashes. ADOPTED_LEGACY_SUCCEEDED records operator/time/configuration digest as OPERATOR_SUPPLIED_NOT_OBSERVED; historical authority/pre-adoption drift remain unproven. Adopt healthy rows; report skipped UNKNOWN/FAILED/IN_FLIGHT by ticket/operation; retain stops. `observe_jira_operation_identity(record)` reads historical envelopes only.
+Match IDs; preserve rows/receipts/hashes. ADOPTED_LEGACY_SUCCEEDED: operator/time/configuration digest, OPERATOR_SUPPLIED_NOT_OBSERVED; authority unproven. Adopt healthy rows; report skipped UNKNOWN/FAILED/IN_FLIGHT/PENDING/HELD by ticket/operation/reason/digest/next-command; retain stops. Name corrupt rows. `observe_jira_operation_identity(record)` reads historical envelopes only.
 
-Without envelopes, stop writers; reuse global arguments: `jira-operation-resolve --issue KEY --operation-id UUID --expected-intent-sha256 DIGEST --expected-project-id PROJECT_ID --expected-repository-id REPOSITORY_ID --operator OPERATOR --now TIME --disposition ABANDON_NO_REPLAY --reason REASON --provenance REFERENCE`.
-Retain original row/receipts plus operator/time/reason/reference/configuration digest as OPERATOR_SUPPLIED_NOT_OBSERVED; mark HELD. Never replay that event or claim success/closeout/provider authority. Later events retain normal admission; never auto-clear. Missing `--stream` refuses clearly.
+Without envelopes, stop writers; globals: `jira-operation-resolve --issue KEY --operation-id UUID --expected-intent-sha256 DIGEST --expected-project-id PROJECT_ID --expected-repository-id REPOSITORY_ID --operator OPERATOR --now TIME --disposition ABANDON_NO_REPLAY --reason REASON --provenance REFERENCE`.
+Also retires pinless PENDING/HELD. Retain rows/receipts/operator/time/reason/reference/digest as OPERATOR_SUPPLIED_NOT_OBSERVED; mark HELD. Never replay/claim success. Later events admit reviewed configuration edits by invariant identity; retain historical digests. Abandoned Done attempts count only via independently observed non-controller closure. Never auto-clear. Missing `--stream` refuses clearly.
 
-Retain OS claim lock before IN_FLIGHT through completion; recovery refuses live owners. Recheck own live claim under issue ownership before writing. Persist pre-write identity/status/updated/history. Require exactly one new final actor/from/target transition; hide none later. Numeric Jira order proves novelty; host tolerance: 300 seconds; equal timestamps refuse. Historical fallback requires pre-upgrade attempt inventory. AWF-175 owns changelog pagination/completeness.
-Jira observation timestamps accept milliseconds/colonless offsets; canonical records stay strict. At 100 entries refuse before POST; reserve one readback entry: 99+1 succeeds. Over-limit refusals name AWF-175; concurrent post-POST growth beyond 100 stays UNKNOWN. Proven pre-POST failures, including lock OSError, return retryable, stop-free NOT_ATTEMPTED/PENDING.
+Lock/recheck claims through completion; refuse live owners. Persist pre-write identity/status/updated/history. Require exactly one new final actor/from/target transition; hide none later. Numeric Jira order proves novelty; host tolerance: 300 seconds; equal timestamps refuse. Historical fallback requires pre-upgrade attempt inventory. AWF-175 owns changelog pagination/completeness.
+Jira accepts milliseconds/colonless offsets; records stay strict. At 100 entries refuse before POST; reserve one readback entry: 99+1 succeeds. Over-limit refusals: AWF-175; post-POST growth beyond 100 stays UNKNOWN. Pre-POST timeouts/lock OSError return retryable NOT_ATTEMPTED/PENDING. First-read 500 reports `writes_stopped: true` but retry succeeds; re-read 500 gives SCOPE_REFUSED/durable FAILED: run `jira-lifecycle BLOCK` before retry.
 
 ## Reference adapter (AWF-32)
 
@@ -108,7 +104,7 @@ function Invoke-ControllerCycle;if (Test-Path $STOP_FILE)
 & $PYTHON @COMMON cycle;& $PYTHON @COMMON jira-lifecycle;observed_at=$NOW;jira_binding=;& $PYTHON @COMMON merge-observed;Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
 ```
 
-Adapter: 1 MiB stderr cap, credentials stripped, fail-closed,
+1 MiB stderr cap, credentials stripped, fail-closed, and
 `execution_authority: false`.
 
 ### Required adapter operations
@@ -119,16 +115,16 @@ state/configuration requirements or effects.
 
 | Controller subcommand | Required adapter operations | Source |
 |---|---|---|
-| `cycle` | `observe_inventory`, `observe_reservations`, `dispatch_ticket`, `observe_dispatch`, `deliver_status`, `observe_publication`, `observe_host_resources`, `verify_host_observation`, `observe_planning_backlog`, `verify_planning_backlog`, `observe_planning_events`, `verify_planning_events`, `verify_planning_owner` | 225–232 |
-| `jira-lifecycle` | `observe_provider_identity`, `observe_issue_identity`, `observe_issue_policy`, `read_current_status`, `write_transition`, `read_transition` | 243–244 |
+| `cycle` | `observe_inventory`, `observe_reservations`, `dispatch_ticket`, `observe_dispatch`, `deliver_status`, `observe_publication`, `observe_host_resources`, `verify_host_observation`, `observe_planning_backlog`, `verify_planning_backlog`, `observe_planning_events`, `verify_planning_events`, `verify_planning_owner` | CLI |
+| `jira-lifecycle` | `observe_provider_identity`, `observe_issue_identity`, `observe_issue_policy`, `read_current_status`, `write_transition`, `read_transition` | CLI |
 | `merge-observed` | `fetch_scope_page`, `observe_accepted_project_config`, `observe_closeout_record`; `observe_provider_identity`, `observe_issue_identity`, `observe_issue_policy`, `read_current_status` only with enabled Jira; additionally `observe_jira_reconciliation` when the supplied project configuration (--project-config) has `jira.enabled is True` | CLI |
-| `owner-publication-prepare` | `authorize_owner_publication` | 217–218 |
-| `owner-publication-resume` | `observe_identity`, `observe_remote_heads`, `create_draft_pr`, `observe_draft_pr` | 220–221 |
-| `owner-publication-status` | None | 206–207, 222–223 |
-| `batch-operation` | `batch_coordinator` | 208–211 |
-| `batch-closeout` | `batch_coordinator`, `observe_batch_merge`, `observe_issue_identity`, `observe_issue_policy`, `observe_provider_identity`, `read_current_status`, `write_transition`, `read_transition` | 58–60, 212–215 |
-| `snapshot` | None | 188, 206–207, 254–255 |
-| `planning-state prune` | None | 145–147, 190–194 |
+| `owner-publication-prepare` | `authorize_owner_publication` | CLI |
+| `owner-publication-resume` | `observe_identity`, `observe_remote_heads`, `create_draft_pr`, `observe_draft_pr` | CLI |
+| `owner-publication-status` | None | CLI |
+| `batch-operation` | `batch_coordinator` | CLI |
+| `batch-closeout` | `batch_coordinator`, `observe_batch_merge`, `observe_issue_identity`, `observe_issue_policy`, `observe_provider_identity`, `read_current_status`, `write_transition`, `read_transition` | CLI |
+| `snapshot` | None | CLI |
+| `planning-state prune` | None | CLI |
 
 `cycle --overlap-allowances` additionally requires `observe_overlap_allowance`:
 the CLI checks whether the flag was supplied, even an empty loaded list.
