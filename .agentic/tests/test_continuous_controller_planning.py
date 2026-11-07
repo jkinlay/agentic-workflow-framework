@@ -93,6 +93,22 @@ def planning_resource_inputs(capacity, *, resource_capacity=None, operator_capac
 		'planning_resource_producer_sha256': 'c' * 64,
 		'project_config_sha256': 'd' * 64, 'operating_config_sha256': 'e' * 64}
 
+def fixture_operating_snapshot(config, count, root):
+    """Give policy re-reads the same isolated settings used by the planner."""
+    from agentic.operating import CONFIG, read_operating
+    from test_planning import operating_snapshot
+    snapshot = operating_snapshot(config, count)
+    if snapshot.provenance.get('path'):
+        return snapshot
+    root = Path(root) / 'operating-fixture'
+    root.mkdir(exist_ok=True)
+    (root / '.agentic').mkdir(exist_ok=True)
+    (root / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(config), encoding='utf-8')
+    (root / CONFIG).write_text(json.dumps(snapshot.config),
+                               encoding='utf-8')
+    return read_operating(root, config)
+
+
 def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now=NOW,
                             config=None, cycle_id='fixture-cycle', repository=REPOSITORY):
     """Independent fixture backlog, built from explicitly supplied fixture records.
@@ -101,11 +117,12 @@ def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now
     """
     import uuid
     from agentic.store import Store
-    from test_planning import config as project_fixture, operating_snapshot
+    from test_planning import config as project_fixture
     cfg = deepcopy(config) if config is not None else project_fixture(min(max(capacity, 1), 6))
     cfg['project']['id'] = binding['project_id']
     cfg['github']['repository_id'] = binding['repository_id']
-    operating = operating_snapshot(cfg, min(max(capacity, 1), 6))
+    operating = fixture_operating_snapshot(cfg, min(max(capacity, 1), 6),
+                                          Path(controller.path).parent)
     history = Store(Path(controller.path).with_suffix('.planning.sqlite3'),
                     str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-planning:' + binding['project_id'])))
     owned = deepcopy(items)
@@ -1416,7 +1433,7 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.history = Store(self.root / 'history.sqlite3', '00000000-0000-0000-0000-000000000050')
         self.config = config(2)
         self.config['github']['repository_id'] = '101'
-        self.operating = operating_snapshot(self.config, 2)
+        self.operating = fixture_operating_snapshot(self.config, 2, self.root)
         self.items = [ticket('AWF-101', 1), ticket('AWF-102', 2)]
         self.events = [{'source_id': 'event-1', 'trigger': 'project_start', 'override': None}]
         self.calls = []
@@ -1797,10 +1814,10 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.events = []
         self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
         if change == 'operating':
-            self.operating = operating_snapshot(self.config, 1)
+            self.operating = fixture_operating_snapshot(self.config, 1, self.root)
         elif change == 'configuration':
             self.config['execution']['max_parallel_tickets'] = 1
-            self.operating = operating_snapshot(self.config, 1)
+            self.operating = fixture_operating_snapshot(self.config, 1, self.root)
         else:
             original = self.backlog
             def with_dependency(request):
