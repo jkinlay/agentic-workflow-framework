@@ -3303,7 +3303,7 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (deepcopy(tickets), repository_binding, observation)
 
-def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None):
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')
 	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
@@ -3347,6 +3347,21 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(all(callable(callback) for callback in (observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events)), 'Production requires authenticated planning backlog and event callbacks')
 	validate_snapshot(planning_operating_snapshot, planning_config)
 	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
+	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots, accepted_budget_snapshot
+	state_roots = protected_state_roots(*store.worktree_roots, repository_root)
+	budget_operating = accepted_budget_snapshot(repository_root, planning_config, planning_operating_snapshot)
+	budget_settings = resolve_settings(budget_operating.config)
+	if configure_budgeting is None:
+		configure_budgeting = getattr(dispatch_ticket, 'configure_budgeting', None)
+	if callable(configure_budgeting):
+		configure_budgeting(path=project_ledger_path(planning_config['project']['id'], path=budget_ledger_path,
+			accounting_enabled=budget_settings['accounting_enabled'],
+			worktree_roots=state_roots,
+			previous_paths=(store.path.with_suffix('.routing.sqlite3'),)),
+			governance=planning_config, operating=budget_operating, repository_root=repository_root, worktree_roots=state_roots)
+	else:
+		_require(not budget_settings['accounting_enabled'] or 'legacy_behavior' in budget_settings,
+			'Enabled budgeting requires a reviewed dispatch budgeting adapter')
 	_require(isinstance(cycle_id, str) and cycle_id, 'Production planning requires a bound cycle identity')
 	planning_binding = {**inventory_binding, 'repository_head_sha': repository_head_sha,
 		'project_config_sha256': project_config_sha256, 'cycle_id': cycle_id}
@@ -3559,6 +3574,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			if item['ticket'] in allowance_blocked_tickets:
 				tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': 'Overlap allowance or post-expiry synchronization gate is not current', 'next_action': 'Restore exact provider-bound allowance or complete its durable sync gate', 'resume_trigger': 'a fresh plan and lane-start recheck pass'}
 	_require(isinstance(reservations, list), 'Authenticated reservations were not refreshed for the inventory being scheduled')
+	if not budget_settings['enforcement_enabled']:
+		tickets = [{**item, 'budget_available': True} for item in tickets]
 	ticket_by_id = {item['ticket']: item for item in tickets}
 	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
 	_require({item['key'] for item in backlog} == {item['ticket'] for item in tickets}, 'Authenticated backlog ticket keys differ from dispatch inventory')

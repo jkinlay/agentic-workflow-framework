@@ -415,7 +415,7 @@ class QualificationTests(unittest.TestCase):
         stdout, stderr = StringIO(), StringIO()
         with patch.object(module, 'verify_installed', return_value='d' * 64), \
              patch.object(module, 'load_config', side_effect=load_config), \
-             patch.object(module, 'HostDriver',
+             patch.object(module.HostDriver, 'from_project',
                           side_effect=lambda config, root:
                               FakeQualificationDriver(config)), \
              redirect_stdout(stdout), redirect_stderr(stderr):

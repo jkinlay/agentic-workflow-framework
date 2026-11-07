@@ -8,6 +8,7 @@ from .canonical import load_yaml
 from .operating import (inspect_operating, is_awf_source_repository,
                         operating_ceiling, tree_reader, validate_operating)
 from .safeio import Tree
+from .budgeting import resolve_settings
 
 
 def with_operating(root, governance, report):
@@ -21,7 +22,13 @@ def with_operating(root, governance, report):
         if source_template:
             try:
                 value = validate_operating(load_yaml(tree.read('OPERATING_CONFIG.yaml')), governance)
-                operating = {'status': 'ACCEPTED', 'hash': value.operating_hash, 'source': value.source,
+                from .protected_settings import resolve_protected
+                # Source diagnostics need no mutable snapshot/audit metadata.
+                # Validate the resolved policy through the same source validator.
+                effective, protected = resolve_protected(root, governance, value.config)
+                value = validate_operating(effective, governance)
+                operating = {'status': 'ACCEPTED', 'protected_settings': protected, 'hash': value.operating_hash, 'source': value.source,
+                             'budgeting': resolve_settings(value.config),
                              'streams': value.count, 'last_change_id': None, 'refusals': [],
                              'provenance': 'source_template', **operating_ceiling(governance)}
             except (ValidationError, OSError, ValueError) as exc:
@@ -35,7 +42,7 @@ def with_operating(root, governance, report):
         # Filesystem observation failed; the already accepted project policy is
         # not thereby invalid. Activation reports this independent blocker.
         result['operating_observation'] = 'UNOBSERVED'
-    elif operating['status'] != 'ACCEPTED':
+    elif operating['status'] not in ('ACCEPTED',):
         result['status'] = 'REJECTED'
         for item in operating['refusals']:
             result['unresolved'].append({

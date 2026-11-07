@@ -26,6 +26,8 @@ from .lane_labels import MAX_LANES, STREAM_LABELS
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
+from .budgeting import resolve_settings
+from .protected_settings import audit_matches, unprotected_hash
 
 CONFIG = "OPERATING_CONFIG.yaml"
 GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
@@ -135,11 +137,12 @@ def _stream(policy=None):
 
 def default_operating(policy=None, *, count=3):
     from .model_routing import default_policy, validate_policy
+    from .budgeting import fresh_settings
 
     policy = default_policy() if policy is None else validate_policy(deepcopy(policy))
     defaults = policy["role_defaults"]
     stream = _stream(policy)
-    return {"version": 1, "source": "default",
+    return {"version": 1, "source": "default", "budgeting": fresh_settings(),
             "streams": {"count": count,
                         **{label: deepcopy(stream) for label in stream_labels(count)}},
             "critic": deepcopy(defaults["critic"]),
@@ -168,7 +171,9 @@ def _upgrade_safe_operating(governance):
     simple = policy.get("simple_worker") if isinstance(policy, dict) else None
     if not all(isinstance(defaults.get(role), dict)
                for role in ("controller", "worker", "critic", "specialist")) or not isinstance(simple, dict):
-        return default_operating()
+        legacy = default_operating()
+        legacy.pop('budgeting')
+        return legacy
     stream = {"worker": dict(defaults["worker"])}
     return {"version": 1, "source": "default",
             "streams": {"count": 3, **{label: deepcopy(stream) for label in stream_labels(3)}},
@@ -274,6 +279,12 @@ class OperatingSnapshot:
 def validate_operating(value, governance):
     """Validate choices against both allowlists/floors; never silently clamp."""
     canonical(value)
+    if isinstance(value, dict) and 'budgeting' in value:
+        from .budgeting import validate_settings
+        try:
+            validate_settings(value['budgeting'])
+        except ValidationError as exc:
+            fail('$.budgeting', str(exc))
     execution = governance.get("execution") if isinstance(governance, dict) else None
     if not isinstance(execution, dict) or not isinstance(execution.get("model_routing"), dict):
         fail("$", "A complete governing execution/model_routing policy is required", "$.execution", execution)
@@ -421,13 +432,13 @@ def _bound_governance(tree, governance):
     return actual
 
 
-def _events(tree):
+def _events(tree, *, additional_bytes=0):
     directory = tree.root / STATE / "changes"
     if not directory.exists():
         return []
     with Tree(directory) as records:
         names = records.file_list()
-        if len(names) > 10000:
+        if len(names) + bool(additional_bytes) > 10000:
             fail("$", "Operating history exceeds bounded inventory; archive through an explicit reviewed migration")
         events, total = [], 0
         for name in names:
@@ -436,7 +447,7 @@ def _events(tree):
                 fail("$", "Unexpected operating audit member")
             raw = records.read(name, maximum=MAX_BYTES)
             total += len(raw)
-            if total > 8 * MAX_BYTES:
+            if total + additional_bytes > 8 * MAX_BYTES:
                 fail("$", "Operating history exceeds aggregate byte bound")
             if staged:
                 # A killed writer can leave an unpublished staging file. Retain
@@ -454,26 +465,43 @@ def _events(tree):
     for index, event in enumerate(events, 1):
         if event["sequence"] != index or event["previous_change_id"] != (previous["id"] if previous else None):
             fail("$", "Operating audit is not a complete append-only chain")
-        if previous and event["before_hash"] != previous["after_hash"]:
+        if (previous and event["before_hash"] != previous["after_hash"]
+                and not (previous.get("unprotected_after_hash") is not None
+                         and event.get("unprotected_before_hash") == previous["unprotected_after_hash"])
+                and not (previous.get("unprotected_after_hash") is None
+                         and isinstance(event.get("legacy_before_configuration"), dict)
+                         and fingerprint("operating", event["legacy_before_configuration"]) == event["before_hash"]
+                         and unprotected_hash(event["legacy_before_configuration"]) == event.get("unprotected_before_hash")
+                         and audit_matches(event["legacy_before_configuration"], previous))):
             fail("$", "Operating audit hash chain differs")
         previous = event
     return events
 
 
-def _snapshot(tree, governance):
+def _snapshot(tree, governance, *, working_only=False):
     if _read(tree, JOURNAL) is not None:
         fail("$", "Pending operating transaction: inspect and recover using its independent --expected-journal-sha256 before dispatch")
     raw = _read(tree, CONFIG)
     if raw is None:
         fail("$", "OPERATING_CONFIG.yaml is missing; initialize operating defaults or explicitly restore reviewed configuration")
-    snapshot = validate_operating(load_yaml(raw), governance)
+    working = load_yaml(raw)
+    protected = None
+    if not working_only:
+        from .protected_settings import resolve_protected
+        effective, protected = resolve_protected(tree.root, governance, working)
+    else:
+        effective = working
+    snapshot = validate_operating(effective, governance)
     events = _events(tree)
-    if events and events[-1]["after_hash"] != snapshot.operating_hash:
+    if events and not audit_matches(working, events[-1]):
         fail("$", "Operating file differs from the last audited change; reconcile the external edit before dispatch")
-    return replace(snapshot, last_change_id=events[-1]["id"] if events else None,
+    snapshot = replace(snapshot, last_change_id=events[-1]["id"] if events else None,
                    _provenance_json=canonical({"path": str(tree.root / CONFIG), "raw_sha256": sha256(raw),
                                                "audit": "recorded" if events else "unrecorded_project_owned",
                                                "audit_sha256": sha256(canonical(events))}))
+    if working_only:
+        return snapshot
+    return replace(snapshot, _provenance_json=canonical({**snapshot.provenance, 'protected_settings': protected}))
 
 
 @contextmanager
@@ -510,8 +538,10 @@ def read_operating(project_root, governance):
 def inspect_operating(project_root, governance):
     try:
         value = read_operating(project_root, governance)
-        return {"status": "ACCEPTED", "hash": value.operating_hash, "source": value.source,
-                "streams": value.count, "last_change_id": value.last_change_id, "refusals": [], **operating_ceiling(governance)}
+        return {"status": "ACCEPTED", "budget_admission": value.provenance.get('protected_settings', {}).get('budget_admission', True), "protected_settings": value.provenance.get("protected_settings", {}), "hash": value.operating_hash, "source": value.source,
+                "streams": value.count, "last_change_id": value.last_change_id, "refusals": [],
+                "budgeting": resolve_settings(value.config),
+                **operating_ceiling(governance)}
     except OSError as exc:
         from .activation import access_diagnostic
         diagnostic = access_diagnostic(exc, "OPERATING_CONFIG.yaml or .agentic-state/operating")
@@ -578,7 +608,8 @@ def _new(tree, name, raw):
             pass
 
 
-def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None):
+def _prepare_commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None):
+    """Validate complete unprotected transaction bytes before publication."""
     after = validate_operating(value, _bound_governance(tree, governance))
     events = _events(tree)
     if _read(tree, JOURNAL) is not None:
@@ -587,12 +618,18 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     if (before is None and current is not None) or (before is not None and current != before):
         fail("$", "Operating bytes changed during preparation")
     before_hash = fingerprint("operating", load_yaml(before)) if before is not None else None
-    if events and events[-1]["after_hash"] != before_hash:
+    if events and not audit_matches(load_yaml(before), events[-1]):
         fail("$", "Current operating bytes disagree with the audit chain")
     event = {"id": "C-" + uuid.uuid4().hex, "created_at": created_at or now_text(), "instruction": instruction,
              "before_hash": before_hash, "after_hash": after.operating_hash, "changes": changed,
              "source": value["source"], "applied_from": applied_from, "sequence": len(events) + 1,
              "previous_change_id": events[-1]["id"] if events else None, "governance_hash": after.governance_hash}
+    event['unprotected_before_hash'] = unprotected_hash(load_yaml(before)) if before is not None else None
+    event['unprotected_after_hash'] = unprotected_hash(value)
+    if events and events[-1].get('unprotected_after_hash') is None and before_hash != events[-1]['after_hash']:
+        # Preserve authentic old records. Bind the exact pre-change configuration
+        # so readers can independently verify the legacy/fresh projection bridge.
+        event['legacy_before_configuration'] = load_yaml(before)
     errors = _schema("operating-change", event)
     if errors:
         raise OperatingError(errors)
@@ -603,6 +640,20 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     for path, data in (("$.configuration", raw), ("$.event", event_raw), ("$.journal", journal_raw)):
         if len(data) > MAX_BYTES:
             fail(path, "Serialized operating transaction member exceeds its 1 MiB read/recovery limit; reduce the change or use a reviewed migration")
+    # The proposed event must fit the existing inventory/aggregate limits before
+    # either the lock or publication can leave state behind on a refusal.
+    _events(tree, additional_bytes=len(event_raw))
+    return event, raw, event_raw, journal_raw
+
+
+def _commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None):
+    event, raw, event_raw, journal_raw = _prepare_commit(
+        tree, governance, before, value, instruction, changed, applied_from,
+        created_at=created_at)
+    from .protected_settings import resolve_protected, require_mutation_policy
+    effective, protected = resolve_protected(tree.root, governance, value)
+    require_mutation_policy(protected, value)
+    effective = validate_operating(effective, governance)
     _new(tree, JOURNAL, journal_raw)
     # On any interruption retain the WAL. Never claim config/audit are a single rename.
     if _read(tree, CONFIG) != before:
@@ -613,7 +664,9 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     if _read(tree, CONFIG) != raw:
         fail("$", "Operating write readback differs; journal retained")
     tree.unlink(JOURNAL)
-    return _snapshot(tree, governance)
+    recorded = _snapshot(tree, governance, working_only=True)
+    return replace(effective, last_change_id=recorded.last_change_id,
+                   _provenance_json=canonical({**recorded.provenance, 'protected_settings': protected}))
 
 
 def plan_initialize_operating(project_root, governance, *, change_id=None, created_at=None, initial_operating=None):
@@ -630,7 +683,7 @@ def plan_initialize_operating(project_root, governance, *, change_id=None, creat
                      else _upgrade_safe_operating(governance))
         else:
             snapshot = validate_operating(load_yaml(before), governance)
-            if events and events[-1]["after_hash"] != snapshot.operating_hash:
+            if events and not audit_matches(snapshot.config, events[-1]):
                 fail("$", "Operating file differs from the last audited change; reconcile the external edit before upgrade")
             if events:
                 files = {} if tree.inspect(LOCK) is not None else {LOCK: b"0" if os.name == "nt" else b""}
@@ -648,7 +701,9 @@ def plan_initialize_operating(project_root, governance, *, change_id=None, creat
                  "before_hash": fingerprint("operating", load_yaml(before)) if before is not None else None,
                  "after_hash": after.operating_hash, "changes": [], "source": value["source"],
                  "applied_from": "bootstrap", "sequence": 1, "previous_change_id": None,
-                 "governance_hash": after.governance_hash}
+                 "governance_hash": after.governance_hash,
+                 "unprotected_before_hash": unprotected_hash(load_yaml(before)) if before is not None else None,
+                 "unprotected_after_hash": unprotected_hash(value)}
         errors = _schema("operating-change", event)
         if errors:
             raise OperatingError(errors)
@@ -704,6 +759,13 @@ def recover_operating(project_root, governance, expected_journal_sha256):
         if checked.operating_hash != event["after_hash"] or checked.governance_hash != event["governance_hash"] or (
                 (fingerprint("operating", load_yaml(before)) if before is not None else None) != event["before_hash"]):
             fail("$", "Journal content/hash/governance binding differs")
+        # Recovery of local transactions cannot publish protected changes.
+        from .protected_settings import PROTECTED_DOMAINS
+        prior_value = load_yaml(before) if before is not None else {}
+        after_value = load_yaml(after)
+        if any(prior_value.get(name, defaults()) != after_value.get(name, defaults())
+               for name, defaults in PROTECTED_DOMAINS):
+            fail('$', 'Protected settings require a PR; local recovery cannot change them')
         current = _read(tree, CONFIG)
         if current not in (before, after):
             fail("$", "Operating bytes contain an unmatched external edit; preserve the journal")
@@ -714,7 +776,7 @@ def recover_operating(project_root, governance, expected_journal_sha256):
             if saved != _json(event) or not events or events[-1] != event or current != after:
                 fail("$", "Recovery audit differs from the prepared terminal event")
         elif event["sequence"] != len(events) + 1 or event["previous_change_id"] != (events[-1]["id"] if events else None) or (
-                events and events[-1]["after_hash"] != event["before_hash"]):
+                events and events[-1]["after_hash"] != event["before_hash"] and not (events[-1].get("unprotected_after_hash") is not None and events[-1]["unprotected_after_hash"] == event.get("unprotected_before_hash"))):
             fail("$", "Recovery journal does not extend the current audit")
         if current != after:
             tree.write(CONFIG, after)
@@ -725,6 +787,11 @@ def recover_operating(project_root, governance, expected_journal_sha256):
 
 
 def _path(path, epic_id=None):
+    from .budgeting import SETTINGS_KEYS
+    if path.startswith('budgeting.') and path[10:] in SETTINGS_KEYS:
+        if epic_id is not None:
+            fail('$.budgeting', 'Budget settings are project-wide')
+        return path
     qualified = re.fullmatch(r"epic_overrides\.([^.]+)\.(.+)", path)
     if qualified:
         if epic_id is not None:
@@ -761,6 +828,14 @@ def _put(value, path, selected):
 
 
 def _selection(path, text):
+    if path.startswith('budgeting.'):
+        if path.endswith('_enabled'):
+            if text not in {'true', 'false'}:
+                fail('$.' + path, 'Expected true or false')
+            return text == 'true'
+        if not re.fullmatch(r'[0-9]+', text):
+            fail('$.' + path, 'Budget limit must be a positive integer')
+        return int(text)
     if path == "streams.count":
         if not re.fullmatch(r"[0-9]+", text):
             fail("$." + path, "Stream count must be an integer")
@@ -807,7 +882,7 @@ def _prune_unrepresentable_routes(value, structural_ceiling):
     return removed
 
 
-def _editable_snapshot(tree, governance, initialize):
+def _editable_snapshot(tree, governance, initialize, *, working_only=False):
     if _read(tree, JOURNAL) is not None:
         fail("$", "Pending operating transaction requires pinned recovery before another change")
     raw = _read(tree, CONFIG)
@@ -821,7 +896,7 @@ def _editable_snapshot(tree, governance, initialize):
     if initialize:
         fail("$", "--initialize cannot overwrite an existing operating file")
     try:
-        return _snapshot(tree, governance), raw
+        return _snapshot(tree, governance, working_only=working_only), raw
     except OperatingError:
         # A new protected policy can invalidate previously audited choices. Only
         # an exact existing audit tip permits repair; dispatch still rejects it.
@@ -842,12 +917,12 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         fail("$", "--initialize requires explicit custom --set choices, not a prior recommendation")
     if epic_id is not None and recommendation_id:
         fail("$.epic", "A project-wide recommendation cannot be reinterpreted as an Epic-scoped change")
-    with Tree(project_root) as tree, _lock(tree):
+    with Tree(project_root) as tree:
         _bound_governance(tree, governance)
         if recommendation_id:
-            snapshot, before = _snapshot(tree, governance), tree.read(CONFIG, maximum=MAX_BYTES)
+            snapshot, before = _snapshot(tree, governance, working_only=True), tree.read(CONFIG, maximum=MAX_BYTES)
         else:
-            snapshot, before = _editable_snapshot(tree, governance, initialize)
+            snapshot, before = _editable_snapshot(tree, governance, initialize, working_only=True)
         value, selected = snapshot.config, {}
         if recommendation_id:
             record = _load_recommendation(tree, recommendation_id, snapshot, governance)
@@ -867,6 +942,16 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                     fail("$." + path, "Duplicate or overlapping set paths")
                 selected[path] = _selection(path, text)
             source = "user"
+        budget_changes = {p[10:]: v for p, v in selected.items() if p.startswith('budgeting.')}
+        if budget_changes:
+            if before is None:
+                fail('$.budgeting', 'Initialize defaults first, then request protected changes with operating set')
+            from .budgeting import transition_settings
+            current_budget = snapshot.config.get('budgeting')
+            if current_budget is None:
+                fail('$.budgeting', 'Legacy budgeting requires versioned adoption with an explicit budget disposition')
+            proposed = transition_settings(current_budget, budget_changes)
+            selected.update({'budgeting.' + k: v for k, v in proposed.items() if v != current_budget[k]})
         count = selected.get("streams.count", value["streams"]["count"])
         structural_ceiling = configured_lane_ceiling(governance)
         ceiling = operating_ceiling(governance)["effective_ceiling"]
@@ -885,7 +970,16 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
-        return _commit(tree, governance, before, value, instruction, changes, "chat")
+        if budget_changes:
+            fail('$.budgeting', 'Protected settings require a PR: open a PR changing only the requested OPERATING_CONFIG.yaml values; the owner merges, then fetch the default branch. The live file was not changed')
+        # Complete all refusal checks before creating the lock/state directory.
+        from .protected_settings import resolve_protected, require_mutation_policy
+        effective, _report = resolve_protected(tree.root, governance, value)
+        require_mutation_policy(_report, value)
+        validate_operating(effective, governance)
+        _prepare_commit(tree, governance, before, value, instruction, changes, "chat")
+        with _lock(tree):
+            return _commit(tree, governance, before, value, instruction, changes, "chat")
 
 
 def _scope(paths, epic_id):
@@ -1113,7 +1207,7 @@ def save_recommendation(project_root, governance, epics_path, inventory_path=Non
             content[key] = None
     with Tree(project_root) as tree, _lock(tree):
         _bound_governance(tree, governance)
-        snapshot = _snapshot(tree, governance)
+        snapshot = _snapshot(tree, governance, working_only=True)
         record = recommend_operating(content["epics"], snapshot, governance, inventory_raw=content["inventory"], now=now, input_files=files)
         _new(tree, STATE + "/recommendations/" + record["id"] + ".json", _json(record))
         return record
@@ -1178,6 +1272,13 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
                   f"Escalation: ≤{policy['escalation']['max_escalations_per_ticket']} per ticket, effort ceiling {policy['escalation']['effort_ceiling']}; "
                   + "review floor " + _display(policy["review_floor"]) + "; risk route " + _display(policy["risk_route"]),
                   "Options: keep | review Epics and recommend | custom (say what you want)"])
+    from .budgeting import resolve_settings
+    budget = resolve_settings(value)
+    lines.extend(['Budgeting (effective):',
+                  'Accounting: ' + ('ON' if budget['accounting_enabled'] else 'OFF'),
+                  'Enforcement: ' + ('ON' if budget['enforcement_enabled'] else 'OFF'),
+                  f"Token limit per ticket: {format(budget['max_tokens_per_ticket'], ',') if budget['max_tokens_per_ticket'] is not None else 'legacy reviewed limit'}",
+                  f"Token limit per project lifetime: {format(budget['max_tokens_per_project'], ',') if budget['max_tokens_per_project'] is not None else 'legacy reviewed limit'}"])
     return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
 
 
@@ -1224,6 +1325,9 @@ def main(argv=None, default_root=None):
     sub = parser.add_subparsers(dest="command", required=True)
     show = sub.add_parser("show")
     show.add_argument("--json", action="store_true")
+    validator = sub.add_parser('validate', help='Validate proposed operating bytes without applying them')
+    validator.add_argument('--file', required=True, type=Path)
+    validator.add_argument('--json', action='store_true')
     setter = sub.add_parser("set")
     setter.add_argument("--instruction", required=True, help="Exact user words; local recording does not authenticate their source")
     setter.add_argument("--set", action="append", default=[], dest="assignments")
@@ -1244,6 +1348,13 @@ def main(argv=None, default_root=None):
         with Tree(args.root) as tree:
             governance = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
         Contracts(SCHEMAS).validate("project-config", governance)
+        if args.command == 'validate':
+            if args.file.stat().st_size > MAX_BYTES:
+                fail('$', 'Proposed operating file exceeds its 1 MiB bound')
+            proposed = validate_operating(load_yaml(args.file.read_bytes()), governance)
+            print(json_text(dict(status='ACCEPTED', proposed_configuration=proposed.config,
+                                 execution_authority=False, next_action='Open a PR; the owner reviews and merges')))
+            return 0
         if args.command == "recommend":
             record = save_recommendation(args.root, governance, args.epics, args.inventory)
             print(json_text(record) if args.json else render_recommendation(record))
@@ -1261,6 +1372,29 @@ def main(argv=None, default_root=None):
                   **operating_ceiling(governance),
                   "last_change_id": snapshot.last_change_id, "configuration": snapshot.config,
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
+        from .protected_settings import repository_rules_warning
+        protected = snapshot.provenance.get('protected_settings', {})
+        result.update(protected_settings=protected, budget_admission=protected.get('budget_admission', True),
+                      repository_rules=repository_rules_warning())
+        result['last_settings_pr'] = dict(status='UNOBSERVED', reason='Last settings PR and merger not observed; optional information only')
+        result['table'] += '\nProtected settings: ' + str(protected.get('source', 'unobserved'))
+        if protected.get('commit'):
+            result['table'] += ' at ' + protected['commit']
+        for field in ('policy_observation', 'branch_observation', 'visibility'):
+            if protected.get(field):
+                result['table'] += '\n' + protected[field]
+        result['table'] += '\nLast fetch attempt of any ref (FETCH_HEAD): ' + str(protected.get('fetch_attempt_at') or 'UNOBSERVED')
+        if protected.get('unverified'):
+            result['table'] += '\n' + protected['next_action']
+        if protected.get('budget_refusal'):
+            result['table'] += '\n' + protected['budget_refusal']
+        if protected.get('differences'):
+            result['table'] += '\n' + protected['next_action']
+            for difference in protected['differences']:
+                result['table'] += ('\n' + difference['path'] + ': working ' + json.dumps(difference['working'], sort_keys=True)
+                                    + '; effective ' + json.dumps(difference['effective'], sort_keys=True))
+        result['table'] += '\n' + result['repository_rules']['warning']
+        result['table'] += '\n' + result['last_settings_pr']['reason']
         print(json_text(result) if args.json else result["table"])
         return 0
     except (ValidationError, OSError, ValueError, UnicodeError) as exc:

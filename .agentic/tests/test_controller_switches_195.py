@@ -72,6 +72,30 @@ class ControllerSwitchContractTests(unittest.TestCase):
 
 
 class IndependentPathSwitchTests(ControllerAutomationTests):
+    def test_policy_reads_use_only_the_disposable_repository(self):
+        from unittest.mock import patch
+        from agentic import protected_settings
+        from test_awf36_controller_automation import REPOSITORY
+        from test_continuous_controller_planning import planning_fixture_inputs
+        from agentic.operating import validate_operating
+        from agentic.canonical import load_yaml
+        policy_root = self.temporary / 'policy-repository'
+        self.assertEqual(policy_root, REPOSITORY['repository_root'])
+        item = ticket('AWF-367')
+        store = self.store()
+        inputs = planning_fixture_inputs([item], store, 1)
+        accepted = load_yaml((policy_root / 'OPERATING_CONFIG.yaml').read_bytes())
+        validate_operating(accepted, inputs['planning_config'])
+        original = protected_settings._git
+        def local_policy_git(root, *args, **kwargs):
+            self.assertEqual(policy_root.resolve(), Path(root).resolve())
+            return original(root, *args, **kwargs)
+        with patch.object(protected_settings, '_git', side_effect=local_policy_git) as reads:
+            result, _, dispatched, _ = self.cycle(store, item, controller_config())
+        self.assertTrue(reads.called)
+        self.assertEqual([item['ticket']], dispatched)
+        self.assertEqual(1, len(result['dispatch_receipts']))
+
     def test_unrelated_disabled_switches_do_not_block_selected_path(self):
         for role, stage, required in (
             ('writer', 'implementation', 'auto_dispatch'),

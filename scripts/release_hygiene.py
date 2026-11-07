@@ -12,6 +12,13 @@ from agentic import VERSION, ValidationError
 from agentic.installer import install_owned_path
 from generate_prompts import render_prompts
 
+PORTABLE_SKILL_WORD_LIMIT = 600
+
+
+def count_words(body):
+    """Distribution and hygiene count all whitespace-delimited Markdown tokens."""
+    return len(body.split())
+
 HISTORY = {'CHANGELOG.md', 'MANIFEST.md', 'MANIFEST.json',
            '17-RED-TEAM-DISPOSITION.md', '19-RELEASE-VALIDATION.md'}
 HISTORICAL_PILOT_DOCUMENTS = {
@@ -94,6 +101,8 @@ def showcase_material(relative):
 def word_budget(relative):
     """Per-file Markdown limits; generated manifest stays visible but uncapped."""
     name = relative.as_posix()
+    if name == 'global/awf-portable/SKILL.md':
+        return PORTABLE_SKILL_WORD_LIMIT, 'portable_skill'
     if relative.name == 'MANIFEST.md':
         return None, 'generated_manifest'
     if showcase_material(relative):
@@ -158,7 +167,7 @@ def check_release(root=ROOT, version=None):
     for path in files:
         rel = path.relative_to(root)
         if path.suffix.lower() == '.md':
-            words = len(path.read_text(encoding='utf-8').split())
+            words = count_words(path.read_text(encoding='utf-8'))
             cap, category = word_budget(rel)
             total_words += words
             if category == 'generated_manifest':
