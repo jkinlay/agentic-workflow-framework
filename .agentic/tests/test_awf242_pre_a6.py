@@ -44,7 +44,7 @@ class ProductionPreA6Tests(unittest.TestCase):
         config['github']['project_id'] = self.gov['project']['id']
         config['codex']['roles']['critic'].update(model=self.value['critic']['model'],
             reasoning_effort=self.value['critic']['reasoning_effort'])
-        runner = FixedContextCli(record_dir=config['codex']['run_record_directory'])
+        runner = FixedContextCli(credential_envs=(config['jira']['token_env'], config['jira'].get('email_env')), record_dir=config['codex']['run_record_directory'])
         runner.thread = thread
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         value = deepcopy(self.value)
