@@ -11,6 +11,33 @@ CHANNEL_ID = '19:4a95f7d8db4c4e7fae857bcebe0623e6@thread.tacv2'
 TEAMS_DESTINATION = TEAM_ID + '/' + CHANNEL_ID
 
 
+def isolate_reporting_admission(case):
+    """Ordinary transport/controller fixtures assume prior owner admission.
+
+    The installed owner CLI/boundary suites exercise that admission separately.
+    Keep ordinary reporting probes independent of OS profiles, Git metadata and
+    protected stores. Preserve real configuration validation and provenance;
+    the calendar helper's snapshot factory must still use the reporting probe's
+    selected settings after its migration to the final owner boundary.
+    """
+    from dataclasses import replace
+    from pathlib import Path
+    from unittest.mock import patch
+    import test_awf244_controller_wiring as calendar_fixture
+    from agentic.canonical import canonical
+
+    def snapshot(_case, root, value, governance):
+        return replace(calendar_fixture.validate_operating(value, governance),
+                       _provenance_json=canonical({'path': str(Path(root) / 'OPERATING_CONFIG.yaml')}))
+
+    for target, replacement in (
+            ('owner_admission_fixtures.confirmed_fixture_snapshot', snapshot),
+            ('agentic.owner_admission.validate_protected_settings', lambda *args: None)):
+        boundary = patch(target, replacement)
+        boundary.start()
+        case.addCleanup(boundary.stop)
+
+
 def slack_text(value):
     # Slack stores Unicode emoji as colon notation, even with parse=none.
     return value.replace('\U0001f389', ':tada:')

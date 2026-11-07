@@ -15,7 +15,7 @@ import uuid
 
 from . import ValidationError
 from .controller_state import restrict_state_permissions
-from .path_containment import is_within
+from .path_containment import is_within, is_reparse_point
 
 
 def require(condition, message):
@@ -70,7 +70,7 @@ class ProtectedDatabase:
 
     def validate_path(self):
         for parent in (self.path, *self.path.parents):
-            require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
+            require(not is_reparse_point(parent),
                     'Protected state path traverses a link/reparse point')
         require(not self.path.exists() or self.path.stat().st_nlink == 1, 'Protected state has multiple hardlinks')
         require(not any(is_within(self.path, root) for root in self.worktree_roots),

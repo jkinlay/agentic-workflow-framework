@@ -25,11 +25,12 @@ from test_continuous_controller import INVENTORY_BINDING, ticket
 from test_reference_controller_adapter import _base_config, FakeClock, FakeRunner
 
 
-from test_reporting_fixtures import ReportingNetwork, TEAMS_DESTINATION
+from test_reporting_fixtures import ReportingNetwork, TEAMS_DESTINATION, isolate_reporting_admission
 
 
 class ReportingE2Regressions(unittest.TestCase):
     def setUp(self):
+        isolate_reporting_admission(self)
         self.helper = controller_fixture.ControllerBatchingTests()
         self.helper.setUp()
         self.addCleanup(self.helper.doCleanups)

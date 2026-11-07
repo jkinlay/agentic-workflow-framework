@@ -10,6 +10,8 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from source_only import skip_unless_source_repo
+from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
 from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle
@@ -31,7 +33,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         runner.exit_code = 1
         path = self.root / 'ledger.sqlite'
         context = adapters['dispatch_ticket'].configure_budgeting(path=path,
-            governance=self.gov, operating=op.validate_operating(self.value, self.gov))
+            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
         payload = _dispatch_payload('failure')
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             adapters['dispatch_ticket'](payload)
@@ -46,7 +48,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         restarted = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         self.value['budgeting']['accounting_enabled'] = False
         restarted['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov,
-            operating=op.validate_operating(self.value, self.gov))
+            operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
         with self.assertRaisesRegex(ValidationError, 'resolve non-reasoning failure before retry: unknown'):
             try:
                 restarted['dispatch_ticket'](_dispatch_payload('retry'))
@@ -66,7 +68,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         unusable = self.root / 'not-a-directory'
         unusable.write_text('Fixture obstruction')
         adapters['dispatch_ticket'].configure_budgeting(path=unusable / 'ledger.sqlite',
-            governance=self.gov, operating=op.validate_operating(self.value, self.gov))
+            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
         payload = _dispatch_payload('off')
         adapters['dispatch_ticket'](payload)
         record = json.loads((runner._budget_record_dir / 'off.json').read_text())
@@ -76,6 +78,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         self.assertTrue(adapters['observe_dispatch'](dict(payload, reconcile_nonce='off-reconcile', reconcile_at=NOW))['terminal'])
         self.assertEqual(unusable.read_text(), 'Fixture obstruction')
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_production_cycle_refuses_unresolved_worker_retry_with_accounting_off(self):
         config, runner, adapters = self.adapter()
         binding = dict(project_id='project-1', repository_id='101', scope_sha256='a'*64)
@@ -89,7 +92,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         path = self.root / 'host-state/project.sqlite'
         context = adapters['dispatch_ticket'].configure_budgeting(path=path,
-            governance=self.gov, operating=op.validate_operating(value, self.gov))
+            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, value, self.gov))
         runner.exit_code = 1
         payload = _dispatch_payload('failed-cycle-worker')
         payload['ticket'] = 'AWF-32'
@@ -101,7 +104,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         # external inventory/publication and CLI behavior come from the runner.
         runner.exit_code = 0
         value['budgeting']['accounting_enabled'] = False
-        snapshot = op.validate_operating(value, self.gov)
+        snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         head, tree = [subprocess.check_output(['git', '-C', str(fixtures.ROOT), 'rev-parse', ref],

@@ -19,6 +19,7 @@ class ReportingOwnerAdmissionTests(unittest.TestCase):
     unchanged = fixture.OwnerAdmissionTests.unchanged
     refused = fixture.OwnerAdmissionTests.refused
     recover = fixture.OwnerAdmissionTests.recover
+    git = fixture.OwnerAdmissionTests.git
 
     def bindings(self):
         return [dict(project=self.gov['project']['id'], repository=str(self.gov['github']['repository_id']),
@@ -32,7 +33,7 @@ class ReportingOwnerAdmissionTests(unittest.TestCase):
     def counts(self):
         database = next((self.fixture.base / 'protected').rglob('owner-admission.sqlite3'))
         with closing(sqlite3.connect(database)) as db:
-            self.assertEqual({'owner_proposals', 'owner_confirmations'}, {r[0] for r in db.execute(
+            self.assertEqual({'owner_proposals', 'owner_confirmations', 'owner_transactions', 'owner_applied'}, {r[0] for r in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")})
             return tuple(db.execute('SELECT count(*) FROM ' + table).fetchone()[0]
                          for table in ('owner_proposals', 'owner_confirmations'))

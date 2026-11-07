@@ -2,6 +2,8 @@
 from copy import deepcopy
 from datetime import timedelta
 import os
+from pathlib import Path
+import subprocess
 import threading
 import time
 import unittest
@@ -166,6 +168,14 @@ class E8ControllerTests(unittest.TestCase):
         self.assertNotIn(opaque.encode(), before)
 
     def test_noncooperative_observer_is_durably_cancelled_and_cannot_send_on_return(self):
+        # Time the real cancellation path against a clean Git fixture, as the
+        # other bounded-delivery probes do. Unrelated source edits otherwise
+        # add worktree-reservation scans to the fixed 47-second assertion.
+        clean = Path(self.helper.temp.name) / 'noncooperative-repository'
+        subprocess.run(['git', 'clone', '--shared', '--quiet',
+                        str(self.repository['repository_root']), str(clean)],
+                       check=True, capture_output=True)
+        self.repository['repository_root'] = clean
         self.network.latency = .3
         self.network.reject = True
         self.settings['mode'] = 'slack'

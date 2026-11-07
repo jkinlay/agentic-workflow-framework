@@ -12,6 +12,7 @@ from agentic import operating as op
 class CalendarOwnerAdmissionTests(unittest.TestCase):
     setUpClass = classmethod(fixture.OwnerAdmissionTests.setUpClass.__func__)
     setUp = fixture.OwnerAdmissionTests.setUp
+    git = fixture.OwnerAdmissionTests.git
     save_governance = fixture.OwnerAdmissionTests.save_governance
     events = fixture.OwnerAdmissionTests.events
     cli = fixture.OwnerAdmissionTests.cli
@@ -28,7 +29,7 @@ class CalendarOwnerAdmissionTests(unittest.TestCase):
         database = next((self.fixture.base / 'protected').rglob('owner-admission.sqlite3'))
         with closing(sqlite3.connect(database)) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            self.assertEqual({'owner_proposals', 'owner_confirmations'}, tables)
+            self.assertEqual({'owner_proposals', 'owner_confirmations', 'owner_transactions', 'owner_applied'}, tables)
             return tuple(db.execute('SELECT count(*) FROM ' + table).fetchone()[0]
                          for table in ('owner_proposals', 'owner_confirmations'))
 

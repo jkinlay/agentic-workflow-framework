@@ -128,7 +128,7 @@ def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_r
     Resolution is read-only, and unavailable state never blocks OFF work.
     """
     from . import ValidationError
-    from .path_containment import is_within
+    from .path_containment import is_within, is_reparse_point
     explicit = path is not None
     try:
         require(text_id(project_id), 'Budget project identity is unavailable')
@@ -145,7 +145,7 @@ def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_r
         candidate = Path(path)
         require(candidate.is_absolute(), 'Project ledger path must be absolute')
         for parent in (candidate, *candidate.parents):
-            require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
+            require(not is_reparse_point(parent),
                     'Project ledger path traverses a link/reparse point')
         candidate = candidate.resolve()
         require(not any(is_within(candidate, root) for root in protected_state_roots(*worktree_roots)),
@@ -192,6 +192,10 @@ class ControllerBudgeting:
         from .budget_enrollment import EnrollmentRegistry
         from .operating import validate_snapshot
         validate_snapshot(operating, governance)
+        from .owner_admission import validate_protected_settings
+        root = (Path(operating.provenance['path']).parent if operating.provenance.get('path') else
+                next(iter(worktree_roots), Path(__file__).resolve().parents[3]))
+        validate_protected_settings(root, governance, operating.config)
         self.governance = deepcopy(governance)
         self.operating = operating
         self.settings = resolve_settings(operating.config)

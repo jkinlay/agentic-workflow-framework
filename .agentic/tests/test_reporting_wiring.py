@@ -31,6 +31,11 @@ class ReportingSettingsTests(unittest.TestCase):
         from types import SimpleNamespace
         self.temp = SimpleNamespace(name=str(self.fixture.base))
         self.count = 0
+        # Parent-process reads must see the same disposable OS-account store as
+        # the installed subprocesses, never the real machine owner's store.
+        location = patch('agentic.owner_admission._owner_state_home', return_value=self.fixture.base / 'protected')
+        location.start()
+        self.addCleanup(location.stop)
 
     save_governance = admission_fixture.ReportingOwnerAdmissionTests.save_governance
     events = admission_fixture.ReportingOwnerAdmissionTests.events
@@ -39,6 +44,7 @@ class ReportingSettingsTests(unittest.TestCase):
     confirm = admission_fixture.ReportingOwnerAdmissionTests.confirm
     unchanged = admission_fixture.ReportingOwnerAdmissionTests.unchanged
     recover = admission_fixture.ReportingOwnerAdmissionTests.recover
+    git = admission_fixture.ReportingOwnerAdmissionTests.git
 
     def destinations(self):
         return [binding(p, self.gov['project']['id'], str(self.gov['github']['repository_id']))
@@ -344,6 +350,10 @@ class ReportingRuntimeTests(unittest.TestCase):
 
 
 class ControllerReportingTests(unittest.TestCase):
+    def setUp(self):
+        from test_reporting_fixtures import isolate_reporting_admission
+        isolate_reporting_admission(self)
+
     def test_real_cycle_wires_sources_reports_batches_and_continued_dispatch(self):
         from test_awf244_controller_wiring import ControllerBatchingTests
         from test_continuous_controller import INVENTORY_BINDING, ticket

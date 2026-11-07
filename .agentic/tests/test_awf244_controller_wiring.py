@@ -79,7 +79,10 @@ class ControllerBatchingTests(unittest.TestCase):
                                          now=now, repository=REPOSITORY)
         config = deepcopy(inputs['planning_operating_snapshot'].config)
         config['operating_calendar'] = deepcopy(self.calendar)
-        snapshot = validate_operating(config, inputs['planning_config'])
+        from owner_admission_fixtures import confirmed_fixture_snapshot
+        root = Path(self.temp.name) / 'project'
+        root.mkdir(exist_ok=True)
+        snapshot = confirmed_fixture_snapshot(self, root, config, inputs['planning_config'])
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         def dispatch(payload):
             self.events.append(payload['lifecycle_stage'])

@@ -10,6 +10,8 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from source_only import skip_unless_source_repo
+from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.budgeting import protected_state_roots
 from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle
@@ -45,6 +47,7 @@ class ProductionPreA8Tests(unittest.TestCase):
                 self.assertEqual(ledger.read_bytes(), content)
                 self.assertFalse(driver.budgeting.registry.path.exists())
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_off_controller_dispatch_never_opens_empty_or_corrupt_budget_history(self):
         config, runner, adapters = self.adapter()
         for content in (b'', b'not a SQLite budget database'):
@@ -56,7 +59,7 @@ class ProductionPreA8Tests(unittest.TestCase):
                 self.gov = inputs['planning_config']
                 value = deepcopy(inputs['planning_operating_snapshot'].config)
                 value['budgeting']['accounting_enabled'] = False
-                snapshot = op.validate_operating(value, self.gov)
+                snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
                 inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
                 config['codex']['roles']['writer']['reasoning_effort'] = 'high'
                 adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))

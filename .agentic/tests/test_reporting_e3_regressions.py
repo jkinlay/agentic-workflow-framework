@@ -153,9 +153,16 @@ class ReportingE3Regressions(unittest.TestCase):
         accepted = project / 'binding.json'
         accepted.write_text(json.dumps(self.binding), encoding='utf-8')
         before = self.helper.path.read_bytes()
-        process = subprocess.run([sys.executable, '-B',
-            str(Path(__file__).resolve().parents[1] / 'scripts/workflow.py'), '--root', str(project),
-            'reporting-status', '--state', str(self.helper.path), '--binding', str(accepted)],
+        # Match the parent fixture's synthetic prior admission in this fresh
+        # process; this redaction test must never open the real owner store.
+        entry = str(Path(__file__).resolve().parents[1] / 'scripts/workflow.py')
+        args = [entry, '--root', str(project), 'reporting-status', '--state', str(self.helper.path), '--binding', str(accepted)]
+        wrapper = ('import sys,runpy\n'
+            f'sys.path.insert(0,{str(Path(__file__).resolve().parents[1] / "lib")!r})\n'
+            'import agentic.owner_admission as admission\n'
+            'admission.validate_protected_settings=lambda *args: None\n'
+            f'sys.argv={args!r}\nrunpy.run_path({entry!r},run_name="__main__")\n')
+        process = subprocess.run([sys.executable, '-B', '-c', wrapper],
             capture_output=True, text=True, timeout=30)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertNotIn(sentinel, process.stdout + process.stderr)

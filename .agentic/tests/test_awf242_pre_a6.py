@@ -9,6 +9,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
 from agentic.providers.github_review_host import HostDriver
@@ -49,7 +50,7 @@ class ProductionPreA6Tests(unittest.TestCase):
         value = deepcopy(self.value)
         value['budgeting']['accounting_enabled'] = enabled
         adapters['dispatch_ticket'].configure_budgeting(path=self.root / (self.gov['project']['id'] + '.sqlite'),
-            governance=self.gov, operating=op.validate_operating(value, self.gov))
+            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, value, self.gov))
         return runner, adapters
 
     def dispatch(self, adapters, payload):
@@ -129,7 +130,7 @@ class ProductionPreA6Tests(unittest.TestCase):
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         self.value['budgeting']['accounting_enabled'] = False
         adapters['dispatch_ticket'].configure_budgeting(path=None, governance=self.gov,
-            operating=op.validate_operating(self.value, self.gov))
+            operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             self.dispatch(adapters, dict(_dispatch_payload('unknown-worker'), ticket='EX-10'))
         driver = self.review(state='other-host')

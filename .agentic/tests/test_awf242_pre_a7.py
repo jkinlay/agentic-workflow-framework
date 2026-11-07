@@ -10,6 +10,8 @@ import uuid
 from unittest.mock import patch
 
 import source_only
+from source_only import skip_unless_source_repo
+from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
 from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle
@@ -30,6 +32,7 @@ class ProductionPreA7Tests(unittest.TestCase):
     configured_adapter = pre_a6.ProductionPreA6Tests.configured_adapter
     dispatch = pre_a6.ProductionPreA6Tests.dispatch
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_controller_checkout_excluded_from_all_protected_state(self):
         config, runner, _ = self.adapter()
         store = ContinuousControllerStore(self.root / 'controller.sqlite', ['A'],
@@ -39,7 +42,7 @@ class ProductionPreA7Tests(unittest.TestCase):
         self.gov = inputs['planning_config']
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting'] = dict(self.value['budgeting'], accounting_enabled=False)
-        snapshot = op.validate_operating(value, self.gov)
+        snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         config['codex']['roles']['writer']['reasoning_effort'] = 'high'
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
