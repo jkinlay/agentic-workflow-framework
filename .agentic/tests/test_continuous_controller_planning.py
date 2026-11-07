@@ -93,19 +93,18 @@ def planning_resource_inputs(capacity, *, resource_capacity=None, operator_capac
 		'planning_resource_producer_sha256': 'c' * 64,
 		'project_config_sha256': 'd' * 64, 'operating_config_sha256': 'e' * 64}
 
-def fixture_operating_snapshot(config, count, root):
+def fixture_operating_snapshot(config, count, root, *, repository_root=None):
     """Give policy re-reads the same isolated settings used by the planner."""
     from agentic.operating import CONFIG, read_operating
     from test_planning import operating_snapshot
     snapshot = operating_snapshot(config, count)
     if snapshot.provenance.get('path'):
         return snapshot
-    root = Path(root) / 'operating-fixture'
+    root = Path(repository_root) if repository_root is not None else Path(root) / 'operating-fixture'
     root.mkdir(exist_ok=True)
     (root / '.agentic').mkdir(exist_ok=True)
     (root / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(config), encoding='utf-8')
-    (root / CONFIG).write_text(json.dumps(snapshot.config),
-                               encoding='utf-8')
+    (root / CONFIG).write_text(json.dumps(snapshot.config), encoding='utf-8')
     return read_operating(root, config)
 
 
@@ -122,7 +121,10 @@ def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now
     cfg['project']['id'] = binding['project_id']
     cfg['github']['repository_id'] = binding['repository_id']
     operating = fixture_operating_snapshot(cfg, min(max(capacity, 1), 6),
-                                          Path(controller.path).parent)
+        Path(controller.path).parent,
+        repository_root=(repository['repository_root']
+            if Path(repository['repository_root']).resolve() != Path(__file__).resolve().parents[2]
+            else None))
     history = Store(Path(controller.path).with_suffix('.planning.sqlite3'),
                     str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-planning:' + binding['project_id'])))
     owned = deepcopy(items)
@@ -335,7 +337,7 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		calls = []
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
 		resources = {**resources, **planning_fixture_inputs(items, self.store, capacity)}
-		result = production_controller_cycle(self.store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, **resources, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
+		result = production_controller_cycle(self.store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture'), **resources, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
 
 	def test_production_cycle_dispatches_mixed_writer_and_critic_per_ticket(self):
@@ -494,7 +496,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		arguments.update(planning_fixture_inputs(items, store, capacity, now=now))
 		arguments.update(operations)
 		return production_controller_cycle(store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=now, host_capacity=capacity,
-			inventory_binding=BINDING, **REPOSITORY, **arguments)
+			inventory_binding=BINDING, **dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture'), **arguments)
 
 	def validate(self, request=None, observation=None, **kwargs):
 		request = request or allowance_request()
@@ -1494,7 +1496,7 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         args.update(changes)
         return production_controller_cycle(self.store,
             controller_config=dict.fromkeys(('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'), True),
-            now=NOW, host_capacity=2, inventory_binding=BINDING, **REPOSITORY,
+            now=NOW, host_capacity=2, inventory_binding=BINDING, **dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture'),
             observe_inventory=lambda: observation(self.items), observe_reservations=lambda request: {},
             dispatch_ticket=self.dispatch, observe_dispatch=lambda payload: receipt(payload),
             deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW},
@@ -1924,7 +1926,7 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         try:
             production_controller_cycle(self.store,
                 controller_config=dict.fromkeys(('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'), True),
-                now=NOW, host_capacity=2, inventory_binding=BINDING, **REPOSITORY,
+                now=NOW, host_capacity=2, inventory_binding=BINDING, **dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture'),
                 observe_inventory=lambda: observation(self.items), observe_reservations=lambda request: {},
                 dispatch_ticket=lambda payload: self.calls.append(payload) or receipt(payload),
                 observe_dispatch=lambda payload: receipt(payload),

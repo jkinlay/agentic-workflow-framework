@@ -77,13 +77,18 @@ def production_controller_cycle(*args,**kwargs):
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
-	snapshot = kwargs.get('planning_operating_snapshot')
-	if snapshot is not None and not snapshot.provenance.get('path'):
-		from settings_pr_fixtures import accepted_fixture_snapshot
-		with tempfile.TemporaryDirectory(prefix='awf-controller-policy-') as policy_root:
-			kwargs['planning_operating_snapshot'] = accepted_fixture_snapshot(None, Path(policy_root),
-				snapshot.config, kwargs['planning_config'])
-			return real_production_controller_cycle(*args,**kwargs)
+	# Trusted fixture construction binds policy and checkout explicitly, never
+	# selecting a root from supplied snapshot provenance.
+	if Path(kwargs['repository_root']).resolve() == ROOT:
+		from settings_pr_fixtures import fixture_repository, fixture_reservations, publish_fixture_settings
+		fixture_root = Path(args[0].path).parent / 'operating-fixture'
+		if not (fixture_root / '.git').exists():
+			publish_fixture_settings(None, fixture_root, kwargs['planning_config'],
+				kwargs['planning_operating_snapshot'].config)
+		kwargs.update(fixture_repository(fixture_root))
+		if kwargs['observe_reservations'] is reservation_observation:
+			kwargs['observe_reservations'] = lambda request: fixture_reservations(fixture_root, request)
+
 	return real_production_controller_cycle(*args,**kwargs)
 
 def inventory_observation(now,tickets):

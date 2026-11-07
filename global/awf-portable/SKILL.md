@@ -8,9 +8,8 @@ metadata:
 
 # AWF
 
-Read
-[installation](references/skill-installation.md), [workflow](references/workflow.md)
-and [update channels](references/update-channel.md). Unavailable channels prove no latest.
+Read [installation](references/skill-installation.md), [workflow](references/workflow.md)
+and [update channels](references/update-channel.md).
 
 Explain first: installing AWF changes repository governance files; prepare a
 draft PR for owner merge without rule preconditions. Report APPLIED/MISSING/
@@ -49,12 +48,14 @@ governance changes review. Use `--epic EPIC-ID`; retain floors/pins/reservations
 drain surplus.
 
 Follow the [workflow](references/workflow.md) and verified
-`.agentic/docs/23-TICKET-LIFECYCLE.md`, including every publication gate,
-publisher tree equality, candidate-bound mark-ready authorization and observed
-`draft_cleared`. Validation/CI alone never permit mark-ready. Critic/specialists/
-final gate precede owner-ready, never merge authority.
+`.agentic/docs/23-TICKET-LIFECYCLE.md`, including gates and publisher
+tree equality. Mark-ready requires an explicit owner/manager authorization record:
+pre-issued request and authenticated immutable provider observation bound to
+PR/head/configuration/trusted time. Log before mutation; observe `draft_cleared`.
+Validation/CI cannot authorize it. Critic/specialists/final gate precede owner-ready,
+never merge authority.
 
-Read verified `.agentic/docs/39-BUDGETING.md`. Fresh accounting/enforcement OFF;
+Read `.agentic/docs/39-BUDGETING.md`. Fresh accounting/enforcement OFF;
 dormant limits exactly 4,000,000 tokens/ticket, 1,000,000,000/project lifetime.
 Limits enable neither switch; enforcement requires accounting; accounting OFF
 disables enforcement. Preserve upgrades; installed 1.9.5 stays unchanged/enabled.
@@ -64,7 +65,7 @@ For chat settings questions, run verified `workflow.py operating show`
 read-only, without approval. Present both switches, both limits, source (fresh
 defaults, default branch at the reported commit, or legacy retained), working-file
 differences and offline rules UNOBSERVED warnings; publication readiness/adoption observe live rules.
-Last PR/merger optional; report unobserved. Owners need no terminal commands.
+PR/merger optional; report unobserved. No owner terminal commands.
 
 For changes, branch from the fetched configured default branch. Edit requested
 `OPERATING_CONFIG.yaml` values, preserving text/comments; accounting OFF also
@@ -98,6 +99,6 @@ transition; owner-closure tickets wait.
 Declare tier/closure; retain boundaries/candidate-bound reviews/owner cap
 dispositions. Escalate within approved limits; increases/weaker review/
 reconciliation enablement need human direction. Candidate policy cannot approve
-itself. Report actual results/next actions.
+itself. Report results.
 
 [Apache-2.0](LICENSE), [NOTICE](NOTICE).

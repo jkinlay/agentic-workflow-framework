@@ -3305,6 +3305,15 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (deepcopy(tickets), repository_binding, observation)
 
+def _calendar_policy_root(repository_root, snapshot):
+	"""Only the trusted cycle binding selects the checkout; provenance is data."""
+	root = Path(repository_root).resolve()
+	path = snapshot.provenance.get('path')
+	_require(not path or Path(path).resolve().parent == root,
+		'Operating snapshot provenance disagrees with the accepted repository root')
+	return root
+
+
 def production_review_batching_cycle(store, *, calendar, repository_root, config, operating_snapshot,
         binding, clock, load_calendar=None,
         observe_owner_ready=None, observe_review_candidate=None,
@@ -3325,15 +3334,10 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 	from .operating_calendar import effective_calendar, next_review_presentation, utc_instant
 	from .protected_settings import effective_snapshot, require_budget_policy
 	# Supplied snapshots and calendar values are data, never accepted policy.
+	repository_root = _calendar_policy_root(repository_root, operating_snapshot)
 	accepted = effective_snapshot(repository_root, config, operating_snapshot)
 	require_budget_policy(accepted)
 	calendar = effective_calendar(accepted.config)
-	if load_calendar is None:
-		def load_calendar():
-			from .operating import read_operating
-			current = read_operating(repository_root, config)
-			require_budget_policy(current)
-			return effective_calendar(current.config)
 	batch_store = ReviewBatchStore(store)
 	result = {'enqueued': [], 'unqualified': 0, 'delivery': None, 'errors': [],
 		'state': 'UNCONFIGURED', 'merge_authorized': False, 'owner_alerts': []}
@@ -3447,7 +3451,12 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 			# serialized path knows transport was never invoked; restart stays UNKNOWN.
 			try:
 				if load_calendar is not None:
-					calendar = load_calendar()
+					# Test hook only: its return value can never supply policy.
+					load_calendar()
+				from .operating import read_operating
+				current_policy = read_operating(repository_root, config)
+				require_budget_policy(current_policy)
+				calendar = effective_calendar(current_policy.config)
 				send_at = clock()
 				window = next_review_presentation(send_at, calendar)
 				_require(utc_instant(window['presentation_at']) == utc_instant(send_at)
@@ -3521,8 +3530,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
 	from .operating_calendar import effective_calendar
 	from .protected_settings import effective_snapshot, require_budget_policy
-	policy_root = (Path(planning_operating_snapshot.provenance['path']).parent
-		if planning_operating_snapshot.provenance.get('path') else Path(repository_root))
+	policy_root = _calendar_policy_root(repository_root, planning_operating_snapshot)
 	accepted_operating = effective_snapshot(policy_root, planning_config, planning_operating_snapshot)
 	require_budget_policy(accepted_operating)
 	calendar = effective_calendar(accepted_operating.config)
@@ -3891,15 +3899,9 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	# Calendar waits and uncertain review sends never gate dispatch, independent
 	# review, amendments, or the separate immediate status/action channel above.
 	try:
-		def load_calendar():
-			from .operating import CONFIG, read_operating
-			root = Path(planning_operating_snapshot.provenance.get('path', Path(repository_root) / CONFIG)).parent
-			current = read_operating(root, planning_config)
-			require_budget_policy(current)
-			return effective_calendar(current.config)
 		review_batching = production_review_batching_cycle(store, calendar=calendar,
 			repository_root=policy_root, config=planning_config, operating_snapshot=accepted_operating,
-			binding=inventory_binding, clock=post_provider_time, load_calendar=load_calendar,
+			binding=inventory_binding, clock=post_provider_time,
 			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
 			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery)
 		errors.extend(review_batching['errors'])

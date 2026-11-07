@@ -1,9 +1,10 @@
 """Accepted calendar policy at reader, production and diagnostic boundaries."""
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from copy import deepcopy
 from dataclasses import replace
 import io
 import json
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -12,11 +13,13 @@ from agentic import ValidationError, operating as op
 from agentic.canonical import canonical
 from agentic.budgeting import fresh_settings, legacy_settings, resolve_settings
 from agentic.continuous_controller import production_review_batching_cycle
-from agentic.operating_calendar import effective_calendar
+from agentic.operating_calendar import effective_calendar, next_review_presentation
 from agentic.protected_settings import effective_snapshot, require_budget_policy
 from agentic.review_batching import ReviewBatchStore
+from settings_pr_fixtures import publish_fixture_settings
 import test_awf242_settings_pr as settings
 import test_awf244_window_regressions as windows
+import test_awf244_review_batching as batching
 
 
 class PolicyReaderTests(unittest.TestCase):
@@ -272,3 +275,148 @@ class ProductionPolicyTests(unittest.TestCase):
         self.assertTrue(any('refused' in error.get('reason', '') for error in result['errors']))
         with self.store.connection() as db:
             self.assertEqual(0, db.execute('SELECT attempts FROM review_presentation_intent_v1').fetchone()[0])
+
+
+class ProductionBoundaries(unittest.TestCase):
+    setUp = ProductionPolicyTests.setUp
+    observe_ready = ProductionPolicyTests.observe_ready
+    observe_candidate = ProductionPolicyTests.observe_candidate
+    deliver = ProductionPolicyTests.deliver
+    readback = ProductionPolicyTests.readback
+    intent_states = ProductionPolicyTests.intent_states
+    cycle = ProductionPolicyTests.cycle
+    supplied = ProductionPolicyTests.supplied
+
+    def batch(self, **overrides):
+        snapshot = self.supplied(True)
+        arguments = dict(repository_root=self.owner.root, config=self.owner.gov,
+            operating_snapshot=snapshot, calendar=effective_calendar(snapshot.config),
+            binding=self.binding, clock=lambda: self.now,
+            observe_owner_ready=self.observe_ready, observe_review_candidate=self.observe_candidate,
+            deliver_review_batch=self.deliver, observe_review_delivery=self.readback)
+        arguments.update(overrides)
+        return production_review_batching_cycle(self.store, **arguments)
+
+    def test_callback_cannot_replace_post_fence_calendar(self):
+        self.now = '2026-11-06T16:59:59Z'
+        calls = []
+        def callback():
+            with self.store.connection() as db:
+                self.assertEqual('SENDING', db.execute(
+                    'SELECT phase FROM review_presentation_phase_v1').fetchone()[0])
+            calls.append(True)
+            self.now = '2026-11-06T17:00:00Z'
+            return effective_calendar({'operating_calendar': {'review_batching': {'enabled': False}}})
+        result = self.batch(load_calendar=callback)
+        self.assertEqual([True], calls)
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+        self.assertTrue(result['errors'])
+        accepted = effective_calendar(op.read_operating(self.owner.root, self.owner.gov).config)
+        self.assertEqual('2026-11-09T07:00:00Z', next_review_presentation(self.now, accepted)['presentation_at'])
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT attempts FROM review_presentation_intent_v1').fetchone()[0])
+
+    def test_foreign_provenance_refuses_in_full_controller_and_direct_entry(self):
+        foreign = self.owner.root.parent / 'foreign-policy'
+        value = self.supplied(False).config
+        publish_fixture_settings(self, foreign, self.owner.gov, value)
+        forged = replace(op.validate_operating(value, self.owner.gov),
+            _provenance_json=canonical({'path': str(foreign / op.CONFIG)}))
+        real_read = op.read_operating
+        first = True
+        def read(*args, **kwargs):
+            nonlocal first
+            if first:
+                first = False
+                return forged
+            return real_read(*args, **kwargs)
+        with patch.object(op, 'read_operating', side_effect=read):
+            with self.assertRaisesRegex(ValidationError, 'provenance.*repository root'):
+                self.cycle('2026-11-07T10:00:00Z')
+        self.assertEqual([], self.delivered)
+        self.assertEqual([], self.events)
+        self.now = '2026-11-07T10:00:00Z'
+        with self.assertRaisesRegex(ValidationError, 'provenance.*repository root'):
+            self.batch(operating_snapshot=forged)
+        self.assertTrue(effective_calendar(real_read(self.owner.root, self.owner.gov).config)['review_batching']['enabled'])
+
+    def test_callback_cannot_replace_post_fence_admission(self):
+        self.now = '2026-11-06T16:00:00Z'
+        def callback():
+            ProductionPolicyTests.unverify(self)
+            return effective_calendar({'operating_calendar': {'review_batching': {'enabled': False}}})
+        result = self.batch(load_calendar=callback)
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+        self.assertTrue(any('refused' in error.get('reason', '') for error in result['errors']))
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT attempts FROM review_presentation_intent_v1').fetchone()[0])
+
+    def test_provider_callbacks_can_begin_immediate_on_separate_connection(self):
+        self.now = '2026-11-10T10:00:00Z'
+        probes = []
+        def observe(value, now):
+            with closing(sqlite3.connect(self.store.path, timeout=0)) as db:
+                try:
+                    db.execute('BEGIN IMMEDIATE')
+                    probes.append('unlocked')
+                    db.rollback()
+                except sqlite3.OperationalError:
+                    probes.append('writer-locked')
+            return self.observe_candidate(value, now)
+        result = self.batch(observe_review_candidate=observe)
+        self.assertEqual([], result['errors'])
+        self.assertEqual(['unlocked'] * 3, probes)
+        self.assertEqual(1, len(self.delivered))
+
+    def test_never_fetched_full_defaults_admit_default_calendar_and_show_unverified(self):
+        settings.SettingsPRTests.git(self.owner, 'remote', 'add', 'origin',
+                                           'https://example.invalid/policy.git')
+        settings.SettingsPRTests.git(self.owner, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+        settings.SettingsPRTests.git(self.owner, 'update-ref', '-d', 'refs/remotes/origin/main')
+        snapshot = op.read_operating(self.owner.root, self.owner.gov)
+        report = snapshot.provenance['protected_settings']
+        self.assertTrue(report['budget_admission'])
+        self.assertTrue(report['unverified'])
+        self.assertIsNone(report['commit'])
+        self.assertEqual(effective_calendar({}), effective_calendar(snapshot.config))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(0, op.main(['--root', str(self.owner.root), 'show', '--json']))
+        shown = json.loads(output.getvalue())
+        self.assertTrue(shown['protected_settings']['unverified'])
+        self.assertIn('unverified', shown['protected_settings']['sources']['operating_calendar'])
+        self.assertTrue(shown['budget_admission'])
+        self.now = '2026-11-10T10:00:00Z'
+        result = self.batch(operating_snapshot=snapshot)
+        self.assertEqual([], result['errors'])
+        self.assertEqual(1, len(self.delivered))
+
+
+class AtomicObservationBindings(unittest.TestCase):
+    setUp = batching.BatchingTests.setUp
+    observe = batching.BatchingTests.observe
+    enqueue = batching.BatchingTests.enqueue
+
+    def test_claim_discards_observation_when_candidate_changes_during_read(self):
+        self.enqueue()
+        def observe(value):
+            self.store.enqueue({**value, 'head_sha': 'e' * 40}, self.ready, {})
+            return self.observe(value)
+        self.assertIsNone(self.store.claim(self.now, {}, observe))
+        with self.controller.connection() as db:
+            self.assertEqual(['PENDING', 'WITHDRAWN'], sorted(row[0] for row in db.execute(
+                'SELECT state FROM review_presentation_intent_v1')))
+            self.assertEqual(0, db.execute('SELECT count(*) FROM review_presentation_outbox_v1').fetchone()[0])
+
+    def test_recheck_refuses_if_claim_released_during_provider_read(self):
+        self.enqueue()
+        batch = self.store.claim(self.now, {}, self.observe)
+        def observe(value):
+            self.assertTrue(self.store.release_unsent(batch['batch_id'], self.now, {}))
+            return self.observe(value)
+        with self.assertRaisesRegex(ValidationError, 'changed|not claimed'):
+            self.store.recheck(batch['batch_id'], self.now, {}, observe)
+        with self.controller.connection() as db:
+            self.assertEqual(0, db.execute('SELECT count(*) FROM review_presentation_check_v1').fetchone()[0])
