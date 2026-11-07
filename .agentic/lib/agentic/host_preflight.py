@@ -593,7 +593,18 @@ def route_models_observed(root, *, config=None, capabilities=None, now=None):
                                      "model_routing": execution.get("model_routing", {})})
         operating = root / "OPERATING_CONFIG.yaml"
         if operating.is_file():
-            routes |= _configured_routes(_load_json_or_yaml(operating))
+            from .operating import MAX_BYTES, validate_operating
+            from .protected_settings import load_operating_yaml
+            from .safeio import Tree
+            try:
+                with Tree(root) as tree:
+                    proposed = load_operating_yaml(tree.read('OPERATING_CONFIG.yaml', maximum=MAX_BYTES))
+                checked = validate_operating(proposed, config)
+            except ValidationError as exc:
+                return {**row('route_models_observed', 'WARN', str(exc),
+                              'Correct OPERATING_CONFIG.yaml; this warning never blocks installation.'),
+                        'operating_refused': True}
+            routes |= _configured_routes(checked.config)
         settings = execution.get("route_capabilities", {})
         max_age_days = settings.get("max_age_days", ROUTE_OBSERVATION_DEFAULT_DAYS)
         if type(max_age_days) is not int or max_age_days < 1:
