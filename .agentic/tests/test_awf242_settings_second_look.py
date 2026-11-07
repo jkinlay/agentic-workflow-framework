@@ -279,17 +279,17 @@ class SecondLookTests(unittest.TestCase):
                 self.assertEqual(before, {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
                                          for p in self.root.rglob('*') if p.is_file()})
 
-    def test_refresh_uses_only_git_230_ref_publication_commands(self):
+    def test_publication_uses_direct_update_ref_without_stdin_symref_protocol(self):
         from agentic.protected_settings import refresh_default_policy
         from agentic.safeio import run_bounded
         seen = []
-        def git230(args, **kwargs):
+        def inspect_publication(args, **kwargs):
             if 'update-ref' in args:
                 seen.append(args[args.index('update-ref'):])
                 self.assertNotIn('--stdin', args)
                 self.assertNotIn('symref-update', kwargs.get('stdin') or '')
             return run_bounded(args, **kwargs)
-        with patch('agentic.safeio.run_bounded', side_effect=git230):
+        with patch('agentic.safeio.run_bounded', side_effect=inspect_publication):
             result = refresh_default_policy(self.root)
         self.assertEqual('FETCHED', result['status'], result)
         self.assertTrue(seen)
@@ -360,7 +360,10 @@ class SecondLookTests(unittest.TestCase):
         with patch('agentic.safeio.run_bounded', side_effect=concurrent_fetch):
             result = refresh_default_policy(self.root)
         self.assertEqual('UNAVAILABLE', result['status'], result)
-        self.assertEqual('branch fetch', result['step'])
+        self.assertEqual('advertised commit check', result['step'])
+        self.assertIn('Fetched commit differs from advertised HEAD', result['reason'])
+        self.assertIn('next controller cycle', result['reason'])
+        self.assertNotIn('Restore access', result['reason'])
         self.assertEqual(before, self.git('rev-parse', 'origin/main'))
         self.assertFalse(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
         self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
@@ -377,7 +380,7 @@ class SecondLookTests(unittest.TestCase):
         seen = []
         def during_network(args, **kwargs):
             if '--symref' in args:
-                self.assertFalse(lock.exists())
+                self.assertTrue(lock.exists())
             if 'fetch' in args:
                 seen.append('fetch')
                 self.assertTrue(lock.exists())

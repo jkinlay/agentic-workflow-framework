@@ -188,14 +188,14 @@ class ControllerBudgeting:
     completion. Neither ticket content nor process ancestry enrolls a run.
     Constructing an OFF context opens no enrollment or accounting database.
     """
-    def __init__(self, path, governance, operating, host, *, worktree_roots=()):
+    def __init__(self, path, governance, operating, host, *, worktree_roots=(), credential_envs=()):
         from .budget_enrollment import EnrollmentRegistry
         from .operating import validate_snapshot
         validate_snapshot(operating, governance)
         from .protected_settings import budget_snapshot
         root = (Path(operating.provenance['path']).parent if operating.provenance.get('path') else
                 next(iter(worktree_roots), Path(__file__).resolve().parents[3]))
-        operating = budget_snapshot(root, governance, operating)
+        operating = budget_snapshot(root, governance, operating, credential_envs=credential_envs)
         self.governance = deepcopy(governance)
         self.operating = operating
         self.settings = resolve_settings(operating.config)

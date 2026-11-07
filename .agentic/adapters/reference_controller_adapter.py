@@ -27,8 +27,7 @@ MAX_SECONDS = 120
 MAX_JIRA_PAGE = 100
 _CODEX_CONFIG_SOURCE = 'AWF isolated CODEX_HOME/config.toml'
 _CODEX_SANDBOX_ERROR = 'Codex sandbox setup failed; config source: ' + _CODEX_CONFIG_SOURCE + '. The user desktop-app config is not inherited; inspect the isolated home and Codex diagnostics for an unexpected user-app file reference.'
-_CREDENTIAL_NAME_MARKERS = ('TOKEN', 'PASSWORD', 'PASSWD', 'SECRET', 'API_KEY', 'APIKEY', 'ACCESS_KEY', 'PRIVATE_KEY', 'CREDENTIAL')
-_CREDENTIAL_SERVICE_NAMES = ('JIRA', 'ATLASSIAN')
+from agentic.child_process import safe_adapter_env as _safe_env
 _TICKET_BODY_FIELDS = {'ticket', 'priority', 'disposition', 'actor', 'reason', 'next_action', 'resume_trigger', 'paths', 'dependencies_satisfied', 'budget_available', 'cap_available', 'review_independent', 'exact_tuple', 'activity', 'verification_gate', 'reviewer_completion', 'open_findings', 'jira_status'}
 _STAGE_ROLES = {'implementation': 'writer', 'independent-review': 'critic'}
 
@@ -390,16 +389,6 @@ def _clock_text(clock, value=None):
 	timestamp(value)
 	return value
 
-def _safe_env(*credential_envs):
-	result = dict(os.environ)
-	for key in tuple(result):
-		normalized = key.upper()
-		if normalized in {name.upper() for name in credential_envs if name} or any((service in normalized for service in _CREDENTIAL_SERVICE_NAMES)) or any((marker in normalized for marker in _CREDENTIAL_NAME_MARKERS)):
-			result.pop(key, None)
-	result['GH_PROMPT_DISABLED'] = '1'
-	result['GIT_TERMINAL_PROMPT'] = '0'
-	return result
-
 def _disjoint(first, second):
 	first = first.resolve()
 	second = second.resolve()
@@ -700,7 +689,8 @@ def _build(config):
 		nonlocal budgeting
 		from agentic.budgeting import ControllerBudgeting
 		budgeting = context if context is not None else ControllerBudgeting(
-			path, governance, operating, runner, worktree_roots=(*worktree_roots, worktree_root))
+			path, governance, operating, runner, worktree_roots=(*worktree_roots, worktree_root),
+			credential_envs=(token_env, email_env))
 		_require(isinstance(budgeting, ControllerBudgeting), 'Budget context must come from the trusted controller')
 		return budgeting
 

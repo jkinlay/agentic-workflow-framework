@@ -78,8 +78,9 @@ Effective protected settings come from `OPERATING_CONFIG.yaml` at the commit
 named by `refs/remotes/origin/HEAD` only. `github.base_branch` cannot select policy;
 `show` reports disagreement. Branch/working edits cannot change enforcement.
 Differences mean update an older checkout, otherwise propose a PR. At cycle start
-the controller discovers the remote default and fetches it, following renames.
-Failure retains the last policy with a step-specific remedy. FETCH_HEAD time is
+the controller locks before discovery, fetch, commit checking and publication.
+Git-valid UTF-8 names and hierarchical renames are supported. Failure retains
+policy or unverified refusal, with a step-specific remedy. FETCH_HEAD time is
 a fetch attempt, never proof of successful policy refresh.
 Absent policy there means fresh OFF or legacy retained; malformed bytes refuse.
 Missing origin/HEAD with configured origin is unverified: show, validation and
