@@ -469,7 +469,7 @@
     ".agentic/tests/test_upgrade_matrix.py": "8fe0be683806135c04863c00c8acbf110d54975127b0759fd64a0c112eecfbf7",
     ".agentic/tests/test_upgrade_pycache.py": "1d09c8b67c2321a67f82e2f09ddf1191ab0e015425ee5a359e0e305343cdaadd",
     ".agentic/tests/test_upgrade_receipts.py": "49c519c70d6bc29fee8186a61e2e06f30934c377a8342408345b627e5078679f",
-    ".agentic/tests/test_windows_diagnostics.py": "b111b03bc320eaaf503149f6d7cbeedb4d68421c449fd42274cde4507dfccc86",
+    ".agentic/tests/test_windows_diagnostics.py": "955b88a2898e774c4434fd5e2350384d0f5e81373e78147b709901d58d9b7117",
     ".agentic/tests/upgrade_fixtures.py": "e6a3eb6f07a3b2a2432d2c6fdd64453d8a57399d94b008aaff8a72a87fba9674",
     ".agentic/upgrade/blobs/3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883": "3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883",
     ".agentic/upgrade/blobs/da8c1e0121daddc22579b061661c9c08ff0745a905ee0f1381492af6b9b77900": "da8c1e0121daddc22579b061661c9c08ff0745a905ee0f1381492af6b9b77900",
