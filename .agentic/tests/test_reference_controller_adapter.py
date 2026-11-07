@@ -652,7 +652,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A', 'B'], worktree_roots=[self.root / 'worktree'])
-		planning_inputs = {**planning_resource_inputs(2), **planning_fixture_inputs([first, second], state, 2, binding=binding, now=NOW)}
+		planning_inputs = {**planning_resource_inputs(2), **planning_fixture_inputs([first, second], state, 2, binding=binding, now=NOW, repository={'repository_root': repository})}
 		result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=2, **planning_inputs, inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(len(result['dispatch_receipts']), 2, result)
 		self.assertEqual(len(runner.launches), 2)

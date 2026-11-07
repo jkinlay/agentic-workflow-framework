@@ -31,7 +31,7 @@ class ProductionPreA11Tests(unittest.TestCase):
         value = deepcopy(self.value)
         value['budgeting']['accounting_enabled'] = enabled
         context = adapters['dispatch_ticket'].configure_budgeting(path=self.root / 'ledger.sqlite',
-            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, value, self.gov), repository_root=self.root)
         return config, runner, adapters, context
 
     def record(self, runner, payload):
@@ -118,14 +118,15 @@ class ProductionPreA11Tests(unittest.TestCase):
             config=self.gov, cycle_id=name)
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting']['accounting_enabled'] = enabled
-        snapshot = accepted_fixture_snapshot(self, self.root, value, inputs['planning_config'])
+        repository = self.root / 'controller-repository'
+        snapshot = accepted_fixture_snapshot(self, repository, value, inputs['planning_config'])
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
-        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(fixtures.ROOT),
+        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(repository),
             'rev-parse', ref], text=True).strip() for ref in ('HEAD', 'HEAD^{tree}')]
         return production_controller_cycle(store, controller_config=dict(dispatch_enabled=True,
             auto_dispatch=True, auto_request_critic=True, auto_resume_amendments=True), now=NOW,
             host_capacity=1, **{**planning_resource_inputs(1), **inputs}, inventory_binding=binding,
-            repository_root=fixtures.ROOT, repository_head_sha=head, repository_tree_sha=tree,
+            repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
             publication_config=config, budget_ledger_path=self.root / 'ledger.sqlite',
             **{key: adapters[key] for key in ('observe_inventory', 'observe_reservations',
                 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})

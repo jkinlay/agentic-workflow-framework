@@ -3305,15 +3305,6 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (deepcopy(tickets), repository_binding, observation)
 
-def _calendar_policy_root(repository_root, snapshot):
-	"""Only the trusted cycle binding selects the checkout; provenance is data."""
-	root = Path(repository_root).resolve()
-	path = snapshot.provenance.get('path')
-	_require(not path or Path(path).resolve().parent == root,
-		'Operating snapshot provenance disagrees with the accepted repository root')
-	return root
-
-
 def production_review_batching_cycle(store, *, calendar, repository_root, config, operating_snapshot,
         binding, clock, load_calendar=None,
         observe_owner_ready=None, observe_review_candidate=None,
@@ -3333,8 +3324,9 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 	from .review_batching import ReviewBatchStore
 	from .operating_calendar import effective_calendar, next_review_presentation, utc_instant
 	from .protected_settings import effective_snapshot, require_budget_policy
+	from .budgeting import policy_repository_root
 	# Supplied snapshots and calendar values are data, never accepted policy.
-	repository_root = _calendar_policy_root(repository_root, operating_snapshot)
+	repository_root = policy_repository_root(repository_root, operating_snapshot)
 	accepted = effective_snapshot(repository_root, config, operating_snapshot)
 	require_budget_policy(accepted)
 	calendar = effective_calendar(accepted.config)
@@ -3529,13 +3521,12 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	validate_snapshot(planning_operating_snapshot, planning_config)
 	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
 	from .operating_calendar import effective_calendar
-	from .protected_settings import effective_snapshot, require_budget_policy
-	policy_root = _calendar_policy_root(repository_root, planning_operating_snapshot)
-	accepted_operating = effective_snapshot(policy_root, planning_config, planning_operating_snapshot)
-	require_budget_policy(accepted_operating)
+	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots, accepted_budget_snapshot
+	# Budget and calendar share the same accepted snapshot and root refusal.
+	policy_root = Path(repository_root).resolve(strict=True)
+	accepted_operating = accepted_budget_snapshot(policy_root, planning_config, planning_operating_snapshot)
 	calendar = effective_calendar(accepted_operating.config)
-	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots
-	state_roots = protected_state_roots(*store.worktree_roots, repository_root)
+	state_roots = protected_state_roots(*store.worktree_roots, policy_root)
 	budget_settings = resolve_settings(accepted_operating.config)
 	if configure_budgeting is None:
 		configure_budgeting = getattr(dispatch_ticket, 'configure_budgeting', None)
@@ -3544,7 +3535,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			accounting_enabled=budget_settings['accounting_enabled'],
 			worktree_roots=state_roots,
 			previous_paths=(store.path.with_suffix('.routing.sqlite3'),)),
-			governance=planning_config, operating=accepted_operating, worktree_roots=state_roots)
+			governance=planning_config, operating=accepted_operating, repository_root=policy_root, worktree_roots=state_roots)
 	else:
 		_require(not budget_settings['accounting_enabled'] or 'legacy_behavior' in budget_settings,
 			'Enabled budgeting requires a reviewed dispatch budgeting adapter')

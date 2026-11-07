@@ -78,7 +78,7 @@ class RefreshReviewTests(unittest.TestCase):
             return result
         with patch.dict(os.environ, {**dummy, **keep}), patch('agentic.safeio.run_bounded', side_effect=capture):
             context = adapters['dispatch_ticket'].configure_budgeting(path=self.base / 'ledger.sqlite',
-                governance=self.gov, operating=snapshot)
+                governance=self.gov, operating=snapshot, repository_root=self.root)
         self.assertFalse(context.settings['enforcement_enabled'])
         self.assertEqual({'ls-remote', 'fetch', 'update-ref', 'symbolic-ref'}, seen)
 

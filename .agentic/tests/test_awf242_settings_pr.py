@@ -133,7 +133,7 @@ class SettingsPRTests(unittest.TestCase):
         snapshot = replace(op.validate_operating(self.value, self.gov),
             _provenance_json=op.canonical({'path': str(self.root / op.CONFIG)}))
         context = ControllerBudgeting(self.root.parent / (self.root.name + '.sqlite'),
-            self.gov, snapshot, object(), worktree_roots=(self.root,))
+            self.gov, snapshot, object(), worktree_roots=(self.root,), repository_root=self.root)
         self.assertTrue(context.settings['enforcement_enabled'])
 
     def test_audited_working_budget_edits_and_merged_changes_leave_unprotected_audit_binding(self):
