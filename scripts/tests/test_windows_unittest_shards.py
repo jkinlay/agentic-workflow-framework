@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from collections import Counter
 import importlib.util
 import io
@@ -46,7 +47,7 @@ class ShardTests(unittest.TestCase):
     def allocation(self):
         return runner.allocate(runner.inventory(self.root))
 
-    def invoke(self, shard=0, *arguments):
+    def invoke(self, shard=7, *arguments):
         return subprocess.run(
             [sys.executable, '-B', str(SCRIPT), '--root', str(self.root),
              '--shard', str(shard), *arguments],
@@ -62,7 +63,7 @@ class ShardTests(unittest.TestCase):
                     records.append(record)
         return records
 
-    def test_allocation_is_ordinal_per_suite_and_order_independent(self):
+    def test_allocation_is_path_hashed_per_suite_and_order_independent(self):
         for suite in ROOTS:
             for name in ('test_z.py', 'test_B.py', 'test_a.py', 'test_c.py'):
                 self.write(suite, name, PASSING)
@@ -72,13 +73,44 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(allocation, runner.allocate(inventory))
         for suite in ROOTS:
             paths = sorted(inventory[suite])
-            self.assertEqual([suite + '/test_B.py'], allocation[suite][0])
-            self.assertEqual([], allocation[suite][1])
-            self.assertEqual(paths[1::6][0::2], allocation[suite][6])
-            self.assertEqual(paths[1::6][1::2], allocation[suite][7])
-            for shard in (2, 3, 4, 5):
-                self.assertEqual(paths[shard::6], allocation[suite][shard])
+            for shard in runner.SHARDS:
+                expected = [p for p in paths if int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % 9 == shard]
+                self.assertEqual(expected, allocation[suite][shard])
+        self.assertEqual([ROOTS[0] + '/test_awf.py'], allocation[ROOTS[0]][7])
         runner.guard(self.root, allocation)
+
+    def test_adding_or_removing_paths_never_moves_existing_modules(self):
+        for path in runner.HEAVY_MODULE_SHARDS:
+            suite, name = path.rsplit('/', 1)
+            self.write(suite, name, PASSING)
+        before = self.allocation()
+        added = []
+        for suite in ROOTS:
+            for name in ('test_000_added.py', 'nested/test_new.py', 'test_zzzz_added.py'):
+                added.append(self.write(suite, name, PASSING))
+        after = self.allocation()
+        for suite in ROOTS:
+            retained = {p for paths in before[suite].values() for p in paths}
+            for shard in runner.SHARDS:
+                self.assertEqual(before[suite][shard], [p for p in after[suite][shard] if p in retained])
+        for path, shard in runner.HEAVY_MODULE_SHARDS.items():
+            suite = path.rsplit('/', 1)[0]
+            self.assertIn(path, before[suite][shard])
+        runner.guard(self.root, after)
+        for path in added:
+            (self.root / path).unlink()
+        self.assertEqual(before, self.allocation())
+
+    def test_hash_is_stable_in_a_fresh_process_with_a_different_hash_seed(self):
+        import os
+        outputs = []
+        for seed in ('1', '987654'):
+            completed = subprocess.run([sys.executable, '-B', str(SCRIPT), '--root', str(self.root),
+                                        '--shard', '7', '--list'], capture_output=True, text=True,
+                                       env={**os.environ, 'PYTHONHASHSEED': seed})
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            outputs.append(completed.stdout)
+        self.assertEqual(outputs[0], outputs[1])
 
     def test_upgrade_matrix_is_split_into_shards_one_and_eight_only(self):
         split = self.write(ROOTS[0], 'test_upgrade_matrix.py', PASSING)
@@ -90,13 +122,13 @@ class ShardTests(unittest.TestCase):
         inventory = runner.inventory(self.root)
         allocation = runner.allocate(inventory)
         for suite in ROOTS:
-            base = sorted(inventory[suite])[1::6]
-            rest = [path for path in base if path != split]
             expected_split = [split] if suite == ROOTS[0] else []
-            self.assertEqual(expected_split, allocation[suite][1])
-            self.assertEqual(expected_split, allocation[suite][8])
-            self.assertEqual(rest[0::2], allocation[suite][6])
-            self.assertEqual(rest[1::2], allocation[suite][7])
+            self.assertEqual(expected_split, [p for p in allocation[suite][1] if p == split])
+            self.assertEqual(expected_split, [p for p in allocation[suite][8] if p == split])
+            for shard in runner.SHARDS:
+                self.assertEqual([p for p in sorted(inventory[suite]) if p != split
+                                  and int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % 9 == shard],
+                                 [p for p in allocation[suite][shard] if p != split])
             self.assertTrue(allocation[suite][6] and allocation[suite][7])
             counts = Counter(path for paths in allocation[suite].values() for path in paths)
             self.assertEqual(set(inventory[suite]), set(counts))
@@ -115,7 +147,7 @@ class ShardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'misplaced'):
             runner.guard(self.root, allocation)
         allocation = self.allocation()
-        allocation[ROOTS[0]][6].append(allocation[ROOTS[0]][0][0])
+        allocation[ROOTS[0]][6].append(ROOTS[0] + '/test_awf.py')
         with self.assertRaisesRegex(ValueError, 'duplicate'):
             runner.guard(self.root, allocation)
 
@@ -152,7 +184,7 @@ class ShardTests(unittest.TestCase):
             completed = self.invoke(shard)
             self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
             record = next(r for r in self.events(completed, 'suite_result') if r['suite'] == ROOTS[0])
-            ran[shard] = sorted(re.findall(r'^(test_\w+) \(', completed.stderr, re.M))
+            ran[shard] = sorted(re.findall(r'^(test_\w+) \(test_upgrade_matrix\.', completed.stderr, re.M))
             self.assertEqual([split], record['executed'])
             self.assertEqual(len(ran[shard]), record['tests_run'])
             self.assertEqual({split: len(ran[shard])}, record['split_cases'])
@@ -187,15 +219,15 @@ class ShardTests(unittest.TestCase):
 
     def test_guard_rejects_missing_module(self):
         allocation = self.allocation()
-        allocation[ROOTS[0]][0].clear()
+        allocation[ROOTS[0]][7].clear()
         with self.assertRaisesRegex(ValueError, 'missing'):
             runner.guard(self.root, allocation)
 
     def test_guard_rejects_duplicate_within_and_between_shards(self):
-        for shard in (0, 1):
+        for shard in (7, 1):
             with self.subTest(shard=shard):
                 allocation = self.allocation()
-                allocation[ROOTS[0]][shard].append(allocation[ROOTS[0]][0][0])
+                allocation[ROOTS[0]][shard].append(ROOTS[0] + '/test_awf.py')
                 with self.assertRaisesRegex(ValueError, 'duplicate'):
                     runner.guard(self.root, allocation)
 
@@ -223,7 +255,7 @@ class ShardTests(unittest.TestCase):
         del allocation[ROOTS[0]]
         with self.assertRaisesRegex(ValueError, 'suite'):
             runner.guard(self.root, allocation)
-        allocation['other/tests'] = {shard: [] for shard in range(6)}
+        allocation['other/tests'] = {shard: [] for shard in runner.SHARDS}
         with self.assertRaisesRegex(ValueError, 'suite'):
             runner.guard(self.root, allocation)
 
@@ -298,10 +330,18 @@ class ShardTests(unittest.TestCase):
                        f'        self.assertEqual({index}, helper.VALUE)\n'
                        '        self.assertEqual("repository root", project_helper.VALUE)\n'
                        f'        self.assertEqual(Path({str(self.root)!r}).resolve(), Path.cwd().resolve())\n')
-        completed = self.invoke()
-        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
-        self.assertEqual('selected', json.loads(completed.stdout.splitlines()[0])['event'])
-        records = self.events(completed, 'suite_result')
+        records = []
+        for shard in (7, 8):
+            completed = self.invoke(shard)
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            self.assertEqual('selected', json.loads(completed.stdout.splitlines()[0])['event'])
+            observed = self.events(completed, 'suite_result')
+            self.assertEqual(list(ROOTS), [r['suite'] for r in observed])
+            records.extend(r for r in observed if r['executed'])
+            modules = self.events(completed, 'module_result')
+            self.assertCountEqual([p for r in observed for p in r['executed']],
+                                  [m['path'] for m in modules])
+            self.assertTrue(all(m['tests_run'] == 1 and m['seconds'] >= 0 for m in modules))
         self.assertEqual(list(ROOTS), [r['suite'] for r in records])
         for record in records:
             self.assertEqual([record['suite'] + '/test_awf.py'], record['executed'])
@@ -328,8 +368,9 @@ def load_tests(loader, tests, pattern):
 
     def test_nested_packages_are_discovered(self):
         self.write(ROOTS[0], 'package/__init__.py', '')
-        self.write(ROOTS[0], 'package/test_nested.py', PASSING)
-        completed = self.invoke()
+        nested = self.write(ROOTS[0], 'package/test_nested.py', PASSING)
+        shard = next(i for i, paths in self.allocation()[ROOTS[0]].items() if nested in paths)
+        completed = self.invoke(shard)
         self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
         self.assertIn('package.test_nested', completed.stderr)
 
@@ -345,7 +386,7 @@ def load_tests(loader, tests, pattern):
         for name in ('test_c.py', 'test_d.py', 'test_e.py'):
             self.write(ROOTS[0], name, PASSING)
         self.write(ROOTS[0], 'test_z.py', PASSING.replace('self.assertTrue(True)', 'print("later module ran")'))
-        completed = self.invoke()
+        completed = self.invoke(8)
         self.assertNotEqual(0, completed.returncode)
         self.assertIn('first module failed', completed.stderr)
         self.assertIn('later module ran', completed.stdout)
@@ -369,9 +410,10 @@ def load_tests(loader, tests, pattern):
             with self.subTest(case=name):
                 target = 'orphan/test_awf.py' if name == 'omitted' else 'test_awf.py'
                 root = ROOTS[0]
-                # The orphan module sorts first and is not importable by discovery.
-                self.write(root, target, source)
-                completed = self.invoke()
+                # The orphan module is selected but not importable by discovery.
+                selected = self.write(root, target, source)
+                shard = next(i for i, paths in self.allocation()[root].items() if selected in paths)
+                completed = self.invoke(shard)
                 self.assertNotEqual(0, completed.returncode, completed.stdout + completed.stderr)
                 self.assertIn(message, completed.stdout + completed.stderr)
                 self.assertTrue(any(r['suite'] == ROOTS[-1] for r in self.events(completed, 'suite_result')))
@@ -423,25 +465,33 @@ def load_tests(loader, tests, pattern):
         for effect in (fake_child, OSError('fixture launch error')):
             with self.subTest(effect=effect), mock.patch.object(runner.subprocess, 'run', side_effect=effect) as child:
                 with mock.patch('sys.stdout', new_callable=io.StringIO), mock.patch('sys.stderr', new_callable=io.StringIO):
-                    self.assertNotEqual(0, runner.main(['--root', str(self.root), '--shard', '0']))
+                    self.assertNotEqual(0, runner.main(['--root', str(self.root), '--shard', '7']))
                 self.assertEqual(4, child.call_count)
 
     def test_allowlisted_empty_helper_is_selected_and_zero_count_is_recorded(self):
-        helper = self.write(ROOTS[0], 'test_awf36_automation_fixtures.py', 'VALUE = 1\n')
-        allocation = self.allocation()
-        shard = next(index for index, paths in allocation[ROOTS[0]].items() if helper in paths)
-        completed = self.invoke(shard)
-        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
-        record = next(r for r in self.events(completed, 'suite_result') if r['suite'] == ROOTS[0])
-        self.assertEqual([helper], record['discovered'])
-        self.assertEqual([helper], record['executed'])
-        self.assertEqual(0, record['tests_run'])
-        self.assertEqual({helper: 0}, record.get('zero_test_modules'))
+        for name in ('test_awf36_automation_fixtures.py', 'test_reporting_fixtures.py'):
+            with self.subTest(helper=name):
+                helper = self.write(ROOTS[0], name, 'VALUE = 1\n')
+                allocation = self.allocation()
+                shard = next(index for index, paths in allocation[ROOTS[0]].items() if helper in paths)
+                completed = self.invoke(shard)
+                self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+                record = next(r for r in self.events(completed, 'suite_result') if r['suite'] == ROOTS[0])
+                self.assertEqual([helper], record['discovered'])
+                self.assertEqual([helper], record['executed'])
+                self.assertEqual(0, record['tests_run'])
+                self.assertEqual({helper: 0}, record.get('zero_test_modules'))
+                module, = self.events(completed, 'module_result')
+                self.assertEqual(helper, module['path'])
+                self.assertEqual(0, module['tests_run'])
+                (self.root / helper).unlink()
 
     def test_non_allowlisted_empty_module_still_raises(self):
         for suite, name in ((ROOTS[0], 'test_awf.py'),
                             (ROOTS[1], 'test_awf36_automation_fixtures.py'),
-                            (ROOTS[0], 'nested/test_awf36_automation_fixtures.py')):
+                            (ROOTS[0], 'nested/test_awf36_automation_fixtures.py'),
+                            (ROOTS[1], 'test_reporting_fixtures.py'),
+                            (ROOTS[0], 'nested/test_reporting_fixtures.py')):
             with self.subTest(suite=suite, name=name):
                 path = self.write(suite, name, 'VALUE = 1\n')
                 loader = runner.SelectedLoader(self.root, [path])
@@ -449,6 +499,17 @@ def load_tests(loader, tests, pattern):
                                        return_value=(unittest.TestSuite(), False)):
                     with self.assertRaisesRegex(ValueError, 'empty discovery for selected module'):
                         loader._find_test_path(str(self.root / path), 'test*.py')
+
+    def test_allowlisted_helpers_cannot_hide_nonempty_failing_tests(self):
+        for name in ('test_awf36_automation_fixtures.py', 'test_reporting_fixtures.py'):
+            with self.subTest(helper=name):
+                helper = self.write(ROOTS[0], name, PASSING.replace('assertTrue(True)',
+                                    'fail("nonempty helper failure")'))
+                shard = next(i for i, paths in self.allocation()[ROOTS[0]].items() if helper in paths)
+                completed = self.invoke(shard)
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn('nonempty helper failure', completed.stderr)
+                (self.root / helper).unlink()
 
     def test_helper_is_imported_before_consumer_suite_is_loaded(self):
         helper = self.write(ROOTS[0], 'test_awf36_automation_fixtures.py',

@@ -11,6 +11,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import source_only  # noqa: F401
 import test_bootstrap_configuration as bootstrap
@@ -1200,11 +1201,23 @@ class OwnerAdmissionTests(unittest.TestCase):
         self.assertEqual('OWNER_CONFIRMATION_REQUIRED', json.loads(expired.stdout)['status'])
 
     def test_r17_second_clone_cannot_claim_first_clones_confirmation(self):
+        # Reproduce the Windows host policy without changing the user's Git
+        # configuration. This fixture has no installed .gitattributes: preserve
+        # its receipt-pinned bytes explicitly at both add and clone checkout.
+        global_config = self.fixture.base / 'global.gitconfig'
+        global_config.write_bytes(b'[core]\n\tautocrlf = true\n')
+        environment = patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': str(global_config)})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.apply('budgeting.accounting_enabled=true')
+        self.git('config', 'core.autocrlf', 'false')
         self.git('add', '-A')
         self.git('commit', '-qm', 'confirmed settings')
         clone = self.fixture.base / 'clone'
-        self.git('clone', '-q', '--no-local', str(self.root), str(clone))
+        self.git('-c', 'core.autocrlf=false', 'clone', '-q', '--no-local', str(self.root), str(clone))
+        self.assertEqual(bootstrap.verify_installed(self.root), bootstrap.verify_installed(clone))
+        for relative in json.loads((self.root / bootstrap.INSTALLED).read_bytes())['immutable_files']:
+            self.assertEqual((self.root / relative).read_bytes(), (clone / relative).read_bytes(), relative)
         shown = self.cli('show', '--json', root=clone)
         self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
         self.assertEqual('OWNER_CONFIRMATION_REQUIRED', json.loads(shown.stdout)['status'])
