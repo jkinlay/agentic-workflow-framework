@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -166,6 +167,18 @@ def _streams_verified(entry):
 
 
 def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
+    try:
+        return _inventory(project, evidence_kind=evidence_kind)
+    except OSError as exc:
+        try:
+            relative = Path(exc.filename).absolute().relative_to(Path(project).absolute()).as_posix()
+        except (ValueError, TypeError):
+            relative = '.'
+        raise ValueError('Preservation inventory incomplete: ' + relative +
+                         '; preserve the baseline, restore readable contained regular content, then repeat snapshot') from exc
+
+
+def _inventory(project, *, evidence_kind):
     """Hash a quiescent disposable project without opening any database for write.
 
     Runtime/Git trees are excluded explicitly. Ledgers (including WAL/SHM),
@@ -178,40 +191,87 @@ def inventory(project, *, evidence_kind='SYNTHETIC_OWNER_CUSTOMIZATION'):
                          'permissions': _permissions(project), 'named_streams': _named_streams(project)}}
 
     def incomplete(error):
-        raise ValueError('Preservation inventory incomplete: directory enumeration failed') from error
+        relative = Path(error.filename).relative_to(project).as_posix() if error.filename else '.'
+        raise ValueError('Preservation inventory incomplete: ' + relative +
+                         '; restore readable regular files from the retained baseline and repeat snapshot') from error
+
+    def scope_key(relative):
+        return relative.casefold() if os.name == 'nt' else relative
+
+    protected_names = {scope_key(path) for path in (
+        '.agentic', '.agentic-state', '.agentic-install', '.agentic-backup', '.github',
+        'AGENTS.md', 'PROJECT_INSTRUCTIONS.md', 'OPERATING_CONFIG.yaml',
+        '.github/CODEOWNERS', '.github/PULL_REQUEST_TEMPLATE.md', 'CODEOWNERS', 'docs/CODEOWNERS')}
+    owner_names = {scope_key(path) for path in (
+        '.github/CODEOWNERS', '.github/PULL_REQUEST_TEMPLATE.md', 'docs/CODEOWNERS')}
 
     for directory, dirs, names in os.walk(project, followlinks=False, onerror=incomplete):
         parent = Path(directory)
+        # Match installer inputs. Record root owner files and directory metadata,
+        # but never descend through unrelated product trees (including junctions).
         for name in [*dirs, *names]:
             path = parent / name
+            relative = path.relative_to(project).as_posix()
+            key = scope_key(relative)
+            if key == '.git':
+                continue
             info = path.lstat()
+            protected = key.startswith(('.agentic/', '.agentic-state/', '.agentic-install/', '.agentic-backup/')) or key in protected_names
             if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_reparse_tag', 0):
-                raise ValueError('Linked/reparse inventory member refused')
-            if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-                raise ValueError('Hard-linked inventory member refused')
+                if not protected:
+                    continue
+                raise ValueError('Linked/reparse inventory member refused: ' + relative +
+                                 '; preserve the target externally, replace this link with contained regular content, then repeat snapshot')
+            if protected and stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                raise ValueError('Hard-linked inventory member refused: ' + relative +
+                                 '; preserve the file externally, replace it with an independent regular copy, then repeat snapshot')
             if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
-                raise ValueError('Non-regular inventory member refused')
+                if not protected:
+                    continue
+                raise ValueError('Non-regular inventory member refused: ' + relative +
+                                 '; preserve externally and replace with regular content before snapshot')
         dirs[:] = sorted(name for name in dirs
-                         if (parent / name).relative_to(project).as_posix() not in EXCLUDED)
+                         if scope_key((parent / name).relative_to(project).as_posix()) not in EXCLUDED
+                         and not (stat.S_ISLNK((parent / name).lstat().st_mode)
+                                  or getattr((parent / name).lstat(), 'st_reparse_tag', 0)))
         for name in dirs:
             path = parent / name
             directories[path.relative_to(project).as_posix() + '/'] = {
                 'mode': stat.S_IMODE(path.stat().st_mode), 'permissions': _permissions(path),
                 'named_streams': _named_streams(path)}
+        if parent == project:
+            dirs[:] = [name for name in dirs if scope_key(name) in {
+                '.agentic', '.agentic-state', '.agentic-install', '.agentic-backup', '.github', 'docs'}]
+        elif scope_key(parent.relative_to(project).as_posix()) in {'.github', 'docs'}:
+            dirs[:] = []
         for name in sorted(names):
             path = parent / name
             relative = path.relative_to(project).as_posix()
-            if relative == '.git':  # Only the actual root worktree pointer.
+            if scope_key(relative) == '.git':  # Only the actual root worktree pointer.
+                continue
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_reparse_tag', 0):
+                continue  # Unrelated root link; protected links refused above.
+            if not stat.S_ISREG(info.st_mode):
+                continue  # Unrelated product special file; never open it.
+            if scope_key(parent.relative_to(project).as_posix()) in {'.github', 'docs'} and scope_key(relative) not in owner_names:
                 continue
             raw = path.read_bytes()
             files[relative] = {'sha256': hashlib.sha256(raw).hexdigest(),
                                'mode': stat.S_IMODE(path.stat().st_mode), 'size': len(raw),
                                'permissions': _permissions(path), 'named_streams': _named_streams(path)}
-    config = load_yaml((project / '.agentic/PROJECT_CONFIG.yaml').read_bytes())
-    github = config['github']
+    try:
+        config = load_yaml((project / CONFIG).read_bytes())
+        github = config['github']
+        if not isinstance(github, dict):
+            raise ValueError('Invalid github identity')
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError('Snapshot configuration refused: ' + CONFIG +
+                         '; restore the reviewed baseline configuration and repeat snapshot') from exc
     identity = {key: github.get(key) for key in ('repository', 'repository_id', 'base_branch')}
     if any(value is None or value == '' for value in identity.values()):
-        raise ValueError('Complete repository identity is required')
+        raise ValueError('Complete repository identity is required: ' + CONFIG +
+                         '; reconcile github.repository/repository_id/base_branch with the accepted baseline, then repeat snapshot')
     return {'format': FORMAT, 'evidence_kind': evidence_kind,
             'identity': identity, 'files': files, 'directories': directories,
             'excluded_paths': sorted(EXCLUDED),
@@ -553,7 +613,8 @@ def prepare_upgrade(source, project, pin, before):
                                  state_archive_plan, apply_chain)
     project = Path(project).resolve(strict=True)
     if inventory(project, evidence_kind=before['evidence_kind']) != before:
-        raise ValueError('Baseline changed before migration policy derivation')
+        raise ValueError('BEFORE snapshot does not match --baseline-project; retain an untouched 1.9.5 copy, '
+                         'snapshot that copy before apply, then compare with its matching BEFORE report')
     with Tree(source) as tree:
         verified_pin, content = verify_release(tree, pin, allow_source_checkout=True)
         manifest_raw = tree.read('MANIFEST.json')
@@ -566,7 +627,8 @@ def prepare_upgrade(source, project, pin, before):
         identity = identify_installation(tree, versions, config_raw, receipt_raw)
     target = manifest['template_version']
     if (identity['version'], target) != ('1.9.5', '1.9.6'):
-        raise ValueError('No approved preservation migration for this release pair')
+        raise ValueError('BEFORE baseline must be 1.9.5, not a post-upgrade snapshot; use the untouched '
+                         'pre-upgrade copy and its matching BEFORE report; preservation before a snapshot is unproven')
     immutable = {path: digest for path, digest in manifest['files'].items()
                  if managed(path) and path not in {CONFIG, PROVENANCE, CODEOWNERS}}
     collisions = before['files'].keys() & (immutable.keys() - identity['immutable_files'].keys())
@@ -645,6 +707,31 @@ def prepare_upgrade(source, project, pin, before):
         creation[path] = cache[key]
     if inventory(project, evidence_kind=before['evidence_kind']) != before:
         raise ValueError('Permission probes changed the disposable baseline')
+    # Backup membership is derived from the exact originals the installer will
+    # replace/delete, never from an allowed-delta prefix or observed backup bytes.
+    backup_sources = {path: before['files'][path] for path in
+        (set(files) | {CONFIG, INSTALLED, PROVENANCE} | (set(identity['immutable_files']) - set(immutable)))
+        if path in before['files'] and (path not in files or
+            before['files'][path]['sha256'] != files[path]['sha256'])}
+    backup_creation = {}
+    placeholder = '.agentic-backup/00000000-0000-4000-8000-000000000000/'
+    backup_paths = {placeholder + path for path in backup_sources}
+    backup_paths |= {parent.as_posix() + '/' for path in backup_paths for parent in Path(path).parents
+                     if parent.as_posix() != '.'}
+    for path in sorted(backup_paths):
+        if path in before['directories']:
+            continue
+        parent = (project / path.rstrip('/')).parent
+        depth = 0
+        while not parent.exists():
+            depth += 1
+            parent = parent.parent
+        key = (parent, depth, path.endswith('/'), False)
+        if key not in cache:
+            cache[key] = _creation_state(project, path, directory=path.endswith('/'))
+        backup_creation[path] = cache[key]
+    if inventory(project, evidence_kind=before['evidence_kind']) != before:
+        raise ValueError('Backup permission probes changed the baseline; preserve it and restore the untouched BEFORE copy')
     return {'manifest_sha256': verified_pin, 'manifest_raw': manifest_raw.decode('utf-8'),
             'baseline_sha256': hashlib.sha256(_json_identity(before).encode('utf-8')).hexdigest(),
             'target_version': target, 'source_version': identity['version'],
@@ -655,6 +742,7 @@ def prepare_upgrade(source, project, pin, before):
             'receipt': receipt, 'creation': creation, 'started_at': time.time(),
             'historical_state': historical_state,
             'archive_actions': archive_actions, 'state_migrations': migrations,
+            'backup_sources': backup_sources, 'backup_creation': backup_creation,
             'exercised_state_paths': exercised}
 
 
@@ -664,6 +752,11 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
     approved = {}
     delta = {}
     failures = []
+    try:
+        if inventory(project, evidence_kind=after['evidence_kind']) != after:
+            failures.append('AFTER inventory differs from current project owner/managed/state bytes or metadata; take a fresh AFTER snapshot')
+    except (ValueError, OSError) as exc:
+        failures.append('AFTER project inventory refused: ' + str(exc))
     if hashlib.sha256(_json_identity(before).encode('utf-8')).hexdigest() != policy['baseline_sha256']:
         failures.append('migration policy baseline binding mismatch')
     old_entries = {**before['files'], **before['directories']}
@@ -795,6 +888,24 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
                           'permissions_rule': 'installer-mkdir-inheritance',
                           'expected_permissions': policy['creation'][path]['permissions'],
                           'expected_mode': policy['creation'][path]['mode']})
+    new_backups = {path for path in new_entries.keys() - old_entries.keys()
+                   if path.startswith('.agentic-backup/')}
+    if new_backups:
+        ids = {path.split('/')[1] for path in new_backups if path != '.agentic-backup/'}
+        if len(ids) == 1 and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', next(iter(ids))):
+            prefix = '.agentic-backup/' + next(iter(ids)) + '/'
+            expected_backups = {prefix + path: original for path, original in policy['backup_sources'].items()}
+            expected_dirs = {parent.as_posix() + '/' for path in expected_backups for parent in Path(path).parents
+                             if parent.as_posix() != '.'} - before['directories'].keys()
+            if prefix not in old_entries and new_backups == expected_backups.keys() | expected_dirs:
+                for path in sorted(new_backups):
+                    template = path.replace(prefix, '.agentic-backup/00000000-0000-4000-8000-000000000000/', 1)
+                    expected = policy['backup_creation'].get(template)
+                    entry = new_entries[path]
+                    original = expected_backups.get(path)
+                    if (expected and all(entry.get(k) == v for k, v in expected.items()) and
+                            (original is None or all(entry.get(k) == original[k] for k in ('sha256', 'size')))):
+                        approve(path, {'rule': 'exact-upgrade-backup', 'source': path[len(prefix):] if original else None})
     result = compare(before, after, delta)
     # External exact deltas may constrain this policy; they cannot widen it.
     for path, record in (allowed_delta or {}).items():
@@ -962,6 +1073,8 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             '--default-branch', 'main', '--test-command', 'python -m unittest',
             '--codeowner', '@fixture-owner']
         command.extend(['--runtime-wheelhouse', str(wheels)])
+        if mode == 'upgrade':
+            command.extend(['--on-conflict', 'backup'])
         child = execute(stage, command)
         if child.returncode != 0:
             report['failed_stage'] = stage
@@ -1147,4 +1260,8 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError) as exc:
+        print('Preservation refused: ' + str(exc), file=sys.stderr)
+        raise SystemExit(2)

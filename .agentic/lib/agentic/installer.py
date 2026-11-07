@@ -445,13 +445,13 @@ def _managed_file_inventory(tree):
         root_info = os.lstat(root)
         root_reparse = getattr(root_info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         if stat.S_ISLNK(root_info.st_mode) or root_reparse or not stat.S_ISDIR(root_info.st_mode):
-            raise ValidationError("Managed inventory root is linked or not a directory")
+            raise ValidationError("Managed inventory root is linked or not a directory: .agentic/")
 
         def visit(directory):
             try:
                 children = sorted(os.scandir(directory), key=lambda item: item.name)
             except OSError as exc:
-                raise ValidationError("Managed inventory is unreadable") from exc
+                raise ValidationError("Managed inventory is unreadable: " + directory.relative_to(tree.root).as_posix()) from exc
             for child in children:
                 relative = Path(child.path).relative_to(tree.root).as_posix()
                 if not _inventory_managed(relative):
@@ -2061,6 +2061,28 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                                         existing_sha256=sha256(existing_owners))
                     break
         if mode == "upgrade":
+            try:
+                _managed_file_inventory(dst)
+            except (ValidationError, OSError) as exc:
+                raise ValidationError(str(exc) + '; preserve affected managed content externally, restore contained '
+                    'regular unlinked release files, then rerun the non-writing plan; no files changed') from exc
+            for relative in (RUNTIME, '.agentic-backup'):
+                try:
+                    path = destination / relative
+                    try:
+                        info = os.lstat(path)
+                    except FileNotFoundError:
+                        info = None
+                    if info is not None and (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                            or getattr(info, 'st_file_attributes', 0) & 0x400):
+                        raise ValidationError('Expected a contained directory')
+                except (ValidationError, OSError) as exc:
+                    raise ValidationError('Upgrade path refused: ' + relative + '; preserve its target externally, '
+                        'replace linked/reparse content with a contained directory, then rerun the plan; no files changed') from exc
+            # Retained owner schemas are loaded by installed validate-config.
+            # Parse them before any transaction, using the same loader as runtime.
+            from .contracts import Contracts
+            Contracts(destination / '.agentic/schemas')
             if _exists_read(dst, INSTALLED) is None or existing_config is None:
                 raise ValidationError("Upgrade requires a verified AWF installation receipt and project configuration")
             installed_version = existing_receipt.get("template_version") if isinstance(existing_receipt, dict) else None
@@ -2161,6 +2183,15 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         if upgrade_report is not None:
             upgrade_report['configuration_diff_total'] = config_diff(
                 existing_config, planned[CONFIG], identity['version'], VERSION)
+            prior_jira = load_yaml(existing_config).get('jira', {})
+            if (isinstance(prior_jira, dict) and prior_jira.get('enabled') is True
+                    and (not prior_jira.get('site') or not prior_jira.get('project_key'))):
+                upgrade_report['configuration_status_changes'] = [{
+                    'code': 'JIRA_IDENTITY_UNBOUND', 'prior_validation': 'REJECTED',
+                    'target_validation': (configuration_report or {}).get('status', 'NOT_CHECKED'),
+                    'reason': '1.9.6 permits incomplete Jira binding as a configuration warning; '
+                              'Jira writes still require explicit identity adoption',
+                    'settings_changed': False, 'jira_write_authority': False}]
         from .operating import inspect_operating, operating_applicability, plan_initialize_operating
         governance = load_yaml(planned[CONFIG])
         applicability = operating_applicability(governance)

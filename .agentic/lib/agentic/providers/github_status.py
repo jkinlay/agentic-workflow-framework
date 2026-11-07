@@ -453,7 +453,8 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
               'line': f'AWF {VERSION}: UNVERIFIED', 'next_action': 'Install or recover the verified AWF files.',
               'decision_codes': ['report_installation_unverified'],
               'checks': [], 'github_rest_api_version': GITHUB_REST_API_VERSION,
-              'next_command': 'python -B .agentic/scripts/workflow.py status --require-active',
+              'next_command': ('.agentic/.venv/Scripts/python.exe' if os.name == 'nt' else '.agentic/.venv/bin/python') +
+                              ' -B -I .agentic/scripts/workflow.py status --require-active',
               'observation_limit': 'Read-only trusted-host Git/GitHub observations; not a server-signed attestation or live automation qualification.'}
     from ..activation import activation_summary, build_capability_matrix, check
     receipt = files = config = report = None
@@ -504,6 +505,10 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
             report = with_operating(root, config, base_report)
             result.update(configuration=report, ci_gate=report['ci_gate'], operating=report['operating'])
             operating = report['operating']
+            if report['status'] != 'ACCEPTED':
+                result.update(project_state='INSTALLED', line=f'AWF {VERSION}: INSTALLED (configuration REJECTED)',
+                              decision_codes=['report_state_installed_unconfigured'],
+                              next_action='Run workflow.py validate-config and reconcile the reported operating refusals.')
             if operating['status'] == 'ACCEPTED':
                 add('OPERATING_SNAPSHOT', 'operating', 'PASS',
                     'Read-only operating snapshot is accepted at ' + operating['hash'],
@@ -721,6 +726,10 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
 
 def render_status(report):
     lines = [report['line']]
+    budgeting = (report.get('operating') or {}).get('budgeting') or {}
+    if budgeting.get('disposition') == 'LEGACY_RETAINED':
+        lines.append('Budgeting: LEGACY_RETAINED; legacy enforcement UNOBSERVED; ' + budgeting['history_import'] +
+                     '; explicit owner adoption required through operating set --adopt-budgeting, then operating confirm.')
     trust = report.get('release_trust') or {}
     if trust.get('basis') == 'trusted_host_installed_awf_skill':
         lines.extend(('Codex home: ' + trust['codex_home'],

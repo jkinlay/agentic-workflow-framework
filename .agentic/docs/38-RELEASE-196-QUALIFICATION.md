@@ -1,37 +1,35 @@
 # Release 1.9.6 qualification and preservation
 
-AWF-238, Tier 3, FULL; includes AWF-237/AWF-239. No release/rollout/controller/adapter
-authority. Failed/missing/stale/unexecuted evidence stays outstanding.
+AWF-238, Tier 3, FULL; includes AWF-237/AWF-239. No release/rollout/controller/adapter authority. Missing evidence stays outstanding.
 
 ## Baseline and scope
 
-Retain PR #271 recognition/migration. Published
+Published
 `v1.9.5` commit: `8ad399943c8f5e4f17db72f3e321b9365ee27782`; manifest SHA-256:
 `1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7`.
 Git proves no hosted provenance. Published assets/tags/pins/receipts stay immutable;
 fixtures use published-installer receipts.
 
-Scope follows the current owner contract. Retain failures/dispositions; changes invalidate passes.
+Owner scope binds; changes invalidate passes.
 
 ## Disposable preservation
 
-Synthetic customization proves no adopter preservation. Forbidden/cancelled targets
-stay excluded. Adopter copies require accepted
-baselines, exclusive ownership, quiescence, approved external storage and separate
-authorization. Record repository/ID/default-branch/releases/permissions,
+ Adopter copies require accepted
+baselines, exclusive ownership, quiescence, approved storage and separate authorization. Record repository/ID/default-branch/releases/permissions,
 owner files/settings/instructions/CODEOWNERS, routes/pins/opt-outs/Jira scope/budgets,
-ledgers/sidecars/reservations/operating history/archives/receipts. Preserve default-OFF choices.
+ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay OFF.
 
 `scripts/qualify_upgrade.py` provides:
 
 - `snapshot --project DISPOSABLE --output BEFORE`: hash bytes/sizes/modes,
-  ownership/access control, named streams and directories/root. Exclude only root
-  `.git`/`.agentic/.venv`; nested archive Git/runtime/cache names remain evidence.
-  Refuse links, incomplete identity and unreadable enumeration.
+  ownership/access control, named streams and directories/root. Exclude root `.git`/runtime contents and do not walk unrelated product trees.
+  Root files remain evidence; managed/state links refuse with path/remedy.
+  Nested archive Git/runtime/cache names remain evidence. Refuse incomplete identity
+  and unreadable enumeration. Take BEFORE before apply; comparison proves only
+  preservation since that snapshot.
 - `plan --source RELEASE --project DISPOSABLE --expected-manifest-sha256 PIN
   --github-repo OWNER/REPO --repository-id ID --default-branch BRANCH
-  --output PLAN`: require identical inventories; test main/master/trunk and wrong
-  repository/ID/branch refusals.
+  --output PLAN`: require identical inventories and matching identity.
 - Keep an untouched disposable baseline matching BEFORE. After bootstrap, snapshot
   again. `compare --project DISPOSABLE --before BEFORE --after AFTER --source RELEASE
   --expected-manifest-sha256 PIN --baseline-project BASELINE --output COMPARISON`
@@ -41,22 +39,19 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Preserve defa
   preservation fails. Owner/history loss cannot be waived.
 - `installed --source CHECKOUT --work-dir NEW_DISPOSABLE --wheelhouse WHEELS
   --output REPORT`: require clean committed source and a current manifest; bind
-  commit/tree/pin without regenerating candidate manifests. Bootstrap authentic baseline,
+  commit/tree/pin without regeneration. Bootstrap authentic baseline,
   seed instructions, populated legacy ledger and published-API accounting history;
-  snapshot/derive policy/upgrade/compare after installed
+  snapshot/derive policy/upgrade with `--on-conflict backup`/compare after installed
   checks. Verify downloads against each lock; require network/complete wheel seeds.
-  Retain external stdout/stderr/hashes. Optional `--allowed-delta` cannot widen policy.
-  Never reuse approvals. Failures retain inventories/comparison
-  and NOT_QUALIFIED/failed-stage; later execution remains unproved. Success requires
+  Retain external output hashes; deltas cannot widen policy.
+  Failures retain inventories/comparison and NOT_QUALIFIED/failed-stage. Success requires
   QUALIFIED_DISPOSABLE_UPGRADE, two CONFIGURED stages, canonical exits zero,
   integrity true, ACCEPTED configuration, bound source/policy/receipt hashes and
   preservation. All `checks` must execute/PASS: `source_managed_membership`,
   `historical_state_continuity`, `named_streams`.
-  Report exercised state migrations and continuity paths; a missing legacy-ledger
-  migration/SQL continuity check refuses qualification.
+  Missing legacy-ledger migration/SQL continuity refuses qualification.
 
-Exclusively create external reports; emit permission/stream digests, never owner
-contents or SIDs. Missing/unverified permission or stream evidence fails; POSIX
+Create external digest reports, never owner contents/SIDs. Missing/unverified permission or stream evidence fails; POSIX
 records explicit stream absence. Comparison has `evidence_scope:
 PRESERVATION_COMPARISON_ONLY`; it proves neither installed integrity nor
 qualification. Plans stay NOT_QUALIFIED; only installed reports qualify.
@@ -88,6 +83,8 @@ rules/hashes/`approved_changes`, exact `changes`, baseline/manifest bindings.
   paths/configuration hash. Provenance requires exact target/schema/manifest/retained
   ID/upgrade/manual profile/canonical cohort time. Extra fields fail. No recovery
   objects/journal/marker/lock remain; permit only the empty named object-store directory.
+- Backups must exactly match this upgrade's replaced/deleted originals and expected
+  metadata under one fresh transaction UUID; no prefix waiver.
 - New directories serve exact outputs. Preserve existing permissions/streams; new
   paths match installer modes/inheritance through disposable probes leaving baseline
   inventories identical. Managed removals cannot discard streams.

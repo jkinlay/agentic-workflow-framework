@@ -2,7 +2,7 @@
 
 For the verified 1.9.6 candidate, rehearse on disposable copies of authentic
 published 1.9.5. Live rollout requires separate target authorization. Retain an
-untouched baseline and external preservation reports; see the
+untouched baseline; snapshot before apply and retain external preservation reports; see the
 [migration guide](../../MIGRATION-v1.9.5-to-v1.9.6.md).
 
 Windows:
@@ -25,13 +25,16 @@ require `--on-conflict backup`; the default creates none.
 
 **Preview acceptance:** inspect detected/target versions, steps, complete configuration
 diff, managed additions/changes/removals, state actions and required settings.
-Unresolved validation commands refuse; other rejected settings remain REJECTED
-pending review. No test commands are invented. Accepted YAML
+Unresolved validation commands refuse. Incomplete enabled Jira identity can change
+from REJECTED to accepted configuration with JIRA_IDENTITY_UNBOUND; the plan
+reports this explicitly. Settings remain unchanged and Jira writes stay refused
+until identity adoption. Other rejected settings await review. No test commands are invented. Accepted YAML
 retains its comments/format. Unexpected import files must be preserved and moved
 outside `.agentic/lib`/`.agentic/scripts`. Unsafe retained state names its path:
 preserve it externally and reconcile references before repeating the plan. Product
 directories outside upgrade inputs are not traversed. Managed containment remains
-mandatory.
+mandatory. Preserve unsafe targets externally and restore contained regular unlinked
+content before repeating the plan. Comparison proves preservation only since BEFORE.
 
 **Application acceptance:** CONFIGURED requires actual isolated installed subprocess
 checks and matching digests. `UPGRADED` alone is only the transaction result.

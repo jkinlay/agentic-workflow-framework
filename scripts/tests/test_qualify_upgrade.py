@@ -77,6 +77,23 @@ class PreservationReportTests(unittest.TestCase):
                                  for p in self.root.rglob('*') if p.is_file()})
         self.assertEqual([], compare(report, report, {})['violations'])
 
+    def test_inventory_retains_canonical_owner_paths_and_managed_link_refusals(self):
+        owners = ('.github/CODEOWNERS', '.github/PULL_REQUEST_TEMPLATE.md', 'docs/CODEOWNERS')
+        for relative in owners:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'owner content\n')
+        before = inventory(self.root)
+        self.assertTrue(set(owners) <= before['files'].keys())
+        for relative in owners:
+            (self.root / relative).unlink()
+        self.assertTrue(set(owners) <= compare(before, inventory(self.root), {})['changes'].keys())
+        managed = self.root / 'AGENTS.md'
+        managed.write_bytes(b'managed content\n')
+        os.link(managed, Path(self.temporary.name) / 'alias')
+        with self.assertRaisesRegex(ValueError, 'AGENTS.md; preserve'):
+            inventory(self.root)
+
     def test_creation_permission_probes_match_installer_and_leave_no_delta(self):
         from agentic.safeio import Tree
         import stat
@@ -280,6 +297,8 @@ class PreservationReportTests(unittest.TestCase):
                     (project / '.agentic/PROJECT_CONFIG.yaml').write_bytes(self.config.read_bytes())
                     (project / 'PROJECT_INSTRUCTIONS.md').write_bytes(b'synthetic owner customization\n')
                 else:
+                    self.assertIn('--on-conflict', command)
+                    self.assertEqual('backup', command[command.index('--on-conflict') + 1])
                     mutation(project)
             return SimpleNamespace(returncode=0, stdout=b'{}', stderr=b'')
 

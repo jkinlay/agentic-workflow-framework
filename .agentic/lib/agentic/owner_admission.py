@@ -392,6 +392,28 @@ def _check_time(record):
             'PROPOSAL_EXPIRED: create and confirm a fresh proposal within 15 minutes')
 
 
+def adoption_import_result(root, governance, intent):
+    """Display a pinned operator receipt, never treat it as admission authority."""
+    from .safeio import Tree
+    if not intent.get('adopt_budgeting'):
+        return None
+    path = intent.get('budget_import_result')
+    if path is None:
+        return dict(status='NOT_SUPPLIED', meaning='Dormant adoption requires no import; import history and verify continuity before enabling accounting')
+    path = Path(path).absolute()
+    from .path_containment import is_within
+    require(not is_within(path, root), 'Budget import result must remain outside the project')
+    with Tree(path.parent) as tree:
+        raw = tree.read(path.name, maximum=1024 * 1024)
+    result = loads(raw.decode('utf-8'))
+    require(isinstance(result, dict) and result.get('status') == 'IMPORTED'
+            and result.get('project_id') == governance['project']['id']
+            and result.get('sources_retained') is True and result.get('budget_mode_changed') is False,
+            'Budget import result must be the retained import_budget_history result for this project')
+    return dict(status='OPERATOR_SUPPLIED_IMPORT_RESULT', sha256=sha256(raw), result=result,
+                meaning='Receipt only; completeness and exact charge proofs remain mandatory at enabled admission')
+
+
 def propose(root, governance, snapshot, instruction, intent, changes):
     """Called only after the entire mixed operating change validates, under lock."""
     created = now_text()
@@ -408,10 +430,13 @@ def propose(root, governance, snapshot, instruction, intent, changes):
     record['protected_values'] = {name: deepcopy(produced[name]) for name, _ in PROTECTED_DOMAINS if name in produced}
     store = ProposalStore.for_project(root, governance['project']['id'])
     record.update(confirmation_delta(store, governance, produced))
+    if intent.get('adopt_budgeting'):
+        record['budget_import'] = adoption_import_result(root, governance, intent)
     digest = store.save(record)
     # Repository-relative invocation contains no host-local paths or credentials.
     command = ('workflow.py operating confirm --digest ' + digest)
     return dict(status='PENDING_OWNER_CONFIRMATION', digest=digest, request_id=record['request_id'],
+                **({'budget_import': record['budget_import']} if 'budget_import' in record else {}),
                 changes=record['changes'], confirmation_changes=record['confirmation_changes'],
                 protected_values=record['protected_values'], expires_at=record['expires_at'], confirm_command=command,
                 execution_authority=False,
@@ -662,6 +687,9 @@ class _ConfirmedOwner:
                 and record['instruction'] == instruction and canonical(record['intent']) == canonical(intent)
                 and canonical(record['changes']) == canonical(changes),
                 'PROPOSAL_BINDING_MISMATCH: project, repository, governance, prior settings or exact changes differ')
+        if intent.get('adopt_budgeting'):
+            require(record.get('budget_import') == adoption_import_result(self.root, governance, intent),
+                    'PROPOSAL_BINDING_MISMATCH: displayed budget import result changed; prepare a fresh proposal')
         from .operating import _put
         produced = snapshot.config
         for change in changes:
@@ -710,6 +738,9 @@ def confirm(root, governance, digest, *, stdin=None, stdout=None):
     require(record['binding'] == accepted_binding(root, governance, admission_snapshot(root, governance)),
             'PROPOSAL_BINDING_MISMATCH: project, repository, governance or prior settings differ')
     identity = observe_github_owner(governance, root)
+    if 'budget_import' in record:
+        stdout.write('Budget adoption import result (no completeness authority):\n' +
+                     json.dumps(record['budget_import'], sort_keys=True, indent=2) + '\n')
     stdout.write('Protected changes from last confirmation (fresh defaults if none):\n'
                  + json.dumps(record['confirmation_changes'], sort_keys=True, indent=2) + '\n')
     if not record['confirmation_changes']:
@@ -783,7 +814,11 @@ def validate_recovery(root, governance, before, after, event, journal_sha256):
         require(observation['project_id'] == governance['project']['id']
                 and observation['actor_id'] == str(audit['actor_id'])
                 and observation['observation_id'] == 'github-terminal:' + record['request_id'] + ':' + audit['digest']
-                and observation['prior_settings_hash'] == settings_hash(before['budgeting']), message)
+                and observation['prior_settings_hash'] == settings_hash(before.get('budgeting', fresh_settings())), message)
+        if 'budgeting' not in before:
+            require(record['intent'].get('adopt_budgeting') is True
+                    and not after['budgeting']['accounting_enabled']
+                    and not after['budgeting']['enforcement_enabled'], message)
         expected = deepcopy(before)
         for change in record['changes']:
             require(_get(before, change['path']) == change['before'], message)
@@ -791,7 +826,7 @@ def validate_recovery(root, governance, before, after, event, journal_sha256):
         # accounting=false derives enforcement=false even when that second
         # field was not explicitly requested in the authenticated observation.
         from .budgeting import transition_settings
-        require(transition_settings(before['budgeting'], observation['changes']) == after['budgeting'], message)
+        require(transition_settings(before.get('budgeting', fresh_settings()), observation['changes']) == after['budgeting'], message)
         require(canonical(expected) == canonical(after), message)
     except (sqlite3.Error, OSError, KeyError, TypeError, ValueError) as exc:
         raise ValidationError(message) from exc

@@ -1,84 +1,52 @@
 # Upgrade from 1.9.5 to 1.9.6
 
-Use the separately verified release and its manifest pin. Stop dispatch and establish exclusive ownership. First rehearse on disposable copies of an accepted baseline. Retain an untouched baseline, external preservation reports and recovery records. `--on-conflict backup` retains backups; the default does not.
+Use the separately verified release/pin. Stop dispatch/settlement and establish exclusive ownership. Rehearse on disposable copies; retain an untouched authentic baseline and external reports. Never run this rehearsal on a real installation.
 
-Run with the prepared bootstrap interpreter (replace uppercase arguments):
+`PYTHON` is the absolute interpreter in a separate bootstrap virtual environment, created with a supported Python using `python -m venv BOOTSTRAP`. Install the verified release dependencies there with `PYTHON -m pip install --require-hashes --no-index --find-links WHEELS -r RELEASE/.agentic/requirements.lock`. WHEELS must satisfy the release lock. Replace uppercase arguments; use absolute paths.
+
+Snapshot **before apply**; copy that same quiescent project to BASELINE and leave BASELINE untouched:
 
 ```text
+PYTHON -B RELEASE/scripts/qualify_upgrade.py snapshot --project DISPOSABLE --output BEFORE
 PYTHON -B RELEASE/scripts/bootstrap_project.py --dest DISPOSABLE --expected-manifest-sha256 PIN --mode upgrade --github-repo OWNER/REPO --repository-id ID --default-branch BRANCH --on-conflict backup --dry-run
 PYTHON -B RELEASE/scripts/bootstrap_project.py --dest DISPOSABLE --expected-manifest-sha256 PIN --runtime-wheelhouse WHEELS --mode upgrade --github-repo OWNER/REPO --repository-id ID --default-branch BRANCH --on-conflict backup
+PYTHON -B RELEASE/scripts/qualify_upgrade.py snapshot --project DISPOSABLE --output AFTER
+PYTHON -B RELEASE/scripts/qualify_upgrade.py compare --project DISPOSABLE --before BEFORE --after AFTER --source RELEASE --expected-manifest-sha256 PIN --baseline-project BASELINE --output COMPARISON
 ```
 
-Identity must match existing configuration. Inspect the plan before applying. Unresolved validation commands refuse; other rejected settings remain REJECTED pending owner review. No settings are repaired. Accepted YAML retains comments/format; only its version scalar changes. Unexpected import files name their paths: preserve and move them outside `.agentic/lib`/`.agentic/scripts`, then repeat planning. Unsafe retained state (links, unsupported names or files above 64 MiB) also names its path: preserve it externally, reconcile references and repeat planning. Unrelated product directories are not traversed. Never weaken managed-path containment or discard history.
+Compare proves preservation only **since BEFORE**, never absence of earlier damage. Backup acceptance requires this upgrade's exact replaced/deleted originals and expected metadata; arbitrary backup-folder additions fail. Default conflict handling creates no backups.
 
-The published 1.9.5 receipt is recognized. Routing, operating choices, reviewers, pins, budgets and accounting remain. Request new stream/model defaults separately within reviewed ceilings.
+Identity must match existing configuration. Inspect the plan before applying. Unresolved validation commands refuse; rejected settings remain pending owner review, with one compatibility change: incomplete enabled Jira identity formerly REJECTED can become accepted configuration with JIRA_IDENTITY_UNBOUND. The plan reports this status change; settings stay unchanged and writes remain refused until explicit identity adoption. Disabled Jira stays disabled; adoption enables no adapter/controller.
 
-Fresh projects default to twelve logical workers and gpt-6.1-sol/high; qualifying simple work uses gpt-6-luna/high. Observed host capacity limits dispatch.
+Accepted YAML retains comments/format; only its version changes. Refusals name paths/remedies. Preserve unexpected import/schema files externally; correct or move them outside their managed directories. For managed/state links, preserve targets externally, restore contained independent regular files/directories and reconcile references before repeating the plan. Do not discard history or weaken containment. Snapshot/upgrade do not walk unrelated product directories.
 
-Unknown state remains with a read-only archive copy. Existing archives remain without recursive archival. Conflicting archive destinations refuse before writes. Never reset accounting or edit receipts.
+Routing, operating choices, reviewers, pins, budgets and accounting remain. Unknown state gets a read-only archive copy; prior archives remain without recursive archival. Conflicting destinations refuse. Never reset accounting or edit receipts.
 
-Verify integrity/configuration through the installed isolated interpreter. ACTIVE additionally requires human-reviewed adoption acceptance and independent release trust; it enables no adapter or controller.
+`RUNTIME` is the absolute installed `.agentic/.venv/Scripts/python.exe` on Windows or `.agentic/.venv/bin/python` elsewhere. `WORKFLOW` is the absolute installed `.agentic/scripts/workflow.py`:
 
-Follow the [release qualification checklist](.agentic/docs/38-RELEASE-196-QUALIFICATION.md)
-for external snapshots, automatically derived release deltas, real preservation
-checks and installed cohorts. Synthetic evidence is not adopter evidence.
+```text
+RUNTIME -B -I WORKFLOW --root DISPOSABLE verify-installation
+RUNTIME -B -I WORKFLOW --root DISPOSABLE validate-config
+RUNTIME -B -I WORKFLOW --root DISPOSABLE status
+```
 
-If installation is interrupted, keep the transaction marker, journal and recovery
-objects intact. Invoke the verified release's `scripts/bootstrap_project.py
---dest DISPOSABLE_PROJECT --recover` in a fresh process, retain its actual result,
-then repeat recovery to prove a stable endpoint. A missing/tampered recovery
-object or unknown outcome requires investigation; do not remove diagnostics,
-rehash corruption, edit receipts or reinstall over the installation. Re-run both
-canonical installed checks after recovery. Never infer CONFIGURED/ACTIVE from a
-rollback result or a successful library-only check.
+CONFIGURED requires actual zero exits, integrity true, ACCEPTED configuration and matching digests. ACTIVE additionally needs independent release trust and observed human-reviewed adoption acceptance; it enables no adapter/controller. See [qualification](.agentic/docs/38-RELEASE-196-QUALIFICATION.md).
 
-Budget adoption is explicit. Missing `budgeting` settings retain the legacy
-engine and reviewed limits; upgrading never silently switches budgeting OFF.
-Existing explicit settings remain unchanged. The upgrade report and
-`.agentic-state/upgrade/budgeting-1.9.6.json` record `LEGACY_RETAINED` or
-`EXPLICIT_SETTINGS_RETAINED`, the prior `operating_sha256` and outstanding import
-requirements. Neither disposition certifies history completeness or owner adoption.
+Interrupted installation: retain marker/journal/recovery objects. Use the verified release's bootstrap script with `--dest DISPOSABLE --recover` in a fresh process, then repeat recovery for a stable endpoint. Unknown/tampered recovery requires investigation; never reinstall over it. Repeat canonical checks; rollback alone proves no CONFIGURED/ACTIVE state.
 
-Before adopting the new controls:
+Budgeting stays LEGACY_RETAINED when absent, with original engine/limits; explicit settings remain. The upgrade report/state disposition records the prior hash and EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED, never completeness or adoption.
 
-1. Stop legacy dispatch/settlement across every host and worktree. Inventory all
-   state-store, routing and per-host budget databases. Checkpoint WALs, retain
-   immutable snapshots and pin their SHA-256 digests. Never remove reservations,
-   UNKNOWN usage or archives to make admission pass.
-2. Before import, capture `prepare_budget_import` evidence from
-   `scripts/qualify_upgrade.py`. These are Python APIs, not installed commands;
-   there is currently no supported general budget-import CLI. A trusted host
-   integration must explicitly call them and retain their results.
-3. Select one protected canonical project ledger outside worker/reviewer
-   worktrees; configure both controller and review host to use that same path.
-   Have the trusted operator call installed `agentic.upgrade.import_budget_history`
-   with that destination, exact project ID, complete worktree roots and a mapping
-   of source labels to `{path, sha256}`. This is an explicit host API, not an
-   automatically enabled adapter. Import every old per-host ledger, even if its
-   rows appear duplicated. Exact identities/rows deduplicate with retained proofs;
-   conflicts refuse for reconciliation. Retain original databases unchanged.
-   Run `check_budget_import` from `scripts/qualify_upgrade.py` afterwards. These
-   query-only checks compare source continuity, canonical charges and deduplication
-   proofs. Keep private rows outside upstream. Receipts cannot excuse lost usage.
-4. If interrupted, replay the identical pinned sources and destination. Import
-   charges/proofs commit together; replay never refunds or double-charges.
-   Changed sources, unknown usage or conflicting recovery state require
-   investigation. Preserve UNKNOWN as unknown, never a retrospective zero.
-5. Through the authenticated owner/host operating boundary, explicitly adopt
-   accounting/enforcement settings. New dormant limits are 4,000,000 tokens per
-   ticket and 1,000,000,000 per project lifetime. A limit alone enables neither
-   switch; enforcement requires accounting. Verify persisted settings and totals
-   before resuming. Enabled state-store admission validates every retained legacy
-   row against its import proof and exact canonical charge, including project,
-   ticket, usage and reservation identity. Missing/mismatched proofs or changed
-   legacy rows refuse; retain sources and reconcile rather than bypassing the
-   guard. Exact admission replay never double-charges. Explicit OFF needs no
-   import; `LEGACY_RETAINED` continues using the original engine and limits.
+For owner adoption:
 
-Jira needs explicit controller identity adoption binding the expected project and
-repository IDs. Old keys/configuration/receipts grant no writes. Disabled Jira
-stays disabled; identity adoption enables no adapter/controller.
+1. Stop every legacy writer. Inventory state-store/routing/per-host databases, checkpoint WALs, retain immutable snapshots and SHA-256 pins. Preserve reservations and UNKNOWN usage.
+2. The trusted host explicitly calls installed `agentic.upgrade.import_budget_history` with one protected canonical ledger outside all worktrees, exact project ID, complete worktree roots and source-label mappings `{path, sha256}`. Both hosts must select that ledger. Retain its JSON result externally as IMPORT_RESULT. This host API grants no adoption authority. Capture `prepare_budget_import` before and `check_budget_import` afterwards using `scripts/qualify_upgrade.py` APIs; retain sources. Exact replay deduplicates; conflicts require reconciliation.
+3. Prepare dormant adoption:
 
-Final integrated qualification, independent review and owner release/adopter
-acceptance remain outstanding until actually observed. This guide authorizes no
-live upgrade or activation.
+```text
+RUNTIME -B -I WORKFLOW --root DISPOSABLE operating set --instruction "Adopt dormant budget controls" --adopt-budgeting --set budgeting.accounting_enabled=false --budget-import-result IMPORT_RESULT
+RUNTIME -B -I WORKFLOW --root DISPOSABLE operating confirm --digest DIGEST
+```
+
+The proposal displays complete OFF settings, exact changes, import result/hash and digest; no settings change until the owner confirms in their own terminal through AWF-242. OFF needs no import (omit its result flag). Then inspect `operating show`; propose enabling separately with ordinary `operating set` and confirm again after continuity verification. Enabled admission retains exact legacy import/charge checks. Declining adoption retains legacy behavior. See [budgeting](.agentic/docs/39-BUDGETING.md).
+
+Final release qualification/review/acceptance and separately authorized adopter rollout remain outstanding. This guide authorizes neither.

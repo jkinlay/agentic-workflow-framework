@@ -534,6 +534,7 @@ def _budgeting_projection(value):
         return resolve_settings(value)
     return {'disposition': 'LEGACY_RETAINED', 'settings_persisted': False,
             'diagnostic_fallback': resolve_settings(value),
+            'diagnostic_fallback_meaning': 'Compatibility markers only; neither switch reports active 1.9.6 accounting or enforcement',
             'legacy_enforcement': 'UNOBSERVED',
             'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED',
             'owner_adoption_required': True}
@@ -934,7 +935,9 @@ def _editable_snapshot(tree, governance, initialize, *, owner_repair=False):
         return OperatingSnapshot(canonical(value), fingerprint("operating", value), fingerprint("operating-governance", governance), events[-1]["id"]), raw
 
 
-def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, budget_registry=None):
+def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, budget_registry=None, adopt_budgeting=False, budget_import_result=None):
+    if type(adopt_budgeting) is not bool:
+        fail('$.budgeting', 'Legacy adoption classification must be boolean')
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction.encode("utf-8")) > 65536:
         fail("$.instruction", "Record the nonempty bounded user instruction verbatim")
     if bool(assignments) == bool(recommendation_id) or bool(recommendation_id) != bool(accept):
@@ -943,6 +946,14 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         fail("$", "--initialize requires explicit custom --set choices, not a prior recommendation")
     if epic_id is not None and recommendation_id:
         fail("$.epic", "A project-wide recommendation cannot be reinterpreted as an Epic-scoped change")
+    if budget_import_result is not None and not adopt_budgeting:
+        fail('$.budgeting', '--budget-import-result is only for the explicit legacy adoption proposal')
+    if budget_import_result is not None:
+        budget_import_result = str(Path(budget_import_result).absolute())
+    if adopt_budgeting and budget_registry is not None:
+        from .owner_admission import _ConfirmedOwner
+        if not isinstance(budget_registry.host, _ConfirmedOwner):
+            fail('$.budgeting', 'Legacy adoption requires owner operating confirm; generic host observations cannot adopt')
     with Tree(project_root) as tree, _lock(tree):
         _bound_governance(tree, governance)
         if recommendation_id:
@@ -972,12 +983,23 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         if budget_changes:
             if before is None:
                 fail('$.budgeting', 'Initialize defaults first, then request protected changes with operating set')
-            from .budgeting import transition_settings
+            from .budgeting import transition_settings, fresh_settings
             current_budget = snapshot.config.get('budgeting')
             if current_budget is None:
-                fail('$.budgeting', 'Legacy budgeting requires versioned adoption with an explicit budget disposition')
+                if not adopt_budgeting:
+                    fail('$.budgeting', 'Legacy budgeting requires operating set --adopt-budgeting --set budgeting.accounting_enabled=false, then owner operating confirm')
+                current_budget = fresh_settings()
+                proposed = transition_settings(current_budget, budget_changes)
+                if proposed['accounting_enabled'] or proposed['enforcement_enabled']:
+                    fail('$.budgeting', 'Legacy adoption installs dormant controls only; confirm OFF first, then separately propose enabling after history import')
+                budget_changes = proposed
+                selected.update({'budgeting.' + k: v for k, v in proposed.items()})
+            elif adopt_budgeting:
+                fail('$.budgeting', '--adopt-budgeting requires a legacy operating file without a budgeting block')
             proposed = transition_settings(current_budget, budget_changes)
             selected.update({'budgeting.' + k: v for k, v in proposed.items() if v != current_budget[k]})
+        elif adopt_budgeting:
+            fail('$.budgeting', '--adopt-budgeting requires explicit budgeting --set choices')
         count = selected.get("streams.count", value["streams"]["count"])
         structural_ceiling = configured_lane_ceiling(governance)
         ceiling = operating_ceiling(governance)["effective_ceiling"]
@@ -1001,6 +1023,8 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             _prepare_commit(tree, governance, before, value, instruction, changes, 'chat', created_at=change_time)
             intent = dict(assignments=list(assignments), recommendation_id=recommendation_id,
                           accept=accept, initialize=initialize, epic_id=epic_id)
+            if adopt_budgeting:
+                intent.update(adopt_budgeting=True, budget_import_result=budget_import_result)
             if budget_registry is None:
                 from .owner_admission import PendingOwnerConfirmation, propose
                 try:
@@ -1378,6 +1402,8 @@ def main(argv=None, default_root=None, *, budget_registry=None):
     setter.add_argument("--epic", help="Exact observed Epic ID; scope only the selected stream/role routes")
     setter.add_argument("--initialize", action="store_true", help="Explicitly start from Balanced defaults only when the root file is absent; validate all selected changes first")
     setter.add_argument("--json", action="store_true")
+    setter.add_argument('--adopt-budgeting', action='store_true', help='Propose legacy adoption with dormant controls; requires owner operating confirm')
+    setter.add_argument('--budget-import-result', help='External import_budget_history JSON result to display and bind to the adoption proposal; no authority or completeness proof')
     confirmer = sub.add_parser('confirm', help='Owner confirms an exact pending proposal in their own terminal')
     confirmer.add_argument('--digest', required=True)
     confirmer.add_argument('--json', action='store_true')
@@ -1400,7 +1426,8 @@ def main(argv=None, default_root=None, *, budget_registry=None):
         if args.command == "set":
             snapshot = set_operating(args.root, governance, args.instruction, args.assignments,
                                      recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic,
-                                     budget_registry=budget_registry)
+                                     budget_registry=budget_registry, adopt_budgeting=args.adopt_budgeting,
+                                     budget_import_result=args.budget_import_result)
         elif args.command == 'confirm':
             snapshot = confirm(args.root, governance, args.digest)
         elif args.command == "recover":
