@@ -1,6 +1,6 @@
 # Operating configuration
 
-In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED enables no adapter.
+In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings/budgets/allowlists/floors/escalation/shared critic; legacy routes accepted; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
@@ -10,11 +10,11 @@ Show/status/`operating.state` `effective_ceiling`: minimum of `execution.max_lan
 
 Cycles reauthenticate `produce_planning_resource_observation`; capacity 0-1000; zero: `safe_lane_count == 0`.
 
-Schemas: `streams.count` 1-12 with A-L routes; optional project `execution.max_lanes` 1-12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
+Schemas: `streams.count` 1–12 with A–L routes; optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
-| `operating-config` | `streams.count` | 1-12 |
+| `operating-config` | `streams.count` | 1–12 |
 | `project-config` | `execution.max_parallel_tickets`, `execution.max_parallel_tickets_per_stream`, `execution.host_broker.max_workers`, each `execution.host_broker.resources` value | 1-1000 |
 | `project-config` | `execution.host_broker.max_heavy_jobs`, `execution.host_broker.max_gpu_jobs`, explicit `execution.independent_reviewers.count` | 0-1000 |
 | `ticket-plan` | `lane_cap` | 1-1000 |
@@ -77,22 +77,22 @@ Effective protected settings come from `OPERATING_CONFIG.yaml` at the commit
 named by `refs/remotes/origin/HEAD` only. `github.base_branch` cannot select policy;
 `show` reports disagreement. Branch/working edits cannot change enforcement or calendar batching.
 Differences mean update an older checkout, otherwise propose a PR. At cycle start
-the controller discovers the remote default and fetches it, following renames.
-Failure retains the last policy with a step-specific remedy. FETCH_HEAD time is
+the controller locks before discovery, fetch, commit checking and publication.
+Git-valid UTF-8 names and hierarchical renames are supported. Failure retains
+policy or unverified refusal, with a step-specific remedy. FETCH_HEAD time is
 a fetch attempt, never proof of successful policy refresh.
 Absent policy there means fresh OFF or legacy retained; malformed bytes refuse.
-Missing origin/HEAD with configured origin is unverified: show, validation and
-installation work; admission first attempts refresh, then refuses if tracking
-refs exist or working protected values are nondefault. The remedy is the next
+Configured origin without verified origin/HEAD: show/validation/installation
+work; admission refreshes, then refuses dangling identity, tracking refs or
+nondefault working protected values. The remedy is the next
 controller cycle or `git remote set-head origin --auto`. Fresh OFF without refs
 can continue offline. Non-repositories invoke no Git/gh. OFF needs no ledger.
 
 Merge authority rests with the host's repository rules and the owner.
 `show` reports rules UNOBSERVED as a warning. Adoption/publication observations
 report APPLIED, MISSING or UNOBSERVED; warnings never block local adoption.
-Git metadata must be outside worker write authority. A process able to push
-directly to an unprotected default branch, or one with the owner's full rights,
-can get around this: offer the shipped ruleset separately.
+Git metadata must be outside worker write authority. Direct pushes to an unprotected default branch or the owner's full rights
+bypass this: offer the shipped ruleset separately.
 `merge_gate.trusted_owner_ids` remains for merge-gate use.
 Calendar shares this PR route and effective source. Defaults: continuous 24/7 work;
 review batching enabled weekdays 07:00-17:00 Europe/London, EoD 17:00 daily.

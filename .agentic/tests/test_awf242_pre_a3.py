@@ -170,7 +170,7 @@ class ProductionPreA3Tests(unittest.TestCase):
     def adapter(self):
         config = _base_config(self.root)
         config['codex']['roles']['writer'].update(model='gpt-6.1-sol', reasoning_effort='medium')
-        runner = ControllerCli(record_dir=config['codex']['run_record_directory'])
+        runner = ControllerCli(credential_envs=(config['jira']['token_env'], config['jira'].get('email_env')), record_dir=config['codex']['run_record_directory'])
         adapters = ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         return config, runner, adapters
 

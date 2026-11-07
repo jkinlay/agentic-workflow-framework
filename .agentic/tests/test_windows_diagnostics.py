@@ -9,7 +9,9 @@ import io
 import json
 import os
 from pathlib import Path, PurePath
+import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -54,20 +56,152 @@ def _ac36_bootstrap_command(source, project, manifest_pin, wheelhouse):
             "--test-command", "python -m unittest", "--default-branch", "main"]
 
 
+class _AC36WindowsJob:
+    """Test-owned job: assign the suspended leader before it can spawn children."""
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self.ctypes = ctypes
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        signatures = {
+            "CreateJobObjectW": ([ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
+            "AssignProcessToJobObject": ([wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+            "TerminateJobObject": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+            "QueryInformationJobObject": ([wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                           wintypes.DWORD, ctypes.c_void_p], wintypes.BOOL),
+            "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
+        }
+        for name, (arguments, result) in signatures.items():
+            function = getattr(self.kernel, name)
+            function.argtypes, function.restype = arguments, result
+        self.resume = ctypes.WinDLL("ntdll").NtResumeProcess
+        self.resume.argtypes, self.resume.restype = [wintypes.HANDLE], wintypes.LONG
+        self.handle = self.kernel.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def assign(self, process):
+        if not self.kernel.AssignProcessToJobObject(self.handle, int(process._handle)):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+        if self.resume(int(process._handle)) != 0:
+            raise OSError("AC36 could not resume its owned process")
+
+    def terminate_and_wait(self):
+        if not self.kernel.TerminateJobObject(self.handle, 1):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+        # BASIC_ACCOUNTING_INFORMATION: four LARGE_INTEGERs then four DWORDs.
+        accounting = self.ctypes.create_string_buffer(48)
+        deadline = time.monotonic() + 5
+        while True:
+            if not self.kernel.QueryInformationJobObject(self.handle, 1, accounting, 48, None):
+                raise self.ctypes.WinError(self.ctypes.get_last_error())
+            if int.from_bytes(accounting.raw[40:44], "little") == 0:
+                return
+            if time.monotonic() >= deadline:
+                raise OSError("AC36 process tree did not exit within five seconds")
+            time.sleep(.01)
+
+    def close(self):
+        if not self.kernel.CloseHandle(self.handle):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+
+
+def _ac36_run_bootstrap(command, *, cwd, timeout=180):
+    job = _AC36WindowsJob() if os.name == "nt" else None
+    process = None
+    try:
+        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, creationflags=0x4 if job else 0,
+                                   start_new_session=job is None)
+        if job:
+            job.assign(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as primary:
+            try:
+                if job:
+                    job.terminate_and_wait()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                primary.add_note("AC36 process-tree cleanup failed: " + str(error))
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    except BaseException as primary:
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                primary.add_note("AC36 leader cleanup failed: " + str(error))
+        raise
+    finally:
+        if job:
+            primary = sys.exc_info()[1]
+            try:
+                job.close()
+            except OSError as error:
+                if primary is None:
+                    raise
+                primary.add_note("AC36 job close failed: " + str(error))
+
+
+def _cleanup_fixture(candidate, base, powershell):
+    try:
+        root_stat = candidate.lstat()
+    except FileNotFoundError:
+        return
+    if (stat.S_ISLNK(root_stat.st_mode) or
+            getattr(root_stat, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise OSError("AC36 fixture cleanup refused a link or reparse-point root")
+    # This helper owns its temporary folder. Keep the candidate lexical so a
+    # replacement link reaches rmtree's root check, as on origin/main. Races
+    # inside rmtree's own check are unchanged and outside this helper's scope.
+    candidate, base = map(lambda path: Path(os.path.abspath(path)), (candidate, base))
+    if candidate == base or not candidate.is_relative_to(base):
+        raise OSError("AC36 fixture cleanup refused an unconfined target")
+    for attempt in range(5):
+        if not candidate.exists():
+            return
+        try:
+            shutil.rmtree(candidate)
+            return
+        except OSError:
+            root_stat = candidate.lstat()
+            if (stat.S_ISLNK(root_stat.st_mode) or
+                    getattr(root_stat, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise OSError("AC36 fixture cleanup refused a link or reparse-point root")
+            if attempt < 4:
+                time.sleep(.1 * (attempt + 1))
+    if powershell is not None:
+        removed = subprocess.run(
+            [powershell, "-NoProfile", "-Command",
+             "$root = Get-Item -LiteralPath $env:AWF_CASE_TMP -Force -ErrorAction Stop; "
+             "if ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) "
+             "{ throw 'AC36 fixture cleanup refused a reparse-point root' }; "
+             "Remove-Item -LiteralPath $env:AWF_CASE_TMP -Recurse -Force -ErrorAction Stop"],
+            env={**os.environ, "AWF_CASE_TMP": str(candidate)},
+            capture_output=True, text=True, timeout=5)
+        if removed.returncode == 0 and not candidate.exists():
+            return
+    raise OSError("AC36 fixture cleanup failed; temporary fixture remains: " + str(candidate))
+
+
 @contextmanager
 def temporary_directory(*, prefix="", require_external=False):
     base = Path(os.environ["AWF_TEST_TMP"]).resolve() if os.environ.get("AWF_TEST_TMP") else None
     if require_external and base is not None and base.is_relative_to(ROOT):
         raise unittest.SkipTest("AC36 SKIP: sandbox temp shim is inside the checkout; an external writable temp root is required")
     if base is None:
-        with tempfile.TemporaryDirectory(prefix=prefix) as folder:
-            if require_external and Path(folder).resolve().is_relative_to(ROOT):
-                raise unittest.SkipTest("AC36 SKIP: sandbox temp shim is inside the checkout; an external writable temp root is required")
-            yield folder
-        return
+        base = Path(tempfile.gettempdir()).resolve()
+    if require_external and base.is_relative_to(ROOT):
+        raise unittest.SkipTest("AC36 SKIP: sandbox temp shim is inside the checkout; an external writable temp root is required")
     candidate = (base / (prefix + uuid.uuid4().hex)).resolve()
     if not candidate.is_relative_to(base) or candidate == base:
         raise RuntimeError("Invalid bounded test temp target")
+    powershell = None
     if os.name == "nt":
         powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
         try:
@@ -79,26 +213,24 @@ def temporary_directory(*, prefix="", require_external=False):
             env["AWF_CASE_TMP"] = str(candidate)
             created = subprocess.run([powershell, "-NoProfile", "-Command",
                                       "New-Item -ItemType Directory -LiteralPath $env:AWF_CASE_TMP | Out-Null"],
-                                     env=env, capture_output=True, text=True)
+                                     env=env, capture_output=True, text=True, timeout=5)
             if created.returncode:
                 raise unittest.SkipTest("AC36 SKIP: restricted-token sandbox denied the external temp fixture")
     else:
         candidate.mkdir(parents=True)
+    primary = None
     try:
         yield str(candidate)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        if os.name == "nt":
-            try:
-                shutil.rmtree(candidate)
-            except OSError:
-                if powershell is not None:
-                    env = os.environ.copy()
-                    env["AWF_CASE_TMP"] = str(candidate)
-                    subprocess.run([powershell, "-NoProfile", "-Command",
-                                    "Remove-Item -LiteralPath $env:AWF_CASE_TMP -Recurse -Force"],
-                                   env=env, capture_output=True, text=True)
-        else:
-            shutil.rmtree(candidate)
+        try:
+            _cleanup_fixture(candidate, base, powershell)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            if primary is None:
+                raise
+            primary.add_note("AC36 fixture cleanup failed: " + str(error))
 
 
 def probe(executable, code, output, category=None):
@@ -242,8 +374,7 @@ class RuntimeCommandTests(unittest.TestCase):
             project = Path(folder) / "fixture project"
             project.mkdir()
             bootstrap = _ac36_bootstrap_command(fixture_source, project, pin, wheelhouse)
-            installed = subprocess.run(bootstrap, cwd=fixture_source, capture_output=True,
-                                       text=True, timeout=180)
+            installed = _ac36_run_bootstrap(bootstrap, cwd=fixture_source, timeout=180)
             self.assertEqual(0, installed.returncode, installed.stderr + installed.stdout)
             installation = json.loads(installed.stdout)
             self.assertEqual("CONFIGURED", installation["status"])
@@ -290,6 +421,217 @@ class RuntimeCommandTests(unittest.TestCase):
         checked, problems = self_test.documentation_command_problems(ROOT)
         self.assertGreater(checked, 0)
         self.assertEqual([], problems)
+
+
+class AC36CleanupTests(unittest.TestCase):
+    def test_root_replaced_after_lstat_or_rmtree_refusal_preserves_sibling(self):
+        for replace_at in ("lstat", "rmtree"):
+            with self.subTest(replace_at=replace_at), tempfile.TemporaryDirectory() as raw:
+                candidate, sibling = Path(raw) / "fixture", Path(raw) / "sibling"
+                candidate.mkdir()
+                sibling.mkdir()
+                sentinel = sibling / "sentinel.txt"
+                sentinel.write_text("must survive", encoding="utf-8")
+                original_lstat, original_rmtree = Path.lstat, shutil.rmtree
+                replaced = False
+
+                def replace_root():
+                    nonlocal replaced
+                    candidate.rmdir()
+                    if os.name == "nt":
+                        subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J",
+                                        str(candidate), str(sibling)],
+                                       check=True, capture_output=True, text=True, timeout=5)
+                    else:
+                        candidate.symlink_to(sibling, target_is_directory=True)
+                    replaced = True
+
+                def paused_lstat(path, *args, **kwargs):
+                    observed = original_lstat(path, *args, **kwargs)
+                    if path == candidate and not replaced and replace_at == "lstat":
+                        replace_root()  # Resume cleanup with the pre-replacement stat.
+                    return observed
+
+                def refused_rmtree(path, *args, **kwargs):
+                    if replace_at == "rmtree":
+                        if not replaced:
+                            replace_root()
+                        raise OSError("Cannot call rmtree on a link root")
+                    return original_rmtree(path, *args, **kwargs)
+
+                try:
+                    with patch.object(Path, "lstat", paused_lstat), \
+                            patch.object(shutil, "rmtree", refused_rmtree), \
+                            patch.object(subprocess, "run", wraps=subprocess.run) as fallback:
+                        try:
+                            _cleanup_fixture(candidate, Path(raw), "powershell.exe")
+                        except OSError:
+                            pass
+                    self.assertTrue(replaced)
+                    self.assertTrue(sentinel.is_file(), "Cleanup deleted an unrelated sibling sentinel")
+                    self.assertEqual("must survive", sentinel.read_text(encoding="utf-8"))
+                    self.assertFalse(any("-Command" in call.args[0] for call in fallback.call_args_list))
+                finally:
+                    if os.path.lexists(candidate):
+                        candidate.rmdir() if os.name == "nt" else candidate.unlink()
+
+    def test_replaced_fixture_root_preserves_sibling_and_reports_cleanup_failure(self):
+        for primary_failure in (False, True):
+            with self.subTest(primary_failure=primary_failure), tempfile.TemporaryDirectory() as raw:
+                sibling = Path(raw) / "sibling"
+                sibling.mkdir()
+                sentinel = sibling / "sentinel.txt"
+                sentinel.write_text("must survive", encoding="utf-8")
+                primary = AssertionError("primary fixture failure") if primary_failure else None
+                observed = None
+                folder = None
+                try:
+                    with patch.dict(os.environ, {"AWF_TEST_TMP": raw}):
+                        try:
+                            with temporary_directory(prefix="awf-ac36-replaced-") as folder:
+                                fixture = Path(folder)
+                                fixture.rmdir()
+                                if os.name == "nt":
+                                    subprocess.run(
+                                        ["cmd.exe", "/d", "/c", "mklink", "/J", str(fixture), str(sibling)],
+                                        check=True, capture_output=True, text=True, timeout=5)
+                                else:
+                                    fixture.symlink_to(sibling, target_is_directory=True)
+                                if primary is not None:
+                                    raise primary
+                        except (OSError, AssertionError) as error:
+                            observed = error
+                    self.assertTrue(sentinel.is_file(), "Cleanup deleted an unrelated sibling sentinel")
+                    self.assertEqual("must survive", sentinel.read_text(encoding="utf-8"))
+                    if primary is None:
+                        self.assertIsInstance(observed, OSError)
+                        self.assertIn("fixture cleanup refused", str(observed))
+                    else:
+                        self.assertIs(primary, observed)
+                        self.assertIn("fixture cleanup failed", " ".join(primary.__notes__))
+                        self.assertIn("fixture cleanup refused", " ".join(primary.__notes__))
+                finally:
+                    if folder is not None and os.path.lexists(folder):
+                        if os.name == "nt":
+                            Path(folder).rmdir()
+                        else:
+                            Path(folder).unlink()
+
+    def test_passing_output_matches_run_without_cleanup_wait(self):
+        command = [sys.executable, "-B", "-c",
+                   "import os; os.write(1,b'first'+bytes((13,10))+b'second'+bytes((13,))+b'third'+bytes((10,))); os.write(2,b'error'+bytes((13,10)))"]
+        expected = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=180)
+        with patch.object(time, "sleep", side_effect=AssertionError("Passing run must not wait")):
+            actual = _ac36_run_bootstrap(command, cwd=ROOT)
+        self.assertEqual(vars(expected), vars(actual))
+        self.assertEqual("first\nsecond\nthird\n", actual.stdout)
+
+    def test_bootstrap_deadline_stays_180_and_timeout_is_not_retried(self):
+        with patch(__name__ + "._AC36WindowsJob"), patch.object(subprocess, "Popen") as spawn:
+            process = spawn.return_value
+            process.communicate.return_value = ("{}\n", "")
+            _ac36_run_bootstrap(["controlled-bootstrap"], cwd=ROOT)
+        spawn.assert_called_once()
+        process.communicate.assert_called_once_with(timeout=180)
+        primary = subprocess.TimeoutExpired(["controlled-bootstrap"], 180)
+        with patch(__name__ + "._AC36WindowsJob") as job, patch.object(subprocess, "Popen") as spawn, \
+                patch.object(os, "killpg", create=True):
+            process = spawn.return_value
+            process.communicate.side_effect = [primary, ("", "")]
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                _ac36_run_bootstrap(["controlled-bootstrap"], cwd=ROOT)
+        self.assertIs(primary, caught.exception)
+        spawn.assert_called_once()
+        if os.name == "nt":
+            job.return_value.terminate_and_wait.assert_called_once_with()
+        self.assertEqual([180, 5], [call.kwargs["timeout"] for call in process.communicate.call_args_list])
+
+    def test_fixture_retries_are_bounded_and_success_does_not_wait(self):
+        with tempfile.TemporaryDirectory() as raw:
+            candidate = Path(raw) / "fixture"
+            candidate.mkdir()
+            with patch.object(shutil, "rmtree", side_effect=[PermissionError("locked"), None]) as retry, \
+                    patch.object(time, "sleep") as sleep:
+                _cleanup_fixture(candidate, Path(raw), None)
+            self.assertEqual(2, retry.call_count)
+            sleep.assert_called_once_with(.1)
+            with patch.object(time, "sleep", side_effect=AssertionError("Successful deletion must not wait")):
+                _cleanup_fixture(candidate, Path(raw), None)
+            self.assertFalse(candidate.exists())
+
+    def test_failed_powershell_deletion_is_reported_after_bounded_retries(self):
+        with tempfile.TemporaryDirectory() as raw:
+            candidate = Path(raw) / "fixture"
+            candidate.mkdir()
+            with patch.object(shutil, "rmtree", side_effect=PermissionError("locked")) as remove, \
+                    patch.object(time, "sleep") as sleep, patch.object(
+                        subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "denied")) as fallback:
+                with self.assertRaisesRegex(OSError, "fixture cleanup failed"):
+                    _cleanup_fixture(candidate, Path(raw), "powershell.exe")
+            self.assertEqual(5, remove.call_count)
+            self.assertEqual(4, sleep.call_count)
+            fallback.assert_called_once()
+            self.assertEqual(5, fallback.call_args.kwargs["timeout"])
+            self.assertIn("-ErrorAction Stop", fallback.call_args.args[0][-1])
+
+    def test_cleanup_failure_keeps_timeout_primary_with_and_without_temp_override(self):
+        with tempfile.TemporaryDirectory() as raw:
+            for override in (False, True):
+                with self.subTest(override=override), patch.dict(os.environ):
+                    os.environ.pop("AWF_TEST_TMP", None)
+                    if override:
+                        os.environ["AWF_TEST_TMP"] = raw
+                    primary = subprocess.TimeoutExpired(["controlled-bootstrap"], 180)
+                    with patch(__name__ + "._cleanup_fixture", side_effect=OSError("locked fixture remains")):
+                        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                            with temporary_directory(prefix="awf-ac36-primary-") as folder:
+                                raise primary
+                    shutil.rmtree(folder)
+                    self.assertIs(primary, caught.exception)
+                    self.assertIn("fixture cleanup failed: locked fixture remains", " ".join(primary.__notes__))
+
+    @unittest.skipUnless(os.name == "nt", "Copied native file locks require Windows")
+    def test_timeout_reaps_native_descendant_before_fixture_cleanup(self):
+        import _ctypes
+
+        with tempfile.TemporaryDirectory(prefix="awf-ac36-evidence-") as evidence_folder:
+            evidence = Path(evidence_folder) / "lock.json"
+            release = Path(evidence_folder) / "release"
+            folder = None
+            child = (
+                "import ctypes,json,os,sys,time; from pathlib import Path; "
+                "module=ctypes.WinDLL(sys.argv[1]); "
+                "locked=Path(sys.argv[1]); error=None; "
+                "\ntry: locked.unlink()\nexcept OSError as exc: error=exc.winerror\n"
+                "Path(sys.argv[2]).write_text(json.dumps({'pid':os.getpid(),'lock_error':error})); "
+                "deadline=time.monotonic()+30; "
+                "\nwhile time.monotonic()<deadline and not Path(sys.argv[3]).exists(): time.sleep(.01)\n"
+            )
+            parent = (
+                "import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-B','-c',*sys.argv[1:]], "
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); time.sleep(30)"
+            )
+            sibling = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(30)"])
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    with temporary_directory(prefix="awf-ac36-timeout-") as folder:
+                        locked = Path(folder) / "controlled_native.pyd"
+                        shutil.copyfile(_ctypes.__file__, locked)
+                        _ac36_run_bootstrap(
+                            [sys.executable, "-B", "-c", parent, child, str(locked), str(evidence), str(release)],
+                            cwd=ROOT, timeout=3)
+                observed = json.loads(evidence.read_text())
+                self.assertIn(observed["lock_error"], (5, 32))
+                self.assertFalse(Path(folder).exists(), str(getattr(caught.exception, "__notes__", [])))
+                self.assertIsNone(sibling.poll(), "Unrelated sibling must survive owned-tree termination")
+            finally:
+                sibling.kill()
+                sibling.wait(timeout=5)
+                # Release the controlled child even during a red-first run.
+                release.touch()
+                if folder is not None:
+                    _cleanup_fixture(Path(folder), Path(folder).parent, None)
 
 
 class HonestPreflightTests(unittest.TestCase):

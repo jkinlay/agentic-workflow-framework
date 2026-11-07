@@ -140,11 +140,17 @@ def _blob(root, commit, path):
 def _default_ref(root):
     # This symbolic ref is the sole identity input. Never parse branch config.
     symbolic = _git(root, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD', optional=True)
-    ref = symbolic.decode('ascii').strip() if symbolic else None
-    if ref is not None and (not ref.startswith('refs/remotes/origin/') or
-                            not re.fullmatch(r'refs/remotes/origin/[A-Za-z0-9][A-Za-z0-9_./-]*', ref)):
-        raise ValidationError('Invalid origin/HEAD default-branch reference')
+    ref = symbolic.decode('utf-8').rstrip('\n') if symbolic else None
+    if ref is not None:
+        _validate_tracking_ref(root, ref)
     return ref, 'Default branch from origin/HEAD' if ref else 'Default branch unverified: origin/HEAD absent'
+
+
+def _validate_tracking_ref(root, ref):
+    # Share Git's grammar with publication, including UTF-8 and punctuation.
+    if not ref.startswith('refs/remotes/origin/'):
+        raise ValidationError('Invalid origin/HEAD default-branch reference')
+    _git(root, 'check-ref-format', ref)
 
 
 def _origin_url(root):
@@ -221,7 +227,9 @@ def resolve_protected(root, governance, working):
             if unverified:
                 branch_observation = 'Default branch unverified: origin/HEAD absent or its target unavailable; ' + remedy
                 tracking = _git(root, 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/')
-                budget_admission = not (tracking or needed)
+                # A dangling identity can result from interrupted namespace
+                # cleanup. It is never the fresh, no-policy installation case.
+                budget_admission = not (ref or tracking or needed)
             configured = governance.get('github', {}).get('base_branch')
             if ref and configured and ref != 'refs/remotes/origin/' + configured:
                 branch_observation += '; origin/HEAD and configured github.base_branch disagree; github.base_branch is not an identity input'
@@ -361,17 +369,29 @@ def _refresh_lock(path):
             stream.close()
 
 
-def refresh_default_policy(root):
-    """Controller-only bounded fetch; failure retains the last known policy ref.
+def refresh_default_policy(root, *, credential_envs=()):
+    """Controller-only bounded fetch; failure retains policy or refuses admission.
 
     Uses the checkout's existing Git credentials/configuration. Read-only show
-    never calls this function. Explicit atomic refspecs avoid configured mapping
-    steering and cannot update unrelated refs or invoke automatic maintenance.
+    never calls this function. Objects-only fetch avoids configured mapping;
+    publication removes only namespace conflicts before updating the identity.
     """
     import os
-    from .child_process import child_env
+    from .child_process import child_env, safe_adapter_env
     from .git_isolation import native_git_executable
     from .safeio import run_bounded
+    # Minimum supported Git: 2.29 (maintenance.auto). Audited bundled Git
+    # Documentation/RelNotes: 1.6.6 --no-replace-objects; 1.7.x -c, config
+    # --local/--null/--get-all and --no-includes (includes: 1.7.10), fetch
+    # --no-tags/--no-recurse-submodules (1.7.4); 1.8.5 -C; 2.8 ls-remote
+    # --symref (--get-url predates it); 2.9 core.hooksPath; 2.16 fsmonitor;
+    # 2.26 documents empty --refmap=; 2.29 introduces maintenance.
+    # Existing plumbing: check-ref-format, for-each-ref --format, rev-parse
+    # --verify/--quiet ^{commit}, update-ref --no-deref/-d, symbolic-ref -q.
+    # safe.directory is ignored before its later security backports; gc.auto=0
+    # also suppresses pre-maintenance GC. No --atomic (2.31) or stdin symrefs.
+    # Sources: https://git-scm.com/docs/RelNotes/2.29.0 (and versions above).
+    # This is an option audit, not execution against an older Git binary.
     step = 'remote identity'
     stale_lock_replaced = False
     try:
@@ -382,7 +402,8 @@ def refresh_default_policy(root):
         if url is None:
             return dict(status='UNOBSERVED', step=step, reason='No repository-configured remote.origin.url; no remote policy fetch attempted; configure origin to refresh')
         url = _accepted_url(root, url)
-        environment = child_env({k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')})
+        environment = child_env({k: v for k, v in safe_adapter_env(*credential_envs).items()
+                                 if not k.upper().startswith('GIT_')})
         environment.update(GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='never',
                            GIT_NO_REPLACE_OBJECTS='1', GIT_ALLOW_PROTOCOL='file:https:http:ssh')
         command = [native_git_executable(Path(root)), '--no-replace-objects',
@@ -405,30 +426,46 @@ def refresh_default_policy(root):
             url = expanded
         else:
             raise ValidationError('Origin URL rewrites do not stabilize; configure an unambiguous external URL')
-        step = 'default discovery'
-        output = run('ls-remote', '--symref', '--', url, 'HEAD').decode('utf-8')
-        names = re.findall(r'^ref: (refs/heads/[^\s]+)\tHEAD$', output, re.MULTILINE)
-        if len(names) != 1:
-            raise ValidationError('Remote HEAD must name one branch')
-        advertised = re.findall(r'^([0-9a-f]{40,64})\tHEAD$', output, re.MULTILINE)
-        if len(advertised) != 1:
-            raise ValidationError('Remote HEAD must advertise one commit')
-        branch_ref = names[0]
-        _git(root, 'check-ref-format', branch_ref)
-        ref = 'refs/remotes/origin/' + branch_ref.removeprefix('refs/heads/')
         step = 'refresh ownership'
         lock = metadata / 'awf-default-policy.lock'
         with _refresh_lock(lock) as stale_lock_replaced:
+            step = 'default discovery'
+            output = run('ls-remote', '--symref', '--', url, 'HEAD').decode('utf-8')
+            names = re.findall(r'^ref: (refs/heads/[^\t\n]+)\tHEAD$', output, re.MULTILINE)
+            if len(names) != 1:
+                raise ValidationError('Remote HEAD must name one branch')
+            advertised = re.findall(r'^([0-9a-f]{40,64})\tHEAD$', output, re.MULTILINE)
+            if len(advertised) != 1:
+                raise ValidationError('Remote HEAD must advertise one commit')
+            branch_ref = names[0]
+            _git(root, 'check-ref-format', branch_ref)
+            ref = 'refs/remotes/origin/' + branch_ref.removeprefix('refs/heads/')
+            _validate_tracking_ref(root, ref)
             previous, _ = _default_ref(root)
             step = 'branch fetch'
             # Fetch objects only. Configured refspecs cannot publish policy early.
-            run('fetch', '--atomic', '--no-tags', '--no-recurse-submodules',
+            run('fetch', '--no-tags', '--no-recurse-submodules',
                 '--refmap=', '--', url, branch_ref)
             commit = _git(root, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}').decode('ascii').strip()
             # Another fetch can overwrite FETCH_HEAD; a real push between
             # discovery and fetch also mismatches. Retain policy; next cycle retries.
+            step = 'advertised commit check'
             if commit != advertised[0]:
                 raise ValidationError('Fetched commit differs from advertised HEAD')
+            step = 'tracking namespace cleanup'
+            tracking = _git(root, 'for-each-ref', '--format=%(refname)', 'refs/remotes/origin/')
+            conflicts = [other for other in tracking.decode('utf-8').split('\n')
+                         if other.startswith(ref + '/') or ref.startswith(other + '/')]
+            if conflicts and previous is None:
+                # Keep evidence of unverified policy even if cleanup removes
+                # the last tracking ref. A DIRECT HEAD is not an identity:
+                # only symbolic-ref can admit policy. Final publication below
+                # replaces this marker with the verified symbolic identity.
+                run('update-ref', '--no-deref', 'refs/remotes/origin/HEAD', commit)
+            for other in conflicts:
+                # Remote refs cannot coexist at these names. Never follow
+                # a stale symbolic tracking ref into an unrelated branch.
+                run('update-ref', '--no-deref', '-d', other)
             step = 'policy ref transaction'
             run('update-ref', '--no-deref', ref, commit)
             if previous != ref:
@@ -443,11 +480,13 @@ def refresh_default_policy(root):
             'default discovery': 'Restore remote access and set its HEAD to an existing branch; retry the controller cycle or git remote set-head origin --auto',
             'refresh ownership': 'Retry the next controller cycle; unlocked refresh locks older than ten minutes are replaced automatically',
             'branch fetch': 'Restore access to the advertised default branch and retry the controller cycle',
+            'advertised commit check': 'Fetched commit differs from advertised HEAD; retry the next controller cycle to rediscover and fetch a stable default',
+            'tracking namespace cleanup': 'Restore writable controller-owned conflicting tracking refs; retry the controller cycle',
             'policy ref transaction': 'Restore writable controller-owned tracking refs; retry the controller cycle',
             'default identity publication': 'Restore writable controller-owned origin/HEAD; retry the controller cycle'}
         return dict(status='UNAVAILABLE', step=step, stale_lock_replaced=stale_lock_replaced,
                     reason='Default-policy ' + step + ' failed (' + type(exc).__name__
-                    + '); retained last known policy; ' + remedies[step]
+                    + '); retained last known policy or unverified identity; ' + remedies[step]
                     + ('; replaced stale refresh lock' if stale_lock_replaced else ''))
 
 
@@ -460,12 +499,12 @@ def effective_snapshot(root, governance, snapshot):
         _provenance_json=canonical({**snapshot.provenance, 'protected_settings': report}))
 
 
-def budget_snapshot(root, governance, snapshot):
+def budget_snapshot(root, governance, snapshot, *, credential_envs=()):
     """Admission refreshes unresolved identity before trusting even OFF bytes."""
     result = effective_snapshot(root, governance, snapshot)
     refresh = None
     if result.provenance['protected_settings'].get('unverified'):
-        refresh = refresh_default_policy(root)
+        refresh = refresh_default_policy(root, credential_envs=credential_envs)
         result = effective_snapshot(root, governance, snapshot)
     require_budget_policy(result, refresh=refresh)
     return result

@@ -21,6 +21,26 @@ PROVIDER_API_KEY_ENV_VARS = frozenset({
     "OPENAI_API_KEY",
 })
 HOST_AUTH_ENV_VARS = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
+_CREDENTIAL_NAME_MARKERS = ('TOKEN', 'PASSWORD', 'PASSWD', 'SECRET', 'API_KEY',
+                            'APIKEY', 'ACCESS_KEY', 'PRIVATE_KEY', 'CREDENTIAL')
+_CREDENTIAL_SERVICE_NAMES = ('JIRA', 'ATLASSIAN')
+
+
+def safe_adapter_env(*credential_envs):
+    """Shared adapter/refresh exclusions, retaining checkout Git authentication."""
+    result = dict(os.environ)
+    excluded = {name.upper() for name in credential_envs if name}
+    for key in tuple(result):
+        normalized = key.upper()
+        if (normalized in excluded
+                or any(service in normalized for service in _CREDENTIAL_SERVICE_NAMES)
+                or any(marker in normalized for marker in _CREDENTIAL_NAME_MARKERS)):
+            result.pop(key, None)
+    result['GH_PROMPT_DISABLED'] = '1'
+    result['GIT_TERMINAL_PROMPT'] = '0'
+    return result
+
+
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_CONFIG_BYTES = 1024 * 1024
 _DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "PROJECT_CONFIG.yaml"

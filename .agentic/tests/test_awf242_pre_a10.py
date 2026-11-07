@@ -363,7 +363,7 @@ class ProductionPreA10Tests(unittest.TestCase):
                             ')),flush=True); time.sleep(0.3); print(json.dumps(dict(type="thread.started",thread_id=' + repr(second) +
                             ')),flush=True); print(json.dumps(dict(type="turn.completed",usage=dict(input_tokens=70,output_tokens=30))),flush=True); raise SystemExit(' + str(exit_code) + ')')
                         return fixtures.ADAPTER['_SubprocessRunner'].launch(inner, [sys.executable, '-B', '-c', program], **kwargs)
-                runner = ConflictingCli(record_dir=config['codex']['run_record_directory'])
+                runner = ConflictingCli(credential_envs=(config['jira']['token_env'], config['jira'].get('email_env')), record_dir=config['codex']['run_record_directory'])
                 adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
                 context = adapters['dispatch_ticket'].configure_budgeting(path=self.root / (str(uuid.uuid4()) + '.sqlite'),
                     governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))

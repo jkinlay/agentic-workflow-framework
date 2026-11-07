@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import tracemalloc
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -864,9 +865,9 @@ class CodexRetentionTests(unittest.TestCase):
         self.assertFalse((self.run / "codex-identity.json").exists())
         self.assertFalse(list(self.run.glob(".awf-*.tmp")))
 @contextmanager
-def _metadata_reads(before_read=lambda: None):
+def _metadata_reads(before_read=lambda: None, *, read_limit=None):
     """Count real FileIO bytes beneath either pathname or descriptor buffering."""
-    observed = {"bytes": 0, "reads": 0, "streams": []}
+    observed = {"bytes": 0, "reads": 0, "streams": [], "requests": []}
     real_open, real_fdopen = io.open, os.fdopen
 
     class CountedRaw(io.RawIOBase):
@@ -887,6 +888,9 @@ def _metadata_reads(before_read=lambda: None):
 
         def read(self, size=-1):
             self._before()
+            observed["requests"].append(size)
+            if read_limit is not None:
+                size = min(size, read_limit)
             data = self.raw.read(size)
             observed["bytes"] += len(data)
             return data
@@ -1152,6 +1156,138 @@ class RepositoryMetadataReadTests(unittest.TestCase):
 
 
 class MetadataSnapshotContractTests(unittest.TestCase):
+    def test_snapshot_one_mib_maximum_uses_one_cap_plus_one_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "small"
+            path.write_bytes(b"snapshot")
+            with _metadata_reads() as observed:
+                result = safeio.snapshot_file(path, maximum=1024 * 1024)
+            self.assertEqual(b"snapshot", result.data)
+            self.assertEqual([1024 * 1024 + 1], observed["requests"])
+
+    def test_snapshot_default_maximum_avoids_large_request_for_small_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "small"
+            path.write_bytes(b"snapshot")
+            with _metadata_reads() as observed:
+                result = safeio.snapshot_file(path)
+            self.assertEqual(b"snapshot", result.data)
+            self.assertTrue(observed["requests"])
+            self.assertLessEqual(max(observed["requests"]), 65536)
+
+    def test_snapshot_small_file_read_requests_follow_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "small"
+            path.write_bytes(b"x" * 1024)
+            with _metadata_reads() as observed:
+                result = safeio.snapshot_file(path)
+            self.assertEqual(path.read_bytes(), result.data)
+            self.assertTrue(observed["requests"])
+            self.assertTrue(all(0 < size <= 1025 for size in observed["requests"]),
+                            observed["requests"])
+
+    def test_snapshot_large_file_read_requests_are_chunk_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large"
+            payload = b"x" * (128 * 1024)
+            path.write_bytes(payload)
+            with _metadata_reads() as observed:
+                result = safeio.snapshot_file(path)
+            self.assertEqual(payload, result.data)
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), result.sha256)
+            self.assertTrue(all(0 < size <= 65536 for size in observed["requests"]),
+                            observed["requests"])
+
+    def test_snapshot_short_reads_continue_to_eof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "short-reads"
+            payload = b"snapshot"
+            path.write_bytes(payload)
+            with _metadata_reads(read_limit=3) as observed:
+                result = safeio.snapshot_file(
+                    path, maximum=safeio._SNAPSHOT_SINGLE_READ_MAXIMUM + 1)
+            self.assertEqual(payload, result.data)
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), result.sha256)
+            self.assertEqual(len(payload), observed["bytes"])
+            self.assertGreater(observed["reads"], 1)
+
+    def test_snapshot_growth_below_limit_and_shrink_during_read_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "changing"
+            for payload in (b"growing", b"s"):
+                path.write_bytes(b"safe")
+
+                def mutate():
+                    path.write_bytes(payload)
+
+                with self.subTest(payload=payload), _metadata_reads(mutate) as observed:
+                    with self.assertRaisesRegex(safeio.SnapshotChangedError,
+                                                "changed during bounded read"):
+                        safeio.snapshot_file(path, maximum=16)
+                self.assertLessEqual(observed["bytes"], 17)
+
+    def test_snapshot_zero_reported_size_with_content_is_never_accepted(self):
+        real_fstat = os.fstat
+
+        def zero_size(fd):
+            info = real_fstat(fd)
+            return SimpleNamespace(**{
+                name: 0 if name == "st_size" else getattr(info, name)
+                for name in dir(info) if name.startswith("st_")})
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "zero-reported"
+            path.write_bytes(b"hidden content")
+            for maximum in (0, 4, 64):
+                with self.subTest(maximum=maximum), _metadata_reads() as observed:
+                    with mock.patch.object(safeio.os, "fstat", side_effect=zero_size):
+                        with self.assertRaises(safeio.SnapshotChangedError):
+                            safeio.snapshot_file(path, maximum=maximum)
+                self.assertGreater(observed["bytes"], 0)
+                self.assertLessEqual(observed["bytes"], maximum + 1)
+                self.assertLessEqual(observed["reads"], 3)
+
+    def test_snapshot_growth_past_limit_with_short_reads_is_bounded(self):
+        maximum = safeio._SNAPSHOT_SINGLE_READ_MAXIMUM + 1
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "growing"
+            path.write_bytes(b"s")
+            with _metadata_reads(lambda: path.write_bytes(b"x" * (maximum + 1)),
+                                 read_limit=32768) as observed:
+                with self.assertRaisesRegex(safeio.SnapshotChangedError,
+                                            "File exceeds size limit"):
+                    safeio.snapshot_file(path, maximum=maximum)
+            self.assertEqual(maximum + 1, observed["bytes"])
+            self.assertTrue(all(0 < size <= min(65536, maximum + 1)
+                                for size in observed["requests"]))
+            self.assertGreater(max(observed["requests"]), 32768)
+
+    def test_snapshot_empty_file_and_inclusive_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "boundary"
+            for payload in (b"", b"1234"):
+                path.write_bytes(payload)
+                with self.subTest(payload=payload):
+                    result = safeio.snapshot_file(path, maximum=len(payload))
+                    self.assertEqual(payload, result.data)
+                    self.assertEqual(len(payload), result.size)
+                    self.assertEqual(hashlib.sha256(payload).hexdigest(), result.sha256)
+
+    def test_snapshot_read_error_propagates_and_closes_handles(self):
+        def fail():
+            raise OSError("snapshot read failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unreadable"
+            path.write_bytes(b"snapshot")
+            with _metadata_reads(fail) as observed:
+                with self.assertRaisesRegex(OSError, "snapshot read failure"):
+                    with safeio.Tree(directory) as tree:
+                        safeio.snapshot_file(tree, path.name)
+            self.assertEqual({}, tree._dirs)
+            self.assertTrue(all(stream.closed and stream.raw.closed
+                                for stream in observed["streams"]))
+
     def test_snapshot_bytes_size_digest_identity_and_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config"

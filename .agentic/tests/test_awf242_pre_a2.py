@@ -204,7 +204,16 @@ class ProductionBoundaryTests(unittest.TestCase):
             .summary(self.gov['project']['id'])['known_tokens'], 200)
 
     def test_real_runner_observes_bound_process_and_usage(self):
-        runner = RUNNER(record_dir=self.root)
+        runner = RUNNER(credential_envs=('ACCOUNT_EMAIL', 'AWF_JIRA_TOKEN'), record_dir=self.root)
+        with patch.dict(os.environ, ACCOUNT_EMAIL='fixture@example.invalid', AWF_JIRA_TOKEN='fixture-token'):
+            with patch('subprocess.run') as child:
+                child.return_value.returncode = 0
+                child.return_value.stdout = b'merged'
+                child.return_value.stderr = b''
+                self.assertEqual({'status': 'MERGEABLE', 'content': b'merged'},
+                                 runner.merge_file(b'current', b'base', b'other'))
+                self.assertNotIn('ACCOUNT_EMAIL', child.call_args.kwargs['env'])
+                self.assertNotIn('AWF_JIRA_TOKEN', child.call_args.kwargs['env'])
         nonce = str(uuid.uuid4())
         binding = dict(project_id='project-1', ticket_id='EX-10', run_id=nonce,
             dispatch_id='dispatch', session_id=nonce, role='worker')
@@ -239,6 +248,21 @@ class ProductionBoundaryTests(unittest.TestCase):
         for method in ('observe_enrollment', 'observe_budget_admission', 'observe_budget_outcome'):
             self.assertTrue(callable(getattr(runner, method, None)), method)
 
+    def test_production_factory_preserves_credentials_and_budget_record_directory(self):
+        namespace = runpy.run_path(str(ROOT / '.agentic/adapters/reference_controller_adapter.py'))
+        config = _base_config(self.root)
+        config['jira'].update(credential_type='scoped_api_token', email_env='ACCOUNT_EMAIL')
+        runners = []
+        def construct(*args, **kwargs):
+            runner = RUNNER(*args, **kwargs)
+            runners.append(runner)
+            return runner
+        with patch.dict(namespace['build_adapters'].__globals__, _SubprocessRunner=construct):
+            namespace['build_adapters'](config)
+        self.assertEqual(1, len(runners))
+        self.assertEqual(('AWF_JIRA_TOKEN', 'ACCOUNT_EMAIL'), runners[0]._credential_envs)
+        self.assertEqual(Path(config['codex']['run_record_directory']), runners[0]._budget_record_dir)
+
     def test_enabled_adapter_uses_real_runner_observers_and_durable_receipts(self):
         namespace = runpy.run_path(str(ROOT / '.agentic/adapters/reference_controller_adapter.py'))
         # Only the external CLI is a fixture. Budgeting, watcher, enrollment,
@@ -255,7 +279,7 @@ class ProductionBoundaryTests(unittest.TestCase):
 
         config = _base_config(self.root)
         config['codex']['roles']['writer'].update(model='gpt-6.1-sol', reasoning_effort='medium')
-        runner = CliFixture(record_dir=Path(config['codex']['run_record_directory']))
+        runner = CliFixture(credential_envs=(config['jira']['token_env'], config['jira'].get('email_env')), record_dir=Path(config['codex']['run_record_directory']))
         runner.launches, runner.usage = 0, True
         adapters = namespace['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         self.value['budgeting'] = dict(fresh_settings(), accounting_enabled=True,
