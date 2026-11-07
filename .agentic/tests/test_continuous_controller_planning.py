@@ -104,14 +104,14 @@ def planning_resource_inputs(capacity, *, resource_capacity=None, operator_capac
 		'planning_resource_producer_sha256': 'c' * 64,
 		'project_config_sha256': 'd' * 64, 'operating_config_sha256': 'e' * 64}
 
-def fixture_operating_snapshot(config, count, root, *, repository_root=None):
+def fixture_operating_snapshot(config, count, *, repository_root=None):
     """Give policy re-reads the same isolated settings used by the planner."""
     from agentic.operating import CONFIG, read_operating
     from test_planning import operating_snapshot
     snapshot = operating_snapshot(config, count)
-    if snapshot.provenance.get('path'):
+    if repository_root is None or snapshot.provenance.get('path'):
         return snapshot
-    root = Path(repository_root) if repository_root is not None else Path(root) / 'operating-fixture'
+    root = Path(repository_root)
     root.mkdir(exist_ok=True)
     (root / '.agentic').mkdir(exist_ok=True)
     (root / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(config), encoding='utf-8')
@@ -132,7 +132,6 @@ def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now
     cfg['project']['id'] = binding['project_id']
     cfg['github']['repository_id'] = binding['repository_id']
     operating = fixture_operating_snapshot(cfg, min(max(capacity, 1), 6),
-        Path(controller.path).parent,
         repository_root=(repository['repository_root']
             if Path(repository['repository_root']).resolve() != Path(__file__).resolve().parents[2]
             else None))
@@ -164,6 +163,30 @@ def planning_fixture_inputs(items, controller, capacity, *, binding=BINDING, now
         verify_planning_events=lambda auth, request: {'status': 'VERIFIED', 'evidence_id': auth['evidence_id'], 'snapshot': deepcopy(evidence['events'])},
         verify_planning_owner=lambda *_: {}, cycle_id=cycle_id,
         project_config_sha256=fingerprint('accepted-project-config', cfg), operating_config_sha256=operating.operating_hash)
+
+
+class PlanningFixtureRepositoryTests(unittest.TestCase):
+    def test_default_planning_fixture_has_no_repository_provenance_or_policy_writes(self):
+        with tempfile.TemporaryDirectory(prefix='awf-planning-default-') as scratch:
+            root = Path(scratch)
+            store = ContinuousControllerStore(root / 'controller.sqlite3', ['A'])
+            inputs = planning_fixture_inputs([], store, 1)
+            self.assertFalse(inputs['planning_operating_snapshot'].provenance.get('path'))
+            self.assertFalse((root / 'operating-fixture').exists())
+
+    def test_explicit_planning_fixture_preserves_repository_bound_policy_rereads(self):
+        from agentic.operating import read_operating
+        with tempfile.TemporaryDirectory(prefix='awf-planning-explicit-') as scratch:
+            root = Path(scratch)
+            repository = root / 'policy-repository'
+            store = ContinuousControllerStore(root / 'controller.sqlite3', ['A'])
+            inputs = planning_fixture_inputs([], store, 1,
+                repository=dict(REPOSITORY, repository_root=repository))
+            snapshot = inputs['planning_operating_snapshot']
+            self.assertEqual(repository.resolve(), Path(snapshot.provenance['path']).parent)
+            reread = read_operating(repository, inputs['planning_config'])
+            self.assertEqual(snapshot.operating_hash, reread.operating_hash)
+            self.assertEqual(snapshot.config, reread.config)
 
 
 class ContinuousControllerStreamMigrationTests(unittest.TestCase):
@@ -347,7 +370,8 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 	def cycle(self, items, *, capacity=2, dispatch=None, **resources):
 		calls = []
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
-		resources = {**resources, **planning_fixture_inputs(items, self.store, capacity)}
+		resources = {**resources, **planning_fixture_inputs(items, self.store, capacity,
+			repository=dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture'))}
 		result = production_controller_cycle(self.store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture'), **resources, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
 
@@ -504,7 +528,8 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			'controller_clock': controller_clock or (lambda: now),
 		}
 		arguments.update(planning_resource_inputs(capacity))
-		arguments.update(planning_fixture_inputs(items, store, capacity, now=now))
+		arguments.update(planning_fixture_inputs(items, store, capacity, now=now,
+			repository=dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture')))
 		arguments.update(operations)
 		return production_controller_cycle(store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=now, host_capacity=capacity,
 			inventory_binding=BINDING, **dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture'), **arguments)
@@ -874,7 +899,8 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			return value
 
 		result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
-			**{key: value for key, value in planning_fixture_inputs(drifted, self.store, 2).items() if key != 'cycle_id'},
+			**{key: value for key, value in planning_fixture_inputs(drifted, self.store, 2,
+				repository=dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture')).items() if key != 'cycle_id'},
 			dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
 			cycle_id='cycle-17', overlap_allowance_requests=[allowance_request()],
 			observe_overlap_allowance=observe_allowance)
@@ -913,7 +939,8 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 
 		with patch('agentic.continuous_controller.canonical_reservation_sources', side_effect=lambda raw, *_args, **_kwargs: raw['sources']):
 			result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
-			**{key: value for key, value in planning_fixture_inputs(refreshed, self.store, 2).items() if key != 'cycle_id'},
+			**{key: value for key, value in planning_fixture_inputs(refreshed, self.store, 2,
+				repository=dict(REPOSITORY, repository_root=Path(self.store.path).parent / 'operating-fixture')).items() if key != 'cycle_id'},
 				dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
 				observe_reservations=observe_reservations, cycle_id='cycle-17',
 				overlap_allowance_requests=[allowance_request()], observe_overlap_allowance=observe_allowance)
@@ -1446,7 +1473,7 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.history = Store(self.root / 'history.sqlite3', '00000000-0000-0000-0000-000000000050')
         self.config = config(2)
         self.config['github']['repository_id'] = '101'
-        self.operating = fixture_operating_snapshot(self.config, 2, self.root)
+        self.operating = fixture_operating_snapshot(self.config, 2, repository_root=self.root / 'operating-fixture')
         self.items = [ticket('AWF-101', 1), ticket('AWF-102', 2)]
         self.events = [{'source_id': 'event-1', 'trigger': 'project_start', 'override': None}]
         self.calls = []
@@ -1827,10 +1854,10 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
         self.events = []
         self.store = ContinuousControllerStore(self.store.path, ['A', 'B'])
         if change == 'operating':
-            self.operating = fixture_operating_snapshot(self.config, 1, self.root)
+            self.operating = fixture_operating_snapshot(self.config, 1, repository_root=self.root / 'operating-fixture')
         elif change == 'configuration':
             self.config['execution']['max_parallel_tickets'] = 1
-            self.operating = fixture_operating_snapshot(self.config, 1, self.root)
+            self.operating = fixture_operating_snapshot(self.config, 1, repository_root=self.root / 'operating-fixture')
         else:
             original = self.backlog
             def with_dependency(request):
