@@ -10,6 +10,52 @@
     "simple_worker"
   ],
   "properties": {
+    "budgeting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accounting_enabled",
+        "enforcement_enabled",
+        "max_tokens_per_ticket",
+        "max_tokens_per_project"
+      ],
+      "properties": {
+        "accounting_enabled": {
+          "type": "boolean"
+        },
+        "enforcement_enabled": {
+          "type": "boolean"
+        },
+        "max_tokens_per_ticket": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_tokens_per_project": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enforcement_enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "accounting_enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
+    },
     "version": {
       "const": 1
     },

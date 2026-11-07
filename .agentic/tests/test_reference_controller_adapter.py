@@ -342,6 +342,11 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 
 	def setUp(self):
 		self.temp = tempfile.TemporaryDirectory(prefix='awf32-adapter-')
+		state_home = tempfile.TemporaryDirectory(prefix='awf32-host-')
+		self.addCleanup(state_home.cleanup)
+		environment = patch.dict(os.environ, {'AWF_STATE_HOME': state_home.name})
+		environment.start()
+		self.addCleanup(environment.stop)
 		self.root = Path(self.temp.name)
 		self.config = _base_config(self.root)
 		self.adapter = ROOT / '.agentic/adapters/reference_controller_adapter.py'

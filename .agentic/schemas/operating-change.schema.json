@@ -93,6 +93,21 @@
     "governance_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "unprotected_before_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "unprotected_after_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "legacy_before_configuration": {
+      "type": "object"
     }
   },
   "allOf": [

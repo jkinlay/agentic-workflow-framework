@@ -12,13 +12,24 @@ import source_only
 from agentic import ValidationError
 from agentic.canonical import MAX_DOCUMENT_BYTES, fingerprint, sha256, timestamp
 import agentic.installer as installer
-from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle, validate_overlap_allowance_observation
+from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle as real_production_controller_cycle, validate_overlap_allowance_observation
 from test_publication_readiness import publication_config, publication_observation
 NOW = '2026-10-15T08:00:00Z'
 BINDING = {'project_id': 'project-1', 'repository_id': '101', 'scope_sha256': 'a' * 64}
 REPOSITORY = {'repository_root': Path(__file__).resolve().parents[2], 'repository_head_sha': 'a' * 40, 'repository_tree_sha': 'b' * 40}
 COUNTS = {'required': 1, 'completed': 0, 'acceptable': 0, 'failed': 0, 'stale': 0, 'outstanding': 1}
 OWNER_CONFIG = {'github': {'repository_id': 101, 'expected_actor_id': 7001}, 'merge_gate': {'trusted_owner_ids': [7002]}}
+
+
+def production_controller_cycle(*args, **kwargs):
+    # These synthetic planning cases supply their own accepted governance and
+    # operating policy. Source Git is only an ownership/path fixture; its live
+    # twelve-lane policy does not belong to these one/two-lane projects.
+    # Keep accepted_budget_snapshot's provenance/root validation active. Budget
+    # authority and admission use real repositories in test_awf242_*.
+    with patch('agentic.protected_settings.budget_snapshot',
+               side_effect=lambda root, governance, snapshot, **options: snapshot):
+        return real_production_controller_cycle(*args, **kwargs)
 
 def ticket(name, priority, *, role='writer', stage='implementation'):
 	return {'ticket': name, 'priority': priority, 'disposition': 'ELIGIBLE', 'actor': 'controller', 'reason': 'eligible', 'next_action': 'continue ' + name, 'resume_trigger': 'completion', 'paths': ['fixture-' + name.lower() + '.txt'], 'dependencies_satisfied': True, 'budget_available': True, 'cap_available': True, 'review_independent': True, 'exact_tuple': 'base:a/head:b/tree:c/contract:d/review:e', 'activity': 'work ' + name, 'verification_gate': 'PENDING', 'reviewer_completion': dict(COUNTS), 'open_findings': 0, 'jira_status': 'In Progress', 'dispatch_role': role, 'lifecycle_stage': stage}
@@ -1403,7 +1414,7 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
                 'agentic.operating.read_operating', return_value=self.operating), patch(
                 'os.chmod', side_effect=restrict), patch.object(cli, 'production_controller_cycle', return_value={}) as cycle:
             with self.assertRaisesRegex(PermissionError, 'sidecar restriction failed'):
-                cli.main(args)
+                cli.main(args, default_root=self.root)
         cycle.assert_not_called()
 
     def setUp(self):

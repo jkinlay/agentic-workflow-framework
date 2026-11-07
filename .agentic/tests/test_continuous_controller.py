@@ -77,7 +77,12 @@ def production_controller_cycle(*args,**kwargs):
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
-	return real_production_controller_cycle(*args,**kwargs)
+	# Source Git supplies ownership paths, while planning_fixture_inputs supplies
+	# this synthetic project's accepted policy (with its own governance ceiling).
+	# Keep provenance/root checking active; real policy I/O has AWF-242 coverage.
+	with patch('agentic.protected_settings.budget_snapshot',
+			side_effect=lambda root, governance, snapshot, **options: snapshot):
+		return real_production_controller_cycle(*args,**kwargs)
 
 def inventory_observation(now,tickets):
 	return{'source':'host_observation','observed_at':now,'binding':dict(INVENTORY_BINDING),'complete':True,'inventory_sha256':fingerprint('controller-inventory',{'binding':INVENTORY_BINDING,'tickets':tickets}),'tickets':tickets}
@@ -1281,7 +1286,10 @@ class JiraProgressTests(unittest.TestCase):
 		binding_path.write_text(json.dumps(INVENTORY_BINDING),encoding='utf-8')
 		pin=sha256(adapter_path.read_bytes())
 		common=[sys.executable,'-B',str(ROOT/'.agentic/scripts/workflow.py'),'--root',str(ROOT),'controller','--state',str(state_path),'--stream','A','--stream','B','--stream','C','--worktree-root',str(worktree),'--project-config',str(project_config_path),'--adapter-module',str(adapter_path),'--adapter-sha256',pin,'--adapter-config',str(adapter_config_path)]
-		cycle=subprocess.run([*common,'cycle','--inventory-binding',str(binding_path),'--repository-root',str(worktree),'--repository-head-sha',merged_head,'--repository-tree-sha',merged_tree,'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
+		# This temporary repository is the controller checkout for the cycle.
+		cycle_common=list(common)
+		cycle_common[cycle_common.index('--root')+1]=str(worktree)
+		cycle=subprocess.run([*cycle_common,'cycle','--inventory-binding',str(binding_path),'--repository-root',str(worktree),'--repository-head-sha',merged_head,'--repository-tree-sha',merged_tree,'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
 		self.assertEqual(cycle.returncode,0,cycle.stderr)
 		cycle_output=json.loads(cycle.stdout)
 		self.assertEqual((len(cycle_output['dispatch_receipts']),cycle_output['status_delivery']['status']),(1,'DELIVERED'))
