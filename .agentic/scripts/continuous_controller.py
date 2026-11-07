@@ -128,7 +128,10 @@ def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapte
 		jira_producer = jira.get('controller_actor_id')
 		jira_identity = {'cloud_id': jira.get('cloud_id'), 'site': jira.get('site'), 'project_id': jira.get('provider_project_id'), 'project_key': jira.get('project_key'), 'controller_actor_id': jira_producer}
 		def jira_observer(request):
-			from agentic.continuous_controller import adopted_jira_reconciliation
+			from agentic.continuous_controller import adopted_jira_reconciliation, retained_jira_owner_closure
+			owner = retained_jira_owner_closure(store, config, request)
+			if owner is not None:
+				return adapters['observe_jira_reconciliation'](request, retained_owner_closure=owner)
 			retained = adopted_jira_reconciliation(store, config, request) if store is not None else None
 			if retained is not None:
 				return adapters['observe_jira_reconciliation'](request, retained_success=retained)
