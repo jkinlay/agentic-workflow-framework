@@ -9,11 +9,29 @@ from pathlib import Path
 import re
 
 from . import ValidationError
-from .budgeting import fresh_settings
+from .budgeting import fresh_settings, validate_settings
 from .canonical import canonical, load_yaml
 
 PROTECTED_DOMAINS = (('budgeting', fresh_settings),)
 MAX_BYTES = 1024 * 1024
+
+
+def load_operating_yaml(raw):
+    """Refuse ambiguous/invalid operating YAML without publishing its source."""
+    try:
+        return load_yaml(raw)
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise ValidationError('Invalid operating YAML: duplicate keys, malformed YAML or unsupported values; correct the file') from exc
+
+
+def _display_domain(working, name, normalize):
+    if name not in working:
+        return None
+    try:
+        normalize(working[name])
+    except ValidationError:
+        return 'REJECTED protected value; correct the proposed file before opening a PR'
+    return deepcopy(working[name])
 
 
 def unprotected_hash(value):
@@ -200,7 +218,7 @@ def resolve_protected(root, governance, working):
                         value[name] = defaults()
                 source = 'fresh defaults' if 'budgeting' in value else 'legacy retained'
             else:
-                accepted = load_yaml(raw)
+                accepted = load_operating_yaml(raw)
                 from .operating import validate_operating
                 validate_operating(accepted, governance)
                 for name, _defaults in PROTECTED_DOMAINS:
@@ -216,7 +234,8 @@ def resolve_protected(root, governance, working):
                       'fresh defaults' if 'budgeting' in working else 'legacy retained')
     except (OSError, ValueError, UnicodeError, ValidationError) as exc:
         raise ValidationError('Protected default-branch settings unavailable: ' + str(exc)) from exc
-    differences = [{'path': name, 'working': working.get(name), 'effective': value.get(name)}
+    differences = [{'path': name, 'working': _display_domain(working, name, validate_settings),
+                    'effective': _display_domain(value, name, validate_settings)}
                    for name, _defaults in PROTECTED_DOMAINS if working.get(name) != value.get(name)]
     next_action = ('Working protected values differ; open a PR for the requested change, then fetch after owner merge'
                    if differences else 'Change protected settings through a PR; fetch after owner merge')
@@ -233,7 +252,7 @@ def resolve_protected(root, governance, working):
                 for candidate in (history or b'').decode('ascii').splitlines()[1:]:
                     try:
                         prior = _blob(root, candidate, 'OPERATING_CONFIG.yaml')
-                        prior = load_yaml(prior) if prior is not None else None
+                        prior = load_operating_yaml(prior) if prior is not None else None
                     except (ValidationError, ValueError, OSError):
                         continue  # Historical guidance cannot invalidate current accepted policy.
                     if isinstance(prior, dict) and all(prior.get(name) == working.get(name) for name, _ in PROTECTED_DOMAINS):

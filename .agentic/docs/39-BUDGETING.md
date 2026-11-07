@@ -13,7 +13,7 @@ is optional and may be unobserved.
 
 Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
 `budgeting.max_tokens_per_ticket`, `budgeting.max_tokens_per_project`.
-Limits: integers 1..9223372036854775807; switches: booleans. No Epic overrides.
+Limits: integers 1..9007199254740991; switches: booleans. No Epic overrides.
 Run `operating validate --file PROPOSED`; invalid combinations refuse before PR preparation.
 
 Branch from the fetched default, change requested values preserving text/comments,
