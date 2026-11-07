@@ -99,7 +99,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `29e7eb343b78305c31310b590b439a03cf3dca0a5de6c54561fed3354767fc36` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `7587c6308761a32048d5128d19c8b1dd8915f1b27368b6752804f93be0ac2fdb` |
+| `.agentic/lib/agentic/continuous_controller.py` | `d6c0594d4f8d4c66c73cd80b0fa06dfbfe69fb6f6bcf31e24c34cb658693d0f4` |
 | `.agentic/lib/agentic/contracts.py` | `c5ffd7177fde55b8ffd00cd58d62fe23ba121761c848e4f1ebf5d4fade249ce7` |
 | `.agentic/lib/agentic/controller_state.py` | `276d34922841eb46c732997933816eb42892045b5a8f0282d34415ec30f6eacf` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -124,7 +124,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/lifecycle.py` | `f01f9eb7862f8f87eb41a94329263e130b31b0f0e7e5aeebd71e962d62608e45` |
 | `.agentic/lib/agentic/merge_train.py` | `9586b01daca94606fb0f97c608e9e667baac4a68b86af5142d54dbe6ad4e85b7` |
 | `.agentic/lib/agentic/model_routing.py` | `7e2dd0e30a472b26a576eaeeff83adfe68b623d1f9b039842721cd693188cd90` |
-| `.agentic/lib/agentic/operating.py` | `2c0d2f979c0c944596199a446469e8544f9758c89de9cfcf76b7a8de1760ce30` |
+| `.agentic/lib/agentic/operating.py` | `fe109c9740e6ce0a49420430da03013d6d833e9ee220ce74c930931474c4ab40` |
 | `.agentic/lib/agentic/operating_calendar.py` | `1eccddadc97e4473c9b3fdbd1a7eaa5cda1e37afc9448229c7d2a530a00f7c4a` |
 | `.agentic/lib/agentic/operating_status.py` | `007aa16f98c98bbe235710c4c12f9738fea4544892fc0a0d9ea05a1ce7df7ef4` |
 | `.agentic/lib/agentic/output.py` | `f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b` |
@@ -135,7 +135,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/policy.py` | `0d3516af5ff5045e50f9d260758243289d0de21d3f1868355dde36d77e38d5f5` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
-| `.agentic/lib/agentic/protected_settings.py` | `e416c98b8014a704240b63a35e85606f28802e4c48bb9e1be674d49da4d996b2` |
+| `.agentic/lib/agentic/protected_settings.py` | `bbe36e7dee2f9363007811adf28708ec7254e73cb6a7d581630f41e0458d037f` |
 | `.agentic/lib/agentic/provenance.py` | `1f5fafd6f76726edefae97869818a31b8e2e913cd32f3bcc9e90cb3832961ac3` |
 | `.agentic/lib/agentic/provider_identity.py` | `5a9e3e4b9a525edfcca125fcd902152d22639e4e43e39ac51943a772a4ca1271` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
@@ -382,7 +382,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf244_controller_wiring.py` | `3b5da7fc45bdd6cc330ea4eb74d22306952ef09b2c22367a8ae62de04a27b38f` |
 | `.agentic/tests/test_awf244_digest_contract.py` | `ec547c9adab857951dde01ae2ccd2fd4ba273fce3332fc81efda3cd17e779133` |
 | `.agentic/tests/test_awf244_persistence.py` | `44618506af3c01af8597233f130cf525da9878c64e3259dd2f2e3df126966cde` |
-| `.agentic/tests/test_awf244_recovery.py` | `8753b1369c35235a8026d881f50bc6907424b10eebf07bfdf45b780142e79269` |
+| `.agentic/tests/test_awf244_policy_rules.py` | `7f06714acb53cd940bfbc80159f78e8fb2b634abb442a88db9f941dbc417c2ad` |
+| `.agentic/tests/test_awf244_recovery.py` | `9bf287a25730c1fc9726bc71d71bc8a61e768078bb34995e1cdb79f9836b066a` |
 | `.agentic/tests/test_awf244_review_batching.py` | `423ece57265b2726e1d25a5bc8ce87f95b93c1f346a6e6e28b8160483f80d4bb` |
 | `.agentic/tests/test_awf244_runtime.py` | `180c7f8edd2d32dff0edbeadc548772715652ec601d39c4729117fbc3cc4bc57` |
 | `.agentic/tests/test_awf244_settings.py` | `5e544b2135be10ec7852596edb058442c7ef42da93049c3963c401a273c690cb` |

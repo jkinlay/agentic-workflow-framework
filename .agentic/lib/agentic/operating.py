@@ -23,11 +23,12 @@ from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
 from .lane_labels import MAX_LANES, STREAM_LABELS
-from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
+from .canonical import canonical, fingerprint, loads, now_text, sha256, timestamp
+from .canonical import load_yaml as load_governance_yaml
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 from .budgeting import resolve_settings
-from .protected_settings import audit_matches, unprotected_hash
+from .protected_settings import audit_matches, unprotected_hash, load_operating_yaml as load_yaml
 from .operating_calendar import effective_calendar, SETTING_PATHS
 
 CONFIG = "OPERATING_CONFIG.yaml"
@@ -434,7 +435,7 @@ def _read(tree, name):
 
 
 def _bound_governance(tree, governance):
-    actual = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
+    actual = load_governance_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
     if canonical(actual) != canonical(governance):
         fail("$", "Governance changed during preparation; reload and revalidate", "$.execution", None)
     return actual
@@ -771,7 +772,7 @@ def recover_operating(project_root, governance, expected_journal_sha256):
         prior_value = load_yaml(before) if before is not None else {}
         after_value = load_yaml(after)
         if any(prior_value.get(name, defaults()) != after_value.get(name, defaults())
-               for name, defaults in PROTECTED_DOMAINS):
+               for name, defaults, _normalize in PROTECTED_DOMAINS):
             fail('$', 'Protected settings require a PR; local recovery cannot change them')
         current = _read(tree, CONFIG)
         if current not in (before, after):
@@ -1369,7 +1370,7 @@ def main(argv=None, default_root=None):
     args = parser.parse_args(argv)
     try:
         with Tree(args.root) as tree:
-            governance = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
+            governance = load_governance_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
         Contracts(SCHEMAS).validate("project-config", governance)
         if args.command == 'validate':
             if args.file.stat().st_size > MAX_BYTES:
@@ -1404,6 +1405,8 @@ def main(argv=None, default_root=None):
         result['table'] += '\nProtected settings: ' + str(protected.get('source', 'unobserved'))
         if protected.get('commit'):
             result['table'] += ' at ' + protected['commit']
+        for domain, source in protected.get('sources', {}).items():
+            result['table'] += '\n' + domain + ': ' + source
         for field in ('policy_observation', 'branch_observation', 'visibility'):
             if protected.get(field):
                 result['table'] += '\n' + protected[field]
