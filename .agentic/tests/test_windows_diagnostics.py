@@ -156,7 +156,10 @@ def _cleanup_fixture(candidate, base, powershell):
     if (stat.S_ISLNK(root_stat.st_mode) or
             getattr(root_stat, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
         raise OSError("AC36 fixture cleanup refused a link or reparse-point root")
-    candidate, base = candidate.resolve(), base.resolve()
+    # This helper owns its temporary folder. Keep the candidate lexical so a
+    # replacement link reaches rmtree's root check, as on origin/main. Races
+    # inside rmtree's own check are unchanged and outside this helper's scope.
+    candidate, base = map(lambda path: Path(os.path.abspath(path)), (candidate, base))
     if candidate == base or not candidate.is_relative_to(base):
         raise OSError("AC36 fixture cleanup refused an unconfined target")
     for attempt in range(5):
@@ -166,11 +169,18 @@ def _cleanup_fixture(candidate, base, powershell):
             shutil.rmtree(candidate)
             return
         except OSError:
+            root_stat = candidate.lstat()
+            if (stat.S_ISLNK(root_stat.st_mode) or
+                    getattr(root_stat, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise OSError("AC36 fixture cleanup refused a link or reparse-point root")
             if attempt < 4:
                 time.sleep(.1 * (attempt + 1))
     if powershell is not None:
         removed = subprocess.run(
             [powershell, "-NoProfile", "-Command",
+             "$root = Get-Item -LiteralPath $env:AWF_CASE_TMP -Force -ErrorAction Stop; "
+             "if ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) "
+             "{ throw 'AC36 fixture cleanup refused a reparse-point root' }; "
              "Remove-Item -LiteralPath $env:AWF_CASE_TMP -Recurse -Force -ErrorAction Stop"],
             env={**os.environ, "AWF_CASE_TMP": str(candidate)},
             capture_output=True, text=True, timeout=5)
@@ -414,6 +424,57 @@ class RuntimeCommandTests(unittest.TestCase):
 
 
 class AC36CleanupTests(unittest.TestCase):
+    def test_root_replaced_after_lstat_or_rmtree_refusal_preserves_sibling(self):
+        for replace_at in ("lstat", "rmtree"):
+            with self.subTest(replace_at=replace_at), tempfile.TemporaryDirectory() as raw:
+                candidate, sibling = Path(raw) / "fixture", Path(raw) / "sibling"
+                candidate.mkdir()
+                sibling.mkdir()
+                sentinel = sibling / "sentinel.txt"
+                sentinel.write_text("must survive", encoding="utf-8")
+                original_lstat, original_rmtree = Path.lstat, shutil.rmtree
+                replaced = False
+
+                def replace_root():
+                    nonlocal replaced
+                    candidate.rmdir()
+                    if os.name == "nt":
+                        subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J",
+                                        str(candidate), str(sibling)],
+                                       check=True, capture_output=True, text=True, timeout=5)
+                    else:
+                        candidate.symlink_to(sibling, target_is_directory=True)
+                    replaced = True
+
+                def paused_lstat(path, *args, **kwargs):
+                    observed = original_lstat(path, *args, **kwargs)
+                    if path == candidate and not replaced and replace_at == "lstat":
+                        replace_root()  # Resume cleanup with the pre-replacement stat.
+                    return observed
+
+                def refused_rmtree(path, *args, **kwargs):
+                    if replace_at == "rmtree":
+                        if not replaced:
+                            replace_root()
+                        raise OSError("Cannot call rmtree on a link root")
+                    return original_rmtree(path, *args, **kwargs)
+
+                try:
+                    with patch.object(Path, "lstat", paused_lstat), \
+                            patch.object(shutil, "rmtree", refused_rmtree), \
+                            patch.object(subprocess, "run", wraps=subprocess.run) as fallback:
+                        try:
+                            _cleanup_fixture(candidate, Path(raw), "powershell.exe")
+                        except OSError:
+                            pass
+                    self.assertTrue(replaced)
+                    self.assertTrue(sentinel.is_file(), "Cleanup deleted an unrelated sibling sentinel")
+                    self.assertEqual("must survive", sentinel.read_text(encoding="utf-8"))
+                    self.assertFalse(any("-Command" in call.args[0] for call in fallback.call_args_list))
+                finally:
+                    if os.path.lexists(candidate):
+                        candidate.rmdir() if os.name == "nt" else candidate.unlink()
+
     def test_replaced_fixture_root_preserves_sibling_and_reports_cleanup_failure(self):
         for primary_failure in (False, True):
             with self.subTest(primary_failure=primary_failure), tempfile.TemporaryDirectory() as raw:
