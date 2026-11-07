@@ -406,7 +406,18 @@ def catalog(*, include_ticket_plan=True):
                 label: {"required": ["reviewer"]},
             }}}},
         })
+    calendar_clock = text(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+    calendar_days = arr(integer(1, maximum=7), minimum=1, maxItems=7, uniqueItems=True)
+    operating_calendar = obj({
+        "timezone": text(), "work_mode": const("continuous"),
+        "review_batching": obj({
+            "enabled": BOOL, "weekdays": calendar_days,
+            "presentation_time": calendar_clock, "cutoff_time": calendar_clock,
+        }, required=[]),
+        "eod": obj({"time": calendar_clock, "weekdays": calendar_days}, required=[]),
+    }, required=[])
     schemas["operating-config"] = obj({
+        "operating_calendar": operating_calendar,
         "budgeting": obj({"accounting_enabled": BOOL, "enforcement_enabled": BOOL,
                           "max_tokens_per_ticket": integer(1),
                           "max_tokens_per_project": integer(1)},
@@ -456,6 +467,19 @@ def catalog(*, include_ticket_plan=True):
         'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
         'changes': {'type': 'object', 'minProperties': 1, 'additionalProperties': False,
                     'properties': schemas['operating-config']['properties']['budgeting']['properties']},
+    })
+    calendar_changes = {
+        key: schema
+        for key, schema in operating_calendar['properties'].items()
+        if key not in ('review_batching', 'eod')
+    }
+    for section in ('review_batching', 'eod'):
+        calendar_changes.update({section + '.' + key: schema for key, schema in
+                                 operating_calendar['properties'][section]['properties'].items()})
+    schemas['operating-change']['properties']['calendar_owner_observation'] = obj({
+        'observation_id': text(maxLength=256), 'actor_id': text(maxLength=256),
+        'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
+        'changes': obj(calendar_changes, required=[], minProperties=1),
     })
     schemas['operating-change']['properties']['owner_admission'] = obj({
         'actor_id': integer(1), 'login': text(maxLength=39), 'type': const('User'),
@@ -651,8 +675,22 @@ def catalog(*, include_ticket_plan=True):
         "updated_at": TIME})
     unresolved_dispatch = obj({"dispatch_id": text(), "stream": text(), "ticket": text(),
         "exact_tuple": text(), "status": const("UNKNOWN"), "detached": BOOL, "updated_at": TIME})
+    review_candidate = obj({"repository_id": integer(1), "pull_request": integer(1),
+        "head_sha": SHA, "base_sha": SHA, "head_tree_sha": SHA, "final_gate_sha256": DIGEST})
+    review_intent = obj({"intent_id": DIGEST, "candidate": review_candidate,
+        "state": enum("PENDING", "CLAIMED", "DELIVERED", "WITHDRAWN", "EXHAUSTED"),
+        "ready_at": TIME, "attempts": integer(), "held": BOOL, "scheduled_at": nullable(TIME),
+        "reason": text(), "changed_at": TIME, "retry_at": nullable(TIME)})
+    unresolved_review_batch = obj({"batch_id": DIGEST, "prepared_at": TIME,
+        "state": const("UNKNOWN"), "reason": text(), "intent_ids": arr(DIGEST, 1)})
+    exhausted_review_alert = obj({"intent_id": DIGEST, "state": const("EXHAUSTED"),
+        "reason": text(), "retry_at": nullable(TIME)})
+    review_status = obj({"intents": arr(review_intent),
+        "unresolved_batches": arr(unresolved_review_batch),
+        "owner_alerts": arr({"oneOf": [exhausted_review_alert, unresolved_review_batch]})})
     controller_status_digest = obj({"schema_version": const(3), "delivery_id": DIGEST, "observed_at": TIME,
         "kind": enum("REGULAR", "CHANGE"), "cadence_seconds": integer(1), "all_complete": BOOL,
+        "review_batching": review_status,
         "unresolved_dispatches": {"type": "array", "items": unresolved_dispatch},
         "streams": arr(stream_status, 1, uniqueItems=True)}, allOf=[
             {"if": {"properties": {"all_complete": const(True)}},
@@ -660,6 +698,7 @@ def catalog(*, include_ticket_plan=True):
             {"if": {"properties": {"all_complete": const(False)}},
              "then": {"properties": {"streams": {"contains": {"properties": {"state": {"not": const("COMPLETE")}}}}}}}])
     controller_status_digest["required"].remove("unresolved_dispatches")
+    controller_status_digest["required"].remove("review_batching")
     schemas["controller-status-digest"] = controller_status_digest
     count_or_unobserved = {"oneOf": [integer(), const("UNOBSERVED")]}
     schemas["jira-progress"] = obj({"schema_version": const(3), "merged_ticket": text(), "scope": text(),

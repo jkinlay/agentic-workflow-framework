@@ -24,7 +24,7 @@ disabling accounting disables enforcement. Preserve upgraded behavior until
 owner adoption; installed 1.9.5 stays unchanged/enabled. Recommend versioned
 preservation, never in-place edits to integrity-managed bytes or receipts.
 
-Echo the requested budget change and run `workflow.py operating set` with the
+For budgeting/calendar settings, echo the requested change; run `workflow.py operating set` with the
 exact instruction and assignments. `PENDING_OWNER_CONFIRMATION` (exit 3) means
 settings have not changed. Give the owner the exact returned
 `workflow.py operating confirm --digest D` command, using the verified installed

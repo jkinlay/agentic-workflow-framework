@@ -267,7 +267,7 @@ def main(argv=None, default_root=ROOT):
 		if args.replan_request is not None:
 			names.add('observe_replan_trigger')
 		calls = _require_adapters(adapters, names)
-		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence'):
+		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence', 'observe_owner_ready', 'observe_review_candidate', 'deliver_review_batch', 'observe_review_delivery'):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
 		from agentic.operating import read_operating

@@ -18,15 +18,17 @@ import sys
 import uuid
 
 from . import ValidationError
-from .budget_enrollment import EnrollmentRegistry, ProtectedDatabase, require
-from .budgeting import fresh_settings, project_ledger_path
+from .budget_enrollment import ProtectedDatabase, require
+from .budgeting import fresh_settings
+from .operating_calendar import effective_calendar
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .child_process import child_env, isolated_git_env
 
 TOKEN_VARIABLES = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN')
 TTL_SECONDS = 15 * 60
 # Extend this inventory when another operating domain requires owner admission.
-PROTECTED_DOMAINS = (('budgeting', fresh_settings),)
+PROTECTED_DOMAINS = (('budgeting', fresh_settings),
+                     ('operating_calendar', lambda: effective_calendar({})))
 DDL = '''
 CREATE TABLE IF NOT EXISTS owner_proposals(digest TEXT PRIMARY KEY, record TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS owner_confirmations(digest TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -202,10 +204,11 @@ def validate_protected_settings(root, governance, value):
     This is a host isolation boundary, not protection from the full-rights owner.
     """
     needed = {name: digest for name, digest in protected_settings(value).items()
-              if canonical(value[name]) != canonical(dict(PROTECTED_DOMAINS)[name]())}
+              if canonical(effective_calendar(value) if name == 'operating_calendar' else value[name])
+              != canonical(dict(PROTECTED_DOMAINS)[name]())}
     message = ('OWNER_SETTINGS_REFUSED: settings differ from the latest confirmation for this clone '
                'on this machine account. Restore the last audited operating bytes if externally edited, then use '
-               'operating set with explicit budgeting choices and obtain fresh owner confirmation; preserve audit history.')
+               'operating set with explicit protected choices and obtain fresh owner confirmation; preserve audit history.')
     try:
         store = ProposalStore.for_project(root, governance['project']['id'])
     except (ValidationError, OSError, KeyError) as exc:
@@ -341,7 +344,7 @@ class ProposalStore(ProtectedDatabase):
         return record
 
     def consume(self, digest, audit, db):
-        # Same transaction as the registry observation: no partial consumption.
+        # One confirmation per complete operating transaction, across domains.
         require(db.execute('SELECT 1 FROM owner_confirmations WHERE digest=?', (digest,)).fetchone() is None,
                 'PROPOSAL_ALREADY_CONSUMED: create a new request')
         row = db.execute('SELECT record FROM owner_proposals WHERE digest=?', (digest,)).fetchone()
@@ -642,15 +645,16 @@ def observe_github_owner(governance, root):
 
 
 class _ConfirmedOwner:
-    """Trusted-process host implementing EnrollmentRegistry's unchanged protocol."""
+    """Trusted-process admission, constructed only by interactive confirm."""
     def __init__(self, root, store, digest, record, identity):
         self.root, self.store, self.digest = root, store, digest
         self.record, self.identity = deepcopy(record), deepcopy(identity)
-        self.audit = None
-        self._validated = None
 
-    def validate_operating_change(self, governance, snapshot, instruction, intent, changes,
-                                 prior_settings_hash, requested_changes):
+    def admit_operating_change(self, root, governance, snapshot, instruction, intent, changes,
+                               *, validate_admission):
+        """Rebind under operating's lock; validate full bytes before consumption."""
+        require(Path(root).resolve() == Path(self.root).resolve(),
+                'PROPOSAL_BINDING_MISMATCH: project location differs')
         record = self.store.load(self.digest)
         require(record == self.record, 'PROPOSAL_BINDING_MISMATCH: protected proposal differs')
         _check_time(record)
@@ -667,28 +671,14 @@ class _ConfirmedOwner:
                 'PROPOSAL_BINDING_MISMATCH: latest confirmation or displayed protected changes differ')
         require(self.identity['type'] == 'User' and self.identity['id'] in governance['merge_gate']['trusted_owner_ids'],
                 'OWNER_IDENTITY_REFUSED: owner is no longer trusted')
-        self._validated = (governance['project']['id'], prior_settings_hash, deepcopy(requested_changes))
-
-    def observe_owner_direction(self, project_id, prior_settings_hash, changes):
-        require(self._validated is not None and self._validated[:2] == (project_id, prior_settings_hash)
-                and canonical(self._validated[2]) == canonical(changes),
-                'PROPOSAL_BINDING_MISMATCH: owner observation requires the exact validated change')
-        _check_time(self.record)
         audit = dict(actor_id=self.identity['id'], login=self.identity['login'], type=self.identity['type'],
                      digest=self.digest, request_id=self.record['request_id'], confirmed_at=now_text(),
                      executable_path=self.identity['executable_path'],
                      executable_sha256=self.identity['executable_sha256'])
-        self.audit = audit
-        self._observation = dict(observation_id='github-terminal:' + self.record['request_id'] + ':' + self.digest,
-                    actor_id=str(self.identity['id']), project_id=project_id,
-                    prior_settings_hash=prior_settings_hash, changes=deepcopy(changes))
-        return deepcopy(self._observation)
-
-    def consume_owner_direction(self, observed, db):
-        require(self._validated is not None and observed == self._observation,
-                'PROPOSAL_BINDING_MISMATCH: consumption differs from owner observation')
-        self.store.consume(self.digest, self.audit, db)
-        self._validated = None
+        validate_admission(deepcopy(audit))
+        with self.store.transaction() as db:
+            self.store.consume(self.digest, audit, db)
+        return audit
 
 
 def confirm(root, governance, digest, *, stdin=None, stdout=None):
@@ -717,8 +707,7 @@ def confirm(root, governance, digest, *, stdin=None, stdout=None):
     require(stdin.readline(128).rstrip('\r\n') == digest[:8],
             'DIGEST_CONFIRMATION_REFUSED: settings unchanged; type the exact first 8 digest characters')
     host = _ConfirmedOwner(root, store, digest, record, identity)
-    registry = EnrollmentRegistry(store.path, host, (root,))
-    return set_operating(root, governance, record['instruction'], budget_registry=registry, **record['intent'])
+    return set_operating(root, governance, record['instruction'], owner_admission=host, **record['intent'])
 
 
 def validate_recovery(root, governance, before, after, event, journal_sha256):
@@ -728,7 +717,6 @@ def validate_recovery(root, governance, before, after, event, journal_sha256):
     lifetime. Confirmation must have occurred within its original validity window.
     """
     from .operating import _get, _put, validate_operating
-    from .budgeting import settings_hash
     message = 'OWNER_RECOVERY_REFUSED: journal requires the exact consumed owner confirmation'
     audit = event.get('owner_admission')
     require(before is not None and isinstance(audit, dict), message)
@@ -752,11 +740,6 @@ def validate_recovery(root, governance, before, after, event, journal_sha256):
                                      (audit['digest'],)).fetchone()
             require(transaction is not None and tuple(transaction) == (event['id'], journal_sha256), message)
             applied = db.execute('SELECT 1 FROM owner_applied WHERE digest=?', (audit['digest'],)).fetchone()
-            observation = event.get('budget_owner_observation')
-            require(isinstance(observation, dict), message)
-            observed = db.execute('SELECT record FROM budget_owner_observations WHERE observation_id=?',
-                                 (observation['observation_id'],)).fetchone()
-            require(observed is not None and loads(observed[0]) == observation, message)
         if applied is not None:
             # Completed admissions permit cleanup only, even if a worker rewinds
             # every project-owned file to the old before state and audit prefix.
@@ -776,10 +759,25 @@ def validate_recovery(root, governance, before, after, event, journal_sha256):
                 and audit['type'] == 'User' and audit['actor_id'] in governance['merge_gate']['trusted_owner_ids']
                 and timestamp(record['created_at']) <= timestamp(audit['confirmed_at']) < timestamp(record['expires_at'])
                 and timestamp(record['expires_at']) - timestamp(record['created_at']) == timedelta(seconds=TTL_SECONDS), message)
-        require(observation['project_id'] == governance['project']['id']
-                and observation['actor_id'] == str(audit['actor_id'])
-                and observation['observation_id'] == 'github-terminal:' + record['request_id'] + ':' + audit['digest']
-                and observation['prior_settings_hash'] == settings_hash(before['budgeting']), message)
+        # The compatibility observation is derived from the consumed proposal,
+        # never another admission or a budget/enrollment database.
+        from .operating import _selection
+        from .budgeting import settings_hash, transition_settings
+        budget_changes = {}
+        for assignment in record['intent']['assignments']:
+            path, text = assignment.split('=', 1)
+            if path.startswith('budgeting.'):
+                budget_changes[path[10:]] = _selection(path, text)
+        observation = event.get('budget_owner_observation')
+        if budget_changes:
+            # Authenticate the exact requested observation. Derived enforcement
+            # changes are checked against the resulting settings below.
+            require(observation == dict(
+                observation_id='github-terminal:' + record['request_id'] + ':' + audit['digest'],
+                actor_id=str(audit['actor_id']), project_id=governance['project']['id'],
+                prior_settings_hash=settings_hash(before['budgeting']), changes=budget_changes), message)
+        else:
+            require(observation is None, message)
         expected = deepcopy(before)
         for change in record['changes']:
             require(_get(before, change['path']) == change['before'], message)
@@ -787,7 +785,24 @@ def validate_recovery(root, governance, before, after, event, journal_sha256):
         # accounting=false derives enforcement=false even when that second
         # field was not explicitly requested in the authenticated observation.
         from .budgeting import transition_settings
-        require(transition_settings(before['budgeting'], observation['changes']) == after['budgeting'], message)
+        if budget_changes:
+            require(transition_settings(before['budgeting'], observation['changes']) == after['budgeting'], message)
+        else:
+            require(before.get('budgeting') == after.get('budgeting'), message)
+        from .operating_calendar import transition_calendar
+        calendar_changes = {path[19:]: _selection(path, text)
+                            for assignment in record['intent']['assignments']
+                            for path, text in (assignment.split('=', 1),)
+                            if path.startswith('operating_calendar.')}
+        if calendar_changes:
+            require(transition_calendar(effective_calendar(before), calendar_changes) == effective_calendar(after), message)
+        else:
+            require(before.get("operating_calendar") == after.get("operating_calendar"), message)
+        require(event.get('calendar_owner_observation') is None, message)
         require(canonical(expected) == canonical(after), message)
+    except ValidationError as exc:
+        if str(exc).startswith(message):
+            raise
+        raise ValidationError(message) from exc
     except (sqlite3.Error, OSError, KeyError, TypeError, ValueError) as exc:
         raise ValidationError(message) from exc

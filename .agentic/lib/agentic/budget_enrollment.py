@@ -152,6 +152,15 @@ class EnrollmentRegistry(ProtectedDatabase):
         The caller must hold the operating lock and commit the returned settings
         through operating's journal. This method does not persist operating state.
         """
+        admitted = self.prepare_owner_direction(project_id, current, changes)
+        if validate_observation is not None:
+            validate_observation(deepcopy(admitted['observation']))
+        with self.transaction(DDL) as db:
+            self.consume_owner_direction(admitted['observation'], db)
+        return admitted
+
+    def prepare_owner_direction(self, project_id, current, changes):
+        """Authenticate and bind an observation without consuming replay state."""
         from .budgeting import settings_hash, transition_settings
         require(text_id(project_id), 'project_id must be a bounded identity')
         result = transition_settings(current, changes)
@@ -167,18 +176,18 @@ class EnrollmentRegistry(ProtectedDatabase):
         require(observed['project_id'] == project_id and observed['prior_settings_hash'] == prior
                 and encoded(observed['changes']) == encoded(changes),
                 'Owner observation must bind project, exact changes and prior settings hash')
-        if validate_observation is not None:
-            validate_observation(deepcopy(observed))
-        with self.transaction(DDL) as db:
-            require(db.execute('SELECT 1 FROM budget_owner_observations WHERE observation_id=?',
-                               (observed['observation_id'],)).fetchone() is None,
-                    'Owner observation already consumed')
-            db.execute('INSERT INTO budget_owner_observations VALUES (?,?)',
-                       (observed['observation_id'], encoded(observed)))
-            consume = getattr(self.host, 'consume_owner_direction', None)
-            if consume is not None:
-                consume(deepcopy(observed), db)
         return {'settings': result, 'observation': deepcopy(observed)}
+
+    def consume_owner_direction(self, observed, db):
+        """Consume a prepared observation in the caller's protected transaction."""
+        require(db.execute('SELECT 1 FROM budget_owner_observations WHERE observation_id=?',
+                           (observed['observation_id'],)).fetchone() is None,
+                'Owner observation already consumed')
+        db.execute('INSERT INTO budget_owner_observations VALUES (?,?)',
+                   (observed['observation_id'], encoded(observed)))
+        consume = getattr(self.host, 'consume_owner_direction', None)
+        if consume is not None:
+            consume(deepcopy(observed), db)
 
 
 OPERATIONAL_DDL = '''

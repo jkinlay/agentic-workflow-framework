@@ -57,6 +57,7 @@ _RUNTIME_IMPORTS = {
     "referencing": "referencing",
     "rpds-py": "rpds",
     "typing-extensions": "typing_extensions",
+    "tzdata": "tzdata",
 }
 _STARTUP_HOOKS = {"sitecustomize.py", "usercustomize.py"}
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *{"COM" + str(value) for value in range(1, 10)},
@@ -473,7 +474,7 @@ def _validate_runtime(interpreter, root, runtime_root, expected_versions, expect
     script = (
         "import importlib,importlib.metadata as m,json,sys,sysconfig;"
         "mods={'attrs':'attrs','jsonschema':'jsonschema','jsonschema-specifications':'jsonschema_specifications',"
-        "'pyyaml':'yaml','referencing':'referencing','rpds-py':'rpds','typing-extensions':'typing_extensions'};"
+        "'pyyaml':'yaml','referencing':'referencing','rpds-py':'rpds','typing-extensions':'typing_extensions','tzdata':'tzdata'};"
         "[importlib.import_module(v) for v in mods.values()];"
         "print(json.dumps({'versions':{k:m.version(k) for k in mods},'prefix':sys.prefix,"
         "'purelib':sysconfig.get_path('purelib'),'platlib':sysconfig.get_path('platlib')},sort_keys=True))"
