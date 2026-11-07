@@ -170,7 +170,8 @@ class OperatingNoEchoSubprocessTests(unittest.TestCase):
         self.root, self.gov, self.value = self.fixture.root, self.fixture.gov, self.fixture.value
         self.marker = 'AWF244_REJECTED_SENTINEL_7F39'
 
-    def run_cli(self, *args, controller=False, route=False, preflight=False, status=False, expected=2):
+    def run_cli(self, *args, controller=False, route=False, preflight=False, status=False, expected=2,
+                diagnostic='OPERATING_CONFIG.yaml'):
         import os
         from pathlib import Path
         import subprocess
@@ -215,7 +216,7 @@ class OperatingNoEchoSubprocessTests(unittest.TestCase):
         self.assertNotIn(self.marker, result.stdout + result.stderr)
         self.assertNotIn('Traceback', result.stdout + result.stderr)
         self.assertEqual(expected, result.returncode, result.stdout + result.stderr)
-        self.assertIn('OPERATING_CONFIG.yaml', result.stdout + result.stderr)
+        self.assertIn(diagnostic, result.stdout + result.stderr)
         for path in self.root.parent.rglob('*'):
             if path.is_file() and '.git' not in path.parts and 'remote.git' not in path.parts:
                 raw = path.read_bytes()
@@ -294,6 +295,94 @@ class OperatingNoEchoSubprocessTests(unittest.TestCase):
                     op.validate_operating(self.mutate(path, self.marker), self.gov)
                 self.assertNotIn(self.marker, str(caught.exception))
                 self.assertNotIn(self.marker, json.dumps(caught.exception.refusals))
+
+    def test_semantic_epic_keys_through_validate_and_accepted_show(self):
+        self.marker = 'ECHO_SENTINEL-244'
+        proposed = self.root.parent / 'OPERATING_CONFIG.yaml'
+        cases = []
+        for role in ('controller', 'critic', 'specialist'):
+            cases.append(('epic_overrides.' + self.marker + '.' + role,
+                          {'model': 'REJECTED_MODEL_SENTINEL', 'reasoning_effort': 'high'}))
+        for role in ('worker', 'reviewer'):
+            cases.append(('epic_overrides.' + self.marker + '.streams.A.' + role,
+                          {'model': 'REJECTED_MODEL_SENTINEL', 'reasoning_effort': 'high'}))
+        for path, pair in cases:
+            with self.subTest(path=path):
+                invalid = self.mutate(path, pair)
+                proposed.write_bytes(op._json(invalid))
+                for flags in ([], ['--json']):
+                    result = self.run_cli('validate', '--file', str(proposed), *flags)
+                    self.assertIn('<epic>', result.stdout)
+                    self.assertNotIn('REJECTED_MODEL_SENTINEL', result.stdout + result.stderr)
+                self.fixture.publish(invalid)
+                from agentic.protected_settings import refresh_default_policy
+                self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+                self.fixture.write(self.value)
+                for flags in ([], ['--json']):
+                    result = self.run_cli('show', *flags)
+                    self.assertIn('<epic>', result.stdout)
+                    self.assertNotIn('REJECTED_MODEL_SENTINEL', result.stdout + result.stderr)
+
+    def test_scoped_assignment_refusals_never_echo_keys(self):
+        self.marker = 'ECHO_SENTINEL-244'
+        route = 'epic_overrides.' + self.marker + '.streams.A.worker'
+        cases = [([route + '=invalid'], 'Route requires'),
+                 ([route + '.pinned=invalid'], 'Expected true or false'),
+                 ([route + '.pinned=true'], 'Choose a complete scoped route'),
+                 ([route + '=gpt-6.1-sol/high', route + '=gpt-6.1-sol/high'], 'Duplicate or overlapping')]
+        for assignments, reason in cases:
+            with self.subTest(reason=reason):
+                args = ['set', '--instruction', 'fixture instruction', '--json']
+                for assignment in assignments:
+                    args.extend(['--set', assignment])
+                result = self.run_cli(*args)
+                self.assertIn('<epic>', result.stdout)
+                self.assertIn('<stream>', result.stdout)
+                self.assertIn(reason, result.stdout)
+
+    def test_recommendation_scope_refusal_never_echoes_epic_or_scope(self):
+        self.marker = 'ECHO_SENTINEL-244'
+        epics = self.root.parent / 'epics.json'
+        epics.write_text(json.dumps({'schema_version': 1, 'epics': [{'id': self.marker, 'title': 'fixture',
+                                              'scope': [self.marker + '/[private]']}]}))
+        result = self.run_cli('recommend', '--epics', str(epics), '--json')
+        self.assertIn('<epic>', result.stdout)
+        self.assertIn('unsupported glob syntax', result.stdout)
+
+    def test_recommendation_json_parser_never_echoes_keys(self):
+        epics = self.root.parent / 'epics.json'
+        epics.write_text(f'{{"{self.marker}":1,"{self.marker}":2}}')
+        result = self.run_cli('recommend', '--epics', str(epics), '--json')
+        self.assertIn('<key>', result.stdout)
+
+    def test_recommendation_inventory_refusals_never_echo_keys(self):
+        epics = self.root.parent / 'epics.json'
+        epics.write_text(json.dumps({'schema_version': 1, 'epics': [
+            {'id': 'FIX-244', 'title': 'fixture', 'scope': ['src/']}]}))
+        inventory = self.root.parent / 'inventory.json'
+        for raw in (json.dumps({self.marker: self.marker}),
+                    f'{{"{self.marker}":1,"{self.marker}":2}}'):
+            with self.subTest(raw=raw[:20]):
+                inventory.write_text(raw)
+                result = self.run_cli('recommend', '--epics', str(epics), '--inventory', str(inventory), '--json')
+                self.assertIn('$.inventory', result.stdout)
+                self.assertIn('<key>', result.stdout)
+
+    def test_report_input_keys_through_status_subprocess(self):
+        import test_adoption_status as status_fixture
+        status_fixture.AdoptionStatusTests.setUpClass()
+        self.addCleanup(status_fixture.AdoptionStatusTests.tearDownClass)
+        self.root = status_fixture.AdoptionStatusTests.root
+        request = self.root.parent / 'report-input.json'
+        for raw in (f'{{"{self.marker}":1,"{self.marker}":2}}',
+                    json.dumps({self.marker: self.marker})):
+            with self.subTest(raw=raw[:20]):
+                request.write_text(raw)
+                result = self.run_cli('--json', '--report', '--report-input', str(request),
+                    '--report-store', str(self.root.parent / 'unused.db'), status=True, expected=0,
+                    diagnostic='Status report input')
+                self.assertEqual('FAILED', json.loads(result.stdout)['status_report']['status'])
+                self.assertIn('<key>', result.stdout + result.stderr)
 
     def test_programming_errors_are_not_disguised_as_yaml_refusals(self):
         from agentic.protected_settings import load_operating_yaml

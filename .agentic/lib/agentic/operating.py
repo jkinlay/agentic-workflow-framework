@@ -23,7 +23,7 @@ from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
 from .lane_labels import MAX_LANES, STREAM_LABELS
-from .canonical import canonical, fingerprint, loads, now_text, sha256, timestamp
+from .canonical import canonical, fingerprint, loads as _canonical_loads, now_text, sha256, timestamp
 from .canonical import load_yaml as load_governance_yaml
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
@@ -44,6 +44,14 @@ MAX_BYTES = 1024 * 1024
 SCHEMAS = Path(__file__).resolve().parents[2] / "schemas"
 SOURCE_MANIFEST = "MANIFEST.json"
 SOURCE_MARKER = "scripts/build_release.py"
+
+
+def loads(text):
+    """Operating JSON diagnostics must not carry parser-selected input keys."""
+    try:
+        return _canonical_loads(text)
+    except (ValidationError, ValueError, UnicodeError):
+        raise ValidationError('Invalid operating JSON: <key>; malformed or unsupported values') from None
 
 
 def stream_labels(count):
@@ -116,7 +124,14 @@ def refusal(path, reason, governance_path=None, governance_value=None):
 
 
 def fail(path, reason, governance_path=None, governance_value=None):
-    raise OperatingError([refusal(path, reason, governance_path, governance_value)])
+    raise OperatingError([refusal(_input_path(path), reason, governance_path, governance_value)])
+
+
+def _input_path(path):
+    """Display field names, never identities selected by input mapping keys."""
+    path = re.sub(r'(\.epic_overrides\.)[^.]+', r'\1<epic>', path)
+    path = re.sub(r'(\.epics\.)[^.]+', r'\1<epic>', path)
+    return re.sub(r'(\.streams\.)(?!count(?:\.|$))[^.]+', r'\1<stream>', path)
 
 
 def _pair(model, effort):
@@ -381,9 +396,9 @@ def validate_operating(value, governance):
     if isinstance(value, dict):
         pairs.append(("$.simple_worker", "worker", value.get("simple_worker")))
     if isinstance(streams, dict):
-        for label, entry in streams.items():
-            if label not in stream_labels(structural_ceiling):
-                continue
+        # These labels are literal schema fields, not input-selected identities.
+        for label in stream_labels(structural_ceiling):
+            entry = streams.get(label)
             if isinstance(entry, dict):
                 pairs.extend(("$.streams." + label + "." + key, role, entry.get(key))
                              for key, role in (("worker", "worker"), ("reviewer", "critic")))
@@ -392,13 +407,13 @@ def validate_operating(value, governance):
         for epic_id, scoped in overrides.items():
             if not re.fullmatch(EPIC_ID, epic_id) or len(epic_id) > 80 or not isinstance(scoped, dict):
                 continue
-            prefix = "$.epic_overrides." + epic_id
+            prefix = "$.epic_overrides.<epic>"
             pairs.extend((prefix + "." + role, role, scoped[role]) for role in ("controller", "critic", "specialist") if role in scoped)
             scoped_streams = scoped.get("streams", {})
             if isinstance(scoped_streams, dict):
                 for label, entry in scoped_streams.items():
                     if label in stream_labels(structural_ceiling) and isinstance(entry, dict):
-                        pairs.extend((prefix + ".streams." + label + "." + key, role, entry[key])
+                        pairs.extend((prefix + ".streams.<stream>." + key, role, entry[key])
                                      for key, role in (("worker", "worker"), ("reviewer", "critic")) if key in entry)
     order = policy["model_order"]
     for path, role, pair in pairs:
@@ -1068,8 +1083,7 @@ def _scope(paths, epic_id):
     for path in paths:
         cleaned = path[:-3] if path.endswith("/**") else path[:-2] if path.endswith("/*") else path.removesuffix("/")
         if any(mark in cleaned for mark in "*?[]{}"):
-            fail("$.epics." + epic_id + ".scope", "Epic " + epic_id + " scope value " + repr(path)
-                 + " has unsupported glob syntax; use a bounded path prefix or a trailing /* or /**")
+            fail("$.epics.<epic>.scope", "Epic scope has unsupported glob syntax; use a bounded path prefix or a trailing /* or /**")
         try:
             relative_parts(cleaned)
             result.append(cleaned)
@@ -1175,8 +1189,11 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
         inventory_epics = {}
         if inventory_raw is not None:
             from .streams import recommendation_groups
-            planned = recommendation_groups(inventory_raw, sha256(inventory_raw), created,
-                                            execution=governance["execution"], allow_synthetic=True)
+            try:
+                planned = recommendation_groups(inventory_raw, sha256(inventory_raw), created,
+                                                execution=governance["execution"], allow_synthetic=True)
+            except ValidationError:
+                fail('$.inventory', 'not allowed: Invalid recommendation inventory <key>')
             inventory_value = loads(inventory_raw.decode("utf-8"))
             if inventory_value["project"]["repository"] != governance.get("github", {}).get("repository"):
                 fail("$.inventory.project.repository", "Inventory repository differs from the governing project")
@@ -1300,7 +1317,8 @@ def _load_recommendation(tree, identifier, snapshot, governance):
         raise OperatingError(errors)
     if record["operating_hash"] != snapshot.operating_hash or record["governance_hash"] != snapshot.governance_hash:
         fail("$.recommendation", "Recommendation is stale: operating/governance changed; request a new recommendation")
-    for key, path in record["input_files"].items():
+    for key in ("epics", "inventory"):
+        path = record["input_files"][key]
         if path:
             with Tree(Path(path).parent) as input_tree:
                 raw = input_tree.read(Path(path).name, maximum=MAX_BYTES)

@@ -266,6 +266,72 @@ class WindowRegressions(unittest.TestCase):
         self.assertEqual(['EXHAUSTED'], self.intent_states())
         self.assert_attempts(3, 2)
 
+    def test_midnight_crossed_after_fence_cannot_charge_the_previous_day(self):
+        self.merged_change('operating_calendar.review_batching.enabled=false')
+        self.negative_delivery = True
+        original = ReviewBatchStore.begin_delivery
+        def fence(batch_store, *args):
+            cancel = original(batch_store, *args)
+            self.now = '2026-11-07T00:00:00Z'
+            return cancel
+        with patch.object(ReviewBatchStore, 'begin_delivery', fence):
+            result = self.cycle('2026-11-06T23:59:59Z')
+        crossed = list(self.delivered)
+        self.assert_attempts(0, 0)
+        self.assertTrue(result['errors'])
+        for now in ('2026-11-07T00:00:01Z', '2026-11-07T00:00:02Z'):
+            self.restart()
+            self.cycle(now)
+        self.assertEqual(2, len(self.delivered))
+        self.assertEqual([], crossed)
+        self.assertEqual(['EXHAUSTED'], self.intent_states())
+        self.assert_attempts(2, 2)
+        self.assertTrue(all(batch['presentation_window']['opening'] == '2026-11-07T00:00:00Z'
+                            for batch in self.delivered))
+
+    def test_reverting_opening_after_fence_cannot_reuse_exhausted_allowance(self):
+        self.exhaust_friday()
+        self.negative_delivery = True
+        self.merged_change('operating_calendar.review_batching.presentation_time=08:00')
+        original = ReviewBatchStore.begin_delivery
+        def fence(batch_store, *args):
+            cancel = original(batch_store, *args)
+            self.merged_change('operating_calendar.review_batching.presentation_time=07:00')
+            return cancel
+        with patch.object(ReviewBatchStore, 'begin_delivery', fence):
+            result = self.cycle('2026-11-06T16:02:00Z')
+        self.assertEqual(2, len(self.delivered))
+        self.assertTrue(result['errors'])
+        self.restart()
+        self.cycle('2026-11-06T16:03:00Z')
+        self.assertEqual(2, len(self.delivered))
+        self.assertEqual(['EXHAUSTED'], self.intent_states())
+        self.assert_attempts(2, 2)
+
+    def test_both_dst_transitions_cross_fence_without_resetting_daily_allowance(self):
+        self.merged_change('operating_calendar.review_batching.enabled=false')
+        self.negative_delivery = True
+        original = ReviewBatchStore.begin_delivery
+        for day, opening in (('2026-03-29', '2026-03-29T00:00:00Z'),
+                             ('2026-10-25', '2026-10-24T23:00:00Z')):
+            with self.subTest(day=day):
+                before = len(self.delivered)
+                def fence(batch_store, *args):
+                    cancel = original(batch_store, *args)
+                    self.now = day + 'T01:00:00Z'
+                    return cancel
+                with patch.object(ReviewBatchStore, 'begin_delivery', fence):
+                    self.cycle(day + 'T00:59:59Z')
+                self.assertEqual(before + 1, len(self.delivered))
+                self.assertEqual(opening, self.delivered[-1]['presentation_window']['opening'])
+                self.restart()
+                self.cycle(day + 'T01:00:01Z')
+                self.restart()
+                self.cycle(day + 'T01:00:02Z')
+                self.assertEqual(before + 2, len(self.delivered))
+                self.assertEqual(['EXHAUSTED'], self.intent_states())
+                self.assert_attempts(before + 2, 2)
+
     def test_eod_only_change_does_not_grant_more_attempts_in_same_review_window(self):
         self.exhaust_friday()
         self.merged_change('operating_calendar.eod.time=18:00')
