@@ -23,11 +23,12 @@ from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
 from .lane_labels import MAX_LANES, STREAM_LABELS
-from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
+from .canonical import canonical, fingerprint, loads, now_text, sha256, timestamp
+from .canonical import load_yaml as load_governance_yaml
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 from .budgeting import resolve_settings
-from .protected_settings import audit_matches, unprotected_hash
+from .protected_settings import audit_matches, unprotected_hash, load_operating_yaml as load_yaml
 
 CONFIG = "OPERATING_CONFIG.yaml"
 GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
@@ -426,7 +427,7 @@ def _read(tree, name):
 
 
 def _bound_governance(tree, governance):
-    actual = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
+    actual = load_governance_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
     if canonical(actual) != canonical(governance):
         fail("$", "Governance changed during preparation; reload and revalidate", "$.execution", None)
     return actual
@@ -1346,7 +1347,7 @@ def main(argv=None, default_root=None):
     args = parser.parse_args(argv)
     try:
         with Tree(args.root) as tree:
-            governance = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
+            governance = load_governance_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
         Contracts(SCHEMAS).validate("project-config", governance)
         if args.command == 'validate':
             if args.file.stat().st_size > MAX_BYTES:
@@ -1408,5 +1409,6 @@ def main(argv=None, default_root=None):
             output = {"status": "REJECTED", "refusals": getattr(exc, "refusals", [refusal("$", str(exc))]),
                       "execution_authority": False,
                       "next_action": "Correct the named input or reconcile the pinned operating transaction; governance changes require a reviewed PR"}
+        output['file'] = args.file.name if args.command == 'validate' else CONFIG
         print(json_text(output))
         return 2

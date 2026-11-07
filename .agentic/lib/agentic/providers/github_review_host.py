@@ -378,17 +378,23 @@ class HostDriver:
         from ..budgeting import ControllerBudgeting, project_ledger_path, resolve_settings, protected_state_roots
         from ..canonical import load_yaml
         from ..operating import read_operating
+        from ..protected_settings import resolve_protected
         driver = cls(config, runtime_root)
         with Tree(driver.root) as tree:
-            legacy = tree.inspect('OPERATING_CONFIG.yaml') is None
-            if not legacy:
-                governance = load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
-        if legacy:
-            # Absence never initializes fresh OFF settings over an old host.
-            # Existing max_agent_runs/recovery/review controls still apply.
-            driver.budgeting = None
-            driver.budget_ticket_id = None
-            return driver
+            missing = tree.inspect('OPERATING_CONFIG.yaml') is None
+            governance = (load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
+                          if tree.inspect('.agentic/PROJECT_CONFIG.yaml') is not None else {})
+        if missing:
+            # Only accepted absence can retain the legacy host. Local deletion
+            # cannot hide an accepted ON/OFF block or unverified policy refusal.
+            accepted, report = resolve_protected(driver.root, governance, {})
+            require(report['budget_admission'], report['budget_refusal'])
+            if 'budgeting' not in accepted:
+                driver.budgeting = None
+                driver.budget_ticket_id = None
+                return driver
+        # Missing/unreadable/invalid working bytes refuse here, including OFF;
+        # never invent unprotected operating choices merely to permit a launch.
         snapshot = read_operating(driver.root, governance)
         pattern = re.escape(governance['github']['branch_pattern'])
         pattern = pattern.replace(r'\{ticket\}', r'(?P<ticket>[A-Z][A-Z0-9]*-[0-9]+)')
