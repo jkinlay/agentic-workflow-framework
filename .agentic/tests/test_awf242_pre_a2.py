@@ -12,7 +12,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
-from owner_admission_fixtures import confirmed_fixture_snapshot
+from settings_pr_fixtures import accepted_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.budgeting import BudgetLedger, ControllerBudgeting, fresh_settings
 from agentic.providers.github_review_host import HostDriver
@@ -24,7 +24,7 @@ from test_model_routing import outcome
 from test_awf242_budgeting import FixtureHost
 from agentic.budget_enrollment import EnrollmentRegistry
 from test_reference_controller_adapter import _base_config, _dispatch_payload, FakeClock
-from owner_admission_fixtures import record_fixture_owner_confirmation
+from settings_pr_fixtures import publish_fixture_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = runpy.run_path(str(ROOT / '.agentic/adapters/reference_controller_adapter.py'))['_SubprocessRunner']
@@ -67,7 +67,7 @@ class ProductionBoundaryTests(unittest.TestCase):
     def test_off_review_continues_past_legacy_total_run_quota(self):
         driver = FakeDriver()
         driver.budgeting = ControllerBudgeting(self.root / 'unused.sqlite', self.gov,
-            confirmed_fixture_snapshot(self, self.root, self.value, self.gov), None)
+            accepted_fixture_snapshot(self, self.root, self.value, self.gov), None)
         config = dict(key='12:7', repository='fixture/project', config_hash='f'*64,
                       max_amendment_cycles=3, max_ci_wait_ticks=2, max_agent_runs=1)
         store = LoopStore(self.root / 'loop')
@@ -89,7 +89,7 @@ class ProductionBoundaryTests(unittest.TestCase):
                     value.pop('budgeting')
                 driver = FakeDriver()
                 driver.budgeting = ControllerBudgeting(self.root / 'unused.sqlite', self.gov,
-                    confirmed_fixture_snapshot(self, self.root, value, self.gov), None)
+                    accepted_fixture_snapshot(self, self.root, value, self.gov), None)
                 config = dict(key='12:7', repository='fixture/project', config_hash='f'*64,
                     max_amendment_cycles=3, max_ci_wait_ticks=2, max_agent_runs=1)
                 store = LoopStore(self.root / str(legacy))
@@ -123,7 +123,7 @@ class ProductionBoundaryTests(unittest.TestCase):
         (self.root / '.agentic').mkdir()
         (self.root / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(self.gov))
         (self.root / 'OPERATING_CONFIG.yaml').write_text(json.dumps(self.value))
-        record_fixture_owner_confirmation(self, self.root, self.gov, self.value)
+        publish_fixture_settings(self, self.root, self.gov, self.value)
         config = dict(worker_checkout=str(self.root / 'worker'), critic_checkout=str(self.root / 'critic'),
             state_dir=str(self.root / 'state'), repository='fixture/project',
             head_branch='codex/EX-10-fixture')
@@ -180,7 +180,7 @@ class ProductionBoundaryTests(unittest.TestCase):
         (self.root / '.agentic').mkdir()
         (self.root / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(self.gov))
         (self.root / 'OPERATING_CONFIG.yaml').write_text(json.dumps(self.value))
-        record_fixture_owner_confirmation(self, self.root, self.gov, self.value)
+        publish_fixture_settings(self, self.root, self.gov, self.value)
         shutil.copytree(ROOT / '.agentic/review-loop', self.root / '.agentic/review-loop')
         contract = self.root / 'contract.txt'
         contract.write_text('Fixture scope')
@@ -263,7 +263,7 @@ class ProductionBoundaryTests(unittest.TestCase):
         path = self.root / 'canonical.sqlite'
         def configure():
             return adapters['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov,
-                operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
+                operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
         context = configure()
         for name, usage in (('known', True), ('unknown', False)):
             runner.usage = usage

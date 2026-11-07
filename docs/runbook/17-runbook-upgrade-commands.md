@@ -39,6 +39,18 @@ content before repeating the plan. Comparison proves preservation only since BEF
 **Application acceptance:** CONFIGURED requires actual isolated installed subprocess
 checks and matching digests. `UPGRADED` alone is only the transaction result.
 
+**Budgeting:** an upgraded 1.9.5 project keeps the block absent and reports
+LEGACY_RETAINED; original accounting/limits continue. Upgrade enables nothing.
+If requested in chat, prepare the dormant block on the upgrade adoption PR branch
+with accounting/enforcement false and limits 4,000,000/ticket, 1,000,000,000/project
+lifetime, keeping text/comments. The optional agent helper `operating set
+--adopt-budgeting --instruction WORDS` prepares only that file change, without
+--set choices. Owner merge and fetch apply it; later non-OFF values need another
+settings PR and verified legacy history import. Working edits have no effect.
+No owner terminal commands or confirmation step. Supported 1.9.5 audit records
+remain valid; unsupported pre-release confirmation records refuse plainly and
+must be retained while restoring a supported baseline.
+
 **Failure:** retain diagnostics, original state and recovery material. Immutable-file
 mismatches refuse; never rehash modified files into a valid-looking receipt.
 

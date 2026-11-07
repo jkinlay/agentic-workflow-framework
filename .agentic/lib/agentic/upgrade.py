@@ -36,7 +36,7 @@ def budget_upgrade_disposition(config, operating, previous):
             'operating_sha256': sha256(operating) if operating is not None else None,
             'settings': settings,
             'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED',
-            # Retained working-tree settings prove no protected owner confirmation.
+            # Retained working bytes do not establish default-branch PR acceptance.
             'owner_adoption_required': True}
 
 

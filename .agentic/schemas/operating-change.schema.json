@@ -94,115 +94,20 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
-    "budget_owner_observation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "observation_id",
-        "actor_id",
-        "project_id",
-        "prior_settings_hash",
-        "changes"
+    "unprotected_before_hash": {
+      "type": [
+        "string",
+        "null"
       ],
-      "properties": {
-        "observation_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256
-        },
-        "actor_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256
-        },
-        "project_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256
-        },
-        "prior_settings_hash": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "changes": {
-          "type": "object",
-          "minProperties": 1,
-          "additionalProperties": false,
-          "properties": {
-            "accounting_enabled": {
-              "type": "boolean"
-            },
-            "enforcement_enabled": {
-              "type": "boolean"
-            },
-            "max_tokens_per_ticket": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
-            },
-            "max_tokens_per_project": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
-            }
-          }
-        }
-      }
+      "pattern": "^[0-9a-f]{64}$"
     },
-    "owner_admission": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "actor_id",
-        "login",
-        "type",
-        "digest",
-        "request_id",
-        "confirmed_at",
-        "executable_path",
-        "executable_sha256"
-      ],
-      "properties": {
-        "actor_id": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
-        },
-        "login": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 39
-        },
-        "type": {
-          "const": "User"
-        },
-        "digest": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "request_id": {
-          "type": "string",
-          "minLength": 1,
-          "format": "uuid"
-        },
-        "confirmed_at": {
-          "type": "string",
-          "minLength": 1,
-          "format": "date-time"
-        },
-        "executable_path": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 32768
-        },
-        "executable_sha256": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      }
+    "unprotected_after_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "legacy_before_configuration": {
+      "type": "object"
     }
   },
   "allOf": [

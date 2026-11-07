@@ -1,6 +1,6 @@
 ---
 name: awf
-description: Verify and adopt AWF releases; guide bounded project work, independent review and evidence accounting. Includes AWF 1.9.6.
+description: Check and change AWF budgets through owner-merged PRs; Verify and adopt AWF releases; guide bounded project work, independent review and evidence accounting. Includes AWF 1.9.6.
 metadata:
   publisher: Jonathan Kinlay
   license: Apache-2.0
@@ -66,16 +66,24 @@ Limits enable neither switch; enforcement requires accounting; accounting OFF
 disables enforcement. Preserve upgrades; installed 1.9.5 stays unchanged/enabled.
 Recommend versioned preservation, never in-place integrity-managed bytes/receipts.
 
-Echo the budget request; run `operating set` with exact instruction/assignments.
-Exit 3 `PENDING_OWNER_CONFIRMATION` changes nothing. Give the exact returned
-`workflow.py operating confirm --digest D` command with verified interpreter,
-script/root for the owner's terminal. Never run confirm yourself. After the
-owner says they ran it, run `operating show`; report persisted effective settings.
-Never claim application without show. Typed identity/chat authenticates nobody.
-Confirm verifies machine-stored GitHub User login, numeric trusted-owner ID and
-interactive terminal. Empty owners require reviewed configuration, never automatic
-enrollment. This cannot resist a process with the owner's full rights and its
-own terminal.
+For budget questions in AWF Codex chat, run verified `workflow.py operating show`
+read-only, without approval. Present both switches, both limits, source (fresh
+defaults, default branch at the reported commit, or legacy retained), working-file
+differences and offline rules UNOBSERVED warnings; publication readiness/adoption observe live rules. Last PR/merger is optional;
+say when unobserved. No terminal command is required of the owner.
+
+For changes, branch from the fetched configured default branch. Edit only requested
+`OPERATING_CONFIG.yaml` values, preserving text/comments; accounting OFF also
+disables enforcement. Run `operating validate --file PROPOSED`; invalid combinations refuse. Present exact
+before/after in a draft PR under existing publication authority. Restricted agent
+pushes prepare branch/body for owner publication. The owner reviews and merges
+on GitHub; agents never merge. Fetch after observed merge, then show effective
+settings/commit. Git history and the PR are the audit trail. Working/branch edits
+have no protected effect. Unprotected `operating set` remains; protected set
+explains the PR route. Keep Git metadata outside worker write authority.
+Host rules and owner govern merge; direct pushes to an unprotected default branch
+or the owner's full rights can get around this. Offer the shipped ruleset.
+`merge_gate.trusted_owner_ids` retains its merge-gate use.
 
 Budgets cover explicitly enrolled AWF sub-agents/attributable tools/retries;
 exclude controller/independent/ULTRA agents. Preserve UNKNOWN/history/failures/

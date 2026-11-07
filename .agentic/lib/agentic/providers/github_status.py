@@ -729,7 +729,7 @@ def render_status(report):
     budgeting = (report.get('operating') or {}).get('budgeting') or {}
     if budgeting.get('disposition') == 'LEGACY_RETAINED':
         lines.append('Budgeting: LEGACY_RETAINED; legacy enforcement UNOBSERVED; ' + budgeting['history_import'] +
-                     '; explicit owner adoption required through operating set --adopt-budgeting, then operating confirm.')
+                     '; owner adoption prepares dormant OFF controls in OPERATING_CONFIG.yaml through an owner-merged PR; fetch the default branch to apply.')
     trust = report.get('release_trust') or {}
     if trust.get('basis') == 'trusted_host_installed_awf_skill':
         lines.extend(('Codex home: ' + trust['codex_home'],

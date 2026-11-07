@@ -36,17 +36,33 @@ Interrupted installation: retain marker/journal/recovery objects. Use the verifi
 
 Budgeting stays LEGACY_RETAINED when absent, with original engine/limits; explicit settings remain. The upgrade report/state disposition records the prior hash and EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED, never completeness or adoption.
 
-For owner adoption:
+For owner adoption, ask in AWF Codex chat. The skill prepares an upgrade/settings
+branch from the fetched default branch and adds the budgeting block to
+OPERATING_CONFIG.yaml, preserving its existing text/comments: accounting false,
+enforcement false, 4,000,000 tokens/ticket and 1,000,000,000/project lifetime.
+It can travel in the upgrade adoption PR when requested. The optional agent helper
+`operating set --adopt-budgeting --instruction "Adopt dormant budget controls"`
+only prepares this file change on that branch; it needs no explicit --set choices
+and cannot enable anything. Restricted publication prepares branch/body for the
+owner. The owner reviews and merges the PR on GitHub; fetch makes it effective.
+No terminal command is required of the owner. Working edits and unmerged branches
+change no effective settings. Ask for non-OFF settings in a subsequent settings PR.
+Git/PR history replaces confirmation transactions.
 
-1. Stop every legacy writer. Inventory state-store/routing/per-host databases, checkpoint WALs, retain immutable snapshots and SHA-256 pins. Preserve reservations and UNKNOWN usage.
-2. The trusted host explicitly calls installed `agentic.upgrade.import_budget_history` with one protected canonical ledger outside all worktrees, exact project ID, complete worktree roots and source-label mappings `{path, sha256}`. Both hosts must select that ledger. Retain its JSON result externally as IMPORT_RESULT. This host API grants no adoption authority. Capture `prepare_budget_import` before and `check_budget_import` afterwards using `scripts/qualify_upgrade.py` APIs; retain sources. Exact replay deduplicates; conflicts require reconciliation.
-3. Prepare dormant adoption:
+Before enabling, stop every legacy writer. Inventory state-store/routing/per-host
+databases, checkpoint WALs and retain immutable snapshots/SHA-256 pins. The trusted
+host explicitly calls installed `agentic.upgrade.import_budget_history` with one
+protected canonical ledger outside worktrees, exact project ID, complete worktree
+roots and source-label mappings `{path, sha256}`. Both hosts select that ledger.
+Capture `prepare_budget_import` before and `check_budget_import` afterwards using
+`scripts/qualify_upgrade.py` APIs. Preserve sources/reservations/UNKNOWN usage and
+retain results externally. Exact replay deduplicates; conflicts need reconciliation.
+Enabled admission retains exact legacy import/charge checks. OFF adoption needs
+no import; declining adoption retains legacy behavior.
 
-```text
-RUNTIME -B -I WORKFLOW --root DISPOSABLE operating set --instruction "Adopt dormant budget controls" --adopt-budgeting --set budgeting.accounting_enabled=false --budget-import-result IMPORT_RESULT
-RUNTIME -B -I WORKFLOW --root DISPOSABLE operating confirm --digest DIGEST
-```
-
-The proposal displays complete OFF settings, exact changes, import result/hash and digest; no settings change until the owner confirms in their own terminal through AWF-242. OFF needs no import (omit its result flag). Then inspect `operating show`; propose enabling separately with ordinary `operating set` and confirm again after continuity verification. Enabled admission retains exact legacy import/charge checks. Declining adoption retains legacy behavior. See [budgeting](.agentic/docs/39-BUDGETING.md).
+Supported 1.9.5 operating records continue to read and verify without confirmation.
+Unsupported 1.9.6 pre-release records carrying confirmation fields refuse with a
+plain reason; preserve them and restore a supported 1.9.5 baseline before upgrade.
+See [budgeting](.agentic/docs/39-BUDGETING.md).
 
 Final release qualification/review/acceptance and separately authorized adopter rollout remain outstanding. This guide authorizes neither.

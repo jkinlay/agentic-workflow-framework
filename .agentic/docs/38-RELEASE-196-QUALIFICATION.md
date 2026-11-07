@@ -1,21 +1,17 @@
 # Release 1.9.6 qualification and preservation
 
-AWF-238, Tier 3, FULL; includes AWF-237/AWF-239. No release/rollout/controller/adapter authority. Missing evidence stays outstanding.
+AWF-238: Tier 3, FULL. No release/rollout/adapter authority.
 
 ## Baseline and scope
 
 Published
 `v1.9.5` commit: `8ad399943c8f5e4f17db72f3e321b9365ee27782`; manifest SHA-256:
 `1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7`.
-Git proves no hosted provenance. Published assets/tags/pins/receipts stay immutable;
-fixtures use published-installer receipts.
-
-Owner scope binds; changes invalidate passes.
+Published assets/tags/pins/receipts stay immutable; Git proves no hosted provenance.
 
 ## Disposable preservation
 
- Adopter copies require accepted
-baselines, exclusive ownership, quiescence, approved storage and separate authorization. Record repository/ID/default-branch/releases/permissions,
+ Adopter copies require accepted baselines, exclusive ownership, quiescence and authorization. Record repository/ID/default-branch/releases/permissions,
 owner files/settings/instructions/CODEOWNERS, routes/pins/opt-outs/Jira scope/budgets,
 ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay OFF.
 
@@ -25,12 +21,11 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay
   ownership/access control, named streams and directories/root. Exclude root `.git`/runtime contents and do not walk unrelated product trees.
   Root files remain evidence; managed/state links refuse with path/remedy.
   Nested archive Git/runtime/cache names remain evidence. Refuse incomplete identity
-  and unreadable enumeration. Take BEFORE before apply; comparison proves only
-  preservation since that snapshot.
+  and unreadable enumeration. Take BEFORE before apply; comparison proves preservation since BEFORE.
 - `plan --source RELEASE --project DISPOSABLE --expected-manifest-sha256 PIN
   --github-repo OWNER/REPO --repository-id ID --default-branch BRANCH
   --output PLAN`: require identical inventories and matching identity.
-- Keep an untouched disposable baseline matching BEFORE. After bootstrap, snapshot
+- Keep an untouched baseline matching BEFORE. After bootstrap, snapshot
   again. `compare --project DISPOSABLE --before BEFORE --after AFTER --source RELEASE
   --expected-manifest-sha256 PIN --baseline-project BASELINE --output COMPARISON`
   runs real preservation checks and generates `approved_delta` from verified release
@@ -42,8 +37,7 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay
   commit/tree/pin without regeneration. Bootstrap authentic baseline,
   seed instructions, populated legacy ledger and published-API accounting history;
   snapshot/derive policy/upgrade with `--on-conflict backup`/compare after installed
-  checks. Verify downloads against each lock; require network/complete wheel seeds.
-  Retain external output hashes; deltas cannot widen policy.
+  checks. Verify downloads against each lock; require complete wheels.
   Failures retain inventories/comparison and NOT_QUALIFIED/failed-stage. Success requires
   QUALIFIED_DISPOSABLE_UPGRADE, two CONFIGURED stages, canonical exits zero,
   integrity true, ACCEPTED configuration, bound source/policy/receipt hashes and
@@ -51,10 +45,9 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay
   `historical_state_continuity`, `named_streams`.
   Missing legacy-ledger migration/SQL continuity refuses qualification.
 
-Create external digest reports, never owner contents/SIDs. Missing/unverified permission or stream evidence fails; POSIX
-records explicit stream absence. Comparison has `evidence_scope:
+External reports contain digests, never owner contents/SIDs. Unverified permissions/streams fail; POSIX records stream absence. Comparison has `evidence_scope:
 PRESERVATION_COMPARISON_ONLY`; it proves neither installed integrity nor
-qualification. Plans stay NOT_QUALIFIED; only installed reports qualify.
+qualification. Plans stay NOT_QUALIFIED.
 
 ### Derived migration policy
 
@@ -89,16 +82,18 @@ rules/hashes/`approved_changes`, exact `changes`, baseline/manifest bindings.
   paths match installer modes/inheritance through disposable probes leaving baseline
   inventories identical. Managed removals cannot discard streams.
 
-External deltas cannot bypass policy. Reproduce owner/managed/configuration/history/
-permission/receipt/provenance loss, collisions and stream deletion. Budget disposition
-preserves legacy behavior; retained settings require manual owner adoption and
-AWF-242 load confirmation. Explicit `import_budget_history` merges pinned
+External deltas cannot bypass preservation policy. Reproduce losses/collisions. Budget disposition
+keeps absent controls LEGACY_RETAINED without new gates. Owner-requested adoption
+adds only dormant OFF controls on the upgrade/settings PR branch, preserving
+text/comments; owner merge and fetch apply it. Non-OFF values require a later
+settings PR. No owner terminal step. Supported 1.9.5 audits remain valid;
+unsupported pre-release confirmation records refuse plainly and remain retained. Explicit `import_budget_history` merges pinned
 state-store/per-host history into one shared ledger. Independently capture
 `prepare_budget_import`; `check_budget_import` verifies sources, canonical
 charges/UNKNOWN values and deduplication proofs. Test published API-generated
 history, lost-row injection, interruption/replay and concurrency. Installed
 qualification requires this import/check/replay. Follow
-[owner adoption](../../MIGRATION-v1.9.5-to-v1.9.6.md), including Jira identity.
+[owner adoption](../../MIGRATION-v1.9.5-to-v1.9.6.md), and Jira identity.
 
 ## Recovery and final gates
 
@@ -110,7 +105,7 @@ unresolved restoration. Preserve archives without recursion. Failed/unknown stag
 prove no CONFIGURED/ACTIVE.
 
 Freeze candidate/artifact/review/trust/publication bindings; rebind changes. Retain
-one heavy reservation/host, exactly-once allocation and approved limits. Record
+one reservation/host, exactly-once allocation and approved limits. Record
 focused/source/archive/installed cohorts, Windows Python 3.12, commands/platform/
 interpreter/timings/counts/skips/failures/receipt hashes.
 
@@ -124,5 +119,5 @@ proves consistency; status proves no historical execution. Require independent/
 specialist review, hosted checks/trust/publication scan/review barrier/owner acceptance.
 Rollout requires target authorization/disposable proof. ACTIVE additionally needs
 independent trust and observed receipt-changing adoption merge with accepted raw
-default-branch bytes; enables no adapters. Report lanes/capacity/concurrency separately.
-Close each acceptance criterion: evidence or NOT MET.
+default-branch bytes; enables no adapters.
+Each criterion needs evidence or NOT MET.

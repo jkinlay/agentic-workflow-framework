@@ -357,11 +357,11 @@ class BudgetUpgradeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, 'Unresolved budget overrun'):
                 admit_totals(db, PROJECT, 'EX-195', dict(max_tokens_per_project=10000, max_tokens_per_ticket=10000), 1)
 
-    def test_retained_budget_settings_do_not_confirm_owner_adoption(self):
+    def test_retained_budget_settings_preserve_bytes_without_claiming_pr_acceptance(self):
         from agentic.installer import install
         from agentic.budgeting import fresh_settings
         from agentic.canonical import load_yaml
-        project = self.work / 'unconfirmed-project'
+        project = self.work / 'retained-project'
         install_baseline(self.source, project)
         operating = project / 'OPERATING_CONFIG.yaml'
         value = load_yaml(operating.read_bytes())
@@ -374,8 +374,8 @@ class BudgetUpgradeTests(unittest.TestCase):
         from agentic.upgrade import budget_upgrade_disposition
         disposition = budget_upgrade_disposition(
             (project / '.agentic/PROJECT_CONFIG.yaml').read_bytes(), original, '1.9.5')
-        # Both independently derived records must require manual adoption. No
-        # protected owner confirmation was supplied by this disposable project.
+        # Both independent records retain the settings without claiming that a
+        # default-branch settings PR was observed.
         expected = dict(disposition, owner_adoption_required=True)
         self.assertEqual(expected, disposition)
         self.assertEqual(hashlib.sha256((json.dumps(expected, indent=2,
@@ -383,15 +383,16 @@ class BudgetUpgradeTests(unittest.TestCase):
         self.assertEqual('EXPLICIT_SETTINGS_RETAINED', disposition['disposition'])
         self.assertEqual(value['budgeting'], disposition['settings'])
         self.assertEqual(before, qualify_upgrade.inventory(project))
-        # An unaudited operating edit must still refuse through the real
-        # installer. A compatibility plan cannot confer owner authority.
-        for dry_run in (True, False):
-            with self.subTest(dry_run=dry_run):
-                with self.assertRaisesRegex(ValidationError, 'audited change'):
-                    install(self.candidate, project, self.pin, mode='upgrade',
-                            configure=True, discover=False, dry_run=dry_run)
-                self.assertEqual(before, qualify_upgrade.inventory(project))
-                self.assertEqual(original, operating.read_bytes())
+        # Protected-only edits can travel in the upgrade PR. They do not invalidate
+        # the authentic legacy audit or authorize effective settings by themselves.
+        plan = install(self.candidate, project, self.pin, mode='upgrade',
+                       configure=True, discover=False, dry_run=True)
+        self.assertFalse(plan['installed'])
+        self.assertEqual(before, qualify_upgrade.inventory(project))
+        install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
+        self.assertEqual(original, operating.read_bytes())
+        comparison = qualify_upgrade.compare_upgrade(before, qualify_upgrade.inventory(project), policy, project)
+        self.assertTrue(comparison['preserved'], comparison['violations'])
 
     def test_upgrade_records_legacy_disposition_without_adding_off_settings(self):
         from agentic.installer import install
@@ -399,6 +400,8 @@ class BudgetUpgradeTests(unittest.TestCase):
         project = self.work / 'project'
         install_baseline(self.source, project)
         original = (project / 'OPERATING_CONFIG.yaml').read_bytes()
+        history = {p.name: p.read_bytes() for p in (project / '.agentic-state/operating/changes').glob('*.json')}
+        self.assertTrue(history)
         plan = install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False, dry_run=True)
         self.assertEqual('LEGACY_RETAINED', plan['upgrade']['budgeting']['disposition'])
         result = install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
@@ -410,6 +413,43 @@ class BudgetUpgradeTests(unittest.TestCase):
         self.assertNotIn('budgeting', load_yaml(original))
         record = project / '.agentic-state/upgrade/budgeting-1.9.6.json'
         self.assertEqual('LEGACY_RETAINED', json.loads(record.read_bytes())['disposition'])
+        import subprocess
+        shown = subprocess.run([sys.executable, '-B', '-I', str(project / '.agentic/scripts/workflow.py'),
+            '--root', str(project), 'operating', 'show', '--json'], capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
+        self.assertEqual('LEGACY_RETAINED', json.loads(shown.stdout)['budgeting']['disposition'])
+        self.assertEqual(history, {p.name: p.read_bytes() for p in (project / '.agentic-state/operating/changes').glob('*.json')})
+        # Real 1.9.5 events have neither the new projection hashes nor confirmation
+        # fields. Read and extend their hash chain after a settings PR is merged.
+        self.assertTrue(all('unprotected_after_hash' not in json.loads(raw) for raw in history.values()))
+        from settings_pr_fixtures import publish_fixture_settings
+        from agentic import operating as op
+        gov = load_yaml((project / op.GOVERNANCE).read_bytes())
+        enabled = load_yaml(original)
+        from agentic.budgeting import fresh_settings
+        enabled['budgeting'] = dict(fresh_settings(), accounting_enabled=True, enforcement_enabled=True)
+        def cli(*arguments):
+            result = subprocess.run([sys.executable, '-B', '-I', str(project / '.agentic/scripts/workflow.py'),
+                '--root', str(project), 'operating', *arguments, '--json'],
+                capture_output=True, text=True, timeout=120)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+        from agentic.installer import INSTALLED, PROVENANCE
+        identity = {name: (project / name).read_bytes() for name in (INSTALLED, PROVENANCE)}
+        publish_fixture_settings(self, project, gov, load_yaml(original))
+        (project / op.CONFIG).write_bytes(op._json(enabled))
+        self.assertNotIn('budgeting', cli('show')['configuration'])
+        publish_fixture_settings(self, project, gov, enabled)
+        (project / op.CONFIG).write_bytes(original)
+        self.assertTrue(cli('show')['configuration']['budgeting']['enforcement_enabled'])
+        changed = cli('set', '--instruction', 'Two streams', '--set', 'streams.count=2')
+        self.assertEqual(2, changed['streams'])
+        self.assertTrue(cli('show')['configuration']['budgeting']['enforcement_enabled'])
+        for name, raw in identity.items():
+            self.assertEqual(raw, (project / name).read_bytes())
+        for name, raw in history.items():
+            self.assertEqual(raw, (project / op.STATE / 'changes' / name).read_bytes())
+
 
 
 if __name__ == '__main__':

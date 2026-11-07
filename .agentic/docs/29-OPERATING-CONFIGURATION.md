@@ -1,6 +1,6 @@
 # Operating configuration
 
-Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
+In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command is required. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings/allowlists/floors/routes; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
@@ -42,7 +42,10 @@ Pins `epic_overrides.PROJ-123.streams.B.worker`. Matching `epic_id` selects allo
 
 Changes affect dispatch; running work retains route/hash. Surplus streams finish without packets or cancellation. A–F proves no availability.
 
-Read Jira; save IDs/paths in `operating-epics.schema.json`:
+Read Jira; save IDs/paths in `operating-epics.schema.json`.
+Unknown custom statuses need reviewed adapter mappings before planning.
+Operating and governance policy hashes bind separately; running reservations
+retain their admission-time bindings.
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating recommend --epics EPICS.json --inventory INVENTORY.json
@@ -57,53 +60,39 @@ Await adoption/keep; apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.a
 Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`. Bootstrap preserves outside `.gitignore` bytes; `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries and `added_lines`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
 
 Publish flushed journal/audit without replacement; preserve conflicts. Inspect/pin journal SHA-256.
-Budgets require latest consumed confirmation's registered transaction. Unconfirmed/superseded journals
-refuse without writes. Register before publication: published transactions recover once;
-otherwise `set`/`confirm` afresh. Preserve evidence.
-
+Unprotected recovery retains the inspected journal pin and append-only audit.
+Protected changes use Git history and a PR, never local recovery authority.
 
 Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
 4000000/ticket, 1000000000/project lifetime. Missing fields retain legacy policy;
 budget adoption stays manual. Accounting OFF disables enforcement; limits enable
 neither switch. No Epic budget overrides.
 
-Paths: `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
-`budgeting.max_tokens_per_ticket`, `budgeting.max_tokens_per_project`.
-`set` validates/stores a protected proposal, prints changes/digest, exits 3
-`PENDING_OWNER_CONFIRMATION`; settings stay unchanged. Initialize;
-protected `--initialize` refuses. Owner runs `workflow.py operating confirm
---digest D` within 15 minutes in their terminal; type eight digest characters.
-Skills never confirm; verify with `show`.
+Ask in AWF Codex chat to check switches, limits, source/commit and differences.
+Last PR/merger is optional. For changes, the skill prepares a validated PR
+preserving comments and showing before/after. The owner merges; restricted pushes
+prepare owner publication. Protected `set` refuses without writes. See the
+[chat/PR procedure](39-BUDGETING.md#settings-in-chat-and-prs).
 
-GitHub User ID matches `merge_gate.trusted_owner_ids`;
-empty refuses `OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`.
-Token variables, foreign GH_HOST, noninteractive streams refuse. Windows requires
-console handles; NUL/pipes/files refuse. Resolve `gh` once; scripts and effective
-sandbox-group/capability modification/replacement grants refuse; owner/admin
-rights do not. Without sandbox principals this check passes. Audit retains
-path/SHA-256. Repository/governance/prior-settings/exact-change mismatches
-and replay refuse. Consume/journal/audit/readback under lock.
+Effective protected settings come from `OPERATING_CONFIG.yaml` at the commit
+named by `refs/remotes/origin/HEAD` only. `github.base_branch` cannot select policy;
+`show` reports disagreement. Branch/working edits cannot change enforcement.
+Differences mean update an older checkout, otherwise propose a PR. At cycle start
+the controller discovers the remote default and fetches it, following renames.
+Failure retains the last policy with a step-specific remedy. FETCH_HEAD time is
+a fetch attempt, never proof of successful policy refresh.
+Absent policy there means fresh OFF or legacy retained; malformed bytes refuse.
+Missing origin/HEAD with configured origin is unverified: show, validation and
+installation work; admission first attempts refresh, then refuses if tracking
+refs exist or working protected values are nondefault. The remedy is the next
+controller cycle or `git remote set-head origin --auto`. Fresh OFF without refs
+can continue offline. Non-repositories invoke no Git/gh. OFF needs no ledger.
 
-Confirmations use protected OS-account storage: Windows token SID/HKLM ProfileList
-ProfileImagePath plus AppData/Local; POSIX password-database home.
-AWF_STATE_HOME, LOCALAPPDATA, USERPROFILE and HOME cannot select it.
-Binding hashes the Git common directory read from metadata;
-project ID only cross-checks. Editable IDs cannot hide confirmations.
-Worktrees share confirmations; other clones confirm afresh.
-Ignore Git environment overrides; gitfiles require registered backlinks outside sandbox write authority.
-Deny worker Git-metadata writes/replacement; binding protects clone identity,
-not against processes able to replace that boundary. Without Git, protected changes refuse.
-
-Loads never inspect Git/gh executables. Without a store/confirmation, fresh
-OFF/default dormant limits and absent legacy blocks load; nondefaults refuse budget admission. Protected changes
-report storage/Git refusals. OFF needs no usage ledger.
-Older checkouts/mismatches remain readable: show/validation report settings differing
-from this clone's latest confirmation; unrelated changes work, budget work refuses.
-Proposals report pending. Budgeting choices/confirmation repair admission
-without deleting audit. The screen/digest bind every difference from confirmed values,
-including external edits; display complete settings for no-change reconfirmation.
-Audit/journals prove nothing; transactions bind governance/prior settings.
-
-`trusted_owner_ids` comes from the working tree: a process that can edit it still
-needs a terminal and that login. A process with the owner's full rights can still
-get around this. See [budgeting](39-BUDGETING.md).
+Merge authority rests with the host's repository rules and the owner.
+`show` reports rules UNOBSERVED as a warning. Adoption/publication observations
+report APPLIED, MISSING or UNOBSERVED; warnings never block local adoption.
+Git metadata must be outside worker write authority. A process able to push
+directly to an unprotected default branch, or one with the owner's full rights,
+can get around this: offer the shipped ruleset separately.
+`merge_gate.trusted_owner_ids` remains for merge-gate use.
+See [budgeting](39-BUDGETING.md).

@@ -1,0 +1,107 @@
+"""Upgrade compatibility and dormant adoption use the settings PR boundary."""
+from contextlib import redirect_stdout
+from copy import deepcopy
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+import sys
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+from agentic import ValidationError, operating as op
+from agentic.budgeting import fresh_settings
+from agentic.canonical import load_yaml
+from settings_pr_fixtures import publish_fixture_settings
+from test_operating import governance
+
+
+class UpgradeSettingsPRTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.gov = governance()
+        self.legacy = op.default_operating(self.gov['execution']['model_routing'])
+        self.legacy.pop('budgeting')
+        publish_fixture_settings(self, self.root, self.gov, self.legacy)
+        op.initialize_operating(self.root, self.gov)
+
+    def show(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = op.main(['--root', str(self.root), 'show', '--json'])
+        self.assertEqual(0, code, output.getvalue())
+        return json.loads(output.getvalue())
+
+    def branch(self):
+        from agentic.protected_settings import _git
+        _git(self.root, 'checkout', '-qb', 'codex/upgrade')
+
+    def test_legacy_show_reports_absence_without_claiming_controls_enabled(self):
+        before = (self.root / op.CONFIG).read_bytes()
+        report = self.show()
+        self.assertNotIn('budgeting', report['configuration'])
+        self.assertEqual('LEGACY_RETAINED', report['budgeting']['disposition'])
+        self.assertIsNone(report['budget_admission'])
+        self.assertIn('legacy', report['protected_settings']['source'])
+        self.assertIn('LEGACY_RETAINED', report['table'])
+        self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
+
+    def test_adoption_prepares_off_block_keeps_comments_and_waits_for_default(self):
+        self.branch()
+        import yaml
+        original = ('# owner header\n' + yaml.safe_dump(self.legacy, sort_keys=False)
+                    + '# owner tail\n').encode()
+        (self.root / op.CONFIG).write_bytes(original)
+        result = op.set_operating(self.root, self.gov, 'Adopt dormant controls', adopt_budgeting=True)
+        prepared = (self.root / op.CONFIG).read_bytes()
+        self.assertTrue(prepared.startswith(original))
+        self.assertEqual(fresh_settings(), load_yaml(prepared)['budgeting'])
+        self.assertNotIn('budgeting', result.config)
+        self.assertNotIn('budgeting', self.show()['configuration'])
+        self.assertTrue(self.show()['protected_settings']['differences'])
+        proposed = load_yaml(prepared)
+        publish_fixture_settings(self, self.root, self.gov, proposed)
+        self.assertEqual(fresh_settings(), self.show()['configuration']['budgeting'])
+        self.assertFalse((self.root / op.JOURNAL).exists())
+
+    def test_adoption_refuses_default_branch_and_cannot_enable(self):
+        original = (self.root / op.CONFIG).read_bytes()
+        with self.assertRaisesRegex(ValidationError, 'branch'):
+            op.set_operating(self.root, self.gov, 'Adopt', adopt_budgeting=True)
+        self.branch()
+        with self.assertRaisesRegex(ValidationError, 'OFF|separate'):
+            op.set_operating(self.root, self.gov, 'Enable', ['budgeting.accounting_enabled=true'], adopt_budgeting=True)
+        self.assertEqual(original, (self.root / op.CONFIG).read_bytes())
+
+    def test_merged_enabled_policy_then_unprotected_change_does_not_lock_upgrade(self):
+        enabled = deepcopy(self.legacy)
+        enabled['budgeting'] = dict(fresh_settings(), accounting_enabled=True, enforcement_enabled=True)
+        publish_fixture_settings(self, self.root, self.gov, enabled)
+        self.assertEqual(enabled['budgeting'], self.show()['configuration']['budgeting'])
+        changed = op.set_operating(self.root, self.gov, 'Two streams', ['streams.count=2'])
+        self.assertEqual(2, changed.count)
+        self.assertTrue(changed.config['budgeting']['enforcement_enabled'])
+        self.assertTrue(op.read_operating(self.root, self.gov).config['budgeting']['enforcement_enabled'])
+
+    def test_worker_edit_cannot_enable_or_disable_upgraded_policy(self):
+        enabled = deepcopy(self.legacy)
+        enabled['budgeting'] = dict(fresh_settings(), accounting_enabled=True, enforcement_enabled=True)
+        for accepted, edited in ((self.legacy, enabled), (enabled, self.legacy)):
+            with self.subTest(accepted=accepted.get('budgeting')):
+                publish_fixture_settings(self, self.root, self.gov, accepted)
+                (self.root / op.CONFIG).write_bytes(op._json(edited))
+                effective = op.read_operating(self.root, self.gov)
+                self.assertEqual(accepted.get('budgeting'), effective.config.get('budgeting'))
+
+    def test_prerelease_confirmation_record_is_refused_plainly_and_retained(self):
+        path = next((self.root / op.STATE / 'changes').glob('*.json'))
+        event = json.loads(path.read_bytes())
+        event['owner_admission'] = {'digest': 'a' * 64}
+        raw = op._json(event)
+        path.write_bytes(raw)
+        with self.assertRaisesRegex(ValidationError, 'pre-release.*unsupported'):
+            op.read_operating(self.root, self.gov)
+        self.assertEqual(raw, path.read_bytes())

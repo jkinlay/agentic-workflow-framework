@@ -13,7 +13,7 @@ import uuid
 from unittest.mock import patch
 
 import source_only
-from owner_admission_fixtures import confirmed_fixture_snapshot
+from settings_pr_fixtures import accepted_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.budgeting import BudgetLedger, fresh_settings, project_ledger_path
 from agentic.canonical import sha256
@@ -26,7 +26,7 @@ from test_reference_controller_adapter import (
 )
 from test_continuous_controller_planning import planning_fixture_inputs, planning_resource_inputs
 from test_review_loop import record_fixture_codex_identity
-from owner_admission_fixtures import record_fixture_owner_confirmation
+from settings_pr_fixtures import publish_fixture_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 ADAPTER = runpy.run_path(str(ROOT / '.agentic/adapters/reference_controller_adapter.py'))
@@ -92,7 +92,7 @@ class ProductionPreA3Tests(unittest.TestCase):
         (project / '.agentic').mkdir(parents=True, exist_ok=True)
         (project / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(self.gov))
         (project / 'OPERATING_CONFIG.yaml').write_text(json.dumps(self.value))
-        record_fixture_owner_confirmation(self, project, self.gov, self.value)
+        publish_fixture_settings(self, project, self.gov, self.value)
         if not (project / '.agentic/review-loop').exists():
             shutil.copytree(ROOT / '.agentic/review-loop', project / '.agentic/review-loop')
         contract = project / 'contract.txt'
@@ -178,7 +178,7 @@ class ProductionPreA3Tests(unittest.TestCase):
         config, runner, adapters = self.adapter()
         runner.exit_code, runner.usage, runner.delay, runner.emit_thread = 1, usage, delay, emit_thread
         context = adapters['dispatch_ticket'].configure_budgeting(path=self.root / 'ledger.sqlite',
-            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
         payload = _dispatch_payload('failure')
         try:
             adapters['dispatch_ticket'](payload)
@@ -205,7 +205,7 @@ class ProductionPreA3Tests(unittest.TestCase):
         off = deepcopy(self.value)
         off['budgeting']['accounting_enabled'] = False
         restarted['dispatch_ticket'].configure_budgeting(path=context.database.path,
-            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, off, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, off, self.gov))
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             restarted['observe_dispatch'](payload)
         self.assertEqual(ledger.summary(self.gov['project']['id']), summary)
@@ -287,7 +287,7 @@ class ProductionPreA3Tests(unittest.TestCase):
         value = deepcopy(planning['planning_operating_snapshot'].config)
         value['budgeting'] = dict(fresh_settings(), accounting_enabled=True)
         self.value = value
-        snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
+        snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
         planning.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         resources = planning_resource_inputs(1)
         resources.update(planning)

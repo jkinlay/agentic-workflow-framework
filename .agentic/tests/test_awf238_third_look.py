@@ -147,92 +147,40 @@ class ThirdLookTests(unittest.TestCase):
         child = self.workflow('status', '--json')
         self.assertNotIn(json.loads(child.stdout)['project_state'], ('CONFIGURED', 'ACTIVE'))
 
-    def test_legacy_budget_adoption_prepares_owner_proposal(self):
+    def test_legacy_budget_adoption_prepares_off_pr_and_preserves_import(self):
         self.upgrade()
-        child = self.workflow('operating', 'set', '--instruction', 'Adopt dormant budget controls',
-            '--adopt-budgeting', '--set', 'budgeting.accounting_enabled=false')
-        # A non-enrolled disposable clone must reach the existing host boundary,
-        # rather than fail parsing or reject legacy adoption unconditionally.
-        self.assertNotIn('unrecognized arguments', child.stderr)
-        self.assertNotIn('requires versioned adoption', child.stdout + child.stderr)
-        self.assertIn('Trusted-host owner admission', child.stdout + child.stderr)
-        import yaml
-        self.assertNotIn('budgeting', yaml.safe_load((self.project / 'OPERATING_CONFIG.yaml').read_bytes()))
-
-    def owner_fixture(self):
-        # Reuse only terminal/login doubles. The installation and operating audit
-        # remain the real upgraded published baseline, not the minimal fixture.
-        from test_awf242_owner_admission import OwnerAdmissionTests
-        owner = OwnerAdmissionTests()
-        owner.template = self.project
-        owner.setUp()
-        self.addCleanup(owner.doCleanups)
-        return owner
-
-    def test_legacy_adoption_confirm_preserves_import_and_requires_terminal(self):
-        self.upgrade()
-        owner = self.owner_fixture()
-        from types import SimpleNamespace
-        from agentic import ValidationError, operating as op
-        with self.assertRaisesRegex(ValidationError, 'generic host observations cannot adopt'):
-            op.set_operating(owner.root, owner.gov, 'Adopt', ['budgeting.accounting_enabled=false'],
-                adopt_budgeting=True, budget_registry=SimpleNamespace(host=object()))
-        refused = owner.cli('set', '--instruction', 'Adopt enabled controls', '--adopt-budgeting',
-            '--set', 'budgeting.accounting_enabled=true', '--json')
-        self.assertEqual(2, refused.returncode)
-        owner.unchanged()
+        from agentic import operating as op
+        from agentic.canonical import load_yaml
+        from agentic.budgeting import fresh_settings
+        from settings_pr_fixtures import publish_fixture_settings
+        gov = load_yaml((self.project / op.GOVERNANCE).read_bytes())
+        legacy = load_yaml((self.project / op.CONFIG).read_bytes())
+        publish_fixture_settings(self, self.project, gov, legacy)
+        from agentic.protected_settings import _git
+        _git(self.project, 'checkout', '-qb', 'codex/upgrade')
         from upgrade_195_fixtures import generate_budget_history
         from agentic.upgrade import import_budget_history
-        generate_budget_history(self.published, self.work / 'history', owner.gov['project']['id'])
+        generate_budget_history(self.published, self.work / 'history', gov['project']['id'])
         sources = {p.stem: {'path': p, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
                    for p in (self.work / 'history').glob('*.sqlite')}
-        before = q.prepare_budget_import(sources, project_id=owner.gov['project']['id'])
+        before = q.prepare_budget_import(sources, project_id=gov['project']['id'])
         canonical = self.work / 'canonical.sqlite'
-        result = import_budget_history(canonical, sources, project_id=owner.gov['project']['id'])
-        receipt = self.work / 'import.json'
-        receipt.write_text(json.dumps(result))
+        import_budget_history(canonical, sources, project_id=gov['project']['id'])
         retained = canonical.read_bytes()
-        pending = owner.cli('set', '--instruction', 'Adopt dormant controls', '--adopt-budgeting',
-            '--set', 'budgeting.accounting_enabled=false', '--budget-import-result', str(receipt), '--json')
-        self.assertEqual(3, pending.returncode, pending.stdout + pending.stderr)
-        proposal = json.loads(pending.stdout)
-        self.assertEqual(result, proposal['budget_import']['result'])
-        owner.unchanged()
-        refused = owner.confirm(proposal['digest'], tty=False)
-        self.assertEqual(2, refused.returncode)
-        owner.unchanged()
-        original_receipt = receipt.read_bytes()
-        receipt.write_text(json.dumps({**result, 'changed': True}))
-        refused = owner.confirm(proposal['digest'])
-        self.assertEqual(2, refused.returncode)
-        self.assertIn('displayed budget import result changed', refused.stdout)
-        owner.unchanged()
-        receipt.write_bytes(original_receipt)
-        confirmed = owner.confirm(proposal['digest'])
-        self.assertEqual(0, confirmed.returncode, confirmed.stdout + confirmed.stderr)
-        self.assertIn('Budget adoption import result', confirmed.stdout)
-        shown = json.loads(owner.cli('show', '--json').stdout)
-        self.assertFalse(shown['configuration']['budgeting']['accounting_enabled'])
-        self.assertFalse(shown['configuration']['budgeting']['enforcement_enabled'])
+        audit = {p.name: p.read_bytes() for p in (self.project / op.STATE / 'changes').glob('*.json')}
+        child = self.workflow('operating', 'set', '--instruction', 'Adopt dormant budget controls',
+                              '--adopt-budgeting', '--json')
+        self.assertEqual(0, child.returncode, child.stdout + child.stderr)
+        self.assertNotIn('budgeting', json.loads(child.stdout)['configuration'])
+        prepared = load_yaml((self.project / op.CONFIG).read_bytes())
+        self.assertEqual(fresh_settings(), prepared['budgeting'])
         self.assertEqual(retained, canonical.read_bytes())
         self.assertTrue(q.check_budget_import(before, sources, canonical)['preserved'])
-        self.assertEqual(2, owner.confirm(proposal['digest']).returncode)
-
-    def test_legacy_adoption_owner_recovery_without_import(self):
-        self.upgrade()
-        owner = self.owner_fixture()
-        pending = owner.cli('set', '--instruction', 'Adopt dormant controls', '--adopt-budgeting',
-            '--set', 'budgeting.accounting_enabled=false', '--json')
-        self.assertEqual(3, pending.returncode, pending.stdout + pending.stderr)
-        proposal = json.loads(pending.stdout)
-        self.assertEqual('NOT_SUPPLIED', proposal['budget_import']['status'])
-        crashed = owner.confirm(proposal['digest'], crash='after_journal')
-        self.assertEqual(71, crashed.returncode, crashed.stdout + crashed.stderr)
-        from agentic import operating as op
-        journal = json.loads((owner.root / op.JOURNAL).read_bytes())
-        recovered = owner.recover(journal)
-        self.assertEqual(0, recovered.returncode, recovered.stdout + recovered.stderr)
-        self.assertFalse(json.loads(owner.cli('show', '--json').stdout)['configuration']['budgeting']['accounting_enabled'])
+        self.assertEqual(audit, {p.name: p.read_bytes() for p in (self.project / op.STATE / 'changes').glob('*.json')})
+        publish_fixture_settings(self, self.project, gov, prepared)
+        shown = json.loads(self.workflow('operating', 'show', '--json').stdout)
+        self.assertFalse(shown['configuration']['budgeting']['accounting_enabled'])
+        self.assertFalse(shown['configuration']['budgeting']['enforcement_enabled'])
 
     def test_plan_calls_out_jira_status_change(self):
         import yaml

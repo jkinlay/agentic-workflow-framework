@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / '.agentic/lib'), str(ROOT / '.agentic/tests')]
-from agentic import owner_admission
 from agentic.canonical import load_yaml
 from agentic.installer import install
 from source_only import skip_unless_source_repo
@@ -37,9 +36,6 @@ class LegacyOwnerBoundaryTests(unittest.TestCase):
         self.work.mkdir()
         self.project = self.work / 'project'
         shutil.copytree(self.baseline, self.project)
-        self.owner_home = self.work / 'owner-home'
-        self.addCleanup(patch.stopall)
-        patch.object(owner_admission, '_owner_state_home', return_value=self.owner_home).start()
 
     def upgrade(self):
         return install(self.candidate, self.project, self.pin, mode='upgrade', configure=True, discover=False)
@@ -86,14 +82,10 @@ class LegacyOwnerBoundaryTests(unittest.TestCase):
         self.assertFalse((self.project / '.git').exists())
         original = (self.project / 'OPERATING_CONFIG.yaml').read_bytes()
         with contextlib.ExitStack() as stack:
-            for name in ('git_common_identity', '_git_executable', '_git_metadata_identity',
-                         '_gh_executable', '_github_executable', 'propose', 'confirm'):
-                if hasattr(owner_admission, name):
-                    stack.enter_context(patch.object(owner_admission, name,
-                        side_effect=AssertionError('upgrade reached owner check: ' + name)))
-            for name in ('save', 'consume', 'transaction'):
-                stack.enter_context(patch.object(owner_admission.ProposalStore, name,
-                    side_effect=AssertionError('upgrade wrote owner record: ' + name)))
+            stack.enter_context(patch('agentic.protected_settings._git',
+                side_effect=AssertionError('Gitless upgrade reached Git')))
+            stack.enter_context(patch('subprocess.run',
+                side_effect=AssertionError('Gitless upgrade reached an external command')))
             plan = install(self.candidate, self.project, self.pin, mode='upgrade',
                            configure=True, discover=False, dry_run=True)
             self.assertFalse(plan['installed'])
@@ -101,7 +93,6 @@ class LegacyOwnerBoundaryTests(unittest.TestCase):
         self.assertEqual('UPGRADED', result['status'])
         self.assertIsNone(result['operating']['budget_admission'])
         self.assertEqual(original, (self.project / 'OPERATING_CONFIG.yaml').read_bytes())
-        self.assertFalse(self.owner_home.exists())
         self.assertFalse((self.project / '.git').exists())
 
 

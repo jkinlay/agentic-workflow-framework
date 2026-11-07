@@ -24,7 +24,7 @@ from upgrade_195_fixtures import (materialize_published, materialize_candidate,
     install_baseline, published_call)
 from test_operating import governance
 from test_awf242_controller_wiring import ObservedBudgetHost
-from owner_admission_fixtures import confirmed_fixture_snapshot
+from settings_pr_fixtures import accepted_fixture_snapshot
 from test_model_routing import capabilities
 from qualify_upgrade import _permissions, _named_streams
 
@@ -99,7 +99,7 @@ print('{}')
         value = default_operating(gov['execution']['model_routing'])
         value['budgeting'] = dict(fresh_settings(), accounting_enabled=enabled,
             enforcement_enabled=enabled, max_tokens_per_ticket=100, max_tokens_per_project=100)
-        snapshot = confirmed_fixture_snapshot(self, self.work / 'worker', value, gov)
+        snapshot = accepted_fixture_snapshot(self, self.work / 'worker', value, gov)
         host = ObservedBudgetHost()
         run = str(uuid.uuid4())
         binding = dict(project_id=gov['project']['id'], ticket_id='EX-NEW', run_id=run,

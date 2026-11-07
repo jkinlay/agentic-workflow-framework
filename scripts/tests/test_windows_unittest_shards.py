@@ -101,6 +101,18 @@ class ShardTests(unittest.TestCase):
             (self.root / path).unlink()
         self.assertEqual(before, self.allocation())
 
+    def test_budget_pr_regressions_replace_removed_terminal_module_without_losing_guard(self):
+        removed = ROOTS[0] + '/test_awf242_owner_admission.py'
+        replacement = self.write(ROOTS[0], 'test_awf242_settings_pr.py', PASSING)
+        self.assertNotIn(removed, runner.HEAVY_MODULE_SHARDS)
+        self.assertEqual(2, runner.HEAVY_MODULE_SHARDS[replacement])
+        allocation = self.allocation()
+        self.assertIn(replacement, allocation[ROOTS[0]][2])
+        runner.guard(self.root, allocation)
+        allocation[ROOTS[0]][2].remove(replacement)
+        with self.assertRaisesRegex(ValueError, 'missing'):
+            runner.guard(self.root, allocation)
+
     def test_hash_is_stable_in_a_fresh_process_with_a_different_hash_seed(self):
         import os
         outputs = []

@@ -64,7 +64,8 @@ SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
 # 162, publish_release 1682, adoptable_source 213, self_test_review 82, ac42_e2e
 # 556, fresh_bootstrap 152; prior local bootstrap_configuration 1115. The
 # upgrade_195 log records 181+211+199 seconds in bootstrap alone.
-# These fixtures, owner admission and the review regressions need fixed owners.
+# These fixtures and the review regressions need fixed owners.
+# The removed terminal admission module is replaced by settings-via-PR coverage.
 # Stacked-suite local observations: awf244 cohort 1334; reporting boundary 627,
 # e10 597 / e11 694 / e12 191 / e13 232 / e16 614 / e3 237 / e6 123 / e7 203 /
 # e9 383 / owner 206 / wiring 122;
@@ -77,7 +78,7 @@ SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
 # elapsed seconds even when the parent buffers output; refresh estimates there.
 HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_adoption_status.py': 0,
-    '.agentic/tests/test_awf242_owner_admission.py': 2,
+    '.agentic/tests/test_awf242_settings_pr.py': 2,
     '.agentic/tests/test_awf243_review_regressions.py': 3,
     '.agentic/tests/test_bootstrap_configuration.py': 6,
     '.agentic/tests/test_host_process.py': 5,

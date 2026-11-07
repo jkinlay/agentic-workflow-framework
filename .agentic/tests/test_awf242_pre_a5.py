@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import source_only
 from source_only import skip_unless_source_repo
-from owner_admission_fixtures import confirmed_fixture_snapshot
+from settings_pr_fixtures import accepted_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
 from agentic.providers.github_review_host import HostDriver
@@ -130,7 +130,7 @@ class ProductionPreA5Tests(unittest.TestCase):
         unusable.write_text('Fixture obstruction')
         path = unusable / 'ledger.sqlite'
         adapters['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov,
-            operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
+            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
         payload = _dispatch_payload('off-failure')
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             adapters['dispatch_ticket'](payload)
@@ -146,7 +146,7 @@ class ProductionPreA5Tests(unittest.TestCase):
         runner.exit_code = 0
         restarted = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         restarted['dispatch_ticket'].configure_budgeting(path=None, governance=self.gov,
-            operating=confirmed_fixture_snapshot(self, self.root, self.value, self.gov))
+            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
         with self.assertRaisesRegex(ValidationError, 'resolve non-reasoning failure'):
             restarted['dispatch_ticket'](_dispatch_payload('retry-off'))
 
@@ -193,7 +193,7 @@ class ProductionPreA5Tests(unittest.TestCase):
         self.gov = inputs['planning_config']
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting'] = dict(self.value['budgeting'], accounting_enabled=False)
-        snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
+        snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         config['codex']['roles']['writer']['reasoning_effort'] = 'high'
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))

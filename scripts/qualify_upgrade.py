@@ -652,6 +652,8 @@ def prepare_upgrade(source, project, pin, before):
              for path, digest in immutable.items()}
     # This compatibility record is derived independently of the installer helper.
     # It grants no import/adoption or permission to alter the operating file.
+    # Dormant adoption is a separate OFF-only file change in the owner-merged
+    # upgrade/settings PR; default-branch settings take effect after fetch.
     operating_raw = operating.read_bytes() if operating.exists() else None
     settings = load_yaml(operating_raw).get('budgeting') if operating_raw is not None else None
     disposition = {'format': 'awf-budget-upgrade-1', 'target_version': '1.9.6',
