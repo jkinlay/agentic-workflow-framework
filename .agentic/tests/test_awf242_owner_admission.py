@@ -46,7 +46,7 @@ class OwnerAdmissionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='awf-owner-')
         self.addCleanup(temporary.cleanup)
-        base = Path(temporary.name)
+        base = Path(temporary.name).resolve()
         self.fixture = SimpleNamespace(base=base, dest=base / 'project')
         self.root = self.fixture.dest
         shutil.copytree(self.template, self.root)
@@ -191,7 +191,7 @@ class OwnerAdmissionTests(unittest.TestCase):
                 'admission._sandbox_group_rights=lambda p:0\n'
                 'original_run=admission.subprocess.run\n'
                 'def fake_run(args,**kwargs):\n'
-                f' if Path(args[0])==Path({str(self.native)!r}): args=[sys.executable,"-B",{str(self.fake)!r},*args[1:]]\n'
+                f' if Path(args[0]).resolve()==Path({str(self.native)!r}).resolve(): args=[sys.executable,"-B",{str(self.fake)!r},*args[1:]]\n'
                 ' return original_run(args,**kwargs)\n'
                 'admission.subprocess.run=fake_run\n')
             if owner_error:

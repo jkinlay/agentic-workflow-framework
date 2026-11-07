@@ -6,6 +6,7 @@ import unittest
 import uuid
 
 import source_only
+from source_only import skip_unless_source_repo
 from owner_admission_fixtures import confirmed_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.budgeting import BudgetLedger
@@ -173,9 +174,11 @@ class ProductionPreA11Tests(unittest.TestCase):
             self.assertFalse(context.database.path.exists())
             self.assertFalse(context.registry.path.exists())
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_off_production_cycle_cannot_retry_rejected_startup_after_restart(self):
         self.zero_recovery_cycle(False)
 
+    @skip_unless_source_repo("Requires source Git HEAD/tree for repository ownership and reservations", ".git")
     def test_accounting_production_cycle_cannot_retry_rejected_startup_after_restart(self):
         self.zero_recovery_cycle(True)
 

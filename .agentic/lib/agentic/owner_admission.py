@@ -626,7 +626,15 @@ def observe_github_owner(governance, root):
         require(sha256(Path(executable).read_bytes()) == executable_hash,
                 'GITHUB_AUTH_UNAVAILABLE: gh changed during identity lookup')
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
-        raise ValidationError('GITHUB_AUTH_UNAVAILABLE: stored GitHub login could not be verified') from exc
+        # Preserve only these fixed local refusals. Parser ValidationErrors can
+        # contain response keys and must receive the same sanitization as OS errors.
+        if isinstance(exc, ValidationError) and str(exc) in {
+                'GITHUB_AUTH_UNAVAILABLE: stored active github.com login was not observed',
+                'GITHUB_AUTH_UNAVAILABLE: gh changed during identity lookup',
+                'GITHUB_AUTH_UNAVAILABLE: GitHub user lookup failed'}:
+            raise
+        raise ValidationError('GITHUB_AUTH_UNAVAILABLE: stored GitHub login could not be verified '
+                              f'({type(exc).__name__})') from exc
     require(isinstance(user, dict) and type(user.get('id')) is int and user['id'] > 0
             and isinstance(user.get('login'), str) and re.fullmatch(r'[A-Za-z0-9-]{1,39}', user['login'])
             and user.get('type') == 'User' and user['id'] in owners,
