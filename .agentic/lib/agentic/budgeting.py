@@ -180,6 +180,18 @@ def subprocess_budget_request(binding, *, worker_context_id=None, stream=None):
     return value
 
 
+def accepted_budget_snapshot(repository_root, governance, operating, *, credential_envs=()):
+    """Read policy only from the repository selected by trusted construction."""
+    from .operating import validate_snapshot
+    from .protected_settings import budget_snapshot
+    validate_snapshot(operating, governance)
+    root = Path(repository_root).resolve(strict=True)
+    provenance_path = operating.provenance.get('path')
+    require(not provenance_path or Path(provenance_path).resolve().parent == root,
+            'Operating snapshot provenance disagrees with controller repository root')
+    return budget_snapshot(root, governance, operating, credential_envs=credential_envs)
+
+
 class ControllerBudgeting:
     """Lazy trusted-host bridge shared by dispatch and review adapters.
 
@@ -188,14 +200,10 @@ class ControllerBudgeting:
     completion. Neither ticket content nor process ancestry enrolls a run.
     Constructing an OFF context opens no enrollment or accounting database.
     """
-    def __init__(self, path, governance, operating, host, *, worktree_roots=(), credential_envs=()):
+    def __init__(self, path, governance, operating, host, *, repository_root, worktree_roots=(), credential_envs=()):
         from .budget_enrollment import EnrollmentRegistry
-        from .operating import validate_snapshot
-        validate_snapshot(operating, governance)
-        from .protected_settings import budget_snapshot
-        root = (Path(operating.provenance['path']).parent if operating.provenance.get('path') else
-                next(iter(worktree_roots), Path(__file__).resolve().parents[3]))
-        operating = budget_snapshot(root, governance, operating, credential_envs=credential_envs)
+        operating = accepted_budget_snapshot(repository_root, governance, operating,
+            credential_envs=credential_envs)
         self.governance = deepcopy(governance)
         self.operating = operating
         self.settings = resolve_settings(operating.config)

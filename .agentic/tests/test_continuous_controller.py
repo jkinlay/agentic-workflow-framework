@@ -77,7 +77,12 @@ def production_controller_cycle(*args,**kwargs):
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
-	return real_production_controller_cycle(*args,**kwargs)
+	# Source Git supplies ownership paths, while planning_fixture_inputs supplies
+	# this synthetic project's accepted policy (with its own governance ceiling).
+	# Keep provenance/root checking active; real policy I/O has AWF-242 coverage.
+	with patch('agentic.protected_settings.budget_snapshot',
+			side_effect=lambda root, governance, snapshot, **options: snapshot):
+		return real_production_controller_cycle(*args,**kwargs)
 
 def inventory_observation(now,tickets):
 	return{'source':'host_observation','observed_at':now,'binding':dict(INVENTORY_BINDING),'complete':True,'inventory_sha256':fingerprint('controller-inventory',{'binding':INVENTORY_BINDING,'tickets':tickets}),'tickets':tickets}

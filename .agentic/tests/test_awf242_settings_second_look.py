@@ -177,7 +177,7 @@ class SecondLookTests(unittest.TestCase):
                 # Force offline admission: it must refuse even with OFF bytes.
                 with patch('agentic.protected_settings.refresh_default_policy', return_value={'status': 'UNAVAILABLE'}):
                     with self.assertRaisesRegex(ValidationError, 'unverified'):
-                        ControllerBudgeting(None, edited, snapshot, None, worktree_roots=(self.root,))
+                        ControllerBudgeting(None, edited, snapshot, None, worktree_roots=(self.root,), repository_root=self.root)
                 self.assertEqual(main, self.git('rev-parse', 'origin/main'))
         from agentic.protected_settings import refresh_default_policy
         self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
@@ -445,7 +445,7 @@ class SecondLookTests(unittest.TestCase):
                         snapshot = op.read_operating(clone, self.gov)
                         self.assertIn('unverified', snapshot.provenance['protected_settings']['branch_observation'])
                         context = ControllerBudgeting(self.base / (shape + str(enabled) + '.sqlite') if enabled else None,
-                            self.gov, snapshot, None, worktree_roots=(clone,))
+                            self.gov, snapshot, None, worktree_roots=(clone,), repository_root=clone)
                         self.assertEqual(enabled, context.settings['enforcement_enabled'])
                         self.assertEqual('refs/remotes/origin/main', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
                     finally:
@@ -457,7 +457,7 @@ class SecondLookTests(unittest.TestCase):
         self.git('update-ref', '-d', 'refs/remotes/origin/main')
         self.git('remote', 'set-url', 'origin', str(self.base / 'offline.git'))
         snapshot = op.read_operating(self.root, self.gov)
-        context = ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,))
+        context = ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,), repository_root=self.root)
         self.assertFalse(context.settings['accounting_enabled'])
         self.assertEqual(0, self.show()[0])
 
@@ -469,7 +469,7 @@ class SecondLookTests(unittest.TestCase):
         snapshot = op.read_operating(self.root, self.gov)
         self.assertFalse(snapshot.provenance['protected_settings']['budget_admission'])
         with self.assertRaisesRegex(ValidationError, 'default discovery'):
-            ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,))
+            ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,), repository_root=self.root)
         with self.assertRaisesRegex(ValidationError, 'default discovery'):
             self.cycle()
         self.assertEqual(0, self.show()[0])

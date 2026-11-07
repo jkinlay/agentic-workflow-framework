@@ -58,12 +58,68 @@ class BudgetWiringTests(unittest.TestCase):
             enforcement_enabled=enforcement, max_tokens_per_ticket=limit, max_tokens_per_project=limit)
         publish_fixture_settings(self, self.root / 'worker', self.gov, self.value)
         return budgeting.ControllerBudgeting(self.path, self.gov,
-            op.validate_operating(self.value, self.gov), self.host, worktree_roots=[self.root / 'worker'])
+            op.validate_operating(self.value, self.gov), self.host, worktree_roots=[self.root / 'worker'], repository_root=self.root / 'worker')
 
     def binding(self, role='worker', ticket='EX-10'):
         run = str(uuid.uuid4())
         return dict(project_id=self.gov['project']['id'], ticket_id=ticket,
                     run_id=run, dispatch_id='dispatch-' + run, session_id='host-session-' + run, role=role)
+
+    def test_foreign_snapshot_provenance_cannot_disable_budget_admission(self):
+        from dataclasses import replace
+        self.context(enabled=True, enforcement=True, limit=50)
+        foreign = self.root / 'foreign'
+        off = op.default_operating(self.gov['execution']['model_routing'])
+        publish_fixture_settings(self, foreign, self.gov, off)
+        snapshot = replace(op.validate_operating(self.value, self.gov),
+            _provenance_json=op.canonical({'path': str(foreign / op.CONFIG)}))
+        op.validate_snapshot(snapshot, self.gov)
+        with self.assertRaisesRegex(ValidationError, 'provenance.*repository root'):
+            context = budgeting.ControllerBudgeting(self.path, self.gov, snapshot,
+                self.host, worktree_roots=[self.root / 'worker'], repository_root=self.root / 'worker')
+            self.assertIsNotNone(self.admit(context),
+                'Foreign accepted OFF policy bypassed enforced budget admission')
+
+    def test_explicit_root_selects_policy_without_snapshot_path_or_worktree_order(self):
+        self.context(enabled=True, enforcement=True, limit=50)
+        foreign = self.root / 'foreign'
+        off = op.default_operating(self.gov['execution']['model_routing'])
+        publish_fixture_settings(self, foreign, self.gov, off)
+        context = budgeting.ControllerBudgeting(self.path, self.gov,
+            op.validate_operating(off, self.gov), self.host,
+            repository_root=self.root / 'worker', worktree_roots=[foreign, self.root / 'worker'])
+        self.assertTrue(context.settings['enforcement_enabled'])
+        with self.assertRaisesRegex(ValidationError, 'budget exhausted'):
+            self.admit(context)
+
+    def test_adapter_factory_refuses_foreign_snapshot_provenance(self):
+        self.context(enabled=True, enforcement=True)
+        foreign = self.root / 'foreign'
+        snapshot = accepted_fixture_snapshot(self, foreign,
+            op.default_operating(self.gov['execution']['model_routing']), self.gov)
+        adapters = runpy.run_path(str(ROOT / '.agentic/adapters/reference_controller_adapter.py'))['build_adapters'](
+            dict(_base_config(self.root), _runner=self.host, _clock=FakeClock()))
+        with self.assertRaisesRegex(ValidationError, 'provenance.*repository root'):
+            adapters['dispatch_ticket'].configure_budgeting(path=self.path,
+                governance=self.gov, operating=snapshot, repository_root=self.root / 'worker')
+
+    def test_production_cycle_refuses_foreign_provenance_before_budget_adapter(self):
+        from dataclasses import replace
+        fixture = reference_tests.ReferenceControllerAdapterTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        real_cycle = reference_tests.production_controller_cycle
+        def cycle(store, **kwargs):
+            snapshot = kwargs['planning_operating_snapshot']
+            kwargs['planning_operating_snapshot'] = replace(snapshot,
+                _provenance_json=op.canonical({'path': str(self.root / 'foreign' / op.CONFIG)}))
+            def unexpected_adapter(**ignored):
+                self.fail('Foreign provenance reached the budget adapter')
+            kwargs['configure_budgeting'] = unexpected_adapter
+            return real_cycle(store, **kwargs)
+        with patch.object(reference_tests, 'production_controller_cycle', cycle):
+            with self.assertRaisesRegex(ValidationError, 'provenance.*repository root'):
+                fixture.test_cycle_runs_end_to_end_through_real_adapter_and_strips_credentials()
 
     def admit(self, context, binding=None):
         binding = binding or self.binding()
@@ -257,10 +313,10 @@ class BudgetWiringTests(unittest.TestCase):
             value = kwargs['planning_operating_snapshot'].config
             value['budgeting'] = dict(fresh_settings(), accounting_enabled=True,
                                      max_tokens_per_ticket=1, max_tokens_per_project=1)
-            snapshot = accepted_fixture_snapshot(self, self.root / 'worker', value, kwargs['planning_config'])
+            worker = Path(kwargs['repository_root'])
+            snapshot = accepted_fixture_snapshot(self, worker, value, kwargs['planning_config'])
             # A worker disables its local file; the real controller load still
             # uses the accepted remote-tracking settings and charges its run.
-            worker = self.root / 'worker'
             (worker / op.GOVERNANCE).parent.mkdir(exist_ok=True)
             (worker / op.GOVERNANCE).write_bytes(op._json(kwargs['planning_config']))
             edited = deepcopy(value)
@@ -270,6 +326,9 @@ class BudgetWiringTests(unittest.TestCase):
             self.assertTrue(snapshot.config['budgeting']['accounting_enabled'])
             self.assertIsNotNone(snapshot.provenance['protected_settings']['commit'])
             kwargs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
+            import subprocess
+            kwargs.update(repository_head_sha=subprocess.check_output(['git', '-C', str(worker), 'rev-parse', 'HEAD'], text=True).strip(),
+                repository_tree_sha=subprocess.check_output(['git', '-C', str(worker), 'rev-parse', 'HEAD^{tree}'], text=True).strip())
             captured['path'] = project_ledger_path(kwargs['planning_config']['project']['id'], accounting_enabled=True)
             return real_cycle(store, **kwargs)
         with patch.object(reference_tests, 'production_controller_cycle', cycle), \

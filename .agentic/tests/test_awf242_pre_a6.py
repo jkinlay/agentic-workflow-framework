@@ -50,7 +50,7 @@ class ProductionPreA6Tests(unittest.TestCase):
         value = deepcopy(self.value)
         value['budgeting']['accounting_enabled'] = enabled
         adapters['dispatch_ticket'].configure_budgeting(path=self.root / (self.gov['project']['id'] + '.sqlite'),
-            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, value, self.gov), repository_root=self.root)
         return runner, adapters
 
     def dispatch(self, adapters, payload):
@@ -130,7 +130,7 @@ class ProductionPreA6Tests(unittest.TestCase):
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         self.value['budgeting']['accounting_enabled'] = False
         adapters['dispatch_ticket'].configure_budgeting(path=None, governance=self.gov,
-            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             self.dispatch(adapters, dict(_dispatch_payload('unknown-worker'), ticket='EX-10'))
         driver = self.review(state='other-host')

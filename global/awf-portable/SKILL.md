@@ -8,9 +8,9 @@ metadata:
 
 # AWF
 
-Installation preserves baselines; adoption is separate. Read
+Read
 [installation](references/skill-installation.md), [workflow](references/workflow.md)
-and [update channels](references/update-channel.md). Unavailable channels prove no latest.
+and [update channels](references/update-channel.md).
 
 First adoption message: installing AWF changes repository governance files, so
 prepare a draft PR for the owner to merge. Adoption has no repository-rule
@@ -52,7 +52,8 @@ drain surplus.
 
 Follow the [workflow](references/workflow.md) and verified
 `.agentic/docs/23-TICKET-LIFECYCLE.md`, including every publication gate,
-publisher tree equality, candidate-bound mark-ready authorization and observed
+publisher tree equality, a candidate-bound explicit owner/manager authorization record with a
+pre-issued request and authenticated immutable provider observation, and observed
 `draft_cleared`. Validation/CI alone never permit mark-ready. Critic/specialists/
 final gate precede owner-ready, never merge authority.
 
