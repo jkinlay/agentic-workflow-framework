@@ -152,7 +152,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/review_tiers.py` | `84ad6eae1053e303390c26858dd7d369282f73d7e311a0e2925fe1b30312faac` |
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
-| `.agentic/lib/agentic/safeio.py` | `f7abc45fddfc6ddd3eac012a0a8999fc12e8b2d26b6a6e764c4ce59bc887b813` |
+| `.agentic/lib/agentic/safeio.py` | `682866495c6584ec986ff2977d72d0feaff4a993c9cddda1c0e3fcacddeda820` |
 | `.agentic/lib/agentic/status_report.py` | `a529bf233d7d4adf66bd4dbbb31ee86103f9c2c54ef519e06766c116f4c979d0` |
 | `.agentic/lib/agentic/status_report_store.py` | `7d370b9e7be30f7518367639d52bb5e76eb02cfb2f172d7db73f3a6cfac8b512` |
 | `.agentic/lib/agentic/store.py` | `26e500f0f675820f9900c7edd965ebcd25bf8d915ab14686ea003b776529652a` |
@@ -461,7 +461,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_safeio_channels.py` | `df344cd57d5996235048a298de461fdde8f2d20335775fced7002a3638c0e107` |
 | `.agentic/tests/test_safeio_cli_channels.py` | `0672aa09a82bb1627ed25a2859f7bff77349acf7af595a9ab37a2f15b4e76dac` |
 | `.agentic/tests/test_safeio_cli_inputs.py` | `fe5b452b8ab636080581b798abc84320b8c3b3650d5d8bab88f50639044b7986` |
-| `.agentic/tests/test_safeio_process.py` | `bd2739d2b6ac610e2fb482614cd0811aa6477b3c733f3a6e0b1ded9f7d6367a6` |
+| `.agentic/tests/test_safeio_process.py` | `34b94034aaa0830c93ee545a8b4f701823e130055db217715992e1f27b0d2292` |
 | `.agentic/tests/test_safeio_unlink.py` | `86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f` |
 | `.agentic/tests/test_safeio_windows_errors.py` | `e497029ec9a4a339995425a988c5a9b81ebeea2d5b24209f9c5845af02a0690c` |
 | `.agentic/tests/test_source_only.py` | `00ded885d804dcf212783bd75afc3d0ecfe16be25e0baf2a912aec48ab4ba653` |
