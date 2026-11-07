@@ -18,7 +18,9 @@ def publish_fixture_settings(case, root, governance, value):
         git('init', '-q', '-b', governance['github']['base_branch'])
     from agentic.operating import _json
     (root / 'OPERATING_CONFIG.yaml').write_bytes(_json(value))
-    git('add', 'OPERATING_CONFIG.yaml')
+    (root / '.agentic').mkdir(exist_ok=True)
+    (root / '.agentic/PROJECT_CONFIG.yaml').write_bytes(_json(governance))
+    git('add', 'OPERATING_CONFIG.yaml', '.agentic/PROJECT_CONFIG.yaml')
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Fixture operating settings', '--allow-empty')
     git('update-ref', 'refs/remotes/origin/' + governance['github']['base_branch'], 'HEAD')

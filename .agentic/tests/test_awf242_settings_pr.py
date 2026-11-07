@@ -44,7 +44,7 @@ class SettingsPRTests(unittest.TestCase):
 
     def publish(self, value):
         self.write(value)
-        self.git('add', op.CONFIG)
+        self.git('add', op.CONFIG, op.GOVERNANCE)
         self.git('commit', '-qm', 'Fixture settings', '--allow-empty')
         self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
         return self.git('rev-parse', 'HEAD')
@@ -65,7 +65,7 @@ class SettingsPRTests(unittest.TestCase):
         previous = self.git('rev-parse', 'HEAD')
         self.git('checkout', '-qb', 'codex/settings')
         self.write(self.enabled())
-        self.git('add', op.CONFIG)
+        self.git('add', op.CONFIG, op.GOVERNANCE)
         self.git('commit', '-qm', 'Proposed budget')
         proposed = self.git('rev-parse', 'HEAD')
         self.assertEqual(fresh_settings(), op.read_operating(self.root, self.gov).config['budgeting'])
@@ -91,7 +91,7 @@ class SettingsPRTests(unittest.TestCase):
         for raw in (b'budgeting: [', b'{}', b'budgeting: null'):
             with self.subTest(raw=raw):
                 (self.root / op.CONFIG).write_bytes(raw)
-                self.git('add', op.CONFIG)
+                self.git('add', op.CONFIG, op.GOVERNANCE)
                 self.git('commit', '-qm', 'Malformed fixture')
                 self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
                 self.write(self.value)
@@ -101,8 +101,7 @@ class SettingsPRTests(unittest.TestCase):
         self.git('commit', '-qm', 'Missing fixture')
         self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
         self.write(self.value)
-        with self.assertRaisesRegex(ValidationError, 'default.branch'):
-            op.read_operating(self.root, self.gov)
+        self.assertEqual(fresh_settings(), op.read_operating(self.root, self.gov).config['budgeting'])
 
     def test_show_reports_effective_diff_rules_warning_and_pr_next_step(self):
         self.publish(self.enabled())
@@ -206,7 +205,7 @@ class SettingsPRTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'default.branch'):
             op.read_operating(self.root, self.gov)
         (self.root / op.CONFIG).write_bytes(b'#' + b'x' * (op.MAX_BYTES + 1))
-        self.git('add', op.CONFIG)
+        self.git('add', op.CONFIG, op.GOVERNANCE)
         self.git('commit', '-qm', 'Oversize fixture')
         self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
         self.write(self.value)
@@ -239,11 +238,11 @@ class SettingsPRTests(unittest.TestCase):
     def test_assigned_repository_load_does_not_need_global_git_owner_configuration(self):
         # Git's test switch reproduces an owner-created checkout read by the
         # controller sandbox, without changing real OS ownership or global config.
-        from agentic import protected_settings
-        real_environment = protected_settings.isolated_git_env
+        from agentic import git_isolation
+        real_environment = git_isolation.isolated_git_environment
         self.publish(self.enabled())
-        with patch.object(protected_settings, 'isolated_git_env',
-                side_effect=lambda: real_environment(extra={'GIT_TEST_ASSUME_DIFFERENT_OWNER': '1'})):
+        with patch.object(git_isolation, 'isolated_git_environment',
+                side_effect=lambda: dict(real_environment(), GIT_TEST_ASSUME_DIFFERENT_OWNER='1')):
             snapshot = op.read_operating(self.root, self.gov)
         self.assertTrue(snapshot.config['budgeting']['enforcement_enabled'])
 

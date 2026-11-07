@@ -453,6 +453,7 @@ def catalog(*, include_ticket_plan=True):
     }])
     schemas['operating-change']['properties']['unprotected_before_hash'] = {'type': ['string', 'null'], 'pattern': '^[0-9a-f]{64}$'}
     schemas['operating-change']['properties']['unprotected_after_hash'] = DIGEST
+    schemas['operating-change']['properties']['legacy_before_configuration'] = {'type': 'object'}
     schemas["operating-epics"] = obj({
         "schema_version": const(1),
         "epics": {"type": "array", "maxItems": 1000, "items": obj({

@@ -1,0 +1,396 @@
+"""Second-look regressions through operating entry points and local bare remotes."""
+from copy import deepcopy
+from contextlib import redirect_stdout
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+import source_only
+from agentic import operating as op
+from test_operating import governance
+
+class SecondLookTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="awf-second-look-")
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.root = self.base / "checkout"
+        self.root.mkdir()
+        self.gov = governance()
+        self.value = op.default_operating(self.gov['execution']['model_routing'])
+        (self.root / op.GOVERNANCE).parent.mkdir()
+        (self.root / op.GOVERNANCE).write_bytes(op._json(self.gov))
+        self.write(self.value)
+        self.git('init', '-q', '-b', 'main')
+        self.git('config', 'user.name', 'Fixture')
+        self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'core.autocrlf', 'false')
+        self.git('add', op.CONFIG, op.GOVERNANCE)
+        self.git('commit', '-qm', 'Initial policy')
+        self.bare = self.base / 'remote.git'
+        self.git('init', '-q', '--bare', '-b', 'main', str(self.bare))
+        self.git('remote', 'add', 'origin', str(self.bare))
+        self.git('push', '-q', 'origin', 'main')
+        self.git('remote', 'set-head', 'origin', 'main')
+
+    def git(self, *args):
+        from agentic.child_process import isolated_git_env
+        return subprocess.run([shutil.which('git'), '-C', str(self.root), *args],
+            env=isolated_git_env(), check=True, capture_output=True, text=True).stdout.strip()
+
+    def write(self, value):
+        (self.root / op.CONFIG).write_bytes(op._json(value))
+
+    def publish(self, value):
+        self.write(value)
+        self.git('add', op.CONFIG)
+        self.git('commit', '-qm', 'Owner policy', '--allow-empty')
+        self.git('push', '-q', 'origin', 'main')
+
+    def enabled(self):
+        value = deepcopy(self.value)
+        value['budgeting'].update(accounting_enabled=True, enforcement_enabled=True)
+        return value
+
+    def show(self, as_json=True):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = op.main(['--root', str(self.root), 'show', *(['--json'] if as_json else [])])
+        return code, json.loads(out.getvalue()) if as_json else out.getvalue()
+
+    def test_absent_default_file_is_no_policy(self):
+        self.git('rm', '-q', op.CONFIG)
+        self.git('commit', '-qm', 'Owner removes policy')
+        self.git('push', '-q', 'origin', 'main')
+        self.write(self.value)
+        code, report = self.show()
+        self.assertEqual(0, code, report)
+        self.assertIn('fresh defaults', report['protected_settings']['source'])
+        self.assertIn('absent', report['protected_settings']['policy_observation'])
+
+    def test_no_fetched_default_allows_defaults_but_nondefault_set_is_atomic(self):
+        self.git('update-ref', '-d', 'refs/remotes/origin/main')
+        code, report = self.show()
+        self.assertEqual(0, code, report)
+        self.assertIn('no fetched default branch', report['protected_settings']['policy_observation'])
+        self.write(self.enabled())
+        before = (self.root / op.CONFIG).read_bytes()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = op.main(['--root', str(self.root), 'set', '--instruction', 'three streams', '--set', 'streams.count=3', '--json'])
+        self.assertEqual(2, code)
+        self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
+        self.assertFalse((self.root / '.agentic-state').exists())
+
+    def test_audit_aggregate_refusal_changes_no_bytes_or_inventory(self):
+        changes = self.root / op.STATE / 'changes'
+        changes.mkdir(parents=True)
+        for n in range(8):
+            (changes / ('.awf-operating-' + format(n, '032x') + '.tmp')).write_bytes(b' ' * op.MAX_BYTES)
+        before = (self.root / op.CONFIG).read_bytes()
+        inventory = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob('*') if p.is_file())
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = op.main(['--root', str(self.root), 'set', '--instruction', 'four streams', '--set', 'streams.count=4', '--json'])
+        self.assertEqual(2, code, out.getvalue())
+        self.assertIn('aggregate', out.getvalue())
+        self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
+        self.assertEqual(inventory, sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob('*') if p.is_file()))
+
+    def test_gc_and_upstream_and_single_branch_defaults(self):
+        self.git('remote', 'remove', 'origin')
+        self.git('gc', '--quiet')
+        self.assertEqual(0, self.show()[0])
+        self.git('remote', 'add', 'upstream', str(self.bare))
+        self.git('fetch', '-q', 'upstream')
+        self.assertEqual(0, self.show()[0])
+        self.git('checkout', '-qb', 'other')
+        self.git('push', '-q', 'upstream', 'other')
+        clone = self.base / 'single'
+        self.git('clone', '-q', '--single-branch', '--branch', 'other', str(self.bare), str(clone))
+        self.root = clone
+        self.assertEqual(0, self.show()[0])
+
+    def test_r17_config_identity_edit_cannot_hide_confirmation(self):
+        self.publish(self.enabled())
+        self.git('checkout', '-qb', 'worker')
+        self.write(self.value)
+        self.git('add', op.CONFIG)
+        self.git('commit', '-qm', 'Worker OFF')
+        self.git('push', '-q', 'origin', 'worker')
+        edited = deepcopy(self.gov)
+        edited['github']['base_branch'] = 'worker'
+        (self.root / op.GOVERNANCE).write_bytes(op._json(edited))
+        code, report = self.show()
+        self.assertEqual(0, code, report)
+        self.assertTrue(report['configuration']['budgeting']['enforcement_enabled'])
+        self.assertEqual('refs/remotes/origin/main', report['protected_settings']['ref'])
+        self.assertTrue(report['protected_settings']['differences'])
+
+    def test_committed_branch_fallback_and_origin_head_disagreement(self):
+        self.publish(self.enabled())
+        self.git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+        self.write(self.value)
+        self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+        self.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+        committed = deepcopy(self.gov)
+        committed['github']['base_branch'] = 'other'
+        (self.root / op.GOVERNANCE).write_bytes(op._json(committed))
+        self.git('add', op.GOVERNANCE)
+        self.git('commit', '-qm', 'Old configured branch')
+        report = self.show()[1]['protected_settings']
+        self.assertIn('disagree', report['branch_observation'])
+
+    def test_relative_local_script_and_sandbox_writable_git_are_refused(self):
+        for name in ('git.cmd', 'git.bat', 'git.ps1', 'git.exe'):
+            fake = self.root / name
+            fake.write_text('planted executable')
+            for candidate in (str(fake), name):
+                with self.subTest(candidate=candidate), patch('shutil.which', return_value=candidate), patch('subprocess.run', side_effect=AssertionError('planted Git executed')):
+                    self.assertEqual(2, self.show()[0])
+
+    def test_reftable_reads_policy_through_git(self):
+        self.publish(self.enabled())
+        self.git('refs', 'migrate', '--ref-format=reftable')
+        self.write(self.value)
+        code, report = self.show()
+        self.assertEqual(0, code, report)
+        self.assertTrue(report['configuration']['budgeting']['enforcement_enabled'])
+
+    def test_external_script_and_sandbox_writable_git_refuse_before_execution(self):
+        fake = self.base / ('git-script.exe' if os.name == 'nt' else 'git-script')
+        fake.write_bytes(b'#!/bin/sh\n')
+        with patch('shutil.which', return_value=str(fake)), patch('subprocess.run', side_effect=AssertionError('script executed')):
+            self.assertEqual(2, self.show()[0])
+        with patch('agentic.git_isolation._worker_writable', return_value=True, create=True):
+            self.assertEqual(2, self.show()[0])
+
+    def cycle(self):
+        import runpy
+        controller = runpy.run_path(str(Path(op.__file__).resolve().parents[2] / 'scripts/continuous_controller.py'))
+        main = controller['main']
+        names = {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation', 'observe_planning_backlog', 'verify_planning_backlog', 'observe_planning_events', 'verify_planning_events', 'verify_planning_owner'}
+        binding = self.base / 'binding.json'
+        binding.write_text('{}')
+        argv = ['--state', str(self.base / 'controller.sqlite'), '--stream', 'A', '--worktree-root', str(self.base / 'worker'),
+                '--project-config', str(self.root / op.GOVERNANCE), 'cycle', '--inventory-binding', str(binding),
+                '--repository-root', str(self.root), '--repository-head-sha', self.git('rev-parse', 'HEAD'),
+                '--repository-tree-sha', self.git('rev-parse', 'HEAD^{tree}'), '--now', '2026-11-07T10:00:00Z']
+        def observed_cycle(*args, **kwargs):
+            return {'status': 'ACCEPTED', 'budget': kwargs['planning_operating_snapshot'].config['budgeting']}
+        with patch.dict(main.__globals__, _load_reviewed_adapters=lambda *a: dict.fromkeys(names, lambda *a: None),
+                ContinuousControllerStore=lambda *a, **k: object(), production_controller_cycle=observed_cycle), patch('agentic.store.Store'):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(0, main(argv, default_root=self.root))
+            return json.loads(out.getvalue())
+
+    def test_controller_cycle_fetches_and_failure_retains_policy(self):
+        old = self.git('rev-parse', 'HEAD')
+        self.publish(self.enabled())
+        self.git('update-ref', 'refs/remotes/origin/main', old)
+        result = self.cycle()
+        self.assertTrue(result['budget']['enforcement_enabled'])
+        self.assertEqual('FETCHED', result['protected_policy_fetch']['status'])
+        self.git('remote', 'set-url', 'origin', str(self.base / 'unavailable.git'))
+        result = self.cycle()
+        self.assertTrue(result['budget']['enforcement_enabled'])
+        self.assertEqual('UNAVAILABLE', result['protected_policy_fetch']['status'])
+
+    @source_only.skip_unless_source_repo("requires both source skill descriptions", "global/awf/SKILL.md", "global/awf-portable/SKILL.md")
+    def test_skill_and_rules_docs_describe_observed_behaviour(self):
+        root = Path(op.__file__).resolve().parents[3]
+        for name in ('awf', 'awf-portable'):
+            skill = (root / 'global' / name / 'SKILL.md').read_text(encoding='utf-8')
+            self.assertIn('budget', skill.split('description:', 1)[1].split('\n', 1)[0].lower())
+            self.assertIn('Fetch after observed merge', skill)
+        doc = (root / '.agentic/docs/39-BUDGETING.md').read_text(encoding='utf-8')
+        self.assertIn('`show` reports rules UNOBSERVED', doc)
+        for phrase in ('update-ref', 'fetch-refspec', 'gitfile', "controller's own checkout"):
+            self.assertIn(phrase, doc)
+
+    @source_only.skip_unless_source_repo("requires genuine published 1.9.5 Git objects", "scripts/publish_release.py")
+    def test_legacy_event_chain_survives_merged_block(self):
+        legacy = deepcopy(self.value)
+        legacy.pop('budgeting')
+        self.publish(legacy)
+        import sys
+        import tarfile
+        source_root = Path(op.__file__).resolve().parents[3]
+        older = self.base / 'published-runtime'
+        older.mkdir()
+        published = '8ad399943c8f5e4f17db72f3e321b9365ee27782'
+        archived = subprocess.run([shutil.which('git'), '-C', str(source_root), 'archive', published,
+            '.agentic/lib', '.agentic/schemas'], capture_output=True, check=True).stdout
+        with tarfile.open(fileobj=io.BytesIO(archived)) as archive:
+            archive.extractall(older, filter='data')
+        command = "import sys; sys.path.insert(0,sys.argv[1]); from agentic import operating as op; from agentic.canonical import load; from pathlib import Path; op.set_operating(sys.argv[2],load(Path(sys.argv[2])/op.GOVERNANCE),'four streams',['streams.count=4'])"
+        historical_run = subprocess.run([sys.executable, '-B', '-I', '-c', command, str(older / '.agentic/lib'), str(self.root)],
+                       capture_output=True, text=True)
+        self.assertEqual(0, historical_run.returncode, historical_run.stderr)
+        events = list((self.root / op.STATE / 'changes').glob('*.json'))
+        self.assertTrue(events)
+        self.assertTrue(all('unprotected_after_hash' not in json.loads(path.read_bytes()) for path in events))
+        upgraded = json.loads((self.root / op.CONFIG).read_bytes())
+        upgraded['budgeting'] = self.enabled()['budgeting']
+        self.publish(upgraded)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = op.main(['--root', str(self.root), 'set', '--instruction', 'three streams', '--set', 'streams.count=3', '--json'])
+        self.assertEqual(0, code, out.getvalue())
+        self.assertEqual(0, self.show()[0])
+
+    def test_behind_checkout_guidance_and_fetch_provenance(self):
+        old = self.git('rev-parse', 'HEAD')
+        self.publish(self.enabled())
+        self.git('checkout', '-q', '--detach', old)
+        code, report = self.show()
+        self.assertEqual(0, code, report)
+        self.assertIn('update the checkout', report['protected_settings']['next_action'])
+        self.assertIn('fetched', report['protected_settings']['visibility'])
+        self.assertIn('fetched_at', report['protected_settings'])
+
+    def test_legacy_source_empty_and_missing_blob_diagnostics(self):
+        legacy = deepcopy(self.value)
+        legacy.pop('budgeting')
+        self.publish(legacy)
+        self.assertIn('legacy retained', self.show()[1]['protected_settings']['source'])
+        (self.root / op.CONFIG).write_bytes(b'')
+        self.git('add', op.CONFIG)
+        self.git('commit', '-qm', 'Empty policy')
+        self.git('push', '-q', 'origin', 'main')
+        self.write(self.value)
+        self.assertIn('empty', str(self.show()[1]))
+        self.publish(self.enabled())
+        blob = self.git('rev-parse', 'HEAD:' + op.CONFIG)
+        obj = self.root / '.git/objects' / blob[:2] / blob[2:]
+        obj.chmod(0o600)
+        obj.unlink()
+        self.assertIn('blob', str(self.show()[1]))
+
+    def test_plain_show_budget_is_readable(self):
+        code, output = self.show(False)
+        self.assertEqual(0, code)
+        self.assertIn('Accounting: OFF', output)
+        self.assertIn('Enforcement: OFF', output)
+        self.assertIn('4,000,000', output)
+        self.assertIn('1,000,000,000', output)
+
+    def test_linked_worktree_requires_matching_backlink(self):
+        linked = self.base / 'linked'
+        self.git('worktree', 'add', '-q', '--detach', str(linked))
+        marker = linked / '.git'
+        admin = Path(marker.read_text().strip()[8:])
+        (admin / 'gitdir').write_text(str(self.root / '.git'))
+        self.root = linked
+        self.assertEqual(2, self.show()[0])
+
+
+from agentic import git_isolation as admission
+
+class NativeGitACLTests(unittest.TestCase):
+    def sandbox_acl(self, target, mask):
+        """Apply a real, non-inheriting capability ACL to a temporary object."""
+        import ctypes
+        from ctypes import wintypes
+        api = ctypes.WinDLL('advapi32', use_last_error=True)
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p)
+        api.GetSecurityDescriptorDacl.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL))
+        api.SetNamedSecurityInfoW.argtypes = (wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+        kernel.LocalFree.argtypes = (ctypes.c_void_p,)
+        descriptor, acl = ctypes.c_void_p(), ctypes.c_void_p()
+        present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+        # Full owner/admin/Users access must not count as sandbox authority.
+        sddl = ('D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;BU)'
+                f'(A;;{hex(mask)};;;S-1-15-3-1024-12345)')
+        self.assertTrue(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, 1, ctypes.byref(descriptor), None))
+        try:
+            self.assertTrue(api.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present),
+                ctypes.byref(acl), ctypes.byref(defaulted)))
+            self.assertEqual(0, api.SetNamedSecurityInfoW(str(target), 1, 0x80000004,
+                None, None, acl, None))
+        finally:
+            kernel.LocalFree(descriptor)
+        self.assertEqual(mask, admission._sandbox_group_rights(target))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows ancestor ACL control')
+    def test_ancestor_acl_control_needs_no_preexisting_create_rights(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            native = base / 'install/vendor/bin/gh.exe'
+            native.parent.mkdir(parents=True)
+            shutil.copyfile(sys.executable, native)
+            targets = (native, native.parent, native.parent.parent, base / 'install', base)
+            inspect = admission._sandbox_group_rights
+            for directory in targets[1:]:
+                for control in (0x40000, 0x80000):
+                    with self.subTest(ancestor=directory.relative_to(base), control=control):
+                        for target in targets:
+                            self.sandbox_acl(target, 0x1200a9 | (control if target == directory else 0))
+                        with patch.object(admission, '_sandbox_group_rights',
+                                side_effect=lambda p: inspect(p) if p in targets else 0):
+                            self.assertTrue(admission._worker_writable(native))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows volume root ACL routes')
+    def test_volume_root_sandbox_replacement_routes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            native = base / 'install/bin/gh.exe'
+            native.parent.mkdir(parents=True)
+            shutil.copyfile(sys.executable, native)
+            inspect = admission._sandbox_group_rights
+            root_acl = base / 'root-acl'
+            root_acl.mkdir()
+            # Inspect real fixture ACLs as the root grant; never mutate a volume ACL.
+            for mask, refused in ((0x40, False), (4, False), (0x44, True),
+                                  (0x40000, True), (0x80000, True)):
+                with self.subTest(root_grant=mask):
+                    self.sandbox_acl(root_acl, 0x1200a9 | mask)
+                    seen = []
+                    def rights(member):
+                        seen.append(member)
+                        return inspect(root_acl) if member == Path(native.anchor) else 0x1200a9
+                    with patch.object(admission, '_sandbox_group_rights', side_effect=rights):
+                        self.assertEqual(refused, admission._worker_writable(native))
+                    self.assertIn(Path(native.anchor), seen)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows capability SID ACL')
+    def test_capability_write_grant_is_refused(self):
+        import ctypes
+        from ctypes import wintypes
+        api = ctypes.WinDLL('advapi32', use_last_error=True)
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p)
+        api.GetSecurityDescriptorDacl.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL))
+        api.SetNamedSecurityInfoW.argtypes = (wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+        kernel.LocalFree.argtypes = (ctypes.c_void_p,)
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / 'gh.exe'
+            shutil.copyfile(sys.executable, binary)
+            descriptor, acl = ctypes.c_void_p(), ctypes.c_void_p()
+            present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+            self.assertTrue(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                'D:(A;;0x2;;;S-1-15-3-1024-12345)', 1, ctypes.byref(descriptor), None))
+            try:
+                self.assertTrue(api.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present),
+                    ctypes.byref(acl), ctypes.byref(defaulted)))
+                # Retain inherited owner access; add only a synthetic capability grant.
+                self.assertEqual(0, api.SetNamedSecurityInfoW(str(binary), 1, 4, None, None, acl, None))
+                self.assertTrue(admission._sandbox_group_rights(binary) & 2)
+                self.assertTrue(admission._worker_writable(binary))
+            finally:
+                kernel.LocalFree(descriptor)

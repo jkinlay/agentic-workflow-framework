@@ -432,13 +432,13 @@ def _bound_governance(tree, governance):
     return actual
 
 
-def _events(tree):
+def _events(tree, *, additional_bytes=0):
     directory = tree.root / STATE / "changes"
     if not directory.exists():
         return []
     with Tree(directory) as records:
         names = records.file_list()
-        if len(names) > 10000:
+        if len(names) + bool(additional_bytes) > 10000:
             fail("$", "Operating history exceeds bounded inventory; archive through an explicit reviewed migration")
         events, total = [], 0
         for name in names:
@@ -447,7 +447,7 @@ def _events(tree):
                 fail("$", "Unexpected operating audit member")
             raw = records.read(name, maximum=MAX_BYTES)
             total += len(raw)
-            if total > 8 * MAX_BYTES:
+            if total + additional_bytes > 8 * MAX_BYTES:
                 fail("$", "Operating history exceeds aggregate byte bound")
             if staged:
                 # A killed writer can leave an unpublished staging file. Retain
@@ -467,7 +467,12 @@ def _events(tree):
             fail("$", "Operating audit is not a complete append-only chain")
         if (previous and event["before_hash"] != previous["after_hash"]
                 and not (previous.get("unprotected_after_hash") is not None
-                         and event.get("unprotected_before_hash") == previous["unprotected_after_hash"])):
+                         and event.get("unprotected_before_hash") == previous["unprotected_after_hash"])
+                and not (previous.get("unprotected_after_hash") is None
+                         and isinstance(event.get("legacy_before_configuration"), dict)
+                         and fingerprint("operating", event["legacy_before_configuration"]) == event["before_hash"]
+                         and unprotected_hash(event["legacy_before_configuration"]) == event.get("unprotected_before_hash")
+                         and audit_matches(event["legacy_before_configuration"], previous))):
             fail("$", "Operating audit hash chain differs")
         previous = event
     return events
@@ -621,6 +626,10 @@ def _prepare_commit(tree, governance, before, value, instruction, changed, appli
              "previous_change_id": events[-1]["id"] if events else None, "governance_hash": after.governance_hash}
     event['unprotected_before_hash'] = unprotected_hash(load_yaml(before)) if before is not None else None
     event['unprotected_after_hash'] = unprotected_hash(value)
+    if events and events[-1].get('unprotected_after_hash') is None and before_hash != events[-1]['after_hash']:
+        # Preserve authentic old records. Bind the exact pre-change configuration
+        # so readers can independently verify the legacy/fresh projection bridge.
+        event['legacy_before_configuration'] = load_yaml(before)
     errors = _schema("operating-change", event)
     if errors:
         raise OperatingError(errors)
@@ -631,6 +640,9 @@ def _prepare_commit(tree, governance, before, value, instruction, changed, appli
     for path, data in (("$.configuration", raw), ("$.event", event_raw), ("$.journal", journal_raw)):
         if len(data) > MAX_BYTES:
             fail(path, "Serialized operating transaction member exceeds its 1 MiB read/recovery limit; reduce the change or use a reviewed migration")
+    # The proposed event must fit the existing inventory/aggregate limits before
+    # either the lock or publication can leave state behind on a refusal.
+    _events(tree, additional_bytes=len(event_raw))
     return event, raw, event_raw, journal_raw
 
 
@@ -638,6 +650,9 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     event, raw, event_raw, journal_raw = _prepare_commit(
         tree, governance, before, value, instruction, changed, applied_from,
         created_at=created_at)
+    from .protected_settings import resolve_protected
+    effective, protected = resolve_protected(tree.root, governance, value)
+    effective = validate_operating(effective, governance)
     _new(tree, JOURNAL, journal_raw)
     # On any interruption retain the WAL. Never claim config/audit are a single rename.
     if _read(tree, CONFIG) != before:
@@ -648,7 +663,9 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     if _read(tree, CONFIG) != raw:
         fail("$", "Operating write readback differs; journal retained")
     tree.unlink(JOURNAL)
-    return _snapshot(tree, governance)
+    recorded = _snapshot(tree, governance, working_only=True)
+    return replace(effective, last_change_id=recorded.last_change_id,
+                   _provenance_json=canonical({**recorded.provenance, 'protected_settings': protected}))
 
 
 def plan_initialize_operating(project_root, governance, *, change_id=None, created_at=None, initial_operating=None):
@@ -899,7 +916,7 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         fail("$", "--initialize requires explicit custom --set choices, not a prior recommendation")
     if epic_id is not None and recommendation_id:
         fail("$.epic", "A project-wide recommendation cannot be reinterpreted as an Epic-scoped change")
-    with Tree(project_root) as tree, _lock(tree):
+    with Tree(project_root) as tree:
         _bound_governance(tree, governance)
         if recommendation_id:
             snapshot, before = _snapshot(tree, governance, working_only=True), tree.read(CONFIG, maximum=MAX_BYTES)
@@ -954,7 +971,13 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                    if _get(snapshot.config, p) != _get(value, p)]
         if budget_changes:
             fail('$.budgeting', 'Protected settings require a PR: open a PR changing only the requested OPERATING_CONFIG.yaml values; the owner merges, then fetch the default branch. The live file was not changed')
-        return _commit(tree, governance, before, value, instruction, changes, "chat")
+        # Complete all refusal checks before creating the lock/state directory.
+        from .protected_settings import resolve_protected
+        effective, _report = resolve_protected(tree.root, governance, value)
+        validate_operating(effective, governance)
+        _prepare_commit(tree, governance, before, value, instruction, changes, "chat")
+        with _lock(tree):
+            return _commit(tree, governance, before, value, instruction, changes, "chat")
 
 
 def _scope(paths, epic_id):
@@ -1248,7 +1271,12 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
                   + "review floor " + _display(policy["review_floor"]) + "; risk route " + _display(policy["risk_route"]),
                   "Options: keep | review Epics and recommend | custom (say what you want)"])
     from .budgeting import resolve_settings
-    lines.append('Budgeting (persisted effective settings): ' + json.dumps(resolve_settings(value), sort_keys=True))
+    budget = resolve_settings(value)
+    lines.extend(['Budgeting (effective):',
+                  'Accounting: ' + ('ON' if budget['accounting_enabled'] else 'OFF'),
+                  'Enforcement: ' + ('ON' if budget['enforcement_enabled'] else 'OFF'),
+                  f"Token limit per ticket: {format(budget['max_tokens_per_ticket'], ',') if budget['max_tokens_per_ticket'] is not None else 'legacy reviewed limit'}",
+                  f"Token limit per project lifetime: {format(budget['max_tokens_per_project'], ',') if budget['max_tokens_per_project'] is not None else 'legacy reviewed limit'}"])
     return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
 
 
@@ -1349,6 +1377,10 @@ def main(argv=None, default_root=None):
         result['table'] += '\nProtected settings: ' + str(protected.get('source', 'unobserved'))
         if protected.get('commit'):
             result['table'] += ' at ' + protected['commit']
+        for field in ('policy_observation', 'branch_observation', 'visibility'):
+            if protected.get(field):
+                result['table'] += '\n' + protected[field]
+        result['table'] += '\nLast fetch (FETCH_HEAD): ' + str(protected.get('fetched_at') or 'UNOBSERVED')
         if protected.get('differences'):
             result['table'] += '\n' + protected['next_action']
             for difference in protected['differences']:

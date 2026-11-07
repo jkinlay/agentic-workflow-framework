@@ -749,6 +749,44 @@ class ConfiguredInstallerTests(unittest.TestCase):
     def perform(self, **kwargs):
         return install(self.source, self.dest, self.pin, configure=True, discover=False, overrides=explicit(), **kwargs)
 
+    def test_adoption_into_clone_without_default_operating_file(self):
+        import shutil
+        # The minimal source fixture must include fresh defaults compatible with
+        # its legacy six-lane governance, just as a full release includes defaults.
+        from agentic.operating import default_operating, _json
+        configured = adoption.prepare_config(template(), overrides=explicit(), discover=False)['config']
+        operating_raw = _json(default_operating(configured['execution']['model_routing']))
+        defaults = '.agentic/defaults/OPERATING_CONFIG.yaml'
+        self.files[defaults] = operating_raw
+        (self.source / defaults).parent.mkdir(parents=True, exist_ok=True)
+        (self.source / defaults).write_bytes(operating_raw)
+        manifest = json_bytes({'format': 'awf-manifest-1', 'template_version': VERSION,
+                               'files': {name: sha256(raw) for name, raw in self.files.items()}})
+        (self.source / 'MANIFEST.json').write_bytes(manifest)
+        self.pin = sha256(manifest)
+        from agentic.child_process import isolated_git_env
+        def git(root, *args):
+            return subprocess.run([shutil.which('git'), '-C', str(root), *args],
+                env=isolated_git_env(), capture_output=True, check=True)
+        seed = self.base / 'seed'
+        seed.mkdir()
+        bare = self.base / 'remote.git'
+        git(seed, 'init', '-q', '-b', 'main')
+        git(seed, 'init', '-q', '--bare', '-b', 'main', str(bare))
+        (seed / 'README.md').write_bytes(b'Product fixture\n')
+        git(seed, 'add', 'README.md')
+        git(seed, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Product')
+        git(seed, 'remote', 'add', 'origin', str(bare))
+        git(seed, 'push', '-q', 'origin', 'main')
+        git(seed, 'clone', '-q', str(bare), str(self.dest))
+        result = self.perform(defer_runtime=True)
+        self.assertEqual('INSTALLED', result['status'])  # Runtime verification deliberately deferred.
+        from agentic.operating import read_operating
+        effective = read_operating(self.dest, load(self.dest / CONFIG))
+        self.assertFalse(effective.config['budgeting']['accounting_enabled'])
+        self.assertEqual('file absent at default-branch commit; no accepted policy',
+                         effective.provenance['protected_settings']['policy_observation'])
+
     def test_same_version_receipt_project_uuid_and_raw_config_survive_upgrade(self):
         first = self.perform()
         config_path = self.dest / CONFIG

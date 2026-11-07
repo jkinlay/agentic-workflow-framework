@@ -1,6 +1,6 @@
 ---
 name: awf
-description: Verify and adopt AWF releases; guide bounded project work, independent review and evidence accounting. Includes AWF 1.9.6.
+description: Check and change AWF budgets through owner-merged PRs; Verify and adopt AWF releases; guide bounded project work, independent review and evidence accounting. Includes AWF 1.9.6.
 metadata:
   publisher: Jonathan Kinlay
   license: Apache-2.0
@@ -69,7 +69,7 @@ Recommend versioned preservation, never in-place integrity-managed bytes/receipt
 For budget questions in AWF Codex chat, run verified `workflow.py operating show`
 read-only, without approval. Present both switches, both limits, source (fresh
 defaults, default branch at the reported commit, or legacy retained), working-file
-differences and rules APPLIED/MISSING/UNOBSERVED warnings. Last PR/merger is optional;
+differences and offline rules UNOBSERVED warnings; publication readiness/adoption observe live rules. Last PR/merger is optional;
 say when unobserved. No terminal command is required of the owner.
 
 For changes, branch from the fetched configured default branch. Edit only requested
