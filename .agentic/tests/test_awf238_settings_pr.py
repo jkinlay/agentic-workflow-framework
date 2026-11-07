@@ -96,6 +96,42 @@ class UpgradeSettingsPRTests(unittest.TestCase):
                 effective = op.read_operating(self.root, self.gov)
                 self.assertEqual(accepted.get('budgeting'), effective.config.get('budgeting'))
 
+    def test_absent_accepted_file_ignores_enabled_working_budget_on_upgrade_branch(self):
+        from agentic.protected_settings import _git
+        _git(self.root, 'rm', '-q', op.CONFIG)
+        _git(self.root, '-c', 'user.name=Fixture', '-c',
+             'user.email=fixture@example.invalid', 'commit', '-qm', 'Absent accepted file')
+        _git(self.root, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+        commit = _git(self.root, 'rev-parse', 'HEAD').decode().strip()
+        for legacy in (False, True):
+            value = deepcopy(self.legacy)
+            if not legacy:
+                value['budgeting'] = dict(fresh_settings(), accounting_enabled=True,
+                                          enforcement_enabled=True)
+            (self.root / op.CONFIG).write_bytes(op._json(value))
+            snapshot = op.read_operating(self.root, self.gov)
+            self.assertEqual(None if legacy else fresh_settings(), snapshot.config.get('budgeting'))
+            report = snapshot.provenance['protected_settings']
+            self.assertEqual(commit, report['commit'])
+            self.assertTrue(report['budget_admission'])
+            self.assertIn('accepted', report['policy_observation'])
+
+    def test_nondefault_policy_checks_use_normalized_values(self):
+        from agentic.protected_settings import resolve_protected, require_mutation_policy
+        with tempfile.TemporaryDirectory() as raw:
+            for block in (None, {}, fresh_settings()):
+                value = deepcopy(self.legacy)
+                if block is not None:
+                    value['budgeting'] = block
+                # This policy-availability test does not relax the complete
+                # budgeting schema enforced by validate_operating afterwards.
+                effective, _ = resolve_protected(Path(raw), self.gov, value)
+                self.assertEqual(value, effective)
+                require_mutation_policy({'unverified': True, 'next_action': 'fetch'}, value)
+            with self.assertRaisesRegex(ValidationError, 'Nondefault'):
+                require_mutation_policy({'unverified': True, 'next_action': 'fetch'},
+                    {'budgeting': dict(fresh_settings(), accounting_enabled=True)})
+
     def test_prerelease_confirmation_record_is_refused_plainly_and_retained(self):
         path = next((self.root / op.STATE / 'changes').glob('*.json'))
         event = json.loads(path.read_bytes())

@@ -25,7 +25,7 @@ class ProductionPreA11Tests(unittest.TestCase):
         if config is None:
             config, _, _ = self.adapter()
         config['github']['project_id'] = self.gov['project']['id']
-        runner = fixtures.ControllerCli(record_dir=config['codex']['run_record_directory'])
+        runner = fixtures.ControllerCli(credential_envs=(config['jira']['token_env'], config['jira'].get('email_env')), record_dir=config['codex']['run_record_directory'])
         runner.emit_thread = False
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         value = deepcopy(self.value)

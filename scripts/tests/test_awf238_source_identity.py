@@ -1,6 +1,9 @@
 """Qualification must name the exact clean, manifest-consistent source."""
 from pathlib import Path
 import sys
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,8 +17,26 @@ import qualify_upgrade
 class SourceIdentityTests(unittest.TestCase):
     def test_dirty_source_refuses_before_creating_cohort(self):
         with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source'
+            # Copy committed source into a disposable repository; the caller's
+            # checkout may be clean, dirty, or in a merge and stays untouched.
+            from agentic.child_process import isolated_git_env
+            git = [shutil.which('git'), '-c', 'safe.directory=' + ROOT.as_posix()]
+            observed = subprocess.run([*git, '-C', str(ROOT), 'rev-parse', '--absolute-git-dir'],
+                env=isolated_git_env(), capture_output=True, check=True)
+            # A linked worktree's local clone validates its administrative path.
+            # Trust only that observed path for this command, never global config.
+            admin = Path(os.fsdecode(observed.stdout).strip())
+            subprocess.run([*git, '-c', 'safe.directory=' + admin.as_posix(), 'clone', '--quiet',
+                '--no-hardlinks', str(ROOT), str(source)],
+                env=isolated_git_env(), capture_output=True, check=True)
+            self.assertEqual(b'', subprocess.run([shutil.which('git'), '-C',
+                str(source), 'status', '--porcelain'], env=isolated_git_env(),
+                capture_output=True, check=True).stdout)
+            readme = source / 'README.md'
+            readme.write_bytes(readme.read_bytes() + b'\nDirty qualification fixture.\n')
             work = Path(temporary) / 'cohort'
-            report = qualify_upgrade.qualify(ROOT, work)
+            report = qualify_upgrade.qualify(source, work)
             self.assertEqual('NOT_QUALIFIED', report['status'])
             self.assertEqual('source_identity', report['failed_stage'])
             self.assertIn('dirty', report['diagnostic'].lower())

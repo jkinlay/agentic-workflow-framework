@@ -4,6 +4,7 @@ Git metadata must remain outside worker write authority. Repository rules and
 the owner govern merging. Reads never fetch; the controller refreshes separately.
 """
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 import re
 
@@ -93,11 +94,17 @@ def _blob(root, commit, path):
 def _default_ref(root):
     # This symbolic ref is the sole identity input. Never parse branch config.
     symbolic = _git(root, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD', optional=True)
-    ref = symbolic.decode('ascii').strip() if symbolic else None
-    if ref is not None and (not ref.startswith('refs/remotes/origin/') or
-                            not re.fullmatch(r'refs/remotes/origin/[A-Za-z0-9][A-Za-z0-9_./-]*', ref)):
-        raise ValidationError('Invalid origin/HEAD default-branch reference')
+    ref = symbolic.decode('utf-8').rstrip('\n') if symbolic else None
+    if ref is not None:
+        _validate_tracking_ref(root, ref)
     return ref, 'Default branch from origin/HEAD' if ref else 'Default branch unverified: origin/HEAD absent'
+
+
+def _validate_tracking_ref(root, ref):
+    # Share Git's grammar with publication, including UTF-8 and punctuation.
+    if not ref.startswith('refs/remotes/origin/'):
+        raise ValidationError('Invalid origin/HEAD default-branch reference')
+    _git(root, 'check-ref-format', ref)
 
 
 def _origin_url(root):
@@ -165,20 +172,19 @@ def resolve_protected(root, governance, working):
             # Admit the executable even when the repository has no default ref.
             from .git_isolation import native_git_executable
             native_git_executable(Path(root))
-            guard = metadata / 'awf-default-policy.lock'
-            if guard.exists():
-                raise ValidationError('Default policy refresh in progress; retry after the controller cycle; inspect a stale awf-default-policy.lock before removing it')
             ref, branch_observation = _default_ref(root)
             raw_commit = _git(root, 'rev-parse', '--verify', '--quiet', ref + '^{commit}', optional=True) if ref else None
             commit = raw_commit.decode('ascii').strip() if raw_commit else None
-            if guard.exists() or _default_ref(root)[0] != ref:
+            if _default_ref(root)[0] != ref:
                 raise ValidationError('Default policy changed during read; retry after the controller cycle')
             remote_configured = _origin_url(root) is not None
             unverified = remote_configured and not commit
             if unverified:
                 branch_observation = 'Default branch unverified: origin/HEAD absent or its target unavailable; ' + remedy
                 tracking = _git(root, 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/')
-                budget_admission = not (tracking or needed)
+                # A dangling identity can result from interrupted namespace
+                # cleanup. It is never the fresh, no-policy installation case.
+                budget_admission = not (ref or tracking or needed)
             configured = governance.get('github', {}).get('base_branch')
             if ref and configured and ref != 'refs/remotes/origin/' + configured:
                 branch_observation += '; origin/HEAD and configured github.base_branch disagree; github.base_branch is not an identity input'
@@ -241,19 +247,92 @@ def resolve_protected(root, governance, working):
         next_action=remedy if unverified else next_action)
 
 
-def refresh_default_policy(root):
-    """Controller-only bounded fetch; failure retains the last known policy ref.
+@contextmanager
+def _refresh_lock(path):
+    """Reclaim old markers only under an OS lock, immune to wall-clock jumps.
 
-    Uses the checkout's existing Git credentials/configuration. Read-only show
-    never calls this function. Explicit atomic refspecs avoid configured mapping
-    steering and cannot update unrelated refs or invoke automatic maintenance.
+    Keep the handle locked through unlink. Openers of the retired inode must
+    recheck its identity; they cannot publish after a replacement acquired it.
+    Windows needs delete sharing to unlink before releasing the kernel lock.
     """
     import os
-    from .child_process import child_env
+    import time
+    if os.name == 'nt':
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        create = kernel.CreateFileW
+        create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                           ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        create.restype = wintypes.HANDLE
+        # OPEN_ALWAYS atomically identifies a new file via ERROR_ALREADY_EXISTS.
+        handle = create(str(path), 0xc0000000, 7, None, 4, 0x80, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        created = ctypes.get_last_error() != 183
+        stream = os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY), 'r+b')
+    else:
+        try:
+            stream = path.open('x+b')
+            created = True
+        except FileExistsError:
+            stream = path.open('r+b')
+            created = False
+    claimed = False
+    try:
+        if os.name == 'nt':
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        info = os.fstat(stream.fileno())
+        if not os.path.samestat(info, path.stat()):
+            raise ValidationError('Refresh lock was replaced; retry next cycle')
+        # Even a suspended live refresher keeps its kernel lock. Age alone
+        # cannot prove death: a clock jump must never permit a second writer.
+        replaced = not (created and info.st_size == 0)
+        if replaced and time.time() - info.st_mtime <= 600:
+            raise ValidationError('Another refresh owns a lock younger than ten minutes')
+        stream.seek(0)
+        stream.truncate()
+        stream.write(b'Controller default-policy refresh\n')
+        stream.flush()
+        claimed = True
+        yield replaced
+    finally:
+        try:
+            if claimed:
+                path.unlink()
+        finally:
+            stream.close()
+
+
+def refresh_default_policy(root, *, credential_envs=()):
+    """Controller-only bounded fetch; failure retains policy or refuses admission.
+
+    Uses the checkout's existing Git credentials/configuration. Read-only show
+    never calls this function. Objects-only fetch avoids configured mapping;
+    publication removes only namespace conflicts before updating the identity.
+    """
+    import os
+    from .child_process import child_env, safe_adapter_env
     from .git_isolation import native_git_executable
     from .safeio import run_bounded
+    # Minimum supported Git: 2.29 (maintenance.auto). Audited bundled Git
+    # Documentation/RelNotes: 1.6.6 --no-replace-objects; 1.7.x -c, config
+    # --local/--null/--get-all and --no-includes (includes: 1.7.10), fetch
+    # --no-tags/--no-recurse-submodules (1.7.4); 1.8.5 -C; 2.8 ls-remote
+    # --symref (--get-url predates it); 2.9 core.hooksPath; 2.16 fsmonitor;
+    # 2.26 documents empty --refmap=; 2.29 introduces maintenance.
+    # Existing plumbing: check-ref-format, for-each-ref --format, rev-parse
+    # --verify/--quiet ^{commit}, update-ref --no-deref/-d, symbolic-ref -q.
+    # safe.directory is ignored before its later security backports; gc.auto=0
+    # also suppresses pre-maintenance GC. No --atomic (2.31) or stdin symrefs.
+    # Sources: https://git-scm.com/docs/RelNotes/2.29.0 (and versions above).
+    # This is an option audit, not execution against an older Git binary.
     step = 'remote identity'
-    guard = None
+    stale_lock_replaced = False
     try:
         metadata = _metadata(root)
         if metadata is None:
@@ -262,7 +341,8 @@ def refresh_default_policy(root):
         if url is None:
             return dict(status='UNOBSERVED', step=step, reason='No repository-configured remote.origin.url; no remote policy fetch attempted; configure origin to refresh')
         url = _accepted_url(root, url)
-        environment = child_env({k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')})
+        environment = child_env({k: v for k, v in safe_adapter_env(*credential_envs).items()
+                                 if not k.upper().startswith('GIT_')})
         environment.update(GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='never',
                            GIT_NO_REPLACE_OBJECTS='1', GIT_ALLOW_PROTOCOL='file:https:http:ssh')
         command = [native_git_executable(Path(root)), '--no-replace-objects',
@@ -285,43 +365,68 @@ def refresh_default_policy(root):
             url = expanded
         else:
             raise ValidationError('Origin URL rewrites do not stabilize; configure an unambiguous external URL')
-        step = 'default discovery'
-        output = run('ls-remote', '--symref', '--', url, 'HEAD').decode('utf-8')
-        names = re.findall(r'^ref: (refs/heads/[^\s]+)\tHEAD$', output, re.MULTILINE)
-        if len(names) != 1:
-            raise ValidationError('Remote HEAD must name one branch')
-        branch_ref = names[0]
-        _git(root, 'check-ref-format', branch_ref)
-        ref = 'refs/remotes/origin/' + branch_ref.removeprefix('refs/heads/')
         step = 'refresh ownership'
         lock = metadata / 'awf-default-policy.lock'
-        with lock.open('x', encoding='ascii') as stream:
-            stream.write('Controller default-policy refresh\n')
-        guard = lock
-        previous, _ = _default_ref(root)
-        step = 'branch fetch'
-        # Fetch objects only. Configured refspecs cannot publish policy early.
-        run('fetch', '--atomic', '--no-tags', '--no-recurse-submodules',
-            '--refmap=', '--', url, branch_ref)
-        commit = _git(root, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}').decode('ascii').strip()
-        if not re.fullmatch(r'[0-9a-f]{40,64}', commit):
-            raise ValidationError('Invalid fetched commit')
-        step = 'policy ref transaction'
-        run('update-ref', '--stdin', stdin='start\noption no-deref\nupdate ' + ref + ' ' + commit
-            + '\noption no-deref\nsymref-update refs/remotes/origin/HEAD ' + ref + '\nprepare\ncommit\n')
+        with _refresh_lock(lock) as stale_lock_replaced:
+            step = 'default discovery'
+            output = run('ls-remote', '--symref', '--', url, 'HEAD').decode('utf-8')
+            names = re.findall(r'^ref: (refs/heads/[^\t\n]+)\tHEAD$', output, re.MULTILINE)
+            if len(names) != 1:
+                raise ValidationError('Remote HEAD must name one branch')
+            advertised = re.findall(r'^([0-9a-f]{40,64})\tHEAD$', output, re.MULTILINE)
+            if len(advertised) != 1:
+                raise ValidationError('Remote HEAD must advertise one commit')
+            branch_ref = names[0]
+            _git(root, 'check-ref-format', branch_ref)
+            ref = 'refs/remotes/origin/' + branch_ref.removeprefix('refs/heads/')
+            _validate_tracking_ref(root, ref)
+            previous, _ = _default_ref(root)
+            step = 'branch fetch'
+            # Fetch objects only. Configured refspecs cannot publish policy early.
+            run('fetch', '--no-tags', '--no-recurse-submodules',
+                '--refmap=', '--', url, branch_ref)
+            commit = _git(root, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}').decode('ascii').strip()
+            # Another fetch can overwrite FETCH_HEAD; a real push between
+            # discovery and fetch also mismatches. Retain policy; next cycle retries.
+            step = 'advertised commit check'
+            if commit != advertised[0]:
+                raise ValidationError('Fetched commit differs from advertised HEAD')
+            step = 'tracking namespace cleanup'
+            tracking = _git(root, 'for-each-ref', '--format=%(refname)', 'refs/remotes/origin/')
+            conflicts = [other for other in tracking.decode('utf-8').split('\n')
+                         if other.startswith(ref + '/') or ref.startswith(other + '/')]
+            if conflicts and previous is None:
+                # Keep evidence of unverified policy even if cleanup removes
+                # the last tracking ref. A DIRECT HEAD is not an identity:
+                # only symbolic-ref can admit policy. Final publication below
+                # replaces this marker with the verified symbolic identity.
+                run('update-ref', '--no-deref', 'refs/remotes/origin/HEAD', commit)
+            for other in conflicts:
+                # Remote refs cannot coexist at these names. Never follow
+                # a stale symbolic tracking ref into an unrelated branch.
+                run('update-ref', '--no-deref', '-d', other)
+            step = 'policy ref transaction'
+            run('update-ref', '--no-deref', ref, commit)
+            if previous != ref:
+                step = 'default identity publication'
+                run('symbolic-ref', 'refs/remotes/origin/HEAD', ref)
         return dict(status='FETCHED', ref=ref, previous_ref=previous, name_changed=previous != ref,
-                    reason='Fetched default branch before loading policy' + ('; default branch name changed' if previous != ref else ''))
+                    stale_lock_replaced=stale_lock_replaced,
+                    reason='Fetched default branch before loading policy' + ('; default branch name changed' if previous != ref else '')
+                    + ('; replaced stale refresh lock' if stale_lock_replaced else ''))
     except (OSError, ValueError, UnicodeError, ValidationError, TimeoutError) as exc:
         remedies = {'remote identity': 'Configure exactly one absolute external remote.origin.url in repository config',
             'default discovery': 'Restore remote access and set its HEAD to an existing branch; retry the controller cycle or git remote set-head origin --auto',
-            'refresh ownership': 'Wait for the owning cycle; inspect a stale awf-default-policy.lock before removing it',
+            'refresh ownership': 'Retry the next controller cycle; unlocked refresh locks older than ten minutes are replaced automatically',
             'branch fetch': 'Restore access to the advertised default branch and retry the controller cycle',
-            'policy ref transaction': 'Restore writable controller-owned Git refs and Git with symref-update support; retry the controller cycle'}
-        return dict(status='UNAVAILABLE', step=step, reason='Default-policy ' + step + ' failed (' + type(exc).__name__
-                    + '); retained last known policy; ' + remedies[step])
-    finally:
-        if guard is not None:
-            guard.unlink()
+            'advertised commit check': 'Fetched commit differs from advertised HEAD; retry the next controller cycle to rediscover and fetch a stable default',
+            'tracking namespace cleanup': 'Restore writable controller-owned conflicting tracking refs; retry the controller cycle',
+            'policy ref transaction': 'Restore writable controller-owned tracking refs; retry the controller cycle',
+            'default identity publication': 'Restore writable controller-owned origin/HEAD; retry the controller cycle'}
+        return dict(status='UNAVAILABLE', step=step, stale_lock_replaced=stale_lock_replaced,
+                    reason='Default-policy ' + step + ' failed (' + type(exc).__name__
+                    + '); retained last known policy or unverified identity; ' + remedies[step]
+                    + ('; replaced stale refresh lock' if stale_lock_replaced else ''))
 
 
 def effective_snapshot(root, governance, snapshot):
@@ -333,12 +438,12 @@ def effective_snapshot(root, governance, snapshot):
         _provenance_json=canonical({**snapshot.provenance, 'protected_settings': report}))
 
 
-def budget_snapshot(root, governance, snapshot):
+def budget_snapshot(root, governance, snapshot, *, credential_envs=()):
     """Admission refreshes unresolved identity before trusting even OFF bytes."""
     result = effective_snapshot(root, governance, snapshot)
     refresh = None
     if result.provenance['protected_settings'].get('unverified'):
-        refresh = refresh_default_policy(root)
+        refresh = refresh_default_policy(root, credential_envs=credential_envs)
         result = effective_snapshot(root, governance, snapshot)
     require_budget_policy(result, refresh=refresh)
     return result

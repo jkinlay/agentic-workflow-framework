@@ -507,8 +507,13 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
             operating = report['operating']
             if report['status'] != 'ACCEPTED':
                 result.update(project_state='INSTALLED', line=f'AWF {VERSION}: INSTALLED (configuration REJECTED)',
-                              decision_codes=['report_state_installed_unconfigured'],
-                              next_action='Run workflow.py validate-config and reconcile the reported operating refusals.')
+                              decision_codes=['report_state_installed_unconfigured'])
+                if operating['status'] != 'ACCEPTED':
+                    # Retain precise governance paths/remedies when both layers
+                    # reject. A valid operating layer must never erase them.
+                    prior_action = result['next_action'] if base_report['status'] != 'ACCEPTED' else ''
+                    result['next_action'] = ((prior_action + ' ') if prior_action else '') + \
+                        'Run workflow.py validate-config and reconcile the reported operating refusals.'
             if operating['status'] == 'ACCEPTED':
                 add('OPERATING_SNAPSHOT', 'operating', 'PASS',
                     'Read-only operating snapshot is accepted at ' + operating['hash'],

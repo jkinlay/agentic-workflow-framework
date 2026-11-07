@@ -277,7 +277,9 @@ def main(argv=None, default_root=ROOT):
 		from agentic.protected_settings import refresh_default_policy, require_budget_policy
 		if args.repository_root.resolve() != default_root.resolve():
 			raise ValidationError('Controller policy must use the controller own checkout, not a worker worktree')
-		policy_fetch = refresh_default_policy(default_root)
+		adapter_jira = (load(args.adapter_config) if args.adapter_config is not None else {}).get('jira', {})
+		policy_fetch = refresh_default_policy(default_root,
+			credential_envs=(adapter_jira.get('token_env'), adapter_jira.get('email_env')))
 		operating = read_operating(default_root, config)
 		require_budget_policy(operating, refresh=policy_fetch)
 		from agentic.store import Store

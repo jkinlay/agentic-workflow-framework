@@ -57,6 +57,7 @@ _RUNTIME_IMPORTS = {
     "referencing": "referencing",
     "rpds-py": "rpds",
     "typing-extensions": "typing_extensions",
+    "tzdata": "tzdata",
 }
 _STARTUP_HOOKS = {"sitecustomize.py", "usercustomize.py"}
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *{"COM" + str(value) for value in range(1, 10)},
@@ -472,8 +473,7 @@ def _validate_runtime(interpreter, root, runtime_root, expected_versions, expect
         raise ValidationError("Canonical runtime dependency inventory changed during validation")
     script = (
         "import importlib,importlib.metadata as m,json,sys,sysconfig;"
-        "mods={'attrs':'attrs','jsonschema':'jsonschema','jsonschema-specifications':'jsonschema_specifications',"
-        "'pyyaml':'yaml','referencing':'referencing','rpds-py':'rpds','typing-extensions':'typing_extensions'};"
+        f"mods={_RUNTIME_IMPORTS!r};"
         "[importlib.import_module(v) for v in mods.values()];"
         "print(json.dumps({'versions':{k:m.version(k) for k in mods},'prefix':sys.prefix,"
         "'purelib':sysconfig.get_path('purelib'),'platlib':sysconfig.get_path('platlib')},sort_keys=True))"
@@ -938,23 +938,32 @@ def _pinned_cpython_cache(path, expected):
 
 def verify_import_membership(root, manifest):
     """Check pinned import membership without executing target code."""
-    for prefix in (".agentic/lib/", ".agentic/scripts/"):
-        expected = {path.removeprefix(prefix): digest for path, digest in manifest["files"].items()
-                    if path.startswith(prefix)}
-        with Tree(Path(root) / prefix) as runtime:
-            actual = set(runtime.file_list())
-            caches = {path for path in actual - set(expected) if _pinned_cpython_cache(path, expected)}
-            unexpected = actual - caches - set(expected)
-            missing = set(expected) - actual
-            if unexpected or missing:
-                raise ValidationError("Unexpected installed runtime import files: " +
-                    ", ".join(prefix + path for path in sorted(unexpected | missing)) +
-                    "; preserve and move unexpected files outside .agentic/lib and .agentic/scripts, "
-                    "or restore missing files from the verified release; rerun the non-writing upgrade plan")
-            for path, digest in expected.items():
-                if sha256(runtime.read(path)) != digest:
-                    raise ValidationError("Installed runtime import file differs from source: " + prefix + path +
-                                          "; restore verified release bytes before retrying")
+    with Tree(root) as project:
+        for prefix in (".agentic/lib/", ".agentic/scripts/"):
+            expected = {path.removeprefix(prefix): digest for path, digest in manifest["files"].items()
+                        if path.startswith(prefix)}
+            try:
+                runtime = Tree(project.root / prefix)
+            except FileNotFoundError:
+                # Minimal manifests may declare no imports at all. Absence then
+                # means an empty inventory; declared missing imports still fail.
+                if expected:
+                    raise
+                continue
+            with runtime:
+                actual = set(runtime.file_list())
+                caches = {path for path in actual - set(expected) if _pinned_cpython_cache(path, expected)}
+                unexpected = actual - caches - set(expected)
+                missing = set(expected) - actual
+                if unexpected or missing:
+                    raise ValidationError("Unexpected installed runtime import files: " +
+                        ", ".join(prefix + path for path in sorted(unexpected | missing)) +
+                        "; preserve and move unexpected files outside .agentic/lib and .agentic/scripts, "
+                        "or restore missing files from the verified release; rerun the non-writing upgrade plan")
+                for path, digest in expected.items():
+                    if sha256(runtime.read(path)) != digest:
+                        raise ValidationError("Installed runtime import file differs from source: " + prefix + path +
+                                              "; restore verified release bytes before retrying")
 
 
 def _verify_import_surface(root, expected_digest):

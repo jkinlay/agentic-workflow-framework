@@ -21,9 +21,11 @@ def with_operating(root, governance, report):
         if source_template:
             try:
                 value = validate_operating(load_yaml(tree.read('OPERATING_CONFIG.yaml')), governance)
-                from .protected_settings import effective_snapshot
-                value = effective_snapshot(root, governance, value)
-                operating = {'status': 'ACCEPTED', 'protected_settings': value.provenance['protected_settings'], 'hash': value.operating_hash, 'source': value.source,
+                from .protected_settings import resolve_protected
+                # Keep source diagnostics free of mutable snapshot/audit metadata.
+                effective, protected = resolve_protected(root, governance, value.config)
+                value = validate_operating(effective, governance)
+                operating = {'status': 'ACCEPTED', 'protected_settings': protected, 'hash': value.operating_hash, 'source': value.source,
                              'budgeting': _budgeting_projection(value.config),
                              'streams': value.count, 'last_change_id': None, 'refusals': [],
                              'provenance': 'source_template', **operating_ceiling(governance)}

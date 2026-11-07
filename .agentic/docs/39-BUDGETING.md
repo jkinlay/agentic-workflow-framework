@@ -51,17 +51,30 @@ branches cannot change admission/recovery/controller/routing, including disablin
 enforcement. Older checkouts read the same policy. Merge then fetch applies a
 change; update a stale checkout before proposing another.
 
-An absent default-branch file means no accepted policy: fresh OFF or legacy.
+An absent default-branch file is accepted: fresh OFF or legacy; working values
+have no effect. Nondefault checks compare normalized values.
 With origin configured but origin/HEAD unavailable, show/validate/install warn;
-budget admission tries refresh and refuses unresolved identity when tracking refs
-or nondefault working values exist. With no refs, fresh OFF/legacy continue
-offline. Malformed/unreadable policy refuses plainly. Git metadata must remain
+budget admission tries refresh and refuses unresolved identity, even without
+tracking refs. Non-repository fresh OFF/legacy continue offline. Malformed/unreadable policy refuses plainly. Git metadata must remain
 outside worker write authority. Repository rules and owner merge rights govern
 acceptance; direct default-branch push/full owner rights can bypass this control.
 Offer the shipped ruleset. Reader digests do not authenticate merges.
 The controller's own checkout is not a worker worktree. Deny worker Git metadata,
 update-ref and fetch-refspec writes; gitfile backlinks must match. `show` reports rules UNOBSERVED
 without a fresh observation; warnings never block.
+
+`show` reports commit and FETCH_HEAD time as the fetch attempt of any
+ref, never evidence of policy refresh. New merges remain invisible until fetched.
+The controller's own checkout requires repository-local remote.origin.url;
+relative/inside-checkout paths refuse. Git 2.29+ ([notes](https://git-scm.com/docs/RelNotes/2.29.0));
+older-binary execution unproven. Lock before 30-second discovery/fetch,
+advertised-commit checking and publication. Mismatches retry next cycle.
+UTF-8 names use check-ref-format. Preserve unverified tracking HEAD when identity
+is absent; delete conflicts, update target, then origin/HEAD. Hierarchical renames recover.
+Failures retain policy/unverified refusal with remedies. Readers ignore locks;
+unlocked locks older than ten minutes are replaced/reported. Locking prevents
+clock-jump takeover. Shared filtering preserves Git helpers/home/PATH/SSH-agent.
+`show` never fetches. The skill fetches after owner merge, then shows settings.
 
 ## Accounting and recovery
 

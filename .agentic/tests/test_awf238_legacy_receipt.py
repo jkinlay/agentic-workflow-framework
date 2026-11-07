@@ -35,5 +35,29 @@ class LegacyReceiptTests(unittest.TestCase):
             self.assertEqual(pin, verify_installed(project))
 
 
+class ImportMembershipTests(unittest.TestCase):
+    def test_absent_undeclared_import_directories_are_empty(self):
+        from agentic.adoption_config import verify_import_membership
+        with tempfile.TemporaryDirectory() as temporary:
+            verify_import_membership(Path(temporary), {'files': {}})
+
+    def test_undeclared_import_files_still_refuse(self):
+        from agentic import ValidationError
+        from agentic.adoption_config import verify_import_membership
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.agentic/lib').mkdir(parents=True)
+            (root / '.agentic/lib/unexpected.py').write_bytes(b'# Synthetic untrusted import\n')
+            with self.assertRaisesRegex(ValidationError, 'Unexpected installed runtime import files'):
+                verify_import_membership(root, {'files': {}})
+
+    def test_declared_missing_directory_still_refuses(self):
+        from agentic.adoption_config import verify_import_membership
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(FileNotFoundError):
+                verify_import_membership(Path(temporary),
+                    {'files': {'.agentic/lib/pinned.py': 'a' * 64}})
+
+
 if __name__ == '__main__':
     unittest.main()

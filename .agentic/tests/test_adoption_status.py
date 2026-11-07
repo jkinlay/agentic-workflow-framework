@@ -298,11 +298,14 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual(result['line'], f'AWF {VERSION}: ACTIVE - streams 3/6')
         preflight_next = result['host_preflight']['next_action']
         rendered = status.render_status(result)
+        expected = (result['line'] + '\nBudgeting: LEGACY_RETAINED; legacy enforcement UNOBSERVED; '
+                    'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED; owner adoption prepares dormant OFF controls in '
+                    'OPERATING_CONFIG.yaml through an owner-merged PR; fetch the default branch to apply.')
         if preflight_next:
-            self.assertEqual(rendered, result['line'] + '\nNext: Host preflight WARN: ' + preflight_next +
-                             '\nNext command: python -B .agentic/scripts/workflow.py status --require-active')
-        else:
-            self.assertNotIn('Next:', rendered)
+            expected += '\nNext: Host preflight WARN: ' + preflight_next
+        interpreter = '.agentic/.venv/Scripts/python.exe' if os.name == 'nt' else '.agentic/.venv/bin/python'
+        expected += '\nNext command: ' + interpreter + ' -B -I .agentic/scripts/workflow.py status --require-active'
+        self.assertEqual(expected, rendered)
 
     @skip_unless_source_repo()
     def test_ac34_installed_host_skill_establishes_durable_trust_and_active(self):

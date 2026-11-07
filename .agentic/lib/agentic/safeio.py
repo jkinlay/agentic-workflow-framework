@@ -36,6 +36,7 @@ _LEGACY_STDOUT_LIMIT = 8 * 1024 * 1024
 _LEGACY_STDERR_LIMIT = 8 * 1024 * 1024
 _LEGACY_WATCHED_LIMIT = 1024 * 1024
 _DEFAULT_STDIN_LIMIT = 1024 * 1024
+_SNAPSHOT_SINGLE_READ_MAXIMUM = 1024 * 1024
 
 
 @dataclass(frozen=True, init=False)
@@ -985,7 +986,22 @@ class Tree:
                 raise ValidationError("Unsafe file type/link count/size")
             if before.st_size > maximum:
                 raise SnapshotSizeError("Unsafe file type/link count/size")
-            data = stream.read(maximum + 1)
+            # Small caps make one cap+1 read cheap; avoid the 64 MiB default
+            # allocation for small files by chunking only larger maxima.
+            if maximum <= _SNAPSHOT_SINGLE_READ_MAXIMUM:
+                data = stream.read(maximum + 1)
+            else:
+                # Size is a hint, not an EOF guarantee (including size zero).
+                read_size = min(before.st_size + 1, 65536)
+                data = bytearray()
+                while len(data) <= maximum:
+                    chunk = stream.read(min(read_size, maximum + 1 - len(data)))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(chunk) == read_size:
+                        read_size = 65536
+                data = bytes(data)
             if len(data) > maximum:
                 raise SnapshotChangedError("File exceeds size limit")
             after = os.fstat(stream.fileno())

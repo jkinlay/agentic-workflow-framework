@@ -273,7 +273,7 @@ def main(argv=None):
         from agentic.contracts import Contracts
         from agentic.installer import verify_installed
         from agentic.lifecycle import validate_workflow
-        for package in ['PyYAML', 'jsonschema', 'attrs', 'jsonschema-specifications', 'referencing', 'rpds-py', 'typing-extensions']:
+        for package in ['PyYAML', 'jsonschema', 'attrs', 'jsonschema-specifications', 'referencing', 'rpds-py', 'typing-extensions', 'tzdata']:
             report['dependencies'][package] = importlib.metadata.version(package)
         report['source_manifest_sha256'] = verify_installed(ROOT)
         report['checks']['integrity'] = 'PASS'

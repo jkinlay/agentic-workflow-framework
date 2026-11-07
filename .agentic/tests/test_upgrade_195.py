@@ -40,18 +40,24 @@ class Published195UpgradeTests(unittest.TestCase):
         materialize_published(ROOT, cls.historical)
         if hashlib.sha256((cls.historical / "MANIFEST.json").read_bytes()).hexdigest() != PUBLISHED_PIN:
             raise AssertionError("independently pinned published 1.9.5 identity mismatch")
-        supplied = os.environ.get("AWF_REAL_RUNTIME_WHEELHOUSE")
-        cls.wheelhouse = Path(supplied).resolve() if supplied else cls.base / "wheelhouse"
-        if not supplied:
-            cls.wheelhouse.mkdir()
-            command = [sys.executable, "-m", "pip", "download", "--require-hashes",
-                       "--only-binary=:all:", "--timeout", "30", "--retries", "1",
-                       "--dest", str(cls.wheelhouse), "-r",
-                       str(cls.historical / ".agentic/requirements.lock")]
-            result = subprocess.run(command, capture_output=True, text=True,
-                                    encoding="utf-8", env=child_env(), timeout=180)
-            if result.returncode:
-                raise AssertionError("real locked-wheel provisioning failed: " + result.stderr)
+        # Historical and current locks can declare different dependencies.
+        # Keep both wheelhouses exact; never add current wheels to 1.9.5.
+        for attribute, source, variable in (
+                ("wheelhouse", cls.historical, "AWF_REAL_RUNTIME_WHEELHOUSE"),
+                ("current_wheelhouse", ROOT, "AWF_CURRENT_RUNTIME_WHEELHOUSE")):
+            supplied = os.environ.get(variable)
+            wheelhouse = Path(supplied).resolve() if supplied else cls.base / attribute
+            setattr(cls, attribute, wheelhouse)
+            if not supplied:
+                wheelhouse.mkdir()
+                command = [sys.executable, "-m", "pip", "download", "--require-hashes",
+                           "--only-binary=:all:", "--timeout", "30", "--retries", "1",
+                           "--dest", str(wheelhouse), "-r",
+                           str(source / ".agentic/requirements.lock")]
+                result = subprocess.run(command, capture_output=True, text=True,
+                                        encoding="utf-8", env=child_env(), timeout=180)
+                if result.returncode:
+                    raise AssertionError("real locked-wheel provisioning failed: " + result.stderr)
         cls.target_pin = hashlib.sha256((ROOT / "MANIFEST.json").read_bytes()).hexdigest()
 
     def setUp(self):
@@ -59,9 +65,10 @@ class Published195UpgradeTests(unittest.TestCase):
         self.bootstrap(self.historical, PUBLISHED_PIN, "install")
 
     def bootstrap(self, source, pin, mode):
+        wheelhouse = self.wheelhouse if source == self.historical else self.current_wheelhouse
         command = [sys.executable, "-B", str(source / "scripts/bootstrap_project.py"),
                    "--dest", str(self.project), "--expected-manifest-sha256", pin,
-                   "--runtime-wheelhouse", str(self.wheelhouse), "--mode", mode,
+                   "--runtime-wheelhouse", str(wheelhouse), "--mode", mode,
                    "--github-repo", "example-org/example-repo", "--repository-id", "101",
                    "--default-branch", "main", "--test-command", "python -m unittest",
                    "--codeowner", "@fixture-owner"]
