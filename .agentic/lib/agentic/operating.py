@@ -935,8 +935,14 @@ def prepare_budgeting_adoption(project_root, governance, instruction):
         report = effective.provenance['protected_settings']
         ref = report.get('ref')
         branch = _git(tree.root, 'symbolic-ref', '-q', 'HEAD', optional=True)
+        try:
+            branch = branch.decode('utf-8').rstrip('\n') if branch else None
+        except UnicodeDecodeError:
+            fail('$.budgeting', 'Adoption branch must be a valid UTF-8 Git reference')
+        if branch:
+            _git(tree.root, 'check-ref-format', branch)
         if (not ref or not report.get('commit') or not branch or
-                branch.decode('ascii').strip() == ref.replace('refs/remotes/origin/', 'refs/heads/', 1)):
+                branch == ref.replace('refs/remotes/origin/', 'refs/heads/', 1)):
             fail('$.budgeting', 'Prepare adoption on an upgrade/settings PR branch from the fetched default branch')
         if 'budgeting' in working.config or 'budgeting' in effective.config:
             fail('$.budgeting', 'Budgeting already exists; request settings changes through a separate PR')

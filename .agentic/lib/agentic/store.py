@@ -482,6 +482,11 @@ class Store:
             if budget_binding is not None and (budget_binding.get('run_id') != run_id or
                     budget_binding.get('ticket_id') != ticket or budget_binding.get('project_id') != self.project_id):
                 raise ValidationError('Budget enrollment differs from state-store reservation')
+            if self.path.resolve() == budget_ledger.path.resolve():
+                # The canonical ledger reads and proves these same retained
+                # reservations under its own admission write lock. Taking a
+                # second Store write lock would deadlock that transaction.
+                return budget_ledger.reserve(budget_binding, settings, tokens)['status']
             # Freeze retained history until canonical proof validation and the
             # new reservation commit. Legacy settlement cannot race admission.
             with self.transaction() as db:

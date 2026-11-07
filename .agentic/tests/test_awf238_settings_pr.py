@@ -76,6 +76,32 @@ class UpgradeSettingsPRTests(unittest.TestCase):
             op.set_operating(self.root, self.gov, 'Enable', ['budgeting.accounting_enabled=true'], adopt_budgeting=True)
         self.assertEqual(original, (self.root / op.CONFIG).read_bytes())
 
+    def test_adoption_accepts_git_valid_utf8_branch(self):
+        from agentic.protected_settings import _git
+        import yaml
+        _git(self.root, 'checkout', '-qb', 'codex/adopt-\u00e9')
+        original = ('# owner header\n' + yaml.safe_dump(self.legacy, sort_keys=False)).encode()
+        (self.root / op.CONFIG).write_bytes(original)
+        result = op.set_operating(self.root, self.gov, 'Adopt dormant controls', adopt_budgeting=True)
+        prepared = (self.root / op.CONFIG).read_bytes()
+        self.assertTrue(prepared.startswith(original))
+        self.assertEqual(fresh_settings(), load_yaml(prepared)['budgeting'])
+        self.assertNotIn('budgeting', result.config)
+
+    def test_adoption_refuses_invalid_utf8_or_git_reference_without_writes(self):
+        from agentic.protected_settings import _git
+        self.branch()
+        original = (self.root / op.CONFIG).read_bytes()
+        for branch in (b'refs/heads/invalid\xff\n', b'refs/heads/invalid..name\n'):
+            def observed(root, *args, **kwargs):
+                if args == ('symbolic-ref', '-q', 'HEAD'):
+                    return branch
+                return _git(root, *args, **kwargs)
+            with self.subTest(branch=branch), patch('agentic.protected_settings._git', side_effect=observed):
+                with self.assertRaises(ValidationError):
+                    op.set_operating(self.root, self.gov, 'Adopt dormant controls', adopt_budgeting=True)
+            self.assertEqual(original, (self.root / op.CONFIG).read_bytes())
+
     def test_merged_enabled_policy_then_unprotected_change_does_not_lock_upgrade(self):
         enabled = deepcopy(self.legacy)
         enabled['budgeting'] = dict(fresh_settings(), accounting_enabled=True, enforcement_enabled=True)

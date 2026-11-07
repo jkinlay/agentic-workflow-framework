@@ -429,8 +429,19 @@ def identify_installation(tree, table, config_raw, receipt_raw):
     if (provenance.get("template", {}).get("version") != claimed
             or provenance.get("installation", {}).get("source_manifest_sha256") != receipt_identity["source_manifest_sha256"]):
         raise ValidationError("Unrecognised AWF installation: workflow provenance does not match the registered receipt; no files changed")
+    provenance_id = provenance.get("installation", {}).get("install_id")
+    receipt_id = receipt.get("install_id")
+    # Registered compatibility formats: 1.8.3's legacy-1 snapshot and the
+    # primary 1.9.3/1.9.4 historical receipts with their exact fixture markers.
+    # Those formats use provenance as the canonical UUID. No published 1.9.5
+    # receipt (or registered variant) is eligible for the marker exception.
+    legacy_marker = (claimed in {"1.9.3", "1.9.4"} and receipt_identity is entry
+                     and receipt_id == "fixture-install-" + claimed)
+    if schema == CURRENT_RECEIPT_SCHEMA and not legacy_marker:
+        if not isinstance(receipt_id, str) or not receipt_id or receipt_id != provenance_id:
+            raise ValidationError("Installed receipt/provenance install_id values differ or are missing; no files changed")
     return {"version": claimed, "entry": entry, "receipt": receipt, "immutable_files": expected,
-            "install_id": provenance.get("installation", {}).get("install_id") or receipt.get("install_id")}
+            "install_id": provenance_id or receipt_id}
 
 
 def _replace_scalar(raw, key, previous, current, *, question):

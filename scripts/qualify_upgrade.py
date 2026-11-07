@@ -908,6 +908,16 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
                     if (expected and all(entry.get(k) == v for k, v in expected.items()) and
                             (original is None or all(entry.get(k) == original[k] for k in ('sha256', 'size')))):
                         approve(path, {'rule': 'exact-upgrade-backup', 'source': path[len(prefix):] if original else None})
+    # A valid replacement receipt cannot establish retention of the original.
+    # Stage A keeps both identity documents in this target's exact upgrade
+    # backup, independently of the untouched external rehearsal baseline.
+    retained_receipts = {record['source'] for record in approved.values()
+                         if record.get('rule') == 'exact-upgrade-backup'}
+    missing_receipts = [path for path in (INSTALLED, PROVENANCE)
+                        if path in before['files'] and before['files'][path] != after['files'].get(path)
+                        and path not in retained_receipts]
+    checks['prior_receipts_retained'] = 'FAIL' if missing_receipts else 'PASS'
+    failures.extend('prior receipt not retained: ' + path for path in missing_receipts)
     result = compare(before, after, delta)
     # External exact deltas may constrain this policy; they cannot widen it.
     for path, record in (allowed_delta or {}).items():

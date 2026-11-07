@@ -389,7 +389,8 @@ class BudgetUpgradeTests(unittest.TestCase):
                        configure=True, discover=False, dry_run=True)
         self.assertFalse(plan['installed'])
         self.assertEqual(before, qualify_upgrade.inventory(project))
-        install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
+        install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False,
+                conflict='backup')
         self.assertEqual(original, operating.read_bytes())
         comparison = qualify_upgrade.compare_upgrade(before, qualify_upgrade.inventory(project), policy, project)
         self.assertTrue(comparison['preserved'], comparison['violations'])

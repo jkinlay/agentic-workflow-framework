@@ -95,7 +95,8 @@ class AuthenticBaselineTests(unittest.TestCase):
         shutil.copytree(project, clean_project)
         clean_before = inventory(clean_project)
         clean_policy = qualify_upgrade.prepare_upgrade(self.candidate, clean_project, self.pin, clean_before)
-        install(self.candidate, clean_project, self.pin, mode='upgrade', configure=True, discover=False)
+        install(self.candidate, clean_project, self.pin, mode='upgrade', configure=True, discover=False,
+                conflict='backup')
         clean = qualify_upgrade.compare_upgrade(clean_before, inventory(clean_project), clean_policy, clean_project)
         self.assertTrue(clean['preserved'], clean['violations'])
         self.assertEqual('PASS', clean['checks']['historical_state_continuity'])
@@ -140,7 +141,8 @@ class AuthenticBaselineTests(unittest.TestCase):
         customize_preservation_project(project)
         before = inventory(project)
         policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
-        install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False)
+        install(self.candidate, project, self.pin, mode='upgrade', configure=True, discover=False,
+                conflict='backup')
         clean = inventory(project)
         result = qualify_upgrade.compare_upgrade(before, clean, policy, project)
         self.assertTrue(result['preserved'], result['violations'])

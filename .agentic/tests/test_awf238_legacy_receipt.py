@@ -17,6 +17,26 @@ from upgrade_fixtures import materialize, verify_materialized
 @skip_unless_source_repo('requires registered historical fixture bytes',
                          '.agentic/tests/fixtures/upgrades/versions.json')
 class LegacyReceiptTests(unittest.TestCase):
+    def test_registered_193_and_194_receipt_markers_keep_provenance_identity(self):
+        from agentic.canonical import load_yaml
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            candidate = materialize_candidate(ROOT, base / 'candidate')
+            pin = hashlib.sha256((candidate / 'MANIFEST.json').read_bytes()).hexdigest()
+            for version in ('1.9.3', '1.9.4'):
+                with self.subTest(version=version):
+                    project = base / version
+                    project.mkdir()
+                    materialize(version, project)
+                    verify_materialized(version, project)
+                    prior = load_yaml((project / '.agentic/workflow-version.yaml').read_bytes())
+                    receipt = json.loads((project / '.agentic/installed-manifest.json').read_bytes())
+                    self.assertEqual('fixture-install-' + version, receipt['install_id'])
+                    result = install(candidate, project, pin, mode='upgrade', configure=True, discover=False)
+                    self.assertEqual('UPGRADED', result['status'])
+                    upgraded = json.loads((project / '.agentic/installed-manifest.json').read_bytes())
+                    self.assertEqual(prior['installation']['install_id'], upgraded['install_id'])
+
     def test_registered_183_without_embedded_manifest_still_upgrades(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

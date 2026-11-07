@@ -81,7 +81,8 @@ class ThirdLookTests(unittest.TestCase):
         self.assertFalse(q.compare_upgrade(before, q.inventory(self.project), policy, self.project)['preserved'])
 
     def test_after_is_rebound_to_owner_bytes(self):
-        before, after, policy = self.upgrade()
+        before, after, policy = self.upgrade(backup=True)
+        self.assertTrue(q.compare_upgrade(before, after, policy, self.project)['preserved'])
         (self.project / 'PROJECT_INSTRUCTIONS.md').unlink()
         self.assertFalse(q.compare_upgrade(before, after, policy, self.project)['preserved'])
 

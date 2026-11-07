@@ -166,7 +166,8 @@ class SecondLookTests(unittest.TestCase):
         shutil.copytree(self.project, baseline)
         before = qualification.inventory(baseline)
         (self.work / 'before.json').write_text(json.dumps(before), encoding='utf-8')
-        install(self.candidate, self.project, self.pin, mode='upgrade', configure=True, discover=False)
+        install(self.candidate, self.project, self.pin, mode='upgrade', configure=True, discover=False,
+                conflict='backup')
         command = [sys.executable, '-B', str(ROOT / 'scripts/qualify_upgrade.py'), 'compare',
             '--project', str(self.project), '--baseline-project', str(baseline), '--source', str(self.candidate),
             '--expected-manifest-sha256', self.pin, '--before', str(self.work / 'before.json'),

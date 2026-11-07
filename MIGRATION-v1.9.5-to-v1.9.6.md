@@ -2,6 +2,8 @@
 
 Use the separately verified release/pin. Stop dispatch/settlement and establish exclusive ownership. Rehearse on disposable copies; retain an untouched authentic baseline and external reports. Never run this rehearsal on a real installation.
 
+Projects not yet on 1.9.5 should first follow the [adoption guide](.agentic/docs/20-NEW-PROJECT-SETUP.md).
+
 `PYTHON` is the absolute interpreter in a separate bootstrap virtual environment, created with a supported Python using `python -m venv BOOTSTRAP`. Install the verified release dependencies there with `PYTHON -m pip install --require-hashes --no-index --find-links WHEELS -r RELEASE/.agentic/requirements.lock`. WHEELS must satisfy the release lock. Replace uppercase arguments; use absolute paths.
 
 Snapshot **before apply**; copy that same quiescent project to BASELINE and leave BASELINE untouched:
@@ -14,7 +16,7 @@ PYTHON -B RELEASE/scripts/qualify_upgrade.py snapshot --project DISPOSABLE --out
 PYTHON -B RELEASE/scripts/qualify_upgrade.py compare --project DISPOSABLE --before BEFORE --after AFTER --source RELEASE --expected-manifest-sha256 PIN --baseline-project BASELINE --output COMPARISON
 ```
 
-Compare proves preservation only **since BEFORE**, never absence of earlier damage. Backup acceptance requires this upgrade's exact replaced/deleted originals and expected metadata; arbitrary backup-folder additions fail. Default conflict handling creates no backups.
+Compare proves preservation only **since BEFORE**, never absence of earlier damage. Backup acceptance requires this upgrade's exact replaced/deleted originals and expected metadata; arbitrary backup-folder additions fail. Default conflict handling creates no backups; missing replaced receipt/provenance originals fail preservation.
 
 Identity must match existing configuration. Inspect the plan before applying. Unresolved validation commands refuse; rejected settings remain pending owner review, with one compatibility change: incomplete enabled Jira identity formerly REJECTED can become accepted configuration with JIRA_IDENTITY_UNBOUND. The plan reports this status change; settings stay unchanged and writes remain refused until explicit identity adoption. Disabled Jira stays disabled; adoption enables no adapter/controller.
 
