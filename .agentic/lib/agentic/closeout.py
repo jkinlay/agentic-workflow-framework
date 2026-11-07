@@ -613,14 +613,15 @@ def require_jira_reconciliation_before_counts(
             jira_observer_registry, jira_reconciliation_selector["producer_id"],
             request, "Jira reconciliation", now=now,
             max_age=_evidence_max_age(project_config), return_attestation=True)
-        if not isinstance(observed, dict) or set(observed) != {"record"}:
+        if not isinstance(observed, dict) or set(observed) not in ({"record"}, {"record", "owner_closure"}):
             raise ValidationError("Jira reconciliation observation has a non-closed shape")
         record = observed["record"]
         contracts.validate("jira-transition", record)
         if (not isinstance(transition, str) or not transition.strip() or
                 record["record_id"] != transition):
             raise ValidationError("closeout does not resolve its JIRA_RECONCILED record")
-        if record["binding"] != closeout_record["binding"]:
+        from .continuous_controller import jira_reconciliation_binding_matches, validate_jira_owner_closure
+        if not jira_reconciliation_binding_matches(record["binding"], closeout_record["binding"]):
             raise ValidationError("JIRA_RECONCILED record is not bound to the closeout candidate")
         if record["lifecycle_event"] != "JIRA_RECONCILED":
             raise ValidationError("closeout transition is not the JIRA_RECONCILED lifecycle event")
@@ -638,8 +639,14 @@ def require_jira_reconciliation_before_counts(
         if transition_time < timestamp(merge_observed_at):
             raise ValidationError("JIRA_RECONCILED transition predates the authenticated merge")
         read_back = record["read_back"]
+        owner_actor = None
+        if "owner_closure" in observed:
+            validate_jira_owner_closure(observed, request, now=now)
+            if timestamp(observed["owner_closure"]["transition_at"]) < timestamp(merge_observed_at):
+                raise ValidationError("Owner Done transition predates the authenticated merge")
+            owner_actor = observed["owner_closure"]["actor"]
         if (read_back["observed_status"] != expected_done or
-                read_back["observed_actor"] != jira["controller_actor_id"] or
+                read_back["observed_actor"] != (owner_actor or jira["controller_actor_id"]) or
                 read_back["observed_at"] is None):
             raise ValidationError("JIRA_RECONCILED record lacks a successful target-status readback")
         readback_time = timestamp(read_back["observed_at"])
