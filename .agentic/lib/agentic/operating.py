@@ -23,11 +23,12 @@ from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
 from .lane_labels import MAX_LANES, STREAM_LABELS
-from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
+from .canonical import canonical, fingerprint, loads, now_text, sha256, timestamp
+from .canonical import load_yaml as load_governance_yaml
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 from .budgeting import resolve_settings
-from .protected_settings import audit_matches, unprotected_hash
+from .protected_settings import audit_matches as _protected_audit_matches, unprotected_hash, load_operating_yaml as load_yaml
 from .operating_calendar import effective_calendar, SETTING_PATHS
 from .reporting.settings import effective_reporting
 
@@ -37,6 +38,34 @@ STATE = ".agentic-state/operating"
 LOCK = STATE + "/lock"
 JOURNAL = STATE + "/pending.json"
 DEFAULT_MAX_LANES = 6
+
+
+def audit_matches(value, event, *, history=()):
+    """Verify old reporting audit projections without rewriting retained bytes."""
+    if _protected_audit_matches(value, event):
+        return True
+    from .protected_settings import PROTECTED_DOMAINS
+    retained = {}
+    domains = {name for name, _, _ in PROTECTED_DOMAINS}
+    for prior in history:
+        if prior['sequence'] > event['sequence']:
+            break
+        for change in prior['changes']:
+            keys = change['path'].split('.')
+            if keys[0] not in domains:
+                continue
+            cursor = retained
+            for key in keys[:-1]:
+                if not isinstance(cursor.get(key), dict):
+                    cursor[key] = {}
+                cursor = cursor[key]
+            if change['after'] is None:
+                cursor.pop(keys[-1], None)
+            else:
+                cursor[keys[-1]] = deepcopy(change['after'])
+    historical = deepcopy(value)
+    historical.update(retained)
+    return bool(retained) and _protected_audit_matches(historical, event)
 DEFAULT_MAX_LANES_SOURCE = ".agentic/schemas/operating-config.schema.json#/properties/streams/properties/count/maximum"
 EPIC_ID = r"[A-Z][A-Z0-9_]*-[1-9][0-9]*"
 STAGING_NAME = r"\.awf-operating-[0-9a-f]{32}\.tmp"
@@ -260,11 +289,20 @@ def _schema(name, value, *, stream_ceiling=MAX_LANES):
         # jsonschema messages include rejected values. Protected settings and
         # historical owner observations must refuse without displaying them.
         domain = parts[0] if parts else None
-        if domain in {'reporting', 'budgeting', 'operating_calendar',
+        if not parts or domain in {'reporting', 'budgeting', 'operating_calendar',
                       'reporting_owner_observation', 'budget_owner_observation', 'calendar_owner_observation'}:
-            result.append(refusal('$.' + domain, 'Protected setting does not satisfy its schema'))
+            result.append(refusal('$.' + domain if parts else '$', 'Protected setting does not satisfy its schema'))
         else:
-            result.append(refusal('$' + ''.join('.' + str(p) for p in parts), error.message))
+            reason = 'Operating input does not satisfy its schema'
+            if parts == ['streams'] and error.validator == 'additionalProperties':
+                # Public lane labels are safe diagnostic identifiers. Never
+                # interpolate arbitrary rejected keys or schema value messages.
+                labels = sorted(set(error.instance) & set(STREAM_LABELS)
+                                - set(schema['properties']['streams']['properties']))
+                if labels:
+                    reason = 'Stream labels outside configured ceiling: ' + ', '.join(labels)
+            result.append(refusal('$' + ''.join('.' + str(p) for p in parts),
+                                  reason))
     return result
 
 
@@ -468,7 +506,7 @@ def _read(tree, name):
 
 
 def _bound_governance(tree, governance):
-    actual = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
+    actual = load_governance_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
     if canonical(actual) != canonical(governance):
         fail("$", "Governance changed during preparation; reload and revalidate", "$.execution", None)
     return actual
@@ -806,7 +844,7 @@ def recover_operating(project_root, governance, expected_journal_sha256):
         prior_value = load_yaml(before) if before is not None else {}
         after_value = load_yaml(after)
         if any(prior_value.get(name, defaults()) != after_value.get(name, defaults())
-               for name, defaults in PROTECTED_DOMAINS):
+               for name, defaults, _normalize in PROTECTED_DOMAINS):
             fail('$', 'Protected settings require a PR; local recovery cannot change them')
         current = _read(tree, CONFIG)
         if current not in (before, after):
@@ -1416,7 +1454,7 @@ def main(argv=None, default_root=None):
     args = parser.parse_args(argv)
     try:
         with Tree(args.root) as tree:
-            governance = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
+            governance = load_governance_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
         Contracts(SCHEMAS).validate("project-config", governance)
         if args.command == 'validate':
             if args.file.stat().st_size > MAX_BYTES:
@@ -1445,12 +1483,16 @@ def main(argv=None, default_root=None):
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
         from .protected_settings import repository_rules_warning
         protected = snapshot.provenance.get('protected_settings', {})
+        if protected.get('differences') and 'PR' not in protected.get('next_action', ''):
+            protected['next_action'] += '; then open a PR for the requested protected settings'
         result.update(protected_settings=protected, budget_admission=protected.get('budget_admission', True),
                       repository_rules=repository_rules_warning())
         result['last_settings_pr'] = dict(status='UNOBSERVED', reason='Last settings PR and merger not observed; optional information only')
         result['table'] += '\nProtected settings: ' + str(protected.get('source', 'unobserved'))
         if protected.get('commit'):
             result['table'] += ' at ' + protected['commit']
+        for domain, source in protected.get('sources', {}).items():
+            result['table'] += '\n' + domain + ': ' + source
         for field in ('policy_observation', 'branch_observation', 'visibility'):
             if protected.get(field):
                 result['table'] += '\n' + protected[field]

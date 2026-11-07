@@ -2,6 +2,7 @@ from test_reporting_fixtures import reporting_policy_snapshot
 """Pre-E10 regressions: real controller/CLI, restarts and production HTTP."""
 from copy import deepcopy
 from datetime import timedelta
+from pathlib import Path
 import time
 import unittest
 from urllib.error import HTTPError
@@ -43,7 +44,8 @@ class E10Tests(unittest.TestCase):
             if method == 'POST':
                 raise HTTPError(url, 400, 'Synthetic rejection', {}, None)
         case.network.before_call = reject
-        providers = case.adapters['configure_reporting'](reporting_policy_snapshot(case), case.binding)
+        providers = case.adapters['configure_reporting'](reporting_policy_snapshot(case), case.binding,
+            repository_root=Path(case.helper.temp.name) / 'reporting-policy')
         port = ReviewReportingPort(case.helper.store, {'reporting': case.settings}, case.binding,
                                    providers, lambda: now)
         self.assertIsNone(port.deliver_review_batch(payload))

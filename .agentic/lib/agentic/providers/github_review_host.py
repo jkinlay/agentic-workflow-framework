@@ -400,7 +400,7 @@ class HostDriver:
             accounting_enabled=resolve_settings(snapshot.config)['accounting_enabled'],
             worktree_roots=state_roots, previous_paths=(driver.state / 'routing.sqlite3',))
         context = ControllerBudgeting(path,
-            governance, snapshot, driver, worktree_roots=state_roots)
+            governance, snapshot, driver, repository_root=driver.root, worktree_roots=state_roots)
         driver.configure_budgeting(context, ticket_id=ticket)
         return driver
 

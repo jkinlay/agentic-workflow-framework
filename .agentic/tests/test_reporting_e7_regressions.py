@@ -113,6 +113,8 @@ class E7ControllerTests(unittest.TestCase):
         subprocess.run(['git', 'clone', '--shared', '--quiet',
                         str(self.repository['repository_root']), str(repository)],
                        check=True, capture_output=True)
+        from test_reporting_fixtures import prepare_reporting_repository
+        prepare_reporting_repository(self, repository)
         self.repository['repository_root'] = str(repository)
         self.settings['mode'] = platform
         if operation == 'POST':

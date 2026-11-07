@@ -227,19 +227,20 @@ class ProductionPreA10Tests(unittest.TestCase):
         self.gov = inputs['planning_config']
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting'] = dict(self.value['budgeting'], accounting_enabled=False)
-        snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
+        repository = self.root / 'controller-repository'
+        snapshot = accepted_fixture_snapshot(self, repository, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         config['codex']['roles']['writer']['reasoning_effort'] = 'high'
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         source, ledger = self.root / 'unrelated-cycle', self.root / 'hardlinked.sqlite'
         source.write_bytes(b'Unrelated optional cycle source')
         os.link(source, ledger)
-        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(fixtures.ROOT),
+        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(repository),
             'rev-parse', ref], text=True).strip() for ref in ('HEAD', 'HEAD^{tree}')]
         result = production_controller_cycle(store, controller_config=dict(dispatch_enabled=True,
             auto_dispatch=True, auto_request_critic=True, auto_resume_amendments=True), now=NOW,
             host_capacity=1, **{**planning_resource_inputs(1), **inputs}, inventory_binding=binding,
-            repository_root=fixtures.ROOT, repository_head_sha=head, repository_tree_sha=tree,
+            repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
             publication_config=config, budget_ledger_path=ledger,
             **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations',
                 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
@@ -363,10 +364,10 @@ class ProductionPreA10Tests(unittest.TestCase):
                             ')),flush=True); time.sleep(0.3); print(json.dumps(dict(type="thread.started",thread_id=' + repr(second) +
                             ')),flush=True); print(json.dumps(dict(type="turn.completed",usage=dict(input_tokens=70,output_tokens=30))),flush=True); raise SystemExit(' + str(exit_code) + ')')
                         return fixtures.ADAPTER['_SubprocessRunner'].launch(inner, [sys.executable, '-B', '-c', program], **kwargs)
-                runner = ConflictingCli(record_dir=config['codex']['run_record_directory'])
+                runner = ConflictingCli(credential_envs=(config['jira']['token_env'], config['jira'].get('email_env')), record_dir=config['codex']['run_record_directory'])
                 adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
                 context = adapters['dispatch_ticket'].configure_budgeting(path=self.root / (str(uuid.uuid4()) + '.sqlite'),
-                    governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+                    governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
                 payload = dict(_dispatch_payload(str(uuid.uuid4())), ticket='EX-10')
                 try:
                     with self.assertRaisesRegex(ValidationError, 'context|identity'):

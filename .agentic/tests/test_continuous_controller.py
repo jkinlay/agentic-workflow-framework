@@ -77,13 +77,18 @@ def production_controller_cycle(*args,**kwargs):
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
-	snapshot = kwargs.get('planning_operating_snapshot')
-	if snapshot is not None and not snapshot.provenance.get('path'):
-		from settings_pr_fixtures import accepted_fixture_snapshot
-		with tempfile.TemporaryDirectory(prefix='awf-controller-policy-') as policy_root:
-			kwargs['planning_operating_snapshot'] = accepted_fixture_snapshot(None, Path(policy_root),
-				snapshot.config, kwargs['planning_config'])
-			return real_production_controller_cycle(*args,**kwargs)
+	# Trusted fixture construction binds policy and checkout explicitly, never
+	# selecting a root from supplied snapshot provenance.
+	if Path(kwargs['repository_root']).resolve() == ROOT:
+		from settings_pr_fixtures import fixture_repository, fixture_reservations, publish_fixture_settings
+		fixture_root = Path(args[0].path).parent / 'operating-fixture'
+		if not (fixture_root / '.git').exists():
+			publish_fixture_settings(None, fixture_root, kwargs['planning_config'],
+				kwargs['planning_operating_snapshot'].config)
+		kwargs.update(fixture_repository(fixture_root))
+		if kwargs['observe_reservations'] is reservation_observation:
+			kwargs['observe_reservations'] = lambda request: fixture_reservations(fixture_root, request)
+
 	return real_production_controller_cycle(*args,**kwargs)
 
 def inventory_observation(now,tickets):
@@ -130,7 +135,7 @@ def observe_jira_provider(config,**overrides):
 	return value
 
 
-def journaled_progress_inputs(store, config, issue, *, binding=None, now=NOW, adapters=None, merge_result_id='merge-1', record_callback=None):
+def journaled_progress_inputs(store, config, issue, *, binding=None, now=NOW, adapters=None, merge_result_id='merge-1', record_callback=None, transition_id='done-transition'):
 	"""Establish a real lifecycle reconciliation before testing read-only progress."""
 	provider=configured_jira_provider(config)
 	binding=binding or {'issue_id':issue}
@@ -141,7 +146,7 @@ def journaled_progress_inputs(store, config, issue, *, binding=None, now=NOW, ad
 		'read_current_status':lambda value:jira_current(value,config['jira']['status_map']['in_review'],now),
 		'write_transition':lambda record:{'operation_id':record['operation_id'],'issue_id':issue,'status':'ATTEMPTED','observed_at':now,'jira_provider':provider},
 		'read_transition':lambda record,operation:{'issue_id':issue,'status':config['jira']['status_map']['done'],'actor':provider['controller_actor_id'],'observed_at':now,'jira_provider':provider}}
-	result=real_production_jira_lifecycle(store,config=config,contract={'owner_closure_required':False},event='JIRA_RECONCILED',facts={'merge_confirmed':True,'closeout_valid':True},binding=binding,issue_type='LEAF',state='MERGED',producer_id=provider['controller_actor_id'],run_id=str(uuid.UUID(int=99)),now=now,evidence=['urn:awf:fixture:journaled-reconciliation'],transition_id='done-transition',merge_result_id=merge_result_id,**{key:calls[key] for key in ('observe_provider_identity','observe_issue_identity','observe_issue_policy','read_current_status','write_transition','read_transition')})
+	result=real_production_jira_lifecycle(store,config=config,contract={'owner_closure_required':False},event='JIRA_RECONCILED',facts={'merge_confirmed':True,'closeout_valid':True},binding=binding,issue_type='LEAF',state='MERGED',producer_id=provider['controller_actor_id'],run_id=str(uuid.UUID(int=99)),now=now,evidence=['urn:awf:fixture:journaled-reconciliation'],transition_id=transition_id,merge_result_id=merge_result_id,**{key:calls[key] for key in ('observe_provider_identity','observe_issue_identity','observe_issue_policy','read_current_status','write_transition','read_transition')})
 	if result.get('record',{}).get('status')!='SUCCEEDED':
 		raise AssertionError(result)
 	record=result['record']

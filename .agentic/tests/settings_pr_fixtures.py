@@ -11,22 +11,14 @@ from agentic.child_process import isolated_git_env
 def publish_fixture_settings(case, root, governance, value, *, preserve_checkout=False):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    def git(*args):
+    def git(*args, check=True):
         return subprocess.run([shutil.which('git'), '-C', str(root), *args],
-            env=isolated_git_env(), check=True, capture_output=True)
-    from agentic.operating import _json
-    if ((root / '.git').exists() and (root / 'OPERATING_CONFIG.yaml').is_file()
-            and (root / 'OPERATING_CONFIG.yaml').read_bytes() == _json(value)
-            and (root / '.agentic/PROJECT_CONFIG.yaml').is_file()
-            and (root / '.agentic/PROJECT_CONFIG.yaml').read_bytes() == _json(governance)):
-        observed = subprocess.run([shutil.which('git'), '-C', str(root), 'show',
-            'refs/remotes/origin/HEAD:OPERATING_CONFIG.yaml'], env=isolated_git_env(), capture_output=True)
-        if observed.returncode == 0 and observed.stdout == _json(value):
-            return  # Existing real default-ref bytes already represent this fixture.
-    previous_head = (git('rev-parse', 'HEAD').stdout.decode().strip()
-                     if preserve_checkout and (root / '.git').exists() else None)
+            env=isolated_git_env(), check=check, capture_output=True)
     if not (root / '.git').exists():
         git('init', '-q', '-b', governance['github']['base_branch'])
+    prior = git('rev-parse', '--verify', 'HEAD', check=False)
+    prior_head = prior.stdout.strip().decode() if prior.returncode == 0 else None
+    from agentic.operating import _json
     (root / 'OPERATING_CONFIG.yaml').write_bytes(_json(value))
     (root / '.agentic').mkdir(exist_ok=True)
     (root / '.agentic/PROJECT_CONFIG.yaml').write_bytes(_json(governance))
@@ -35,10 +27,9 @@ def publish_fixture_settings(case, root, governance, value, *, preserve_checkout
         '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Fixture operating settings', '--allow-empty')
     git('update-ref', 'refs/remotes/origin/' + governance['github']['base_branch'], 'HEAD')
     git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/' + governance['github']['base_branch'])
-    if previous_head:
-        # A fetched settings merge advances policy, not the controller checkout.
-        # Retain working proposed bytes and its original ownership tuple.
-        git('reset', '--mixed', '-q', previous_head)
+    if prior_head:
+        # A fetched policy merge need not move the controller checkout's HEAD.
+        git('update-ref', 'HEAD', prior_head)
 
 
 def accepted_fixture_snapshot(case, root, value, governance):
@@ -51,13 +42,7 @@ def accepted_fixture_snapshot(case, root, value, governance):
 def fixture_repository(root):
     """Observe the real disposable repository tuple, independent of source index."""
     from test_continuous_controller import REPOSITORY
-    policy_root = Path(root)
-    root = policy_root.parent / 'reservation-repository'
-    if not (root / '.git').exists():
-        from agentic.canonical import load_yaml
-        publish_fixture_settings(None, root,
-            load_yaml((policy_root / '.agentic/PROJECT_CONFIG.yaml').read_bytes()),
-            load_yaml((policy_root / 'OPERATING_CONFIG.yaml').read_bytes()))
+    root = Path(root)
     def git(*args):
         return subprocess.run([shutil.which('git'), '-C', str(root), *args],
             env=isolated_git_env(), check=True, capture_output=True).stdout.decode().strip()
@@ -68,7 +53,7 @@ def fixture_repository(root):
 def fixture_reservations(root, request):
     """Observe actual disposable worktree changes, retaining reservation validation."""
     from agentic.canonical import fingerprint
-    root = Path(root).parent / 'reservation-repository'
+    root = Path(root)
     def git(*args):
         return subprocess.run([shutil.which('git'), '-C', str(root), *args],
             env=isolated_git_env(), check=True, capture_output=True).stdout.decode().split('\0')

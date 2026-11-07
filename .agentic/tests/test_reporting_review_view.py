@@ -13,6 +13,20 @@ from test_awf244_controller_wiring import candidate
 class ReportingReviewViewTests(unittest.TestCase):
     setUp = reporting.ReportingRuntimeTests.setUp
 
+    def policy_inputs(self):
+        from pathlib import Path
+        from test_operating import governance
+        from agentic import operating as op
+        from settings_pr_fixtures import accepted_fixture_snapshot
+        config = governance()
+        config['project']['id'] = self.binding['project']
+        config['github']['repository_id'] = self.binding['repository']
+        value = op.default_operating(config['execution']['model_routing'])
+        value['reporting'] = self.root['reporting']
+        root = Path(self.temp.name) / 'policy'
+        snapshot = accepted_fixture_snapshot(self, root, value, config)
+        return dict(repository_root=root, config=config, operating_snapshot=snapshot)
+
     def test_hourly_uses_read_only_shared_held_withdrawn_exhausted_view(self):
         now = '2026-11-07T18:00:00Z'
         reviews = ReviewBatchStore(self.store)
@@ -50,6 +64,7 @@ class ReportingReviewViewTests(unittest.TestCase):
                 open=True, merged=False, final_gate_valid=True,
                 readiness='READY_FOR_OWNER_AUTHORIZATION' if len(calls) % 2 else 'FINAL_REVIEW')
         result = production_review_batching_cycle(self.store, calendar={}, binding={}, clock=lambda: now,
+            **self.policy_inputs(),
             observe_review_candidate=observe, candidate_limit=1,
             deliver_review_batch=lambda payload: self.fail('Invalid recheck reached delivery'),
             observe_review_delivery=lambda payload: self.fail('No old batch exists'))
@@ -93,6 +108,7 @@ class ReportingReviewViewTests(unittest.TestCase):
         self.assertIn('Reporting delivery exhausted', view['intents'][0]['reason'])
         self.assertEqual(3, len(self.sent))
         result = production_review_batching_cycle(self.store, calendar={}, binding={}, clock=lambda: next_day,
+            **self.policy_inputs(),
             observe_review_candidate=observe, candidate_limit=1,
             deliver_review_batch=lambda p: self.fail('Exhausted reporting cannot be presented again'),
             observe_review_delivery=lambda p: self.fail('Terminal reporting needs no readback'))

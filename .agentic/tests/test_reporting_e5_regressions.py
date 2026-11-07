@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 import hashlib
 import io
 import json
+from pathlib import Path
 import subprocess
 import time
 import unittest
@@ -46,7 +47,8 @@ class BoundaryTests(unittest.TestCase):
     def test_real_factory_senders_refuse_legacy_envelope_before_any_http(self):
         self.network.__class__ = e3.Network
         e3.Network.__init__(self.network)
-        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding)
+        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding,
+            repository_root=Path(self.helper.temp.name) / 'reporting-policy')
         for destination in self.settings['bindings']:
             intent = legacy_intent('unsafe', destination, SENTINEL)
             with self.assertRaisesRegex(ValidationError, 'REPORT_CREDENTIAL_WITHHELD'):
@@ -55,7 +57,8 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(self.network.thread_observations, [])
 
     def test_direct_transport_cannot_post_a_credential(self):
-        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding)
+        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding,
+            repository_root=Path(self.helper.temp.name) / 'reporting-policy')
         for destination in self.settings['bindings']:
             for credential in (SENTINEL, 'token\nsynthetic-value'):
                 intent = legacy_intent('unsafe', destination, credential)

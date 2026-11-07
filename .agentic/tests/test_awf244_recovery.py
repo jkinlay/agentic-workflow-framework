@@ -48,7 +48,15 @@ class RecoveryTests(unittest.TestCase):
                         deliver_review_batch=self.deliver,
                         observe_review_delivery=self.readback)
         defaults.update(ports)
+        from settings_pr_fixtures import accepted_fixture_snapshot
+        from test_operating import governance
+        from agentic.operating import default_operating
+        config = governance()
+        root = Path(self.temp.name) / 'project'
+        snapshot = accepted_fixture_snapshot(self, root,
+            default_operating(config['execution']['model_routing']), config)
         return production_review_batching_cycle(self.store, calendar={},
+            repository_root=root, config=config, operating_snapshot=snapshot,
             binding=fixture.INVENTORY_BINDING, clock=lambda: self.now, **defaults)
 
     def observe_each(self, value, now):

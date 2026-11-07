@@ -33,7 +33,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         runner.exit_code = 1
         path = self.root / 'ledger.sqlite'
         context = adapters['dispatch_ticket'].configure_budgeting(path=path,
-            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         payload = _dispatch_payload('failure')
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             adapters['dispatch_ticket'](payload)
@@ -48,7 +48,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         restarted = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         self.value['budgeting']['accounting_enabled'] = False
         restarted['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov,
-            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         with self.assertRaisesRegex(ValidationError, 'resolve non-reasoning failure before retry: unknown'):
             try:
                 restarted['dispatch_ticket'](_dispatch_payload('retry'))
@@ -68,7 +68,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         unusable = self.root / 'not-a-directory'
         unusable.write_text('Fixture obstruction')
         adapters['dispatch_ticket'].configure_budgeting(path=unusable / 'ledger.sqlite',
-            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         payload = _dispatch_payload('off')
         adapters['dispatch_ticket'](payload)
         record = json.loads((runner._budget_record_dir / 'off.json').read_text())
@@ -92,7 +92,7 @@ class ProductionPreA4Tests(unittest.TestCase):
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         path = self.root / 'host-state/project.sqlite'
         context = adapters['dispatch_ticket'].configure_budgeting(path=path,
-            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, value, self.gov), repository_root=self.root)
         runner.exit_code = 1
         payload = _dispatch_payload('failed-cycle-worker')
         payload['ticket'] = 'AWF-32'
@@ -104,15 +104,16 @@ class ProductionPreA4Tests(unittest.TestCase):
         # external inventory/publication and CLI behavior come from the runner.
         runner.exit_code = 0
         value['budgeting']['accounting_enabled'] = False
-        snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
+        repository = self.root / 'controller-repository'
+        snapshot = accepted_fixture_snapshot(self, repository, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
-        head, tree = [subprocess.check_output(['git', '-C', str(fixtures.ROOT), 'rev-parse', ref],
+        head, tree = [subprocess.check_output(['git', '-C', str(repository), 'rev-parse', ref],
                      text=True).strip() for ref in ('HEAD', 'HEAD^{tree}')]
         result = production_controller_cycle(state, controller_config=dict(dispatch_enabled=True,
             auto_dispatch=True, auto_request_critic=True, auto_resume_amendments=True), now=NOW,
             host_capacity=1, **{**planning_resource_inputs(1), **inputs}, inventory_binding=binding,
-            repository_root=fixtures.ROOT, repository_head_sha=head, repository_tree_sha=tree,
+            repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
             budget_ledger_path=path,
             publication_config=config, **{name: adapters[name] for name in ('observe_inventory',
                 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})

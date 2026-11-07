@@ -280,6 +280,7 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                         continue
                     delivery_provider = copy(provider)
                     delivery_provider.binding = deepcopy(intent['binding'])
+                    delivery_provider._retained_scope_binding = True
                 if not budget.admit(platform, reconciliation=not row['fresh']):
                     if monotonic() >= budget.deadline:
                         remember(category(row))
@@ -616,11 +617,23 @@ class ReviewReportingPort:
     Reporting owns per-destination retry identities after durable handoff.
     Exhaustion closes FAILED without claiming absence or multiplying retries.
     """
-    def __init__(self, store, operating, binding, providers, clock, *, observe_candidate=None, delivery_budget=None):
+    def __init__(self, store, operating, binding, providers, clock, *, observe_candidate=None, delivery_budget=None,
+                 load_operating=None):
         self.store, self.operating, self.binding = store, operating, binding
         self.providers, self.clock = providers, clock
         self.observe_candidate = observe_candidate
         self.delivery_budget = delivery_budget
+        self.load_operating = load_operating
+
+    def _readmit(self):
+        if self.load_operating is None:
+            return self.operating  # Trusted in-process test/host port.
+        current = self.load_operating()
+        settings, destinations = _bindings(current, self.binding)
+        _, retained = _bindings(self.operating, self.binding)
+        require(settings['mode'] != 'off', 'REPORTING_OFF')
+        require(destinations == retained, 'REPORT_DESTINATION_MISMATCH')
+        return current
 
     def _id(self, payload):
         return 'review-' + payload['batch_id']
@@ -657,8 +670,10 @@ class ReviewReportingPort:
                 checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar,
                     lambda candidate: checked[fingerprint('review-candidate', candidate)])
                 require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
+            calendar = effective_calendar(self._readmit())
             send_at = self.clock()
-            require(not next_review_presentation(send_at, calendar)['held'] and
+            window = next_review_presentation(send_at, calendar)
+            require(not window['held'] and (restoration or window['calendar_sha256'] == payload['calendar_sha256']) and
                     all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked.values()),
                     'REPORT_REVIEW_CHECK_EXPIRED')
 
@@ -707,7 +722,7 @@ class ReviewReportingPort:
                 refused.append(exc)
                 raise
         drain(self.store, self.operating, self.binding, self.providers, report_ids={self._id(payload)}, budget=budget,
-              before_send=before_send if self.observe_candidate is not None else None)
+              before_send=before_send if self.observe_candidate is not None else self._readmit)
         if refused:
             self._defer(self._id(payload), str(refused[0]))
             raise refused[0]

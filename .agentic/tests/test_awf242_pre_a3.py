@@ -170,7 +170,7 @@ class ProductionPreA3Tests(unittest.TestCase):
     def adapter(self):
         config = _base_config(self.root)
         config['codex']['roles']['writer'].update(model='gpt-6.1-sol', reasoning_effort='medium')
-        runner = ControllerCli(record_dir=config['codex']['run_record_directory'])
+        runner = ControllerCli(credential_envs=(config['jira']['token_env'], config['jira'].get('email_env')), record_dir=config['codex']['run_record_directory'])
         adapters = ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         return config, runner, adapters
 
@@ -178,7 +178,7 @@ class ProductionPreA3Tests(unittest.TestCase):
         config, runner, adapters = self.adapter()
         runner.exit_code, runner.usage, runner.delay, runner.emit_thread = 1, usage, delay, emit_thread
         context = adapters['dispatch_ticket'].configure_budgeting(path=self.root / 'ledger.sqlite',
-            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         payload = _dispatch_payload('failure')
         try:
             adapters['dispatch_ticket'](payload)
@@ -205,7 +205,7 @@ class ProductionPreA3Tests(unittest.TestCase):
         off = deepcopy(self.value)
         off['budgeting']['accounting_enabled'] = False
         restarted['dispatch_ticket'].configure_budgeting(path=context.database.path,
-            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, off, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, off, self.gov), repository_root=self.root)
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             restarted['observe_dispatch'](payload)
         self.assertEqual(ledger.summary(self.gov['project']['id']), summary)
@@ -287,7 +287,9 @@ class ProductionPreA3Tests(unittest.TestCase):
         value = deepcopy(planning['planning_operating_snapshot'].config)
         value['budgeting'] = dict(fresh_settings(), accounting_enabled=True)
         self.value = value
-        snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
+        snapshot = accepted_fixture_snapshot(self, repository, value, self.gov)
+        head, tree = [subprocess.check_output(['git', '-C', str(repository), 'rev-parse', ref], text=True).strip()
+                      for ref in ('HEAD', 'HEAD^{tree}')]
         planning.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         resources = planning_resource_inputs(1)
         resources.update(planning)

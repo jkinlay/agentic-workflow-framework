@@ -34,6 +34,18 @@ def refresh_reporting_repository(case, root):
     case.repository.update(repository_root=root, repository_head_sha=head, repository_tree_sha=tree)
 
 
+def prepare_reporting_repository(case, root):
+    """Give a source clone this probe's real accepted three-lane policy."""
+    from test_planning import config, operating_snapshot
+    from settings_pr_fixtures import publish_fixture_settings
+    governance = config(3)
+    governance['project']['id'] = case.binding['project']
+    governance['github']['repository_id'] = case.binding['repository']
+    value = operating_snapshot(governance, 3).config
+    value['reporting'] = deepcopy(case.settings)
+    publish_fixture_settings(case, root, governance, value)
+
+
 def reporting_policy_snapshot(case):
     from test_reporting_e2_regressions import ReportingE2Regressions
     return ReportingE2Regressions.policy_snapshot(case)

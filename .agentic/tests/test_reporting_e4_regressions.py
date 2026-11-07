@@ -163,6 +163,8 @@ class ControllerAdmissionTests(unittest.TestCase):
         clean = Path(self.helper.temp.name) / 'clean-isolation-repository'
         subprocess.run(['git', 'clone', '--shared', '--quiet', str(self.repository['repository_root']), str(clean)],
                        check=True, capture_output=True)
+        from test_reporting_fixtures import prepare_reporting_repository
+        prepare_reporting_repository(self, clean)
         self.repository['repository_root'] = clean
         def cycle():
             try:
@@ -242,6 +244,8 @@ class DeadlineControllerTests(unittest.TestCase):
         clean = Path(self.helper.temp.name) / 'clean-deadline-repository'
         subprocess.run(['git', 'clone', '--shared', '--quiet', str(self.repository['repository_root']), str(clean)],
                        check=True, capture_output=True)
+        from test_reporting_fixtures import prepare_reporting_repository
+        prepare_reporting_repository(self, clean)
         self.repository['repository_root'] = clean
         original = type(network).__call__
         writers = []

@@ -3307,7 +3307,8 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (deepcopy(tickets), repository_binding, observation)
 
-def production_review_batching_cycle(store, *, calendar, binding, clock, load_calendar=None,
+def production_review_batching_cycle(store, *, calendar, repository_root, config, operating_snapshot,
+        binding, clock, load_calendar=None,
         observe_owner_ready=None, observe_review_candidate=None,
         deliver_review_batch=None, observe_review_delivery=None, candidate_limit=None):
 	"""Routine presentation only, through trusted injected ports; never transport.
@@ -3323,7 +3324,14 @@ def production_review_batching_cycle(store, *, calendar, binding, clock, load_ca
 	Safety/action alerts and hourly reports use their separate immediate ports.
 	"""
 	from .review_batching import ReviewBatchStore
-	from .operating_calendar import next_review_presentation, utc_instant
+	from .operating_calendar import effective_calendar, next_review_presentation, utc_instant
+	from .protected_settings import effective_snapshot, require_budget_policy
+	from .budgeting import policy_repository_root
+	# Supplied snapshots and calendar values are data, never accepted policy.
+	repository_root = policy_repository_root(repository_root, operating_snapshot)
+	accepted = effective_snapshot(repository_root, config, operating_snapshot)
+	require_budget_policy(accepted)
+	calendar = effective_calendar(accepted.config)
 	batch_store = ReviewBatchStore(store)
 	result = {'enqueued': [], 'unqualified': 0, 'delivery': None, 'errors': [],
 		'state': 'UNCONFIGURED', 'merge_authorized': False, 'owner_alerts': []}
@@ -3447,7 +3455,12 @@ def production_review_batching_cycle(store, *, calendar, binding, clock, load_ca
 			# serialized path knows transport was never invoked; restart stays UNKNOWN.
 			try:
 				if load_calendar is not None:
-					calendar = load_calendar()
+					# Test hook only: its return value can never supply policy.
+					load_calendar()
+				from .operating import read_operating
+				current_policy = read_operating(repository_root, config)
+				require_budget_policy(current_policy)
+				calendar = effective_calendar(current_policy.config)
 				send_at = clock()
 				window = next_review_presentation(send_at, calendar)
 				_require(utc_instant(window['presentation_at']) == utc_instant(send_at)
@@ -3512,13 +3525,13 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	validate_snapshot(planning_operating_snapshot, planning_config)
 	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
 	from .operating_calendar import effective_calendar
-	from .protected_settings import effective_snapshot, require_budget_policy
-	policy_root = (Path(planning_operating_snapshot.provenance['path']).parent
-		if planning_operating_snapshot.provenance.get('path') else Path(repository_root))
-	planning_operating_snapshot = effective_snapshot(policy_root, planning_config, planning_operating_snapshot)
-	require_budget_policy(planning_operating_snapshot)
-	calendar = effective_calendar(planning_operating_snapshot.config)
-	operating_config_sha256 = planning_operating_snapshot.operating_hash
+	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots, accepted_budget_snapshot
+	# All protected domains use the independently selected repository and refusal.
+	policy_root = Path(repository_root).resolve(strict=True)
+	accepted_operating = accepted_budget_snapshot(policy_root, planning_config, planning_operating_snapshot)
+	planning_operating_snapshot = accepted_operating
+	calendar = effective_calendar(accepted_operating.config)
+	operating_config_sha256 = accepted_operating.operating_hash
 	resource_binding = {**inventory_binding, 'repository_head_sha': repository_head_sha,
 		'repository_tree_sha': repository_tree_sha, 'project_config_sha256': project_config_sha256,
 		'operating_config_sha256': operating_config_sha256}
@@ -3530,9 +3543,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(host_capacity is None or (type(host_capacity) is int and host_capacity == resources['host_capacity']),
 		'Operator capacity differs from authenticated host capacity')
 	host_capacity = min(resources['host_capacity'], *(item['capacity'] for item in resources['resources']))
-	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots
-	state_roots = protected_state_roots(*store.worktree_roots, repository_root)
-	budget_settings = resolve_settings(planning_operating_snapshot.config)
+	state_roots = protected_state_roots(*store.worktree_roots, policy_root)
+	budget_settings = resolve_settings(accepted_operating.config)
 	if configure_budgeting is None:
 		configure_budgeting = getattr(dispatch_ticket, 'configure_budgeting', None)
 	if callable(configure_budgeting):
@@ -3540,7 +3552,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			accounting_enabled=budget_settings['accounting_enabled'],
 			worktree_roots=state_roots,
 			previous_paths=(store.path.with_suffix('.routing.sqlite3'),)),
-			governance=planning_config, operating=planning_operating_snapshot, worktree_roots=state_roots)
+			governance=planning_config, operating=accepted_operating, repository_root=policy_root, worktree_roots=state_roots)
 	else:
 		_require(not budget_settings['accounting_enabled'] or 'legacy_behavior' in budget_settings,
 			'Enabled budgeting requires a reviewed dispatch budgeting adapter')
@@ -3924,7 +3936,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			if callable(observe_owner_ready):
 				observe_owner_ready = source_review_budget.observer(observe_owner_ready)
 			if callable(configure_reporting):
-				reporting_providers = configure_reporting(planning_operating_snapshot, report_binding)
+				reporting_providers = configure_reporting(planning_operating_snapshot, report_binding, repository_root=policy_root)
 			selected = {'teams', 'slack'} if report_settings['mode'] == 'both' else {report_settings['mode']}
 			_require(isinstance(reporting_providers, dict) and selected <= reporting_providers.keys(), 'REPORT_PROVIDERS_REQUIRED')
 			with SourceBudget():
@@ -3982,7 +3994,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			deliver_review_batch = observe_review_delivery = None
 			if report_settings['mode'] != 'off':
 				port = ReviewReportingPort(store, operating_root, report_binding, reporting_providers, post_provider_time,
-					observe_candidate=observe_review_candidate, delivery_budget=report_delivery_budget)
+					observe_candidate=observe_review_candidate, delivery_budget=report_delivery_budget,
+					load_operating=lambda: accepted_budget_snapshot(policy_root, planning_config, accepted_operating).config)
 				deliver_review_batch, observe_review_delivery = port.deliver_review_batch, port.observe_review_delivery
 	except Exception as exc:
 		# Invalid bindings and generation failure cannot fall back to a different
@@ -4034,12 +4047,9 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	try:
 		if port is not None:
 			report_delivery_budget.remaining()
-		def load_calendar():
-			from .operating import CONFIG, read_operating
-			root = Path(planning_operating_snapshot.provenance.get('path', Path(repository_root) / CONFIG)).parent
-			return effective_calendar(read_operating(root, planning_config).config)
 		review_batching = production_review_batching_cycle(store, calendar=calendar,
-			binding=inventory_binding, clock=post_provider_time, load_calendar=load_calendar,
+			repository_root=policy_root, config=planning_config, operating_snapshot=accepted_operating,
+			binding=inventory_binding, clock=post_provider_time,
 			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
 			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery,
 			candidate_limit=MAX_REVIEW_CANDIDATES if report_settings['mode'] != 'off' else None)

@@ -62,7 +62,8 @@ class E8ControllerTests(unittest.TestCase):
         for candidate in self.helper.listed:
             batches.enqueue_observed(candidate, observe(candidate, now), now, {}, repository_id='101')
         payload = batches.claim(now, {}, lambda candidate: observe(candidate, now))
-        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding)
+        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding,
+            repository_root=Path(self.helper.temp.name) / 'reporting-policy')
         port = ReviewReportingPort(self.helper.store, {'reporting': self.settings}, self.binding,
                                    providers, lambda: now, observe_candidate=observe)
         self.assertIsNone(port.deliver_review_batch(payload))
@@ -95,7 +96,8 @@ class E8ControllerTests(unittest.TestCase):
         self.assertTrue(all(len(d['attempts']) == 1 for d in final))
 
     def test_public_persistence_refuses_exact_opaque_credential_in_every_intent_field(self):
-        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding)
+        providers = self.adapters['configure_reporting'](reporting_policy_snapshot(self), self.binding,
+            repository_root=Path(self.helper.temp.name) / 'reporting-policy')
         outbox = DeliveryOutbox(self.helper.store)
         for destination in self.settings['bindings']:
             provider = providers[destination['platform']]
@@ -176,6 +178,8 @@ class E8ControllerTests(unittest.TestCase):
         subprocess.run(['git', 'clone', '--shared', '--quiet',
                         str(self.repository['repository_root']), str(clean)],
                        check=True, capture_output=True)
+        from test_reporting_fixtures import prepare_reporting_repository
+        prepare_reporting_repository(self, clean)
         self.repository['repository_root'] = clean
         self.network.latency = .3
         self.network.reject = True

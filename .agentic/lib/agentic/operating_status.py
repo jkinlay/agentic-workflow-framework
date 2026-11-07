@@ -23,9 +23,12 @@ def with_operating(root, governance, report):
         if source_template:
             try:
                 value = validate_operating(_safe_load_operating(tree.read('OPERATING_CONFIG.yaml')), governance)
-                from .protected_settings import effective_snapshot
-                value = effective_snapshot(root, governance, value)
-                operating = {'status': 'ACCEPTED', 'protected_settings': value.provenance['protected_settings'], 'hash': value.operating_hash, 'source': value.source,
+                from .protected_settings import resolve_protected
+                # Source diagnostics need no mutable snapshot/audit metadata.
+                # Validate the resolved policy through the same source validator.
+                effective, protected = resolve_protected(root, governance, value.config)
+                value = validate_operating(effective, governance)
+                operating = {'status': 'ACCEPTED', 'protected_settings': protected, 'hash': value.operating_hash, 'source': value.source,
                              'budgeting': resolve_settings(value.config),
                              'reporting': effective_reporting(value.config),
                              'streams': value.count, 'last_change_id': None, 'refusals': [],

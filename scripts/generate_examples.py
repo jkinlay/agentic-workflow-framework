@@ -64,7 +64,7 @@ def controller_adapter_config():
         "jira": {
             "enabled": True, "cloud_id": "CHANGE_ME_CLOUD", "site": "https://CHANGE_ME.atlassian.net",
             "provider_project_id": "CHANGE_ME_PROJECT", "project_key": "CHANGE_ME",
-            "controller_actor_id": "CHANGE_ME_ACCOUNT", "token_env": "AWF_JIRA_TOKEN",
+            "controller_actor_id": "CHANGE_ME_ACCOUNT", "credential_type": "oauth", "token_env": "AWF_JIRA_TOKEN",
             "merged_status_id": "CHANGE_ME_DONE_STATUS", "merged_transition_id": "CHANGE_ME_DONE_TRANSITION",
             "page_size": 100, "timeout_seconds": 30,
         },

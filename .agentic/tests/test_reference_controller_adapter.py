@@ -108,27 +108,49 @@ class FakeRunner:
 
 class FakeHttp:
 
-	def __init__(self, *, mismatch=False):
+	def __init__(self, *, mismatch=False, credential_type='oauth'):
+		self.credential_type = credential_type
 		self.calls = []
 		self.issue_reads = 0
 		self.mismatch = mismatch
 
 	def request(self, method, url, *, headers, body, timeout, max_bytes):
 		self.calls.append((method, url, dict(headers), body))
+		tenant = url == 'https://jira.example.invalid/_edge/tenant_info'
+		if tenant:
+			assert 'Authorization' not in headers, 'Tenant request must be anonymous'
+		else:
+			base = 'https://jira.example.invalid' if self.credential_type == 'unscoped_api_token' else 'https://api.atlassian.com/ex/jira/cloud-1'
+			assert url.startswith(base + '/') or (self.credential_type == 'oauth' and url == 'https://api.atlassian.com/oauth/token/accessible-resources'), 'Wrong Jira destination'
+			token = os.environ['AWF_JIRA_TOKEN']
+			expected = 'Bearer ' + token if self.credential_type == 'oauth' else 'Basic ' + base64.b64encode((os.environ['ACCOUNT_EMAIL'] + ':' + token).encode()).decode()
+			assert headers.get('Authorization') == expected, 'Wrong Jira authentication'
+		return self.respond(method, url, body=body)
+
+	def respond(self, method, url, *, body):
+		if url == 'https://api.atlassian.com/oauth/token/accessible-resources':
+			return 200, json.dumps([{'id': 'cloud-1', 'url': 'https://jira.example.invalid', 'scopes': ['read:jira-work']}])
 		if self.mismatch:
 			return (200, json.dumps({'accountId': 'foreign'}))
 		if url.endswith('/rest/api/3/myself'):
-			return (200, json.dumps({'accountId': 'controller'}))
+			return (200, json.dumps({'accountId': 'controller', 'timeZone': 'Europe/London'}))
 		if url.endswith('/_edge/tenant_info'):
-			return (200, json.dumps({'cloudId': 'cloud-1', 'siteUrl': 'https://jira.example.invalid'}))
+			return (200, json.dumps({'cloudId': 'cloud-1'}))
 		if '/rest/api/3/project/EX' in url:
 			return (200, json.dumps({'id': 'project-1', 'key': 'EX'}))
 		if '/rest/api/3/search?' in url:
-			if 'startAt=0' in url:
-				issue = {'id': '100', 'fields': {'issuetype': {'name': 'Task'}, 'status': {'statusCategory': {'key': 'done'}}}}
-				return (200, json.dumps({'issues': [issue], 'total': 2}))
-			issue = {'id': '101', 'fields': {'issuetype': {'name': 'Task'}, 'status': {'statusCategory': {'key': 'new'}}}}
-			return (200, json.dumps({'issues': [issue], 'total': 2}))
+			raise AssertionError('Legacy Jira search is forbidden')
+		if '/rest/api/3/search/jql?' in url:
+			from urllib.parse import urlsplit, parse_qs
+			query = parse_qs(urlsplit(url).query)
+			assert query['fields'] == ['issuetype,status,updated']
+			token = query.get('nextPageToken', [None])[0]
+			assert token in (None, 'opaque+/= next'), 'Cursor was not forwarded verbatim'
+			first = token is None
+			issue = {'id': '100' if first else '101', 'fields': {'issuetype': {'name': 'Task'}, 'updated': '2026-10-09T07:59:30Z', 'status': {'id': '10120' if first else '10118', 'name': 'Done' if first else 'Ready', 'statusCategory': {'key': 'done' if first else 'new'}}}}
+			return 200, json.dumps({'issues': [issue], 'isLast': not first, **({'nextPageToken': 'opaque+/= next'} if first else {})})
+		if url.endswith('/transitions') and method == 'GET':
+			return 200, json.dumps({'transitions': [{'id': '21', 'to': {'id': '10119'}}, {'id': '31', 'to': {'id': '10120'}}]})
 		if url.endswith('?fields=key'):
 			return (200, json.dumps({'id': '100', 'key': 'EX-42'}))
 		if '?fields=project,parent,labels,components,issuetype,summary' in url:
@@ -139,15 +161,15 @@ class FakeHttp:
 			self.issue_reads += 1
 			if 'expand=changelog' in url:
 				posted = bool(getattr(self, 'transition_bodies', [])) or not any('?fields=project,parent,labels,components,issuetype,summary' in call[1] for call in self.calls)
-				from_status = 'In Review' if '/issue/EX-100?' in url else 'Ready'
-				status = ('Done' if '/issue/EX-100?' in url else 'In Progress') if posted else from_status
-				previous = {'id': '1', 'created': '2026-10-09T08:59:59.000+0100', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': 'Backlog', 'to': from_status}]}
+				from_status = '10117' if '/issue/EX-100?' in url else '10118'
+				status = ('10120' if '/issue/EX-100?' in url else '10119') if posted else from_status
+				previous = {'id': '1', 'created': '2026-10-09T08:59:59.000+0100', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': '10116', 'to': from_status, 'fromString': 'Backlog', 'toString': 'In Review' if from_status == '10117' else 'Ready'}]}
 				histories = [previous]
 				if posted:
-					histories = [{'id': '2', 'created': '2026-10-09T08:00:00.000+0000', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'to': status, 'toString': status}, {'field': 'resolution', 'fieldtype': 'jira', 'fieldId': 'resolution', 'from': None, 'to': '10000'}]}, previous]
-				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status}, 'updated': '2026-10-09T08:00:00.000+0000' if posted else previous['created']}, 'changelog': {'histories': histories, 'startAt': 0, 'total': len(histories), 'maxResults': len(histories)}}))
-			status = 'Ready' if self.issue_reads == 1 else 'In Progress'
-			return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status}}}))
+					histories = [{'id': '2', 'created': '2026-10-09T08:00:00.000+0000', 'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': from_status, 'fromString': 'In Review' if from_status == '10117' else 'Ready', 'to': status, 'toString': {'10119': 'In Progress', '10120': 'Done'}[status]}, {'field': 'resolution', 'fieldtype': 'jira', 'fieldId': 'resolution', 'from': None, 'to': '10000'}]}, previous]
+				return (200, json.dumps({'id': '100', 'key': url.split('/issue/', 1)[1].split('?', 1)[0], 'fields': {'status': {'id': status, 'name': {'10118': 'Ready', '10117': 'In Review', '10119': 'In Progress', '10120': 'Done'}[status]}, 'updated': '2026-10-09T08:00:00.000+0000' if posted else previous['created']}, 'changelog': {'histories': histories, 'startAt': 0, 'total': len(histories), 'maxResults': len(histories)}}))
+			status = '10118' if self.issue_reads == 1 else '10119'
+			return (200, json.dumps({'id': '100', 'fields': {'status': {'id': status, 'name': {'10118': 'Ready', '10117': 'In Review', '10119': 'In Progress', '10120': 'Done'}[status]}}}))
 		if method == 'POST' and '/transitions' in url:
 			self.transition_bodies = getattr(self, 'transition_bodies', [])
 			self.transition_bodies.append(json.loads(body))
@@ -159,12 +181,12 @@ class ProgressHttp(FakeHttp):
 	"""Stateful post-merge transport: canonical key and status follow the write."""
 	def __init__(self):
 		super().__init__()
-		self.status='In Review'
+		self.status='10117'
 
 	def request(self,method,url,**kwargs):
 		status,body=super().request(method,url,**kwargs)
 		if method=='POST' and '/transitions' in url:
-			self.status='Done'
+			self.status='10120'
 		if '/issue/' in url and method=='GET':
 			value=json.loads(body)
 			if url.endswith('?fields=key'):
@@ -188,11 +210,17 @@ class AdvancingPageHttp(ProgressHttp):
 
 	def request(self, method, url, **kwargs):
 		status, body = super().request(method, url, **kwargs)
-		if '/rest/api/3/search?' in url:
+		if '/rest/api/3/search/jql?' in url:
 			value = json.loads(body)
-			value['total'] = 2 if 'startAt=0' in url else 3
+			if sum('/search/jql?' in call[1] for call in self.calls) > 2:
+				value['issues'][0]['fields']['updated'] = '2026-10-09T07:59:31Z'
 			body = json.dumps(value)
 		return (status, body)
+
+def numeric_project_config():
+	value = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+	value['jira']['status_map'].update(backlog='10116', ready='10118', in_progress='10119', in_review='10117', done='10120')
+	return value
 
 def _base_config(root):
 	codex = root / 'codex.exe'
@@ -207,7 +235,7 @@ def _base_config(root):
 	auth.write_text('{"fixture":"auth-material"}\n', encoding='utf-8')
 	if os.name != 'nt':
 		auth.chmod(384)
-	project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+	project_config = numeric_project_config()
 	project_config['github'].update(host='https://github.com', repository='example/project', repository_id=101, base_branch='main')
 	project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid',
 		provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
@@ -218,7 +246,7 @@ def _base_config(root):
 	observations = {'accepted_project_config': {'path': str(project_path),
 		'sha256': sha256(project_path.read_bytes()), 'blob_sha': 'e' * 40, 'acceptance_receipt_id': 'fixture-acceptance'},
 		'closeout_directory': str(closeout_dir), 'jira_transition_directory': str(jira_dir)}
-	return {'observations': observations, 'codex': {'executable': {'path': str(codex), 'sha256': sha256(codex.read_bytes())}, 'roles': {'writer': {'model': 'writer-model', 'reasoning_effort': 'high', 'sandbox': 'workspace-write'}, 'critic': {'model': 'critic-model', 'reasoning_effort': 'medium', 'sandbox': 'read-only'}}, 'isolated_home': str(isolated_home), 'windows_sandbox': 'elevated', 'worktree_root': str(worktree), 'run_record_directory': str(root / 'runs'), 'timeout_seconds': 20}, 'github': {'host': 'https://github.com', 'repository': 'example/project', 'repository_id': 101, 'project_id': 'project-1', 'scope_sha256': 'a' * 64, 'base_branch': 'main', 'branch_pattern': 'codex/{ticket}-{slug}', 'expected_actor_id': 1001, 'auth_profile': 'smoke', 'executable': {'path': str(gh), 'sha256': sha256(gh.read_bytes())}, 'page_size': 100}, 'jira': {'enabled': True, 'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'provider_project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller', 'token_env': 'AWF_JIRA_TOKEN', 'merged_status_id': 'Done', 'merged_transition_id': 'done-transition', 'page_size': 1}, 'outbox': {'directory': str(root / 'outbox')}}
+	return {'observations': observations, 'codex': {'executable': {'path': str(codex), 'sha256': sha256(codex.read_bytes())}, 'roles': {'writer': {'model': 'writer-model', 'reasoning_effort': 'high', 'sandbox': 'workspace-write'}, 'critic': {'model': 'critic-model', 'reasoning_effort': 'medium', 'sandbox': 'read-only'}}, 'isolated_home': str(isolated_home), 'windows_sandbox': 'elevated', 'worktree_root': str(worktree), 'run_record_directory': str(root / 'runs'), 'timeout_seconds': 20}, 'github': {'host': 'https://github.com', 'repository': 'example/project', 'repository_id': 101, 'project_id': 'project-1', 'scope_sha256': 'a' * 64, 'base_branch': 'main', 'branch_pattern': 'codex/{ticket}-{slug}', 'expected_actor_id': 1001, 'auth_profile': 'smoke', 'executable': {'path': str(gh), 'sha256': sha256(gh.read_bytes())}, 'page_size': 100}, 'jira': {'enabled': True, 'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'provider_project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller', 'token_env': 'AWF_JIRA_TOKEN', 'credential_type': 'oauth', 'merged_status_id': '10120', 'merged_transition_id': '31', 'page_size': 1}, 'outbox': {'directory': str(root / 'outbox')}}
 
 def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False, binary=False):
 	original = list(heads)
@@ -580,7 +608,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
-		planning_inputs = {**planning_resource_inputs(1), **planning_fixture_inputs([_ticket('tracked.txt')], state, 1, binding=inventory_binding, now=NOW)}
+		planning_inputs = {**planning_resource_inputs(1), **planning_fixture_inputs([_ticket('tracked.txt')], state, 1, binding=inventory_binding, now=NOW, repository={'repository_root': repository})}
 		with patch.dict(os.environ, {'GH_TOKEN': 'secret-gh', 'GITHUB_TOKEN': 'secret-github', 'AWF_JIRA_TOKEN': 'secret-jira', 'ATLASSIAN_API_TOKEN': 'secret-atlassian', 'JIRA_API_KEY': 'secret-jira-key', 'EXAMPLE_CLIENT_SECRET': 'secret-generic'}, clear=False):
 			result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=1, **planning_inputs, inventory_binding=inventory_binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=cfg, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(result['status_delivery']['status'], 'DELIVERED')
@@ -624,7 +652,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A', 'B'], worktree_roots=[self.root / 'worktree'])
-		planning_inputs = {**planning_resource_inputs(2), **planning_fixture_inputs([first, second], state, 2, binding=binding, now=NOW)}
+		planning_inputs = {**planning_resource_inputs(2), **planning_fixture_inputs([first, second], state, 2, binding=binding, now=NOW, repository={'repository_root': repository})}
 		result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=2, **planning_inputs, inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(len(result['dispatch_receipts']), 2, result)
 		self.assertEqual(len(runner.launches), 2)
@@ -973,32 +1001,40 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		http = RealisticTransitionHttp()
 		clock = MutationClock(http)
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_http_transport': http, '_clock': clock})
-		project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+		project_config = numeric_project_config()
 		project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid', provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'jira-timing.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='21', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
 		self.assertIn('record', result, result)
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
 
 	def test_jira_old_history_entry_cannot_prove_current_transition(self):
-
 		class OldHistory(FakeHttp):
-
 			def request(self, method, url, **kwargs):
 				status, body = super().request(method, url, **kwargs)
 				if 'expand=changelog' in url:
 					value = json.loads(body)
-					value['changelog']['histories'][0]['created'] = '2020-01-01T00:00:00Z'
+					value['changelog']['histories'] = ([{'id': '1', 'created': '2020-01-01T00:00:00Z',
+						'author': {'accountId': 'controller'}, 'items': [{'field': 'status', 'from': '10118', 'to': '10119'}]}]
+						if getattr(self, 'transition_bodies', []) else [])
+					value['changelog']['total'] = len(value['changelog']['histories'])
+					value['changelog']['maxResults'] = len(value['changelog']['histories'])
 					body = json.dumps(value)
-				return (status, body)
+				return status, body
 		http = OldHistory()
-		cfg = {**self.config, '_http_transport': http, '_clock': FakeClock()}
-		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](cfg)
-		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			with self.assertRaisesRegex(ValidationError, 'current transition|operation'):
-				adapters['read_transition']({'binding': {'issue_id': '10001'}, 'to_status_id': 'In Progress', 'jira_provider': {'cloud_id': 'cloud-1', 'project_id': 'project-1', 'controller_actor_id': 'controller'}, 'operation_id': 'op'}, {'observed_at': NOW})
+		adapters = self._identity_adapters(http)
+		with patch.dict(os.environ, AWF_JIRA_TOKEN='secret-jira'):
+			record = {'binding': {'issue_id': 'EX-42'}, 'from_status_id': '10118', 'to_status_id': '10119',
+				'transition_id': '21', 'jira_provider': adapters['observe_provider_identity'](),
+				'operation_id': '10000000-0000-0000-0000-000000000001'}
+			operation = adapters['write_transition'](record)
+			self.assertEqual('ATTEMPTED', operation['status'])
+			with self.assertRaisesRegex(ValidationError, 'outside its provider window'):
+				adapters['read_transition'](record, operation)
+		self.assertEqual(1, len(http.transition_bodies))
+		self.assertEqual(2, sum('expand=changelog' in call[1] for call in http.calls))
 
 	def test_github_slurped_pages_are_bounded(self):
 
@@ -1181,11 +1217,11 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		return __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_http_transport': http, '_clock': clock or FakeClock()})
 
 	def _identity_lifecycle(self, adapters, issue='EX-42'):
-		config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+		config = numeric_project_config()
 		config['jira'].update({k: self.config['jira'][k] for k in ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')})
 		store = ContinuousControllerStore(self.root / 'identity.sqlite', ['A'], worktree_roots=[self.root / 'worktree'])
 		binding = {'issue_id': issue}
-		return production_jira_lifecycle(store, config=config, contract={}, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', **{k: adapters[k] for k in ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition')})
+		return production_jira_lifecycle(store, config=config, contract={}, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='21', **{k: adapters[k] for k in ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition')})
 
 	def test_issue_identity_returns_provider_key_and_completion_time(self):
 		clock = FakeClock()
@@ -1200,7 +1236,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'):
 			result = observer('EX-42')
 		self.assertEqual({'issue_key': 'EX-42', 'observed_at': clock.value}, result)
-		self.assertEqual([url.split('invalid')[-1] for _, url, _, _ in http.calls], ['/rest/api/3/myself', '/rest/api/3/project/EX', '/_edge/tenant_info', '/rest/api/3/issue/EX-42?fields=key'])
+		self.assertEqual([url for _, url, _, _ in http.calls], ['https://jira.example.invalid/_edge/tenant_info', 'https://api.atlassian.com/oauth/token/accessible-resources', *['https://api.atlassian.com/ex/jira/cloud-1' + path for path in ('/rest/api/3/myself', '/rest/api/3/project/EX', '/rest/api/3/issue/EX-42?fields=key')]])
 		self.assertTrue(all(call[0] == 'GET' for call in http.calls))
 
 	def test_provider_alias_is_rejected_before_status_or_intent(self):
@@ -1226,14 +1262,15 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		self.assertEqual([], http.calls)
 
 	def test_issue_identity_verifies_provider_before_issue_get(self):
-		for field, value in (('cloudId', 'foreign'), ('siteUrl', 'https://foreign.invalid'), ('id', 'foreign'), ('key', 'OTHER'), ('accountId', 'foreign')):
+		for field, value in (('cloudId', 'foreign'), ('url', 'https://foreign.invalid'), ('id', 'foreign'), ('key', 'OTHER'), ('accountId', 'foreign')):
 			with self.subTest(field=field):
 				class WrongProvider(FakeHttp):
 					def request(self, method, url, **kwargs):
 						status, body = super().request(method, url, **kwargs)
 						obj = json.loads(body)
-						if field in obj:
-							obj[field] = value
+						for entry in (obj if isinstance(obj, list) else [obj]):
+							if field in entry:
+								entry[field] = value
 						return status, json.dumps(obj)
 				http = WrongProvider()
 				observer = self._identity_adapters(http)['observe_issue_identity']
@@ -1278,7 +1315,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 					observer = namespace['build_adapters']({**self.config, '_clock': FakeClock()})['observe_issue_identity']
 					with patch.dict(os.environ, AWF_JIRA_TOKEN='fixture-secret'), self.assertRaises(ValidationError) as error:
 						observer('EX-42')
-				self.assertNotIn('fixture-secret', str(error.exception))
+				self.assertNotIn('fixture-secret', ''.join(__import__('traceback').format_exception(error.exception)))
 				self.assertEqual([30], timeouts)
 				self.assertEqual([] if raw is None else [1024 * 1024 + 1], reads)
 		observer = self._identity_adapters(FakeHttp())['observe_issue_identity']
@@ -1293,14 +1330,14 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		_, loader = _load_real(self.adapter, adapter_config)
 		for enabled in (True, False):
 			with self.subTest(enabled=enabled):
-				config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+				config = numeric_project_config()
 				config['jira'].update({k: self.config['jira'][k] for k in ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')})
 				config['jira']['enabled'] = enabled
 				files = {'project': config, 'contract': {}, 'facts': {'run_registered': True, 'worktree_verified': True}, 'binding': {'issue_id': 'EX-42'}}
 				for name, value in files.items():
 					(self.root / (name + '.json')).write_text(json.dumps(value), encoding='utf-8')
 				state = self.root / ('cli-' + str(enabled) + '.sqlite')
-				argv = ['--state', str(state), '--stream', 'A', '--worktree-root', str(self.root / 'worktree'), '--project-config', str(self.root / 'project.json'), '--adapter-module', str(self.adapter), '--adapter-sha256', sha256(self.adapter.read_bytes()), '--adapter-config', str(adapter_config), 'jira-lifecycle', '--contract', str(self.root / 'contract.json'), '--facts', str(self.root / 'facts.json'), '--binding', str(self.root / 'binding.json'), '--event', 'WORKER_STARTED', '--lifecycle-state', 'DISPATCHED', '--producer-id', 'controller', '--run-id', '00000000-0000-0000-0000-000000000001', '--now', NOW, '--transition-id', '3']
+				argv = ['--state', str(state), '--stream', 'A', '--worktree-root', str(self.root / 'worktree'), '--project-config', str(self.root / 'project.json'), '--adapter-module', str(self.adapter), '--adapter-sha256', sha256(self.adapter.read_bytes()), '--adapter-config', str(adapter_config), 'jira-lifecycle', '--contract', str(self.root / 'contract.json'), '--facts', str(self.root / 'facts.json'), '--binding', str(self.root / 'binding.json'), '--event', 'WORKER_STARTED', '--lifecycle-state', 'DISPATCHED', '--producer-id', 'controller', '--run-id', '00000000-0000-0000-0000-000000000001', '--now', NOW, '--transition-id', '21']
 				http = FakeHttp()
 				def request(_transport, *args, **kwargs):
 					return http.request(*args, **kwargs)
@@ -1337,16 +1374,16 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		clock = FakeClock()
 		cfg = {**self.config, '_http_transport': http, '_clock': clock}
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](cfg)
-		project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+		project_config = numeric_project_config()
 		project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid', provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		binding = {'issue_id': 'EX-42'}
 		store = ContinuousControllerStore(self.root / 'jira.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding=binding, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='21', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
 		self.assertTrue(result['planned'])
 		self.assertEqual(result['record']['status'], 'SUCCEEDED')
-		self.assertEqual(http.asserted_transition_id, '3')
+		self.assertEqual(http.asserted_transition_id, '21')
 		methods = [call[0] for call in http.calls]
 		self.assertEqual(methods.count('POST'), 1)
 		self.assertLess(methods.index('GET'), methods.index('POST'))
@@ -1356,12 +1393,12 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		http = ForeignActorHttp()
 		cfg = {**self.config, '_http_transport': http, '_clock': FakeClock()}
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters'](cfg)
-		project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text())
+		project_config = numeric_project_config()
 		project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid', provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
 		contract = json.loads((ROOT / '.agentic/examples/evidence-bundle.json').read_text())['contract']
 		store = ContinuousControllerStore(self.root / 'foreign.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False):
-			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='3', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
+			result = production_jira_lifecycle(store, config=project_config, contract=contract, event='WORKER_STARTED', facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': 'EX-42'}, issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='00000000-0000-0000-0000-000000000001', now=NOW, evidence=[], transition_id='21', read_current_status=adapters['read_current_status'], write_transition=adapters['write_transition'], read_transition=adapters['read_transition'], observe_provider_identity=adapters['observe_provider_identity'], observe_issue_identity=adapters['observe_issue_identity'], observe_issue_policy=adapters['observe_issue_policy'])
 		self.assertNotEqual(result.get('record', {}).get('status'), 'SUCCEEDED')
 		self.assertIn('writes_stopped', result)
 
@@ -1369,7 +1406,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		from test_continuous_controller import journaled_progress_inputs
 		project_config=project_config or json.loads(Path(self.config['observations']['accepted_project_config']['path']).read_text())
 		store=ContinuousControllerStore(self.root/'progress.sqlite3',['A'],worktree_roots=[self.root/'worktree'])
-		return journaled_progress_inputs(store,project_config,'EX-100',binding=binding,adapters=adapters,merge_result_id=merge_result_id,now=NOW,record_callback=lambda record:setattr(self,'reconciliation_record',record))
+		return journaled_progress_inputs(store,project_config,'EX-100',binding=binding,adapters=adapters,merge_result_id=merge_result_id,now=NOW,transition_id='31',record_callback=lambda record:setattr(self,'reconciliation_record',record))
 
 	def test_merge_observed_reconciles_then_pages(self):
 		http = ProgressHttp()
@@ -1388,7 +1425,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		self.assertEqual(result['jira_progress']['remaining_open'],1)
 		progress_calls=http.calls[progress_start:]
 		self.assertFalse(any(call[0]=='POST' for call in progress_calls))
-		self.assertEqual(sum('/rest/api/3/search?' in call[1] for call in progress_calls),2)
+		self.assertEqual(sum('/rest/api/3/search/jql?' in call[1] for call in progress_calls),4)
 
 	def test_merge_observed_uses_shipped_adapter_closeout_observers(self):
 		repository = self.root / 'merge-repository'
@@ -1411,7 +1448,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		merge = git('rev-parse', 'HEAD')
 		tree = git('rev-parse', 'HEAD^{tree}')
 		blob = git('rev-parse', 'HEAD:tracked.txt')
-		project_config = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
+		project_config = numeric_project_config()
 		project_config['github'].update(repository='example/project', repository_id=101, base_branch='main')
 		project_config['jira'].update(cloud_id='cloud-1', site='https://jira.example.invalid', provider_project_id='project-1', project_key='EX', controller_actor_id='controller')
 		project_bytes = canonical(project_config)
@@ -1427,7 +1464,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		merge_result_id = '10000000-0000-0000-0000-000000000002'
 		closeout_id = '10000000-0000-0000-0000-000000000003'
 		closeout = {'schema_version': 3, 'record_id': closeout_id, 'created_at': NOW, 'producer_id': 'fixture-controller', 'run_id': '10000000-0000-0000-0000-000000000004', 'binding': binding, 'pr_number': 32, 'reviewed_head_sha': head, 'base_sha': base, 'merge_commit_sha': merge, 'merge_tree_sha': tree, 'bound_files': [{'path': 'tracked.txt', 'blob_sha': blob, 'sha256': hashlib.sha256(b'candidate\n').hexdigest()}], 'gate_record_id': '10000000-0000-0000-0000-000000000005', 'review_record_ids': ['10000000-0000-0000-0000-000000000006'], 'jira_transition_record_id': transition_id, 'evidence': ['urn:awf:fixture:closeout']}
-		transition = {'schema_version': 3, 'record_id': transition_id, 'created_at': NOW, 'producer_id': 'controller', 'run_id': '10000000-0000-0000-0000-000000000007', 'binding': binding, 'operation_id': '10000000-0000-0000-0000-000000000008', 'merge_result_id': merge_result_id, 'jira_provider': {'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller'}, 'lifecycle_event': 'JIRA_RECONCILED', 'from_status_id': '3', 'to_status_id': 'Done', 'transition_id': 'done-transition', 'status': 'SUCCEEDED', 'evidence': ['urn:awf:fixture:jira-transition'], 'read_back': {'observed_status': 'Done', 'observed_actor': 'controller', 'observed_at': NOW}}
+		transition = {'schema_version': 3, 'record_id': transition_id, 'created_at': NOW, 'producer_id': 'controller', 'run_id': '10000000-0000-0000-0000-000000000007', 'binding': binding, 'operation_id': '10000000-0000-0000-0000-000000000008', 'merge_result_id': merge_result_id, 'jira_provider': {'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller'}, 'lifecycle_event': 'JIRA_RECONCILED', 'from_status_id': '10117', 'to_status_id': '10120', 'transition_id': '31', 'status': 'SUCCEEDED', 'evidence': ['urn:awf:fixture:jira-transition'], 'read_back': {'observed_status': '10120', 'observed_actor': 'controller', 'observed_at': NOW}}
 		(closeout_dir / (closeout_id + '.json')).write_bytes(canonical({'record': closeout, 'merge_result_id': merge_result_id, 'merge_observed_at': NOW}))
 		(jira_dir / (transition_id + '.json')).write_bytes(canonical({'record': transition}))
 		http = ProgressHttp()
@@ -1456,7 +1493,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		self.assertEqual(result['jira_progress']['remaining_open'],1)
 		progress_calls=http.calls[progress_start:]
 		self.assertFalse(any(call[0]=='POST' for call in progress_calls))
-		self.assertEqual(sum('/rest/api/3/search?' in call[1] for call in progress_calls),2)
+		self.assertEqual(sum('/rest/api/3/search/jql?' in call[1] for call in progress_calls),4)
 		original_request = http.request
 		for returned_key in (None, 'EX-999'):
 			with self.subTest(returned_key=returned_key):
@@ -1469,7 +1506,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 						body = json.dumps(value)
 					return status, body
 				posts_before = sum(call[0] == 'POST' for call in http.calls)
-				request = {'operation': 'JIRA_RECONCILIATION', 'provider_identity': transition['jira_provider'], 'source_identity': 'jira_issue_transition_and_readback', 'binding': binding, 'issue_id': 'EX-100', 'transition_record_id': transition_id, 'expected_status_id': 'Done'}
+				request = {'operation': 'JIRA_RECONCILIATION', 'provider_identity': transition['jira_provider'], 'source_identity': 'jira_issue_transition_and_readback', 'binding': binding, 'issue_id': 'EX-100', 'transition_record_id': transition_id, 'expected_status_id': '10120'}
 				with patch.object(http, 'request', side_effect=wrong_readback), patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'secret-jira'}, clear=False), self.assertRaisesRegex(ValidationError, 'different issue'):
 					adapters['observe_jira_reconciliation'](request)
 				self.assertEqual(posts_before, sum(call[0] == 'POST' for call in http.calls))
@@ -1486,7 +1523,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 			result = production_merge_observed(lifecycle_state='MERGING', lifecycle_facts={'merge_confirmed': True, 'candidate_matched': True}, jira_progress={**progress, 'reconcile_merged_ticket': adapters['reconcile_merged_ticket'], 'fetch_scope_page': adapters['fetch_scope_page']})
 		self.assertEqual(result['jira_progress']['jira_state'], 'RECONCILED')
 		self.assertEqual(result['jira_progress']['closed'],'UNOBSERVED')
-		self.assertEqual(sum('/rest/api/3/search?' in call[1] for call in http.calls[progress_start:]),2)
+		self.assertEqual(sum('/rest/api/3/search/jql?' in call[1] for call in http.calls[progress_start:]),4)
 		self.assertFalse(any(call[0]=='POST' for call in http.calls[progress_start:]))
 
 	def test_interrupted_dispatch_is_observed_without_relaunch(self):

@@ -46,13 +46,14 @@ legacy policy stays until versioned adoption. No retrospective zero usage.
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
 ref, never evidence of policy refresh. New merges remain invisible until fetched.
 The controller's own checkout requires repository-local remote.origin.url;
-relative/inside-checkout paths refuse. Discovery/fetch have 30-second/output bounds.
-Fetched and advertised HEAD must match; mismatches retry next cycle. Publication
-atomically updates the tracking ref, then origin/HEAD on rename/absence, retaining
-old refs. Readers ignore refresh locks. Refreshers lock after discovery; unlocked
-locks older than ten minutes are replaced/reported. OS locking prevents clock-jump
-takeover of live refreshers. Renames work with old branches kept/deleted.
-Failures report step/remedy and retain policy; credentials apply.
+relative/inside-checkout paths refuse. Git 2.29+ ([notes](https://git-scm.com/docs/RelNotes/2.29.0));
+older-binary execution unproven. Lock before 30-second discovery/fetch,
+advertised-commit checking and publication. Mismatches retry next cycle.
+UTF-8 names use check-ref-format. Preserve unverified tracking HEAD when identity
+is absent; delete conflicts, update target, then origin/HEAD. Hierarchical renames recover.
+Failures retain policy/unverified refusal with remedies. Readers ignore locks;
+unlocked locks older than ten minutes are replaced/reported. Locking prevents
+clock-jump takeover. Shared filtering preserves Git helpers/home/PATH/SSH-agent.
 `show` never fetches. The skill fetches after owner merge, then shows settings.
 
 Merge authority rests with host rules and the owner. `show` reports rules UNOBSERVED

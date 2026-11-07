@@ -177,7 +177,7 @@ class SecondLookTests(unittest.TestCase):
                 # Force offline admission: it must refuse even with OFF bytes.
                 with patch('agentic.protected_settings.refresh_default_policy', return_value={'status': 'UNAVAILABLE'}):
                     with self.assertRaisesRegex(ValidationError, 'unverified'):
-                        ControllerBudgeting(None, edited, snapshot, None, worktree_roots=(self.root,))
+                        ControllerBudgeting(None, edited, snapshot, None, worktree_roots=(self.root,), repository_root=self.root)
                 self.assertEqual(main, self.git('rev-parse', 'origin/main'))
         from agentic.protected_settings import refresh_default_policy
         self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
@@ -279,17 +279,17 @@ class SecondLookTests(unittest.TestCase):
                 self.assertEqual(before, {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
                                          for p in self.root.rglob('*') if p.is_file()})
 
-    def test_refresh_uses_only_git_230_ref_publication_commands(self):
+    def test_publication_uses_direct_update_ref_without_stdin_symref_protocol(self):
         from agentic.protected_settings import refresh_default_policy
         from agentic.safeio import run_bounded
         seen = []
-        def git230(args, **kwargs):
+        def inspect_publication(args, **kwargs):
             if 'update-ref' in args:
                 seen.append(args[args.index('update-ref'):])
                 self.assertNotIn('--stdin', args)
                 self.assertNotIn('symref-update', kwargs.get('stdin') or '')
             return run_bounded(args, **kwargs)
-        with patch('agentic.safeio.run_bounded', side_effect=git230):
+        with patch('agentic.safeio.run_bounded', side_effect=inspect_publication):
             result = refresh_default_policy(self.root)
         self.assertEqual('FETCHED', result['status'], result)
         self.assertTrue(seen)
@@ -360,7 +360,10 @@ class SecondLookTests(unittest.TestCase):
         with patch('agentic.safeio.run_bounded', side_effect=concurrent_fetch):
             result = refresh_default_policy(self.root)
         self.assertEqual('UNAVAILABLE', result['status'], result)
-        self.assertEqual('branch fetch', result['step'])
+        self.assertEqual('advertised commit check', result['step'])
+        self.assertIn('Fetched commit differs from advertised HEAD', result['reason'])
+        self.assertIn('next controller cycle', result['reason'])
+        self.assertNotIn('Restore access', result['reason'])
         self.assertEqual(before, self.git('rev-parse', 'origin/main'))
         self.assertFalse(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
         self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
@@ -377,7 +380,7 @@ class SecondLookTests(unittest.TestCase):
         seen = []
         def during_network(args, **kwargs):
             if '--symref' in args:
-                self.assertFalse(lock.exists())
+                self.assertTrue(lock.exists())
             if 'fetch' in args:
                 seen.append('fetch')
                 self.assertTrue(lock.exists())
@@ -442,7 +445,7 @@ class SecondLookTests(unittest.TestCase):
                         snapshot = op.read_operating(clone, self.gov)
                         self.assertIn('unverified', snapshot.provenance['protected_settings']['branch_observation'])
                         context = ControllerBudgeting(self.base / (shape + str(enabled) + '.sqlite') if enabled else None,
-                            self.gov, snapshot, None, worktree_roots=(clone,))
+                            self.gov, snapshot, None, worktree_roots=(clone,), repository_root=clone)
                         self.assertEqual(enabled, context.settings['enforcement_enabled'])
                         self.assertEqual('refs/remotes/origin/main', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
                     finally:
@@ -454,13 +457,8 @@ class SecondLookTests(unittest.TestCase):
         self.git('update-ref', '-d', 'refs/remotes/origin/main')
         self.git('remote', 'set-url', 'origin', str(self.base / 'offline.git'))
         snapshot = op.read_operating(self.root, self.gov)
-        # The later shared-domain ruling refuses unverified protected policy,
-        # even when the working file says OFF. Diagnostics still work and the
-        # refusal must precede any ledger construction.
-        from agentic import ValidationError
-        with patch('agentic.budgeting.BudgetLedger', side_effect=AssertionError('OFF opened ledger')):
-            with self.assertRaisesRegex(ValidationError, 'unverified'):
-                ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,))
+        context = ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,), repository_root=self.root)
+        self.assertFalse(context.settings['accounting_enabled'])
         self.assertEqual(0, self.show()[0])
 
     def test_offline_with_tracking_refs_reports_failed_step_at_admission(self):
@@ -471,7 +469,7 @@ class SecondLookTests(unittest.TestCase):
         snapshot = op.read_operating(self.root, self.gov)
         self.assertFalse(snapshot.provenance['protected_settings']['budget_admission'])
         with self.assertRaisesRegex(ValidationError, 'default discovery'):
-            ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,))
+            ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,), repository_root=self.root)
         with self.assertRaisesRegex(ValidationError, 'default discovery'):
             self.cycle()
         self.assertEqual(0, self.show()[0])
@@ -559,8 +557,7 @@ class SecondLookTests(unittest.TestCase):
     def test_legacy_event_chain_survives_merged_block(self):
         legacy = deepcopy(self.value)
         legacy.pop('budgeting')
-        legacy.pop('operating_calendar', None)
-        legacy.pop('reporting', None)  # Published 1.9.5 predates these domains.
+        legacy.pop('operating_calendar', None)  # Published 1.9.5 has neither domain.
         self.publish(legacy)
         import sys
         import tarfile

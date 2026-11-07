@@ -115,8 +115,13 @@ class ReportingE2Regressions(unittest.TestCase):
                     from agentic.child_process import isolated_git_env
                     def git(*argv):
                         return subprocess.run([shutil.which('git'),'-C',str(root),*argv],env=isolated_git_env(),check=True,capture_output=True)
+                    checkout_head = git('rev-parse','HEAD').stdout.decode().strip()
                     git('checkout','-B','codex/planted');git('add','OPERATING_CONFIG.yaml')
                     git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Proposed reporting','--allow-empty')
+                    # Retain the unmerged proposal branch and working edit,
+                    # without moving the controller's pinned checkout tuple.
+                    git('checkout','--detach',checkout_head)
+                    (root/'OPERATING_CONFIG.yaml').write_bytes(_json(value))
                     planted = replace(validate_operating(value,kwargs['planning_config']),_provenance_json=snapshot._provenance_json)
                     kwargs.update(planning_operating_snapshot=planted,operating_config_sha256=planted.operating_hash)
                     return real(*args,**kwargs)
@@ -169,13 +174,20 @@ class ReportingE2Regressions(unittest.TestCase):
 
     def test_missing_transport_and_foreign_scope_refuse_before_secret_access(self):
         from agentic.reporting.platform import build_reporting_providers
-        operating = dict(reporting=deepcopy(self.settings))
+        operating = self.policy_snapshot()
+        root = Path(self.helper.temp.name) / 'reporting-policy'
+        from agentic.operating import load_yaml
+        governance = load_yaml((root / '.agentic/PROJECT_CONFIG.yaml').read_bytes())
         with patch('agentic.reporting.platform.environment_secret', side_effect=AssertionError('secret read')):
             with self.assertRaisesRegex(ValidationError, 'REPORT_TRANSPORT_BINDING_REQUIRED'):
-                build_reporting_providers({}, operating, self.binding)
-            operating['reporting']['bindings'][0]['scope_revision'] = 'foreign'
+                build_reporting_providers({}, operating, self.binding, repository_root=root, governance=governance)
+            value = operating.config
+            for destination in value['reporting']['bindings']:
+                destination['scope_revision'] = 'foreign'
+            from settings_pr_fixtures import accepted_fixture_snapshot
+            operating = accepted_fixture_snapshot(self, root, value, governance)
             with self.assertRaisesRegex(ValidationError, 'REPORT_SCOPE_BINDING_MISMATCH'):
-                build_reporting_providers({}, operating, self.binding)
+                build_reporting_providers({}, operating, self.binding, repository_root=root, governance=governance)
 
     def test_default_off_factory_cycle_has_no_reporting_state_or_secret_reads(self):
         self.settings = dict(mode='off', bindings=[])
@@ -188,11 +200,19 @@ class ReportingE2Regressions(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM controller_reports').fetchone()[0], 0)
 
     def test_slow_destination_is_bounded_other_platform_and_next_cycle_proceed(self):
-        # Keep real Git admission while excluding unrelated dirty-path scans
-        # from the bounded destination timing test. This clone makes no commit.
+        # Keep real Git admission with policy matching this three-lane fixture;
+        # publishing the fixture policy preserves the clone's checkout head.
         clean = Path(self.helper.temp.name) / 'clean-repository'
         subprocess.run(['git', 'clone', '--shared', '--quiet', str(self.repository['repository_root']), str(clean)],
                        check=True, capture_output=True)
+        from test_planning import config, operating_snapshot
+        from settings_pr_fixtures import publish_fixture_settings
+        governance = config(3)
+        governance['project']['id'] = self.binding['project']
+        governance['github']['repository_id'] = self.binding['repository']
+        value = operating_snapshot(governance, 3).config
+        value['reporting'] = deepcopy(self.settings)
+        publish_fixture_settings(self, clean, governance, value)
         self.repository['repository_root'] = clean
         self.network.slow = True
         from agentic.reporting import runtime

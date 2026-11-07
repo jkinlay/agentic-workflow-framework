@@ -18,13 +18,27 @@ class PlatformReportingAdapter:
     platform = None
     max_payload_bytes = 0
 
-    def __init__(self, transport, approved_binding, *, resolve_secret, mode='off'):
+    def __init__(self, transport, approved_binding, *, resolve_secret, mode='off', load_policy=None):
         self.binding = validate_binding(approved_binding)
         require(self.binding['platform'] == self.platform, 'REPORT_PLATFORM_MISMATCH')
         require(mode in {'off', 'slack', 'teams', 'both'}, 'REPORT_MODE_INVALID')
         self.transport = transport
         self.resolve_secret = resolve_secret
         self.mode = mode
+        self.load_policy = load_policy
+
+    def _readmit(self, intent):
+        if self.load_policy is not None:
+            from .settings import effective_reporting
+            from .delivery import same_destination
+            settings = effective_reporting(self.load_policy())
+            require(settings['mode'] in {self.platform, 'both'}, 'REPORTING_OFF')
+            # Only the controller's retained-correction copy may carry a prior
+            # scope. Ordinary factory senders require all seven binding fields.
+            retained = getattr(self, '_retained_scope_binding', False)
+            require(any(intent['binding'] == b or retained and same_destination(intent['binding'], b)
+                        for b in settings['bindings']),
+                    'REPORT_DESTINATION_MISMATCH')
 
     def _admit(self, intent):
         require(self.mode in {self.platform, 'both'}, 'REPORTING_OFF')
@@ -61,7 +75,10 @@ class PlatformReportingAdapter:
             from .bounded import sending
             # The transport calls start after payload and HTTP-budget admission,
             # immediately before POST. Verification consumes no attempt.
-            with sending(start):
+            def admitted_start():
+                self._readmit(intent)
+                start()
+            with sending(admitted_start):
                 raw = self.transport.send(deepcopy(intent), attempt_id, secret)
             from .delivery import DeliveryOutbox
             safe = DeliveryOutbox._rejection(raw, intent, attempt_id)
@@ -119,15 +136,24 @@ def environment_secret(reference):
     return os.environ.get(reference[4:])
 
 
-def build_reporting_providers(configuration, operating, binding, *, http=None, clock=None):
+def build_reporting_providers(configuration, operating, binding, *, repository_root=None, governance=None,
+                              http=None, clock=None):
     """Reviewed construction; project settings select bindings, never code.
 
     Tenant/workspace and sender identity are project-owned transport bindings.
     Construction validates everything without resolving any credential.
     """
+    from ..operating import OperatingSnapshot
+    from ..budgeting import accepted_budget_snapshot, policy_repository_root
+    require(isinstance(operating, OperatingSnapshot) and repository_root is not None
+            and isinstance(governance, dict), 'REPORT_ACCEPTED_POLICY_REQUIRED')
+    root = policy_repository_root(repository_root, operating)
+    operating = accepted_budget_snapshot(root, governance, operating)
+    def load_policy():
+        return accepted_budget_snapshot(root, governance, operating).config
     from .settings import effective_reporting
     from .http_transport import SlackTransport, TeamsTransport
-    settings = effective_reporting(operating, binding=binding)
+    settings = effective_reporting(operating.config, binding=binding)
     if settings['mode'] == 'off':
         return {}
     selected = {'teams', 'slack'} if settings['mode'] == 'both' else {settings['mode']}
@@ -152,5 +178,5 @@ def build_reporting_providers(configuration, operating, binding, *, http=None, c
         if http is not None:
             options['http'] = http
         result[platform] = adapter(transport(**options), destination,
-                                  resolve_secret=environment_secret, mode=settings['mode'])
+                                  resolve_secret=environment_secret, mode=settings['mode'], load_policy=load_policy)
     return result

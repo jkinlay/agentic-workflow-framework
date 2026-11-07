@@ -42,18 +42,19 @@ class ProductionPreA7Tests(unittest.TestCase):
         self.gov = inputs['planning_config']
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting'] = dict(self.value['budgeting'], accounting_enabled=False)
-        snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
+        repository = self.root / 'controller-repository'
+        snapshot = accepted_fixture_snapshot(self, repository, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         config['codex']['roles']['writer']['reasoning_effort'] = 'high'
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
-        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(fixtures.ROOT),
+        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(repository),
             'rev-parse', ref], text=True).strip() for ref in ('HEAD', 'HEAD^{tree}')]
-        with tempfile.TemporaryDirectory(dir=fixtures.ROOT) as home, \
+        with tempfile.TemporaryDirectory(dir=repository) as home, \
              patch.dict(os.environ, {'AWF_STATE_HOME': home}):
             result = production_controller_cycle(store, controller_config=dict(dispatch_enabled=True,
                 auto_dispatch=True, auto_request_critic=True, auto_resume_amendments=True), now=NOW,
                 host_capacity=1, **{**planning_resource_inputs(1), **inputs}, inventory_binding=binding,
-                repository_root=fixtures.ROOT, repository_head_sha=head, repository_tree_sha=tree,
+                repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
                 publication_config=config,
                 **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations',
                     'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})

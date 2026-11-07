@@ -85,7 +85,8 @@ class ExhaustionTests(unittest.TestCase):
             reviews.recheck(payload['batch_id'], now, {}, observe)
             reviews.begin_delivery(payload['batch_id'], now)
             if retained:
-                providers = case.adapters['configure_reporting'](reporting_policy_snapshot(case), case.binding)
+                providers = case.adapters['configure_reporting'](reporting_policy_snapshot(case), case.binding,
+            repository_root=Path(case.helper.temp.name) / 'reporting-policy')
                 ReviewReportingPort(case.helper.store, {'reporting': case.settings}, case.binding,
                                     providers, case.clock.now)._retain_review_batch(payload)
         before = [r for r in case.status()['reports'] if r['kind'] == 'final-human-review']

@@ -354,11 +354,25 @@ class ReviewBatchStore:
                            (key, selected[-1][0]))
             return [deepcopy(v[1]) for v in selected], len(eligible) - len(selected)
 
+    @staticmethod
+    def _state_binding(db):
+        """Bind every review row used by selection, retry accounting and recheck.
+
+        Read under a SQLite snapshot, compare under BEGIN IMMEDIATE. Neither
+        provider latency nor a concurrent claim/release can reuse stale evidence.
+        """
+        tables = ('intent', 'outbox', 'receipt', 'check', 'phase', 'detail')
+        return fingerprint('review-observation-state-v1', {
+            name: [list(row) for row in db.execute(
+                'SELECT * FROM review_presentation_' + name + '_v1 ORDER BY rowid')]
+            for name in tables})
+
     def claim(self, now, calendar, observer, *, max_members=None, exclude=()):
         """Recompute pending eligibility and atomically claim one due digest.
 
-        The trusted observer runs inside the serialized transaction. An exception
-        rolls back the tick; fresh invalid/changed/closed members withdraw.
+        Collect provider observations without a transaction, then atomically
+        recheck all dependent state and persist their bindings. Exceptions leave
+        the tick unchanged; fresh invalid/changed/closed members withdraw.
         Stale, malformed or unavailable evidence retains the pending intent.
         A missed run catches up during a current presentation window, never
         after cutoff.
@@ -371,7 +385,7 @@ class ReviewBatchStore:
         window = next_review_presentation(now, calendar)
         if utc_instant(window["presentation_at"]) != current:
             return None
-        selected = None
+        selected_ids = None
         if max_members is not None:
             # Commit the scheduling cursor before a remote observation can
             # fail/roll back claim. A broken observer or unresolved schedule
@@ -383,11 +397,13 @@ class ReviewBatchStore:
                 key = 'report-review-claim-cursor'
                 row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
                 cursor = row[0] if row else ''
-                selected = ([i for i in ids if i > cursor] + [i for i in ids if i <= cursor])[:max_members]
-                if selected:
+                selected_ids = ([i for i in ids if i > cursor] + [i for i in ids if i <= cursor])[:max_members]
+                if selected_ids:
                     db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                               (key, selected[-1]))
-        with self.controller.transaction() as db:
+                               (key, selected_ids[-1]))
+        with self.controller.connection() as db:
+            db.execute('BEGIN')
+            state_binding = self._state_binding(db)
             presentation_window = _window(now, calendar)
             evidence = self._attempt_windows(db, calendar)
             terminal = self._reporting_failure_intents(db)
@@ -400,10 +416,10 @@ class ReviewBatchStore:
                 for member in self._payload(claimed)['members']:
                     value = member['candidate']
                     fenced.add((value['repository_id'], value['pull_request']))
-            members = []
+            selected = []
             rows = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE state IN ('PENDING','EXHAUSTED') ORDER BY intent_id").fetchall()
-            if selected is not None:
-                rows = [row for row in rows if row['intent_id'] in selected]
+            if selected_ids is not None:
+                rows = [row for row in rows if row['intent_id'] in selected_ids]
             for index, row in enumerate(rows):
                 if max_members is not None and index >= max_members:
                     break
@@ -424,7 +440,15 @@ class ReviewBatchStore:
                     continue
                 if utc_instant(schedule["presentation_at"]) > current:
                     continue
-                observation = observer(deepcopy(candidate))
+                selected.append((dict(row), candidate, schedule, count))
+            db.rollback()
+        observations = [(row, candidate, schedule, count, deepcopy(observer(deepcopy(candidate))))
+                        for row, candidate, schedule, count in selected]
+        with self.controller.transaction() as db:
+            if self._state_binding(db) != state_binding:
+                return None  # Changed while reading; a later tick must re-observe.
+            members = []
+            for row, candidate, schedule, count, observation in observations:
                 if not _observation_current(observation, current):
                     continue
                 if not _observation_valid(observation, candidate, current):
@@ -480,7 +504,9 @@ class ReviewBatchStore:
         _require(callable(observer), "Fresh review candidate observer is required")
         current = utc_instant(now)
         window = next_review_presentation(now, calendar)
-        with self.controller.transaction() as db:
+        with self.controller.connection() as db:
+            db.execute('BEGIN')
+            state_binding = self._state_binding(db)
             row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
             _require(row is not None and row["state"] in {"CLAIMED", "REPORTING"}, "Review batch is not claimed")
             payload = self._payload(row)
@@ -491,12 +517,23 @@ class ReviewBatchStore:
                      utc_instant(window["presentation_at"]) == current and
                      window["calendar_sha256"] == payload["calendar_sha256"],
                      "Review batch calendar changed or presentation window is closed")
-            observations = []
-            for member in payload["members"]:
-                observation = observer(deepcopy(member["candidate"]))
-                _require(_observation_valid(observation, member["candidate"], current),
+            db.rollback()
+        observations = [{"intent_id": member["intent_id"],
+                         "observation": deepcopy(observer(deepcopy(member["candidate"])))}
+                        for member in payload["members"]]
+        with self.controller.transaction() as db:
+            _require(self._state_binding(db) == state_binding,
+                     "Review batch dependencies changed during provider observation")
+            row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
+            _require(row is not None and row["state"] in {"CLAIMED", "REPORTING"}, "Review batch is not claimed")
+            payload = self._payload(row)
+            _require(current >= utc_instant(payload["prepared_at"]) and
+                     utc_instant(window["presentation_at"]) == current and
+                     window["calendar_sha256"] == payload["calendar_sha256"],
+                     "Review batch calendar changed or presentation window is closed")
+            for member, evidence in zip(payload["members"], observations):
+                _require(_observation_valid(evidence["observation"], member["candidate"], current),
                          "Review candidate is no longer current and ready")
-                observations.append({"intent_id": member["intent_id"], "observation": observation})
             encoded = canonical(observations).decode()
             prior = db.execute("SELECT observation_json FROM review_presentation_check_v1 WHERE batch_id=? AND checked_at=?",
                                (batch_id, utc_text(current))).fetchone()
