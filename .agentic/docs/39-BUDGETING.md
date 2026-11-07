@@ -5,80 +5,51 @@ AWF-242: Tier 3, FULL. Fresh accounting/enforcement default OFF; dormant limits:
 switch; enforcement requires accounting; accounting OFF disables enforcement.
 Missing fields preserve legacy budgeting/reviewed limits.
 
-## Operating choices and authentication
+## Settings in chat and PRs
 
-`OPERATING_CONFIG.yaml` block:
+Ask in AWF Codex chat to check budget settings. The skill runs read-only
+`workflow.py operating show` without approval. It presents accounting/enforcement
+on or off, both limits, source (fresh defaults, default branch at the reported
+commit, or legacy retained), and working-file differences. Last PR/merger is
+optional information; if unobserved, say so without failure.
 
-```json
-"budgeting": {
-  "accounting_enabled": false,
-  "enforcement_enabled": false,
-  "max_tokens_per_ticket": 4000000,
-  "max_tokens_per_project": 1000000000
-}
-```
+Ask in chat for a change to `budgeting.accounting_enabled`,
+`budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` or
+`budgeting.max_tokens_per_project`. Limits are positive signed 64-bit integers
+(1..9223372036854775807); switches are booleans. Validate with `operating validate --file PROPOSED`;
+refuse invalid combinations before preparing a PR. Accounting OFF also disables
+enforcement; a dormant limit enables nothing. No Epic overrides.
 
-Set `budgeting.*` booleans/positive integers within bounds.
+The skill branches from the fetched configured default branch and changes only
+requested values in `OPERATING_CONFIG.yaml`, preserving text/comments. The PR
+shows exact before/after under existing publication authority. Restricted agent
+pushes prepare branch/body for owner publication. The owner reviews and merges
+on GitHub; agents never merge. No terminal command is required of the owner.
+Git history and the PR are the audit trail. Protected `operating set` writes
+nothing and explains the PR route; unprotected settings retain their existing flow.
 
-Run `workflow.py operating set --instruction "REQUEST" --set
-budgeting.accounting_enabled=true`. Valid changes print exact changes/digest,
-store a protected proposal, exit 3 `PENDING_OWNER_CONFIRMATION`; settings stay
-unchanged. Owner runs `workflow.py operating confirm --digest D` in their
-terminal within 15 minutes, typing its first eight characters. Skills never
-confirm; verify persistence with `operating show`.
+Effective protected settings are the locally known commit at
+`refs/remotes/origin/<github.base_branch>`. Working-tree edits and PR branches
+have no effect on budget admission, recovery, controller or routing, including
+disabling enforcement. After owner merge and fetch, the next controller load
+reads the new commit. Older worktrees read the same settings. `show` and
+`validate-config` explain differences: open a PR. Missing, unreadable or malformed
+default-branch files refuse budget work with a reason; never silently assume OFF.
 
-Proposals bind clone/project/repository/governance, prior settings, changes, request/expiry.
-Confirmation retains protected digests. Audit: numeric owner ID/login/digest/time, never tokens. Register journal SHA-256/event ID once
-in protected storage within 15 minutes, before publication/configuration changes.
-Confirmations supersede unapplied transactions. Recovery
-finishes the latest registered transaction extending bound prior
-settings, or clears its terminal journal without reapplying; it never renews
-authority. Before journal publication, unchanged settings permit fresh `set`/`confirm`;
-afterwards inspect/pin and recover first. Preserve evidence. Disabling accounting recovers
-derived enforcement OFF too.
+Fresh defaults without remote metadata and absent legacy blocks load without
+Git commands, gh or network. Nondefault protected settings without Git/a fetched
+ref refuse budget work. Once remote metadata exists, it must be inspected even
+when working bytes say OFF, to prevent disabling an accepted policy.
+OFF needs no usage ledger, telemetry or reservations. Bootstrap/adoption/upgrade
+preserve existing choices/history; legacy fields retain legacy policy until
+manual versioned adoption. No retrospective zero usage.
 
-Owner storage uses the Windows current token's account SID and HKLM ProfileList
-ProfileImagePath plus AppData/Local, or POSIX password-database home, outside worker
-writes. No override selects it; AWF_STATE_HOME, LOCALAPPDATA, USERPROFILE and HOME cannot.
-Usage state may use AWF_STATE_HOME; deny worker writes.
-
-Budget admission/recovery/controller/routing require protected confirmation;
-schema validation supplies none. Latest confirmed values bind even defaults/absent blocks.
-Loads never inspect Git/gh executables. Without a store/confirmation, fresh OFF
-defaults and absent legacy blocks load; unconfirmed nondefaults refuse budget work. Unavailable profiles, junctions
-or missing password-database entries never brick defaults. New protected changes
-refuse with the reason. OFF needs no usage ledger.
-
-Binding hashes the Git common directory read from metadata;
-project ID cross-checks. Editable IDs cannot hide confirmations. Worktrees share them; moved/fresh clones and copies need fresh
-confirmation. Ignore Git environment overrides; gitfiles require registered backlinks outside sandbox write authority. Without Git, protected changes refuse. The host must deny worker Git-metadata
-writes/replacement: binding protects clone identity under that isolation, not processes
-able to replace it.
-
-Older checkouts/mismatches remain inspectable: show/validate-config report differences
-from this clone's latest confirmation; unrelated changes work, budget work refuses.
-Pending proposals report pending. Explicit budgeting choices/terminal confirmation
-repair admission preserving audit. Screen/digest bind every difference from
-confirmed values, including prior disk edits; settings appear for
-no-change reconfirmation. Audit/journals prove nothing; transactions bind governance/prior settings.
-Bootstrap/adoption/upgrade preserve OFF defaults; migration/import preserve
-history, never authenticate. Missing legacy fields retain legacy policy
-until manual versioned budget adoption.
-
-Confirm requires interactive stdin/stdout (Windows console handles, excluding
-NUL/pipes/files); refuses token environment variables and foreign `GH_HOST`.
-`gh auth status --hostname github.com --active` and
-`gh api --hostname github.com --method GET user` verify numeric User ID
-against `merge_gate.trusted_owner_ids`; empty yields
-`OWNER_GATE_NOT_CONFIGURED` (`.agentic/PROJECT_CONFIG.yaml`). Resolve native `gh` once;
-refuse scripts and sandbox-group/capability SID modification/replacement rights.
-Inspect ancestors through volume root for ACL/ownership control; replacement needs
-parent creation plus DELETE or parent delete-child. Owner/admin rights pass.
-Without sandbox principals (POSIX), pass.
-Audit path/SHA-256.
-`trusted_owner_ids` comes from the working tree:
-a process editing it still needs that terminal/login. A process with the
-owner's full rights can still get around this. No execution authority.
+Merge authority rests with the host's repository rules and the owner.
+`show` reports rules APPLIED, MISSING or UNOBSERVED as warnings, never blocking.
+Git metadata must be outside worker write authority. A process able to push
+directly to an unprotected default branch, or one with the owner's full rights,
+can get around this: offer the shipped ruleset separately.
+`merge_gate.trusted_owner_ids` remains for its existing merge-gate use.
 
 ## Ledger and enrollment
 

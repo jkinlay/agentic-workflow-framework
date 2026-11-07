@@ -7,7 +7,7 @@ import uuid
 
 import source_only
 from source_only import skip_unless_source_repo
-from owner_admission_fixtures import confirmed_fixture_snapshot
+from settings_pr_fixtures import accepted_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.budgeting import BudgetLedger
 from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle
@@ -31,7 +31,7 @@ class ProductionPreA11Tests(unittest.TestCase):
         value = deepcopy(self.value)
         value['budgeting']['accounting_enabled'] = enabled
         context = adapters['dispatch_ticket'].configure_budgeting(path=self.root / 'ledger.sqlite',
-            governance=self.gov, operating=confirmed_fixture_snapshot(self, self.root, value, self.gov))
+            governance=self.gov, operating=accepted_fixture_snapshot(self, self.root, value, self.gov))
         return config, runner, adapters, context
 
     def record(self, runner, payload):
@@ -118,7 +118,7 @@ class ProductionPreA11Tests(unittest.TestCase):
             config=self.gov, cycle_id=name)
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting']['accounting_enabled'] = enabled
-        snapshot = confirmed_fixture_snapshot(self, self.root, value, inputs['planning_config'])
+        snapshot = accepted_fixture_snapshot(self, self.root, value, inputs['planning_config'])
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         head, tree = [fixtures.subprocess.check_output(['git', '-C', str(fixtures.ROOT),
             'rev-parse', ref], text=True).strip() for ref in ('HEAD', 'HEAD^{tree}')]

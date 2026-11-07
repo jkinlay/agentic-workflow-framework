@@ -16,7 +16,7 @@ from agentic.budgeting import BudgetLedger, fresh_settings, project_ledger_path
 from agentic.model_routing import RoutingLedger, policy_from_config, select_route
 from test_operating import governance
 from test_model_routing import request, capabilities, outcome
-from owner_admission_fixtures import record_fixture_owner_confirmation, confirmed_fixture_snapshot
+from settings_pr_fixtures import publish_fixture_settings, accepted_fixture_snapshot
 import test_reference_controller_adapter as reference_tests
 from test_reference_controller_adapter import _base_config, _dispatch_payload, FakeRunner, FakeClock
 
@@ -56,7 +56,7 @@ class BudgetWiringTests(unittest.TestCase):
     def context(self, *, enabled=True, enforcement=False, limit=50):
         self.value['budgeting'] = dict(fresh_settings(), accounting_enabled=enabled,
             enforcement_enabled=enforcement, max_tokens_per_ticket=limit, max_tokens_per_project=limit)
-        record_fixture_owner_confirmation(self, self.root / 'worker', self.gov, self.value)
+        publish_fixture_settings(self, self.root / 'worker', self.gov, self.value)
         return budgeting.ControllerBudgeting(self.path, self.gov,
             op.validate_operating(self.value, self.gov), self.host, worktree_roots=[self.root / 'worker'])
 
@@ -257,7 +257,18 @@ class BudgetWiringTests(unittest.TestCase):
             value = kwargs['planning_operating_snapshot'].config
             value['budgeting'] = dict(fresh_settings(), accounting_enabled=True,
                                      max_tokens_per_ticket=1, max_tokens_per_project=1)
-            snapshot = confirmed_fixture_snapshot(self, self.root / 'worker', value, kwargs['planning_config'])
+            snapshot = accepted_fixture_snapshot(self, self.root / 'worker', value, kwargs['planning_config'])
+            # A worker disables its local file; the real controller load still
+            # uses the accepted remote-tracking settings and charges its run.
+            worker = self.root / 'worker'
+            (worker / op.GOVERNANCE).parent.mkdir(exist_ok=True)
+            (worker / op.GOVERNANCE).write_bytes(op._json(kwargs['planning_config']))
+            edited = deepcopy(value)
+            edited['budgeting'] = fresh_settings()
+            (worker / op.CONFIG).write_bytes(op._json(edited))
+            snapshot = op.read_operating(worker, kwargs['planning_config'])
+            self.assertTrue(snapshot.config['budgeting']['accounting_enabled'])
+            self.assertIsNotNone(snapshot.provenance['protected_settings']['commit'])
             kwargs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
             captured['path'] = project_ledger_path(kwargs['planning_config']['project']['id'], accounting_enabled=True)
             return real_cycle(store, **kwargs)

@@ -24,18 +24,24 @@ disabling accounting disables enforcement. Preserve upgraded behavior until
 owner adoption; installed 1.9.5 stays unchanged/enabled. Recommend versioned
 preservation, never in-place edits to integrity-managed bytes or receipts.
 
-Echo the requested budget change and run `workflow.py operating set` with the
-exact instruction and assignments. `PENDING_OWNER_CONFIRMATION` (exit 3) means
-settings have not changed. Give the owner the exact returned
-`workflow.py operating confirm --digest D` command, using the verified installed
-interpreter, script and project root, to run in their own terminal. Never run
-confirm yourself. After the owner says they ran it, run `operating show` and
-report its persisted effective settings; never claim application without that
-readback. Chat text and typed identity prove no GitHub identity. Confirmation
-checks an interactive terminal and the machine's stored GitHub login against
-reviewed numeric owner IDs; it cannot resist a process with the owner's full
-rights and its own terminal. Empty trusted owners require a reviewed config
-change, never automatic enrollment.
+For budget questions in chat, run `workflow.py operating show`
+without approval. Present switches, limits, source (fresh
+defaults, default branch at the reported commit, or legacy retained), working-file
+differences and rules APPLIED/MISSING/UNOBSERVED warnings. Last PR/merger optional;
+say when unobserved. No terminal command is required of the owner.
+
+Branch from the fetched default branch. Edit only requested
+`OPERATING_CONFIG.yaml` values, preserving text/comments; accounting OFF also
+disables enforcement. Run `operating validate --file PROPOSED`; invalid combinations refuse. Present exact
+before/after in a draft PR under publication authority. Restricted agent
+pushes prepare branch/body for owner publication. The owner reviews and merges
+on GitHub; agents never merge. Fetch after observed merge, then show effective
+settings/commit. Git history and the PR are the audit trail. Working/branch edits
+have no protected effect. Unprotected `operating set` remains; protected set
+explains the PR route. Keep Git metadata outside worker write authority.
+Host rules and owner govern merge; direct pushes to an unprotected default branch
+or the owner's full rights can get around this. Offer the shipped ruleset.
+`merge_gate.trusted_owner_ids` retains its merge-gate use.
 
 Enabled budgets cover only explicitly enrolled AWF sub-agent runs and attributable
 tools/retries; exclude the main controller and independent agents, including

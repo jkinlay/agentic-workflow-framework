@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import source_only
 from source_only import skip_unless_source_repo
-from owner_admission_fixtures import confirmed_fixture_snapshot
+from settings_pr_fixtures import accepted_fixture_snapshot
 from agentic import ValidationError, operating as op
 from agentic.canonical import sha256
 from agentic.continuous_controller import ContinuousControllerStore, production_controller_cycle
@@ -42,7 +42,7 @@ class ProductionPreA7Tests(unittest.TestCase):
         self.gov = inputs['planning_config']
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting'] = dict(self.value['budgeting'], accounting_enabled=False)
-        snapshot = confirmed_fixture_snapshot(self, self.root, value, self.gov)
+        snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         config['codex']['roles']['writer']['reasoning_effort'] = 'high'
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
