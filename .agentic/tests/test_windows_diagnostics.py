@@ -39,7 +39,7 @@ SELF_TEST_SPEC.loader.exec_module(self_test)
 
 _RUNTIME_DISTRIBUTIONS = (
     "PyYAML", "jsonschema", "attrs", "jsonschema-specifications",
-    "referencing", "rpds-py", "typing-extensions",
+    "referencing", "rpds-py", "typing-extensions", "tzdata",
 )
 
 

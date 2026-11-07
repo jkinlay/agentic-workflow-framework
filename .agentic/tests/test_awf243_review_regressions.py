@@ -681,6 +681,8 @@ class AssignmentRegressions(unittest.TestCase):
                  "_runner": FakeRunner(), "_clock": FakeClock()})
             self.config["jira"].update(cloud_id="cloud-1", provider_project_id="project-1",
                                        controller_actor_id="controller")
+            from test_reference_controller_adapter import numeric_project_config
+            self.config["jira"]["status_map"].update(numeric_project_config()["jira"]["status_map"])
             self.config["jira"]["scope"].update(included_epics=[], labels_any=["awf-fixture"])
             args = {name: adapters[name] for name in ("observe_provider_identity", "observe_issue_identity",
                     "observe_issue_policy", "read_current_status", "write_transition", "read_transition")}
@@ -696,16 +698,16 @@ class AssignmentRegressions(unittest.TestCase):
                     value = json.loads(body)
                     posted = bool(getattr(http, 'transition_bodies', []))
                     value['key'] = 'EX-100'
-                    value['fields'].update(status={'id': 'Done' if posted else 'In Review'},
+                    value['fields'].update(status={'id': '10120' if posted else '10117'},
                         updated=ADAPTER_NOW if posted else '2026-10-09T07:59:59Z')
                     value['changelog'] = {'histories': [dict(id='1', created=ADAPTER_NOW,
                         author={'accountId': 'controller'}, items=[{'field': 'status',
-                        'from': 'In Review', 'to': 'Done'}])] if posted else []}
+                        'from': '10117', 'to': '10120'}])] if posted else []}
                     body = json.dumps(value)
                 return status, body
             http.request = original_request
             cases = [("absent", None), ("incomplete", None), ("actor", "other-actor"),
-                     ("target", "In Review"), ("time", "2020-01-01T00:00:00Z"),
+                     ("target", "10117"), ("time", "2020-01-01T00:00:00Z"),
                      ("time", "2099-01-01T00:00:00Z")]
             with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "fixture-token"}):
                 self.assertEqual("UNKNOWN", invoke(read_transition=timeout)["record"]["status"])
@@ -1815,7 +1817,7 @@ class SecondLookReferenceRegressions(unittest.TestCase):
             args.update(config=policy, contract={}, event='BLOCK', facts={},
                 binding={'issue_id': KEY}, issue_type='LEAF', state='IN_PROGRESS', producer_id='controller',
                 run_id='fixture', now=now, evidence=[], transition_id='3',
-                read_current_status=lambda b: dict(issue_id=KEY, status_id='In Progress', observed_at=now, jira_provider=provider),
+                read_current_status=lambda b: dict(issue_id=KEY, status_id='10119', observed_at=now, jira_provider=provider),
                 write_transition=lambda r: dict(operation_id=r['operation_id'], issue_id=KEY, status='ATTEMPTED', observed_at=now, jira_provider=provider),
                 read_transition=lambda r,o: dict(issue_id=KEY, status=r['to_status_id'], actor='controller', observed_at=now, jira_provider=provider))
             return production_jira_lifecycle(store, **{**args, **overrides})
@@ -1823,7 +1825,7 @@ class SecondLookReferenceRegressions(unittest.TestCase):
         with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
             self.assertEqual('SUCCEEDED', invoke(event='WORKER_STARTED', state='DISPATCHED',
                 facts={'run_registered': True, 'worktree_verified': True},
-                read_current_status=lambda b: dict(issue_id=KEY, status_id='Ready', observed_at=now, jira_provider=provider))['record']['status'])
+                read_current_status=lambda b: dict(issue_id=KEY, status_id='10118', observed_at=now, jira_provider=provider))['record']['status'])
             record = store.jira_operations(KEY)[0]['record']
             with store.transaction() as db:
                 db.execute('DELETE FROM controller_meta WHERE key=?', ('jira-identity:' + record['operation_id'],))
@@ -1896,14 +1898,14 @@ class SecondLookReferenceRegressions(unittest.TestCase):
             if method == 'GET' and '/issue/' in url and 'fields=status' in url:
                 value = json.loads(body)
                 value['key'] = KEY
-                value['fields']['status']['id'] = 'Done' if posts else 'In Review'
+                value['fields']['status']['id'] = '10120' if posts else '10117'
                 value['fields']['updated'] = now if posts else '2026-10-09T07:59:59Z'
                 if 'expand=changelog' in url:
                     for history in value['changelog']['histories']:
                         if history['id'] == '1':
-                            history['items'][0]['to'] = 'In Review'
+                            history['items'][0]['to'] = '10117'
                         else:
-                            history['items'][0].update({'from': 'In Review', 'to': 'Done'})
+                            history['items'][0].update({'from': '10117', 'to': '10120'})
                 body = json.dumps(value)
             return status, body
         http.request = request
@@ -1913,7 +1915,7 @@ class SecondLookReferenceRegressions(unittest.TestCase):
             result = production_jira_lifecycle(store, config=policy, contract={}, event='JIRA_RECONCILED',
                 facts={'merge_confirmed': True, 'closeout_valid': True}, binding={'issue_id': KEY},
                 issue_type='LEAF', state='MERGED', producer_id='controller', run_id='fixture',
-                now=clock.value, evidence=[], transition_id='3', merge_result_id='merge-1',
+                now=clock.value, evidence=[], transition_id='31', merge_result_id='merge-1',
                 **{key: calls[key] for key in ('observe_provider_identity', 'observe_issue_identity',
                     'observe_issue_policy', 'read_current_status', 'write_transition', 'read_transition')})
             self.assertEqual('SUCCEEDED', result['record']['status'])
@@ -1921,7 +1923,7 @@ class SecondLookReferenceRegressions(unittest.TestCase):
             Path(config['observations']['jira_transition_directory'], record['record_id'] + '.json').write_text(json.dumps({'record': record}))
             observed = adapters()['observe_jira_reconciliation'](dict(operation='JIRA_RECONCILIATION',
                 provider_identity=record['jira_provider'], source_identity='jira_issue_transition_and_readback',
-                binding=record['binding'], issue_id=KEY, transition_record_id=record['record_id'], expected_status_id='Done'))
+                binding=record['binding'], issue_id=KEY, transition_record_id=record['record_id'], expected_status_id='10120'))
             self.assertEqual(record, observed['result']['record'])
             self.assertEqual(1, len(posts))
             def older(method, url, **kwargs):
@@ -1935,7 +1937,7 @@ class SecondLookReferenceRegressions(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 adapters()['observe_jira_reconciliation'](dict(operation='JIRA_RECONCILIATION',
                     provider_identity=record['jira_provider'], source_identity='jira_issue_transition_and_readback',
-                    binding=record['binding'], issue_id=KEY, transition_record_id=record['record_id'], expected_status_id='Done'))
+                    binding=record['binding'], issue_id=KEY, transition_record_id=record['record_id'], expected_status_id='10120'))
             self.assertEqual(1, len(posts))
 
     def test_second_look_clock_skew_and_earlier_transition(self):
@@ -1958,12 +1960,12 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                         if method == 'GET' and '/issue/' in url and 'fields=status' in url:
                             value = json.loads(body)
                             value['key'] = KEY
-                            value['fields']['status']['id'] = 'In Progress' if posted else 'Ready'
+                            value['fields']['status']['id'] = '10119' if posted else '10118'
                             value['fields']['updated'] = jira_now if posted else before_time
                             if 'expand=changelog' in url and posted:
                                 history = value['changelog']['histories'][0]
                                 history['created'] = before_time if earlier else jira_now
-                                history['items'][0]['from'] = 'Ready'
+                                history['items'][0]['from'] = '10118'
                             body = json.dumps(value)
                         return status, body
                     http.request = request
@@ -1972,7 +1974,7 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                     args = dict(config=policy, contract={}, event='WORKER_STARTED',
                         facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': KEY},
                         issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='fixture',
-                        now=clock.value, evidence=[], transition_id='3', **{key: calls[key] for key in
+                        now=clock.value, evidence=[], transition_id='21', **{key: calls[key] for key in
                         ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy',
                          'read_current_status', 'write_transition', 'read_transition')})
                     with patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}):
@@ -1992,7 +1994,7 @@ class SecondLookReferenceRegressions(unittest.TestCase):
                         self.assertEqual(1, len(posted))
                         if not earlier:
                             # Preserve a read-only no-op when already at the requested target.
-                            policy['jira']['status_map']['in_review'] = 'In Progress'
+                            policy['jira']['status_map']['in_review'] = '10119'
                             args.update(event='PR_READY', facts={'draft_cleared': True}, state='PR_DRAFT')
                             self.assertFalse(production_jira_lifecycle(store, **args)['planned'])
                             self.assertEqual(1, len(posted))
@@ -2115,8 +2117,8 @@ class PreEightHistoryRegressions(unittest.TestCase):
                 provider = dict(cloud_id='cloud-1', site='https://jira.example.invalid',
                     project_id='project-1', project_key='EX', controller_actor_id='controller')
                 record = dict(operation_id='00000000-0000-0000-0000-000000000001',
-                    binding={'issue_id': KEY}, jira_provider=provider, from_status_id='Ready',
-                    to_status_id='In Progress', created_at=now)
+                    binding={'issue_id': KEY}, jira_provider=provider, from_status_id='10118',
+                    to_status_id='10119', created_at=now)
                 directory = Path(config['codex']['run_record_directory'])
                 directory.mkdir(exist_ok=True)
                 path = directory / ('jira-attempt-' + fingerprint('jira-attempt-record', record) + '.json')
@@ -2157,8 +2159,8 @@ class PreEightHistoryRegressions(unittest.TestCase):
         def history(identity, created, actor, old, new):
             return dict(id=str(identity), created=created, author={'accountId': actor},
                 items=[{'field': 'status', 'from': old, 'to': new}])
-        old = history(10, now, 'controller', 'Ready', 'In Progress')
-        boundary = history(11, '2026-10-09T07:59:59Z', 'other', 'In Progress', 'Ready')
+        old = history(10, now, 'controller', '10118', '10119')
+        boundary = history(11, '2026-10-09T07:59:59Z', 'other', '10119', '10118')
         def request(method, url, **kwargs):
             status, body = original(method, url, **kwargs)
             if method == 'POST':
@@ -2166,19 +2168,19 @@ class PreEightHistoryRegressions(unittest.TestCase):
             if method == 'GET' and '/issue/' in url and 'fields=status' in url:
                 value = json.loads(body)
                 value['key'] = KEY
-                value['fields'].update(status={'id': 'In Progress' if posts else 'Ready'},
+                value['fields'].update(status={'id': '10119' if posts else '10118'},
                     updated=now if posts else '2026-10-09T07:59:59Z')
                 if 'updated' in url and not posts:
                     if scenario in ('missing', 'mismatch'):
                         value['fields'].pop('updated')
                     if scenario == 'mismatch':
-                        value['fields']['status']['id'] = 'Done'
+                        value['fields']['status']['id'] = '10120'
                     if scenario == 'foreign':
                         value['key'] = 'EX-99'
                 histories = [old, boundary] if scenario == 'rollback' else []
                 if posts and scenario == 'external':
-                    histories = [old, history(11, '2026-10-09T08:00:01Z', 'other', 'In Progress', 'Done'),
-                        history(12, '2026-10-09T08:00:02Z', 'other', 'Done', 'In Progress')]
+                    histories = [old, history(11, '2026-10-09T08:00:01Z', 'other', '10119', '10120'),
+                        history(12, '2026-10-09T08:00:02Z', 'other', '10120', '10119')]
                     value['fields']['updated'] = '2026-10-09T08:00:02Z'
                 elif posts and scenario != 'rollback':
                     histories = [old]
@@ -2192,7 +2194,7 @@ class PreEightHistoryRegressions(unittest.TestCase):
             result = production_jira_lifecycle(store, config=policy, contract={}, event='WORKER_STARTED',
                 facts={'run_registered': True, 'worktree_verified': True}, binding={'issue_id': KEY},
                 issue_type='LEAF', state='DISPATCHED', producer_id='controller', run_id='fixture',
-                now=now, evidence=[], transition_id='3', **{key: calls[key] for key in
+                now=now, evidence=[], transition_id='21', **{key: calls[key] for key in
                 ('observe_provider_identity', 'observe_issue_identity', 'observe_issue_policy',
                  'read_current_status', 'write_transition', 'read_transition')})
         self.assertNotEqual('SUCCEEDED', result.get('record', {}).get('status'))
@@ -2233,14 +2235,28 @@ class PreNineCliRegressions(unittest.TestCase):
         from agentic.lifecycle import definition
         from agentic.policy import policy_hash
         self.binding['policy_hash'] = policy_hash(policy, definition())
-        self.before_status, self.after_status = 'Ready', 'In Progress'
+        self.before_status, self.after_status = '10118', '10119'
         self.posted, self.fail_readback, self.history_problem = [], False, None
-        self.histories = [self.history('9', '2026-10-09T07:59:58Z', 'other', 'Backlog', 'Ready')]
+        self.histories = [self.history('9', '2026-10-09T07:59:58Z', 'other', '10116', '10118')]
         original = http.request
         def request(method, url, **kwargs):
             if method == 'POST':
                 self.posted.append(url)
-            status, body = original(method, url, **kwargs)
+            if getattr(self, 'historical_protocol', False):
+                # Historical implementations intentionally use their historical
+                # site/Bearer/tenant shape; this never qualifies modern auth.
+                self.assertTrue(url.startswith('https://jira.example.invalid/'))
+                self.assertEqual('Bearer fixture-token', kwargs['headers']['Authorization'])
+                http.calls.append((method, url, kwargs['headers'], kwargs['body']))
+                if url.endswith('/_edge/tenant_info'):
+                    status, body = 200, json.dumps({'cloudId': 'cloud-1', 'siteUrl': 'https://jira.example.invalid'})
+                else:
+                    status, body = http.respond(method, url, body=kwargs['body'])
+            else:
+                status, body = original(method, url, **kwargs)
+            if method == 'GET' and url.endswith('/transitions'):
+                body = json.dumps({'transitions': [{'id': '21', 'to': {'id': self.policy['jira']['status_map']['in_progress']}},
+                    {'id': '31', 'to': {'id': self.policy['jira']['status_map']['done']}}]})
             if method == 'GET' and '/issue/' in url and 'fields=status' in url:
                 if self.fail_readback and self.posted and 'expand=changelog' in url:
                     raise TimeoutError('lost response after POST')
@@ -2252,7 +2268,7 @@ class PreNineCliRegressions(unittest.TestCase):
                 if self.posted:
                     histories.append(self.history('10', now, 'controller', self.before_status, self.after_status))
                     if self.history_problem == 'external':
-                        intermediate = 'In Progress' if self.after_status == 'Done' else 'Done'
+                        intermediate = '10119' if self.after_status == '10120' else '10120'
                         histories.extend([self.history('11', '2026-10-09T08:00:01Z', 'other', self.after_status, intermediate),
                             self.history('12', '2026-10-09T08:00:02Z', 'other', intermediate, self.after_status)])
                     elif self.history_problem == 'missing':
@@ -2306,6 +2322,7 @@ class PreNineCliRegressions(unittest.TestCase):
         output = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {'AWF_JIRA_TOKEN': 'fixture-token'}))
+            stack.enter_context(patch.object(self, 'historical_protocol', adapter != self.adapter, create=True))
             stack.enter_context(patch.object(self.cli, 'load', side_effect=load))
             if legacy is not None:
                 stack.enter_context(patch.object(self.cli, 'ContinuousControllerStore', legacy.ContinuousControllerStore))
@@ -2324,7 +2341,7 @@ class PreNineCliRegressions(unittest.TestCase):
             '--lifecycle-state', states.get(event, 'BLOCKED'), '--producer-id', 'controller',
             '--run-id', '10000000-0000-0000-0000-000000000001', '--now', self.now,
             '--evidence', 'urn:awf:fixture:cli-transition',
-            '--transition-id', '3', '--merge-result-id', '10000000-0000-0000-0000-000000000002'], **kwargs)
+            '--transition-id', '31' if event == 'JIRA_RECONCILED' else '21', '--merge-result-id', '10000000-0000-0000-0000-000000000002'], **kwargs)
 
     def adopt(self):
         return self.run_cli(['jira-identity-adopt', '--expected-project-id', self.policy['project']['id'],
@@ -2390,8 +2407,8 @@ class PreNineCliRegressions(unittest.TestCase):
         import json
         from pathlib import Path
         self.fixture(newest_first)
-        self.before_status, self.after_status = 'In Review', 'Done'
-        self.histories[0]['items'][0]['to'] = 'In Review'
+        self.before_status, self.after_status = '10117', '10120'
+        self.histories[0]['items'][0]['to'] = '10117'
         controller = self.historical('f71ee70f32737bfb02b9b09b1e2e420529e0cc63',
             '.agentic/lib/agentic/continuous_controller.py', module=True)
         adapter = self.historical('f71ee70f32737bfb02b9b09b1e2e420529e0cc63',
@@ -2454,7 +2471,7 @@ class PreNineCliRegressions(unittest.TestCase):
             registration = registry['controller']
             request = dict(operation='JIRA_RECONCILIATION', provider_identity=self.record['jira_provider'],
                 source_identity='jira_issue_transition_and_readback', binding=self.record['binding'],
-                issue_id=KEY, transition_record_id=self.record['record_id'], expected_status_id='Done')
+                issue_id=KEY, transition_record_id=self.record['record_id'], expected_status_id='10120')
             observation = registration['observer'](request)
             self.assertEqual({'record': self.record}, observation['result'])
             self.assertEqual(provider_observation_receipt_sha256(registration, request, observation),
