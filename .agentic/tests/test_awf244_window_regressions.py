@@ -83,6 +83,107 @@ class WindowRegressions(unittest.TestCase):
             self.assertEqual(lifetime, db.execute('SELECT attempts FROM review_presentation_intent_v1').fetchone()[0])
             self.assertEqual(window, db.execute('SELECT window_attempts FROM review_presentation_detail_v1').fetchone()[0])
 
+    def test_calendar_confirmation_overtakes_send(self):
+        digest = self.owner.pending('operating_calendar.review_batching.cutoff_time=16:30',
+                                    clock='2026-11-06T16:58:00Z')
+        original = ReviewBatchStore.begin_delivery
+        def fence(batch_store, *args):
+            cancel = original(batch_store, *args)
+            result = self.owner.confirm(digest, clock='2026-11-06T16:59:00Z')
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            shown = self.owner.cli('show', '--json')
+            self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
+            value = json.loads(shown.stdout)
+            self.assertEqual('ACCEPTED', value['status'])
+            self.assertEqual('16:30', value['effective_operating_calendar']['review_batching']['cutoff_time'])
+            self.assertTrue(self.owner.calls.exists())
+            return cancel
+        with patch.object(ReviewBatchStore, 'begin_delivery', fence):
+            result = self.cycle('2026-11-06T16:59:00Z')
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+        self.assert_attempts(0, 0)
+        self.assertEqual('2026-11-09T07:00:00Z',
+                         result['review_batching']['status']['intents'][0]['scheduled_at'])
+        self.restart()
+        self.cycle('2026-11-09T07:00:00Z')
+        self.restart()
+        self.cycle('2026-11-09T07:01:00Z')
+        self.assertEqual(1, len(self.delivered))
+        self.assert_attempts(1, 1)
+
+    def test_backward_clock_after_fence_recovers_without_send(self):
+        original = ReviewBatchStore.begin_delivery
+        def fence(batch_store, *args):
+            cancel = original(batch_store, *args)
+            self.now = '2026-11-06T15:59:59Z'
+            return cancel
+        with patch.object(ReviewBatchStore, 'begin_delivery', fence):
+            result = self.cycle('2026-11-06T16:00:00Z')
+        self.assertTrue(result['errors'])
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+        self.assert_attempts(0, 0)
+        self.restart()
+        self.cycle('2026-11-06T16:01:00Z')
+        self.restart()
+        self.cycle('2026-11-09T07:00:00Z')
+        self.assertEqual(1, len(self.delivered))
+        self.assertEqual(['DELIVERED'], self.intent_states())
+        self.assert_attempts(1, 1)
+
+    def test_post_fence_protected_digest_refusal_cancels_without_attempt(self):
+        self.confirmed_change('operating_calendar.eod.time=18:00')
+        original = ReviewBatchStore.begin_delivery
+        config = self.owner.root / op.CONFIG
+        before = config.read_bytes()
+        self.addCleanup(config.write_bytes, before)
+        history = self.owner.root / op.STATE / 'changes'
+        original_events = set(history.iterdir())
+        def fence(batch_store, *args):
+            cancel = original(batch_store, *args)
+            value = json.loads(before)
+            value['operating_calendar']['eod']['time'] = '19:00'
+            self.owner.forge_config_event(value)  # Editable audit cannot confer owner admission.
+            shown = self.owner.cli('show', '--json')
+            self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
+            self.assertEqual('OWNER_CONFIRMATION_REQUIRED', json.loads(shown.stdout)['status'])
+            return cancel
+        with patch.object(ReviewBatchStore, 'begin_delivery', fence):
+            result = self.cycle('2026-11-06T16:00:00Z')
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+        self.assert_attempts(0, 0)
+        self.assertTrue(any('OWNER_SETTINGS_REFUSED' in error['reason'] for error in result['errors']))
+        config.write_bytes(before)
+        for event in set(history.iterdir()) - original_events:
+            event.unlink()
+        self.restart()
+        self.cycle('2026-11-06T16:01:00Z')
+        self.assertEqual(1, len(self.delivered))
+        self.assert_attempts(1, 1)
+
+    def test_post_fence_settings_io_exception_cancels_and_reports_original(self):
+        original = ReviewBatchStore.begin_delivery
+        failure = patch.object(op, 'read_operating', side_effect=PermissionError('fixture settings unavailable'))
+        def fence(batch_store, *args):
+            cancel = original(batch_store, *args)
+            failure.start()
+            return cancel
+        try:
+            with patch.object(ReviewBatchStore, 'begin_delivery', fence):
+                result = self.cycle('2026-11-06T16:00:00Z')
+        finally:
+            failure.stop()
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+        self.assert_attempts(0, 0)
+        self.assertTrue(any(error['reason'] == 'PermissionError' for error in result['errors']))
+        self.restart()
+        self.cycle('2026-11-06T16:01:00Z')
+        self.assertEqual(1, len(self.delivered))
+        self.assert_attempts(1, 1)
+
     def test_cutoff_crossed_by_fence_commit_cancels_without_attempt_and_restart_deduplicates(self):
         original = ReviewBatchStore.begin_delivery
         def fence(batch_store, *args):

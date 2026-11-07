@@ -69,9 +69,9 @@ even with batching disabled; no offset fallback.
    NOT_DELIVERED requeues once. Two attempts exhaust each opening, keyed by retained sends across restart; claims consume none. Lifetime counts/receipts persist. Current confirmed calendars govern recovery, including changed openings/disabled batching; stored retry times cannot override them. Fresh qualification remains mandatory; never retry unknown sends.
    Newer tuples take precedence; transport retry ceilings remain independent.
 
-`begin_delivery` durably fences/counts. Recheck clock/window/expiry after commit, immediately before transport. Refusal cancels only that live uninvoked fence, returning to waiting without an attempt. The small gap between this last check and provider receipt, including scheduling/transport latency, is unavoidable. UNKNOWN never resends. Restart releases PREPARED claims only; missing legacy phase evidence and started sends require
+`begin_delivery` durably fences/counts. Reload accepted settings/recheck clock/window/expiry after commit, immediately before transport. Refusal/exception cancels only that live uninvoked fence, returning to waiting without an attempt. The small gap between this last check and provider receipt, including later confirmations/scheduling/transport latency, is unavoidable. UNKNOWN never resends. Restart releases PREPARED claims only; missing legacy phase evidence and started sends require
 terminal readback through `pending_batches()`. Unknowns fence their PR, allowing
-unrelated digests. No blind resend/operator reset/timeout release.
+unrelated digests. Operators obtain verified terminal provider readback for `observe_review_delivery` to reconcile; no blind resend/operator reset/timeout release.
 `view(now, calendar)` exposes held, withdrawn, exhausted and unresolved identities,
 reasons/times, counts and retry openings read-only for AWF-241. Exhausted/unknown
 states raise owner alerts and remain in controller status digests.
