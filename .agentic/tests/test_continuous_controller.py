@@ -123,7 +123,7 @@ def observe_jira_provider(config,**overrides):
 	return value
 
 
-def journaled_progress_inputs(store, config, issue, *, binding=None, now=NOW, adapters=None, merge_result_id='merge-1', record_callback=None):
+def journaled_progress_inputs(store, config, issue, *, binding=None, now=NOW, adapters=None, merge_result_id='merge-1', record_callback=None, transition_id='done-transition'):
 	"""Establish a real lifecycle reconciliation before testing read-only progress."""
 	provider=configured_jira_provider(config)
 	binding=binding or {'issue_id':issue}
@@ -134,7 +134,7 @@ def journaled_progress_inputs(store, config, issue, *, binding=None, now=NOW, ad
 		'read_current_status':lambda value:jira_current(value,config['jira']['status_map']['in_review'],now),
 		'write_transition':lambda record:{'operation_id':record['operation_id'],'issue_id':issue,'status':'ATTEMPTED','observed_at':now,'jira_provider':provider},
 		'read_transition':lambda record,operation:{'issue_id':issue,'status':config['jira']['status_map']['done'],'actor':provider['controller_actor_id'],'observed_at':now,'jira_provider':provider}}
-	result=real_production_jira_lifecycle(store,config=config,contract={'owner_closure_required':False},event='JIRA_RECONCILED',facts={'merge_confirmed':True,'closeout_valid':True},binding=binding,issue_type='LEAF',state='MERGED',producer_id=provider['controller_actor_id'],run_id=str(uuid.UUID(int=99)),now=now,evidence=['urn:awf:fixture:journaled-reconciliation'],transition_id='done-transition',merge_result_id=merge_result_id,**{key:calls[key] for key in ('observe_provider_identity','observe_issue_identity','observe_issue_policy','read_current_status','write_transition','read_transition')})
+	result=real_production_jira_lifecycle(store,config=config,contract={'owner_closure_required':False},event='JIRA_RECONCILED',facts={'merge_confirmed':True,'closeout_valid':True},binding=binding,issue_type='LEAF',state='MERGED',producer_id=provider['controller_actor_id'],run_id=str(uuid.UUID(int=99)),now=now,evidence=['urn:awf:fixture:journaled-reconciliation'],transition_id=transition_id,merge_result_id=merge_result_id,**{key:calls[key] for key in ('observe_provider_identity','observe_issue_identity','observe_issue_policy','read_current_status','write_transition','read_transition')})
 	if result.get('record',{}).get('status')!='SUCCEEDED':
 		raise AssertionError(result)
 	record=result['record']
