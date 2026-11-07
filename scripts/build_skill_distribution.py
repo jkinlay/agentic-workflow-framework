@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
 from agentic.child_process import child_env
-from release_hygiene import word_budget
+from release_hygiene import PORTABLE_SKILL_WORD_LIMIT, count_words, word_budget
 from release_modes import archive_mode, load_modes
 LINE = VERSION.removesuffix('.0')
 
@@ -106,10 +106,10 @@ def main():
     # length grows with the release and must not be subject to the user-facing
     # documentation budget.
     documents = [p for p in skill.rglob('*.md') if p.name != 'MANIFEST.md']
-    skill_words = sum(len(p.read_text(encoding='utf-8').split()) for p in documents)
+    skill_words = sum(count_words(p.read_text(encoding='utf-8')) for p in documents)
     for document in documents:
-        limit = 600 if document.name == 'SKILL.md' else word_budget(document.relative_to(skill))[0]
-        if limit is not None and len(document.read_text(encoding='utf-8').split()) > limit:
+        limit = PORTABLE_SKILL_WORD_LIMIT if document.name == 'SKILL.md' else word_budget(document.relative_to(skill))[0]
+        if limit is not None and count_words(document.read_text(encoding='utf-8')) > limit:
             parser.error(f'Portable skill document exceeds {limit} words: {document.relative_to(skill)}')
     output = args.output_dir.absolute()
     if output.is_relative_to(ROOT) or output.is_relative_to(skill) or output.exists():

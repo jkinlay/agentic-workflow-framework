@@ -1403,7 +1403,7 @@ class ProductionPlanningTriggerTests(unittest.TestCase):
                 'agentic.operating.read_operating', return_value=self.operating), patch(
                 'os.chmod', side_effect=restrict), patch.object(cli, 'production_controller_cycle', return_value={}) as cycle:
             with self.assertRaisesRegex(PermissionError, 'sidecar restriction failed'):
-                cli.main(args)
+                cli.main(args, default_root=self.root)
         cycle.assert_not_called()
 
     def setUp(self):
