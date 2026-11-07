@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePath
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -148,6 +149,13 @@ def _ac36_run_bootstrap(command, *, cwd, timeout=180):
 
 
 def _cleanup_fixture(candidate, base, powershell):
+    try:
+        root_stat = candidate.lstat()
+    except FileNotFoundError:
+        return
+    if (stat.S_ISLNK(root_stat.st_mode) or
+            getattr(root_stat, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise OSError("AC36 fixture cleanup refused a link or reparse-point root")
     candidate, base = candidate.resolve(), base.resolve()
     if candidate == base or not candidate.is_relative_to(base):
         raise OSError("AC36 fixture cleanup refused an unconfined target")
@@ -195,7 +203,7 @@ def temporary_directory(*, prefix="", require_external=False):
             env["AWF_CASE_TMP"] = str(candidate)
             created = subprocess.run([powershell, "-NoProfile", "-Command",
                                       "New-Item -ItemType Directory -LiteralPath $env:AWF_CASE_TMP | Out-Null"],
-                                     env=env, capture_output=True, text=True)
+                                     env=env, capture_output=True, text=True, timeout=5)
             if created.returncode:
                 raise unittest.SkipTest("AC36 SKIP: restricted-token sandbox denied the external temp fixture")
     else:
@@ -406,6 +414,48 @@ class RuntimeCommandTests(unittest.TestCase):
 
 
 class AC36CleanupTests(unittest.TestCase):
+    def test_replaced_fixture_root_preserves_sibling_and_reports_cleanup_failure(self):
+        for primary_failure in (False, True):
+            with self.subTest(primary_failure=primary_failure), tempfile.TemporaryDirectory() as raw:
+                sibling = Path(raw) / "sibling"
+                sibling.mkdir()
+                sentinel = sibling / "sentinel.txt"
+                sentinel.write_text("must survive", encoding="utf-8")
+                primary = AssertionError("primary fixture failure") if primary_failure else None
+                observed = None
+                folder = None
+                try:
+                    with patch.dict(os.environ, {"AWF_TEST_TMP": raw}):
+                        try:
+                            with temporary_directory(prefix="awf-ac36-replaced-") as folder:
+                                fixture = Path(folder)
+                                fixture.rmdir()
+                                if os.name == "nt":
+                                    subprocess.run(
+                                        ["cmd.exe", "/d", "/c", "mklink", "/J", str(fixture), str(sibling)],
+                                        check=True, capture_output=True, text=True, timeout=5)
+                                else:
+                                    fixture.symlink_to(sibling, target_is_directory=True)
+                                if primary is not None:
+                                    raise primary
+                        except (OSError, AssertionError) as error:
+                            observed = error
+                    self.assertTrue(sentinel.is_file(), "Cleanup deleted an unrelated sibling sentinel")
+                    self.assertEqual("must survive", sentinel.read_text(encoding="utf-8"))
+                    if primary is None:
+                        self.assertIsInstance(observed, OSError)
+                        self.assertIn("fixture cleanup refused", str(observed))
+                    else:
+                        self.assertIs(primary, observed)
+                        self.assertIn("fixture cleanup failed", " ".join(primary.__notes__))
+                        self.assertIn("fixture cleanup refused", " ".join(primary.__notes__))
+                finally:
+                    if folder is not None and os.path.lexists(folder):
+                        if os.name == "nt":
+                            Path(folder).rmdir()
+                        else:
+                            Path(folder).unlink()
+
     def test_passing_output_matches_run_without_cleanup_wait(self):
         command = [sys.executable, "-B", "-c",
                    "import os; os.write(1,b'first'+bytes((13,10))+b'second'+bytes((13,))+b'third'+bytes((10,))); os.write(2,b'error'+bytes((13,10)))"]
