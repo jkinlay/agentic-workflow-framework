@@ -1435,5 +1435,6 @@ def main(argv=None, default_root=None):
             output = {"status": "REJECTED", "refusals": getattr(exc, "refusals", [refusal("$", str(exc))]),
                       "execution_authority": False,
                       "next_action": "Correct the named input or reconcile the pinned operating transaction; governance changes require a reviewed PR"}
+        output['file'] = args.file.name if args.command == 'validate' else CONFIG
         print(json_text(output))
         return 2
