@@ -3,10 +3,11 @@
 
 From the repository root: python -B scripts/run_windows_unittests.py --shard 0
 Add --list to guard all allocations and print this shard without importing tests.
-Paths are repository-relative POSIX strings sorted by Unicode code point, per
-suite; index i belongs to base shard i % 6 after the explicit exclusion below,
-then the rest of base shard 1 alternates by position (j % 2) between shards 6
-and 7. The single module in SPLIT_MODULES is the only exception to whole-module
+Paths are repository-relative POSIX strings. Measured heavy modules have fixed
+owners in HEAVY_MODULE_SHARDS; every other module uses the unsigned big-endian
+SHA-256 of its UTF-8 path modulo nine. Adding a path cannot move existing paths.
+Each shard's paths are sorted by Unicode code point. The single module in
+SPLIT_MODULES is the only exception to whole-module
 sharding: it is selected in both of its shards, and each of them runs a fixed,
 disjoint half of its test methods (the named first half, or everything else).
 Each suite uses a fresh interpreter, the repository cwd and its Linux CI
@@ -17,12 +18,14 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import importlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 
 
@@ -30,12 +33,11 @@ SUITES = ('.agentic/tests', 'scripts/tests', 'global/awf/tests',
           'global/awf-portable/tests')
 EXPLICIT_TOP = frozenset(SUITES[:2])
 SHARDS = (0, 1, 2, 3, 4, 5, 6, 7, 8)
-BASE_SHARDS = 6
-# Base shard 1 exceeded the 60-minute Windows job budget, and test_upgrade_matrix
-# alone then exceeded it on Python 3.13. It is the only module split by test
+# test_upgrade_matrix exceeded the Windows job budget on Python 3.13.
+# It is the only module split by test
 # method: shard 1 runs UPGRADE_MATRIX_FIRST_HALF and shard 8 runs the rest
-# (about 943 s and 922 s of the 1865 s measured on 3.13 locally). The rest of
-# base shard 1 alternates between shards 6 and 7.
+# (about 943 s and 922 s of the 1865 s measured on 3.13 locally;
+# Windows 3.12 CI measured 1042 s and 1185 s). Keep the existing halves.
 UPGRADE_MATRIX = '.agentic/tests/test_upgrade_matrix.py'
 UPGRADE_MATRIX_FIRST_HALF = frozenset({
     'test_complete_ledger_schema_rejects_changed_column_and_missing_index',
@@ -53,8 +55,67 @@ UPGRADE_MATRIX_FIRST_HALF = frozenset({
     'test_state_compatibility_is_listed_for_every_adjacent_step',
 })
 SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
-SPLIT_SHARDS = {1: (6, 7)}
-ZERO_TEST_MODULES = frozenset({'.agentic/tests/test_awf36_automation_fixtures.py'})
+# Windows 3.12 sampled suite totals (seconds), before reallocation:
+# shard 0: agentic 2907 / scripts 482; shard 4: agentic 1378 / scripts >2199
+# (cancelled, not a completed duration). Child stderr was buffered per suite:
+# its log timestamps cannot identify individual module durations. Isolated
+# local module-suite measurements: admission 1318, adoption_status 448-483,
+# review_regressions 146, upgrade_journal 613, installed adapter 227, host_process
+# 162, publish_release 1682, adoptable_source 213, self_test_review 82, ac42_e2e
+# 556, fresh_bootstrap 152; prior local bootstrap_configuration 1115. The
+# upgrade_195 log records 181+211+199 seconds in bootstrap alone.
+# These fixtures and the review regressions need fixed owners.
+# The removed terminal admission module is replaced by settings-via-PR coverage.
+# Stacked-suite local observations: awf244 cohort 1334; reporting boundary 627,
+# e10 597 / e11 694 / e12 191 / e13 232 / e16 614 / e3 237 / e6 123 / e7 203 /
+# e9 383 / owner 206 / wiring 122;
+# awf238 owner boundary 662 / pre_f3 386; upgrade preservation 1403 / recovery
+# 1640 / budgeting 417. Calendar attribution and its newer window regressions
+# (180 s planning allowance, outside that cohort) are estimates, not per-module
+# CI measurements. Third-look (900 s) and reporting e17 (300 s) also use
+# explicit planning allowances pending measurement. Preassign incoming paths so their
+# arrival cannot crowd an existing heavy shard. New module_result records carry
+# elapsed seconds even when the parent buffers output; refresh estimates there.
+HEAVY_MODULE_SHARDS = {
+    '.agentic/tests/test_adoption_status.py': 0,
+    '.agentic/tests/test_awf242_settings_pr.py': 2,
+    '.agentic/tests/test_awf243_review_regressions.py': 3,
+    '.agentic/tests/test_bootstrap_configuration.py': 6,
+    '.agentic/tests/test_host_process.py': 5,
+    '.agentic/tests/test_reference_controller_adapter_install.py': 7,
+    '.agentic/tests/test_upgrade_195.py': 3,
+    '.agentic/tests/test_upgrade_journal.py': 0,
+    '.agentic/tests/test_windows_diagnostics.py': 5,
+    'scripts/tests/test_ac42_e2e.py': 6,
+    'scripts/tests/test_adoptable_source.py': 1,
+    'scripts/tests/test_fresh_bootstrap.py': 7,
+    'scripts/tests/test_publish_release.py': 4,
+    'scripts/tests/test_self_test_review.py': 3,
+    '.agentic/tests/test_awf238_owner_boundary.py': 8,
+    '.agentic/tests/test_awf238_pre_f3.py': 2,
+    '.agentic/tests/test_awf238_second_look.py': 6,
+    '.agentic/tests/test_awf244_window_regressions.py': 8,
+    '.agentic/tests/test_reporting_boundary.py': 2,
+    '.agentic/tests/test_reporting_e10_regressions.py': 3,
+    '.agentic/tests/test_reporting_e11_regressions.py': 3,
+    '.agentic/tests/test_reporting_e12_regressions.py': 1,
+    '.agentic/tests/test_reporting_e13_regressions.py': 6,
+    '.agentic/tests/test_reporting_e16_regressions.py': 5,
+    '.agentic/tests/test_reporting_e3_regressions.py': 1,
+    '.agentic/tests/test_reporting_e6_regressions.py': 0,
+    '.agentic/tests/test_reporting_e7_regressions.py': 3,
+    '.agentic/tests/test_reporting_e9_regressions.py': 5,
+    '.agentic/tests/test_reporting_owner_admission.py': 4,
+    '.agentic/tests/test_reporting_wiring.py': 2,
+    '.agentic/tests/test_upgrade_195_preservation.py': 0,
+    '.agentic/tests/test_upgrade_195_recovery.py': 7,
+    '.agentic/tests/test_upgrade_196_budgeting.py': 4,
+}
+ZERO_TEST_MODULES = frozenset({
+    '.agentic/tests/test_awf36_automation_fixtures.py',
+    # The stacked reporting suite's network/owner fixture helper has no cases.
+    '.agentic/tests/test_reporting_fixtures.py',
+})
 # The installed-runtime acceptance suite has its own CI job and budget.
 EXCLUDED_MODULES = frozenset({'scripts/tests/test_installed_self_test.py'})
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,23 +146,22 @@ def inventory(root):
 
 
 def allocate(modules):
-    """Allocate independently within each suite using ordinal path ordering."""
+    """Assign fixed heavy owners, otherwise a stable hash of the whole path."""
     allocation = {}
     for suite, paths in modules.items():
         if len(paths) != len(set(paths)):
             raise ValueError(f'duplicate inventory paths: {suite}')
         ordered = sorted(path for path in paths if path not in EXCLUDED_MODULES)
         shards = {shard: [] for shard in SHARDS}
-        for base in range(BASE_SHARDS):
-            base_paths = ordered[base::BASE_SHARDS]
-            rest = [path for path in base_paths if path not in SPLIT_MODULES]
-            targets = SPLIT_SHARDS.get(base, (base,))
-            for position, shard in enumerate(targets):
-                shards[shard].extend(rest[position::len(targets)])
         for path in ordered:
             if path in SPLIT_MODULES:
                 for shard in SPLIT_MODULES[path][0]:
                     shards[shard].append(path)
+            else:
+                shard = HEAVY_MODULE_SHARDS.get(path)
+                if shard is None:
+                    shard = int.from_bytes(hashlib.sha256(path.encode('utf-8')).digest(), 'big') % len(SHARDS)
+                shards[shard].append(path)
         allocation[suite] = {shard: sorted(paths) for shard, paths in shards.items()}
     return allocation
 
@@ -178,12 +238,18 @@ class RecordedSuite(unittest.TestSuite):
         self.allowed_empty = path in ZERO_TEST_MODULES and tests.countTestCases() == 0
 
     def run(self, result, debug=False):
+        started = time.monotonic()
         before = (result.testsRun, len(result.errors), len(result.skipped))
         result = super().run(result, debug)
         after = (result.testsRun, len(result.errors), len(result.skipped))
         if before == after and not self.allowed_empty:
             raise ValueError(f'empty execution for selected module: {self.path}')
         self.executed.append(self.path)
+        # Parent output is buffered per suite. Carry elapsed time in the record
+        # so hosted log timestamps need not be mistaken for module timings.
+        print(json.dumps(dict(event='module_result', path=self.path,
+                              tests_run=after[0] - before[0],
+                              seconds=round(time.monotonic() - started, 3))), flush=True)
         return result
 
 
@@ -212,7 +278,7 @@ class SelectedLoader(unittest.TestLoader):
                 and relative == '.agentic/tests/test_awf36_controller_automation.py'
                 and (self.root / helper).is_file()):
             # The helper patches the consumer's setUp before discovery loads its
-            # cases, even when ordinal allocation puts it in another shard.
+            # cases, even when path allocation puts it in another shard.
             importlib.import_module('test_awf36_automation_fixtures')
         # Wrap the suite returned by real discovery, including its import-error
         # or explicit SkipTest cases. Do not guess dotted module names.

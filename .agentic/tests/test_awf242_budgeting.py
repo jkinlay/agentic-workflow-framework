@@ -14,11 +14,7 @@ from agentic.budget_enrollment import EnrollmentRegistry
 class FixtureHost:
     """Test-only adapter. Production must obtain these facts independently."""
     def __init__(self):
-        self.owner = None
         self.enrollment = None
-
-    def observe_owner_direction(self, project_id, prior_hash, changes):
-        return self.owner
 
     def observe_enrollment(self, binding):
         return self.enrollment
@@ -174,38 +170,7 @@ class BudgetTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             self.assertCountEqual(list(pool.map(attempt, bindings)), ['reserved', 'blocked'])
 
-    def test_owner_direction_exact_binding_replay_and_reopen(self):
-        current = fresh_settings()
-        changes = {'accounting_enabled': True}
-        self.host.owner = dict(observation_id='owner-event', actor_id='fixture-owner',
-            project_id='project', prior_settings_hash=settings_hash(current), changes=changes)
-        for key, wrong in [('project_id', 'other'), ('prior_settings_hash', '0' * 64),
-                           ('changes', {'accounting_enabled': False})]:
-            with self.subTest(key=key):
-                original = self.host.owner
-                self.host.owner = {**original, key: wrong}
-                with self.assertRaises(ValidationError):
-                    self.registry.admit_owner_direction('project', current, changes)
-                self.host.owner = original
-        result = self.registry.admit_owner_direction('project', current, changes)
-        self.assertTrue(result['settings']['accounting_enabled'])
-        reopened = EnrollmentRegistry(self.registry.path, self.host)
-        with self.assertRaises(ValidationError):
-            reopened.admit_owner_direction('project', current, changes)
 
-    def test_caller_identity_and_malformed_mixed_changes_are_refused_before_consumption(self):
-        current = fresh_settings()
-        for changes in ({'actor_id': 'owner', 'accounting_enabled': True},
-                        {'max_tokens_per_ticket': 123, 'enforcement_enabled': True}):
-            with self.assertRaises(ValidationError):
-                self.registry.admit_owner_direction('project', current, changes)
-        self.assertFalse(self.registry.path.exists())
-        self.host.owner = {'source': 'user', 'actor_id': 'owner'}
-        with self.assertRaises(ValidationError):
-            self.registry.admit_owner_direction('project', current, {'accounting_enabled': True})
-        missing = EnrollmentRegistry(self.registry.path, None)
-        with self.assertRaises(ValidationError):
-            missing.admit_owner_direction('project', current, {'accounting_enabled': True})
 
     def test_enrollment_reopen_and_each_retry_must_enroll(self):
         first = self.enroll()

@@ -1450,6 +1450,42 @@
       "regression_id": "AWF243-REAL-JIRA-ABANDONED-BATCH",
       "source_finding_id": null,
       "test_id": "BatchRecoveryRegressions.test_operator_abandoned_closeout_never_replays_or_counts_in_batch"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_operator_recovery.py",
+      "name": "Owner-only closure history refuses counting after invariant identity drift",
+      "permanent": true,
+      "regression_id": "AWF243-OPERATOR-R1-IDENTITY",
+      "source_finding_id": "PR275-R1",
+      "test_id": "OwnerClosureIdentityTests.test_r1_owner_only_history_refuses_count_after_identity_drift"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_operator_recovery.py",
+      "name": "Owner-only history refuses another closure after invariant identity drift",
+      "permanent": true,
+      "regression_id": "AWF243-OPERATOR-R1-CLOSURE",
+      "source_finding_id": null,
+      "test_id": "OwnerClosureIdentityTests.test_r1_owner_only_history_refuses_another_closure_after_identity_drift"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf243_operator_recovery.py",
+      "name": "Owner-only history refuses a reopened worker write after invariant identity drift",
+      "permanent": true,
+      "regression_id": "AWF243-OPERATOR-R1-WRITE",
+      "source_finding_id": null,
+      "test_id": "OwnerClosureIdentityTests.test_r1_owner_only_history_refuses_reopened_worker_write_after_identity_drift"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf243_operator_recovery.py",
+      "name": "Reviewed policy edits and repeated owner closure observations remain idempotent",
+      "permanent": true,
+      "regression_id": "AWF243-OPERATOR-R1-POLICY",
+      "source_finding_id": null,
+      "test_id": "OwnerClosureIdentityTests.test_r1_reviewed_policy_edit_and_repeat_owner_observations_remain_idempotent"
     }
   ]
 }

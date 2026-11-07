@@ -462,30 +462,9 @@ def catalog(*, include_ticket_plan=True):
         "then": {"properties": {"instruction": text()}},
         "else": {"properties": {"instruction": {"type": "null"}}},
     }])
-    schemas['operating-change']['properties']['budget_owner_observation'] = obj({
-        'observation_id': text(maxLength=256), 'actor_id': text(maxLength=256),
-        'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
-        'changes': {'type': 'object', 'minProperties': 1, 'additionalProperties': False,
-                    'properties': schemas['operating-config']['properties']['budgeting']['properties']},
-    })
-    calendar_changes = {
-        key: schema
-        for key, schema in operating_calendar['properties'].items()
-        if key not in ('review_batching', 'eod')
-    }
-    for section in ('review_batching', 'eod'):
-        calendar_changes.update({section + '.' + key: schema for key, schema in
-                                 operating_calendar['properties'][section]['properties'].items()})
-    schemas['operating-change']['properties']['calendar_owner_observation'] = obj({
-        'observation_id': text(maxLength=256), 'actor_id': text(maxLength=256),
-        'project_id': text(maxLength=256), 'prior_settings_hash': DIGEST,
-        'changes': obj(calendar_changes, required=[], minProperties=1),
-    })
-    schemas['operating-change']['properties']['owner_admission'] = obj({
-        'actor_id': integer(1), 'login': text(maxLength=39), 'type': const('User'),
-        'digest': DIGEST, 'request_id': UUID, 'confirmed_at': TIME,
-        'executable_path': text(maxLength=32768), 'executable_sha256': DIGEST,
-    })
+    schemas['operating-change']['properties']['unprotected_before_hash'] = {'type': ['string', 'null'], 'pattern': '^[0-9a-f]{64}$'}
+    schemas['operating-change']['properties']['unprotected_after_hash'] = DIGEST
+    schemas['operating-change']['properties']['legacy_before_configuration'] = {'type': 'object'}
     schemas["operating-epics"] = obj({
         "schema_version": const(1),
         "epics": {"type": "array", "maxItems": 1000, "items": obj({

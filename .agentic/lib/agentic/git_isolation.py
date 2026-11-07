@@ -40,8 +40,132 @@ def isolated_git_environment() -> dict[str, str]:
     return child_env(environment, strip_extra=[])
 
 
+def _native_require(condition, reason):
+    if not condition:
+        raise ValidationError(reason)
+
+
+def _sandbox_group_rights(path):
+    """Read sandbox group/capability grants without using the current token.
+
+    An absent Codex group contributes no rights. Capability SIDs named by the
+    DACL are also sandbox principals, including on hosts without that group.
+    """
+    import ctypes
+    from ctypes import wintypes
+    class TRUSTEE(ctypes.Structure):
+        _fields_ = [('multiple', ctypes.c_void_p), ('operation', ctypes.c_int),
+                    ('form', ctypes.c_int), ('type', ctypes.c_int), ('name', wintypes.LPWSTR)]
+    api = ctypes.WinDLL('advapi32', use_last_error=True)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.GetNamedSecurityInfoW.argtypes = (wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p))
+    api.GetEffectiveRightsFromAclW.argtypes = (ctypes.c_void_p, ctypes.POINTER(TRUSTEE),
+                                             ctypes.POINTER(wintypes.DWORD))
+    api.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = (
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p)
+    api.ConvertStringSidToSidW.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p))
+    kernel.LocalFree.argtypes = (ctypes.c_void_p,)
+    acl, descriptor, rights = ctypes.c_void_p(), ctypes.c_void_p(), wintypes.DWORD()
+    _native_require(api.GetNamedSecurityInfoW(str(path), 1, 4, None, None, ctypes.byref(acl), None,
+            ctypes.byref(descriptor)) == 0, 'GIT_UNAVAILABLE: cannot inspect Git ACL; restore read access to the native installation ACL')
+    try:
+        text = ctypes.c_void_p()
+        _native_require(api.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, 1, 4, ctypes.byref(text), None),
+            'GIT_UNAVAILABLE: cannot inspect sandbox capability ACL')
+        try:
+            capabilities = set(re.findall(r'S-1-15-3-(?:\d+-)*\d+', ctypes.wstring_at(text)))
+        finally:
+            kernel.LocalFree(text)
+        value = 0
+        for principal in ('CodexSandboxUsers', *sorted(capabilities)):
+            sid = ctypes.c_void_p()
+            try:
+                if principal in capabilities:
+                    _native_require(api.ConvertStringSidToSidW(principal, ctypes.byref(sid)),
+                            'GIT_UNAVAILABLE: cannot inspect sandbox capability SID')
+                trustee = TRUSTEE(None, 0, 0 if sid.value else 1, 2,
+                                  ctypes.cast(sid, wintypes.LPWSTR) if sid.value else principal)
+                rights.value = 0
+                error = api.GetEffectiveRightsFromAclW(acl, ctypes.byref(trustee), ctypes.byref(rights))
+                _native_require(error in (0, 1332), 'GIT_UNAVAILABLE: cannot inspect sandbox principal rights; repair the native installation ACL')
+                value |= rights.value if error == 0 else 0
+            finally:
+                if sid.value:
+                    kernel.LocalFree(sid)
+        if value & 0x10000000:  # GENERIC_ALL
+            value |= 0x1f01ff
+        if value & 0x40000000:  # GENERIC_WRITE
+            value |= 0x120116
+        return value
+    finally:
+        kernel.LocalFree(descriptor)
+
+def _worker_writable(path):
+    """Check sandbox principals only; full-rights owner processes are out of scope.
+
+    No sandbox principal on this host means no disqualifying grant. POSIX has
+    no configured worker principal here. Never probe the current token's rights.
+    """
+    if os.name != 'nt':
+        return False
+    rights = {}
+    def allowed(member, mask):
+        if member not in rights:
+            rights[member] = _sandbox_group_rights(member)
+        return bool(rights[member] & mask)
+    if (allowed(path, 2 | 4 | 0x40000 | 0x80000)
+            or allowed(path.parent, 0x40000 | 0x80000)
+            or allowed(path.parent, 2) and (allowed(path, 0x10000) or allowed(path.parent, 0x40))):
+        return True
+    for directory in path.parents:
+        # ACL/ownership control can grant replacement rights on descendants.
+        if allowed(directory, 0x40000 | 0x80000):
+            return True
+        if directory.parent == directory:
+            continue
+        # Renaming/removing a directory can use DELETE on it OR DELETE_CHILD
+        # on its parent; installing a replacement also needs ADD_SUBDIRECTORY.
+        if (allowed(directory, 0x10000) or allowed(directory.parent, 0x40)) and allowed(directory.parent, 4):
+            return True
+    return False
+
+def _native_executable(path):
+    """Admit executable binaries only, never batch files, shebangs or scripts."""
+    if os.name == 'nt' and path.suffix.lower() != '.exe':
+        return False
+    with path.open('rb') as source:
+        magic = source.read(4)
+    return (magic[:2] == b'MZ' if os.name == 'nt' else magic == b'\x7fELF' or
+            magic in (b'\xfe\xed\xfa\xce', b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe',
+                      b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe'))
+
+
+def native_git_executable(root: Path) -> str:
+    """Resolve Git once; refuse scripts, relative and repository-local candidates."""
+    candidate = shutil.which("git")
+    if not candidate:
+        raise ValidationError("Git native executable is unavailable")
+    path = Path(candidate)
+    if not path.is_absolute():
+        raise ValidationError("Git needs an absolute native executable outside worker write authority")
+    path = path.resolve(strict=True)
+    if path.suffix.casefold() in {".cmd", ".bat", ".ps1"}:
+        raise ValidationError("Git needs a native executable")
+    if path == root.resolve() or root.resolve() in path.parents:
+        raise ValidationError("Repository-local Git is inside worker write authority")
+    if not path.is_file() or not _native_executable(path):
+        raise ValidationError("Git needs a native executable binary")
+    if _worker_writable(path):
+        raise ValidationError("Git native installation is writable or replaceable by sandbox principals")
+    return str(path)
+
+
 def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
-                     label: str) -> bytes:
+                     label: str, missing_ok: bool = False) -> bytes | None:
     # Archive format names can select arbitrary repo-local tar.<format>.command
     # programs. Only the explicit built-in tar invocation used by our readers
     # is safe; reject output/remote/format switches rather than running a filter.
@@ -54,12 +178,7 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
     if args and args[0] == "cat-file" and any(
             value in {"--filters", "--textconv"} for value in args[1:]):
         raise ValidationError(f"{label} needs unfiltered object bytes")
-    executable = shutil.which("git")
-    if not executable:
-        raise ValidationError(f"{label} is unavailable")
-    executable = str(Path(executable).resolve())
-    if Path(executable).suffix.casefold() in {".cmd", ".bat", ".ps1"}:
-        raise ValidationError(f"{label} needs a native executable")
+    executable = native_git_executable(root)
     safe_directory = root.resolve().as_posix()
     # A literal '*' directory name can become Git's parent/prefix trust rule.
     # Git cannot express that name as exact trust, so refuse it before launch.
@@ -213,6 +332,8 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
                 env=child_env(environment, strip_extra=[]), timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ValidationError(f"{label} is unavailable") from exc
+    if missing_ok and done.returncode == 1 and not done.stdout:
+        return None
     if done.returncode or len(done.stdout) > maximum:
         raise ValidationError(f"{label} failed or exceeded its bound")
     return done.stdout

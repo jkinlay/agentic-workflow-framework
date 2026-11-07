@@ -56,7 +56,7 @@ def planned_write(config, contract, event, facts, *, issue_type="LEAF", current_
     if missing:
         raise ValidationError(f"{event} write needs verified guards: " + ", ".join(missing))
     if key == "done" and contract.get("owner_closure_required"):
-        return None, "owner_closure_required: ticket stays In Review until an owner-closure record arrives"
+        return None, "owner_closure_required: owner closes in Jira; then run jira-lifecycle JIRA_RECONCILED to observe actor-bound Done evidence"
     for record in prior_writes:
         if record["status"] in {"UNKNOWN", "FAILED"} or (record["read_back"]["observed_status"] not in (None, record["to_status_id"])):
             raise ValidationError("Jira writes are stopped for this ticket after a mismatched or unknown result; report the suspected external automation conflict")

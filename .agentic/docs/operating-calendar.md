@@ -1,14 +1,13 @@
-# Operating calendar and routine final-review batching
+# Calendar and batching
 
-AWF-244: Tier 3, FULL. Wiring activates no scheduler/adapter.
+Tier 3, FULL.
 Implementation/tests/independent review/enabled hourly reporting continue 24/7;
 only routine `READY_FOR_OWNER_AUTHORIZATION` presentation waits.
-Draft readiness/safety escalation/authenticated owner overrides retain policy.
-Receipts authorize no merge/release/Jira/activation.
+Safety escalation/owner overrides retain policy. Receipts authorize no merge.
 
 ## Calendar contract
 
-Optional version 1 `OPERATING_CONFIG.yaml` subtree:
+Optional `OPERATING_CONFIG.yaml` subtree:
 
 ```json
 {
@@ -27,10 +26,9 @@ Optional version 1 `OPERATING_CONFIG.yaml` subtree:
 ```
 
 Omissions resolve in memory; nulls/unknown keys refuse. Local `HH:MM` requires
-presentation before cutoff. Days: nonempty unique ISO integers 1-7, never booleans.
-Work: `continuous` only.
-Disabled batching presents immediately without authority. Independent EoD days
-never enable/suppress reporting. Preserve legacy bytes/hashes/history.
+presentation before cutoff. Days: unique ISO integers 1-7.
+Work: `continuous`.
+Disabled batching presents immediately without authority. EoD never enables reporting; preserve legacy bytes/history.
 
 Window: includes 07:00, excludes 17:00. Early weekdays wait until morning;
 late readiness waits until next review day; Friday evening/weekends until Monday.
@@ -39,8 +37,7 @@ boundaries to the later occurrence, gaps to the first valid instant; collapsed
 windows skip.
 Weekdays have no holiday exclusions: Christmas Day gets a digest when selected.
 
-Lock: `tzdata==2026.6`, reviewed SHA-256. Missing/invalid IANA data refuses
-even with batching disabled; no offset fallback.
+Missing/invalid IANA tzdata refuses even with batching disabled.
 
 ## Persistence and delivery
 
@@ -50,12 +47,11 @@ even with batching disabled; no offset fallback.
    Independently validate repository/PR/head/base/tree/final-gate against current
    evidence. Deduplicate repeats; changed tuples withdraw pending predecessors.
 2. `claim(now, calendar, observer)` recomputes schedules and atomically claims
-   one due digest. Immutable timestamped catch-up means a missed held opening/earlier
-   window, never ordinary clock precision.
-3. Trusted fresh observation requires exact candidate, `observed_at == now`,
+   one due digest. Catch-up marks missed windows.
+3. Fresh observation requires exact candidate, `observed_at == now`,
    later `expires_at`, literal `open: true`, `merged: false`,
    `final_gate_valid: true`, and owner-ready `readiness`. Stored flags authenticate nothing. Invalid observations withdraw; exceptions roll back.
-   Optional trusted `ready_at <= observed_at` preserves readiness; otherwise use observation time. Cutoff still applies.
+   Trusted `ready_at <= observed_at` preserves readiness; otherwise observation time applies.
    Withdrawn identities require fresh qualification, never replay.
 4. Before initial send, `recheck(batch_id, now, calendar, observer)`
    persists fresh member/window/calendar evidence.
@@ -66,47 +62,47 @@ even with batching disabled; no offset fallback.
    matching `batch_id`, `payload_sha256`, status, nonempty `provider_receipt_id`
    and `observed_at` not before preparation. Identical receipts deduplicate;
    conflicts/reused identities refuse. DELIVERED completes; confirmed
-   NOT_DELIVERED requeues once. Two attempts exhaust each opening, keyed by retained sends across restart; claims consume none. Lifetime counts/receipts persist. Current confirmed calendars govern recovery, including changed openings/disabled batching; stored retry times cannot override them. Fresh qualification remains mandatory; never retry unknown sends.
+   NOT_DELIVERED requeues once. Two attempts exhaust each opening across restart; claims consume none. Retain counts/receipts. Current merged calendars govern recovery, including changed windows/disabled batching; retained times cannot override them. Fresh qualification remains mandatory; never retry unknown sends.
    Newer tuples take precedence; transport retry ceilings remain independent.
 
-`begin_delivery` durably fences/counts. Reload accepted settings/recheck clock/window/expiry after commit, immediately before transport. Refusal/exception cancels only that live uninvoked fence, returning to waiting without an attempt. The small gap between this last check and provider receipt, including later confirmations/scheduling/transport latency, is unavoidable. UNKNOWN never resends. Restart releases PREPARED claims only; missing legacy phase evidence and started sends require
+`begin_delivery` durably fences/counts. Reload accepted settings/recheck clock/window/expiry after commit, immediately before transport. Refusal/exception cancels only that live uninvoked fence, returning to waiting without an attempt. The small gap between this last check and provider receipt, including later merges/scheduling/transport latency, is unavoidable. UNKNOWN never resends. Restart releases PREPARED claims only; missing legacy phase evidence and started sends require
 terminal readback through `pending_batches()`. Unknowns fence their PR, allowing
 unrelated digests. Operators obtain verified terminal provider readback for `observe_review_delivery` to reconcile; no blind resend/operator reset/timeout release.
 `view(now, calendar)` exposes held, withdrawn, exhausted and unresolved identities,
 reasons/times, counts and retry openings read-only for AWF-241. Exhausted/unknown
 states raise owner alerts and remain in controller status digests.
 
-AWF-241 owns OFF/Teams/Slack/both and per-platform two-attempt ceilings. Reconcile partial delivery before logical terminal receipts; one failed destination
-cannot mean NOT_DELIVERED. Never multiply retries.
+AWF-241 owns reporting/destination ceilings. Reconcile partial delivery; one failed destination cannot mean NOT_DELIVERED. Never multiply retries.
 
 ## Settings and controller ports
 
-Validation/set/show retains lock/journal/audit/recovery. Weekdays: JSON lists.
-`operating set`: exit 3 `PENDING_OWNER_CONFIRMATION`, unchanged settings. Owner runs
-`operating confirm --digest D` within 15 minutes, typing eight digest characters.
-Terminal/stored GitHub User identity must match reviewed numeric owners.
-OFF/unchanged assignments require admission. Under lock: revalidate domains/governance/bytes,
-consume once across mixed changes, register before journal/audit/readback.
-Calendar creates no budget/enrollment state. Both domains bind clone-common-directory
-and OS-account storage, never environment; latest confirmation supersedes.
-Load-time digest checks reject external edits/removal. Unconfirmed defaults load without Git/gh executables.
+Ask in AWF Codex chat to check or change calendar settings. `operating show` reports effective calendar, source/commit and working differences. PR/merger is optional; rules warnings never block show. For changes it branches from the fetched default, preserves comments,
+validates `operating validate --file PROPOSED`, and prepares a PR showing exact
+before/after under existing publication authority. Restricted pushes prepare
+branch/body for owner publication. The owner reviews and merges; agents never
+merge. No owner terminal command is required. Protected `operating set` refuses
+without writes, including OFF or unchanged calendar assignments.
 
-Each cycle resolves calendar for AWF-241's separate EoD/hourly scheduler.
-Batching follows dispatch/immediate status/action delivery. Optional reviewed ports:
+Calendar/budget share default-branch policy, identified by `refs/remotes/origin/HEAD`. Working-tree/PR-branch edits cannot alter windows,
+batching or sends. Merged changes apply at the next load after fetch, reporting
+the commit. An absent calendar retains the defaults above; malformed accepted
+policy refuses with a reason. Non-repository fresh defaults invoke no Git/gh.
+Git/PR history audits changes; unprotected recovery remains.
+Keep Git metadata outside worker authority; host rules and owner govern merge.
+Direct default pushes or owner rights can bypass this; offer the shipped ruleset.
+
+Cycles expose calendar for EoD/hourly scheduling. Batching follows dispatch/status. Reviewed ports:
 
 - `observe_owner_ready` supplies candidate locators bound to scope/time,
   never authority or inventory-derived readiness.
 - `observe_review_candidate(candidate, now)` independently observes repository,
   PR/head/base/tree, open/merged state, lifecycle and current final-gate bytes.
-  Only `READY_FOR_OWNER_AUTHORIZATION` enqueues. Claim/pre-send recheck repeat observation;
-  post-read trusted time guards cutoff/expiry; changed members withdraw; expired evidence stays pending.
+  Only owner-ready enqueues. Rechecks observe again; trusted time guards cutoff/expiry; changed members withdraw; expired evidence waits.
 - `deliver_review_batch(payload)` conditionally sends once using immutable
   `batch_id` as idempotency key; returns verified terminal receipt or `None`.
 - `observe_review_delivery(payload)` reads receipts only. Unknown returns `None`.
   Confirmed NOT_DELIVERED must fence delayed sends before allowing a retry.
 
-Host authenticates transport/receipts, serializes cycles, bounds adapter calls. Without delivery ports, collection persists without
-claiming. Restart reconciles started sends without resending. Held/unknown reviews never gate work/tests/independent review/amendments/hourly reports.
-Safety and action alerts stay immediate. No port grants merge authority.
-Delivery/OFF qualification, current-head independent review, specialists,
-final gate and owner review remain required for FULL closure.
+Host authenticates receipts, serializes/bounds calls. Missing ports collect only. Restart reconciles without resending; held/unknown reviews never gate work.
+Safety/action alerts stay immediate.
+FULL requires qualification, current-head independent review, specialists, final gate and owner review.

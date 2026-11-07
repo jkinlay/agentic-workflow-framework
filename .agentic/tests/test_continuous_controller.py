@@ -77,6 +77,13 @@ def production_controller_cycle(*args,**kwargs):
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
+	snapshot = kwargs.get('planning_operating_snapshot')
+	if snapshot is not None and not snapshot.provenance.get('path'):
+		from settings_pr_fixtures import accepted_fixture_snapshot
+		with tempfile.TemporaryDirectory(prefix='awf-controller-policy-') as policy_root:
+			kwargs['planning_operating_snapshot'] = accepted_fixture_snapshot(None, Path(policy_root),
+				snapshot.config, kwargs['planning_config'])
+			return real_production_controller_cycle(*args,**kwargs)
 	return real_production_controller_cycle(*args,**kwargs)
 
 def inventory_observation(now,tickets):
@@ -1281,7 +1288,10 @@ class JiraProgressTests(unittest.TestCase):
 		binding_path.write_text(json.dumps(INVENTORY_BINDING),encoding='utf-8')
 		pin=sha256(adapter_path.read_bytes())
 		common=[sys.executable,'-B',str(ROOT/'.agentic/scripts/workflow.py'),'--root',str(ROOT),'controller','--state',str(state_path),'--stream','A','--stream','B','--stream','C','--worktree-root',str(worktree),'--project-config',str(project_config_path),'--adapter-module',str(adapter_path),'--adapter-sha256',pin,'--adapter-config',str(adapter_config_path)]
-		cycle=subprocess.run([*common,'cycle','--inventory-binding',str(binding_path),'--repository-root',str(worktree),'--repository-head-sha',merged_head,'--repository-tree-sha',merged_tree,'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
+		# This temporary repository is the controller checkout for the cycle.
+		cycle_common=list(common)
+		cycle_common[cycle_common.index('--root')+1]=str(worktree)
+		cycle=subprocess.run([*cycle_common,'cycle','--inventory-binding',str(binding_path),'--repository-root',str(worktree),'--repository-head-sha',merged_head,'--repository-tree-sha',merged_tree,'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
 		self.assertEqual(cycle.returncode,0,cycle.stderr)
 		cycle_output=json.loads(cycle.stdout)
 		self.assertEqual((len(cycle_output['dispatch_receipts']),cycle_output['status_delivery']['status']),(1,'DELIVERED'))
@@ -1339,7 +1349,8 @@ class ReviewBatchingCliTests(unittest.TestCase):
 			for enabled in (True,False):
 				selected=adapters if enabled else {key:value for key,value in adapters.items() if key not in ports}
 				with self.subTest(enabled=enabled), patch.object(module,'_load_reviewed_adapters',return_value=selected), \
-					patch('agentic.operating.read_operating',return_value=SimpleNamespace(operating_hash='b'*64)), \
+					patch('agentic.protected_settings.refresh_default_policy', return_value={'status': 'UNOBSERVED'}), \
+					patch('agentic.operating.read_operating',return_value=SimpleNamespace(operating_hash='b'*64, provenance={})), \
 					patch.object(module,'production_controller_cycle',return_value={'execution_authority':False}) as cycle, \
 					redirect_stdout(io.StringIO()):
 					self.assertEqual(module.main(command),0)

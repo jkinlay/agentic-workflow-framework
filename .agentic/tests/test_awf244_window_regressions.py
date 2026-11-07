@@ -3,16 +3,20 @@ import json
 import unittest
 from unittest.mock import patch
 
-import test_awf242_owner_admission as owner_fixture
+from types import SimpleNamespace
+from copy import deepcopy
+from pathlib import Path
+import source_only
+from settings_pr_fixtures import publish_fixture_settings, fixture_repository, fixture_reservations
+from test_operating import governance
 import test_awf244_controller_wiring as controller_fixture
-from agentic import operating as op, owner_admission
+from agentic import operating as op
 from agentic.continuous_controller import ContinuousControllerStore
 from agentic.review_batching import ReviewBatchStore
 from test_continuous_controller_planning import planning_fixture_inputs
 
 
 class WindowRegressions(unittest.TestCase):
-    setUpClass = classmethod(owner_fixture.OwnerAdmissionTests.setUpClass.__func__)
     observe_ready = controller_fixture.ControllerBatchingTests.observe_ready
     observe_candidate = controller_fixture.ControllerBatchingTests.observe_candidate
     deliver = controller_fixture.ControllerBatchingTests.deliver
@@ -21,20 +25,13 @@ class WindowRegressions(unittest.TestCase):
 
     def setUp(self):
         controller_fixture.ControllerBatchingTests.setUp(self)
-        self.owner = owner_fixture.OwnerAdmissionTests()
-        self.owner.template = self.template
-        self.owner.setUp()
-        self.addCleanup(self.owner.doCleanups)
+        self.owner = SimpleNamespace(root=Path(self.temp.name) / 'project', gov=governance())
         self.owner.gov['github']['repository_id'] = 101
         self.owner.gov['merge_gate']['trusted_owner_ids'] = [1001]
-        self.owner.save_governance()
-        self.owner.before = (self.owner.root / op.CONFIG).read_bytes()
         self.binding = dict(controller_fixture.INVENTORY_BINDING,
                             project_id=self.owner.gov['project']['id'])
-        location = patch.object(owner_admission, '_owner_state_home',
-                                return_value=self.owner.fixture.base / 'protected')
-        location.start()
-        self.addCleanup(location.stop)
+        publish_fixture_settings(self, self.owner.root, self.owner.gov,
+            op.default_operating(self.owner.gov['execution']['model_routing']))
 
     def cycle(self, now):
         self.now = now
@@ -47,7 +44,8 @@ class WindowRegressions(unittest.TestCase):
                       project_config_sha256=op.fingerprint('accepted-project-config', self.owner.gov))
         return controller_fixture.production_controller_cycle(self.store, **inputs, now=now, host_capacity=3,
             controller_config=self.owner.gov['controller'],
-            inventory_binding=self.binding, **controller_fixture.REPOSITORY,
+            inventory_binding=self.binding, **fixture_repository(self.owner.root),
+            observe_reservations=lambda request: fixture_reservations(self.owner.root, request),
             controller_clock=lambda: self.now,
             observe_inventory=lambda: dict(source='host_observation', observed_at=now,
                 binding=self.binding, complete=True, tickets=[],
@@ -61,14 +59,13 @@ class WindowRegressions(unittest.TestCase):
     def restart(self):
         self.store = ContinuousControllerStore(self.path, ['A', 'B', 'C'], cadence_seconds=3600)
 
-    def confirmed_change(self, assignment):
-        digest = self.owner.pending(assignment, clock='2026-11-07T09:59:00Z')
-        result = self.owner.confirm(digest, clock='2026-11-07T10:00:00Z')
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        shown = self.owner.cli('show', '--json')
-        self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
-        self.assertEqual('ACCEPTED', json.loads(shown.stdout)['status'])
-        self.assertTrue(self.owner.calls.exists())  # Only the disposable fake gh ran.
+    def merged_change(self, assignment):
+        value = op.read_operating(self.owner.root, self.owner.gov).config
+        path, text = assignment.split('=', 1)
+        op._put(value, op._path(path), op._selection(path, text))
+        op.validate_operating(value, self.owner.gov)
+        publish_fixture_settings(self, self.owner.root, self.owner.gov, value)
+        self.assertEqual(value, op.read_operating(self.owner.root, self.owner.gov).config)
 
     def exhaust_friday(self):
         self.negative_delivery = True
@@ -83,20 +80,13 @@ class WindowRegressions(unittest.TestCase):
             self.assertEqual(lifetime, db.execute('SELECT attempts FROM review_presentation_intent_v1').fetchone()[0])
             self.assertEqual(window, db.execute('SELECT window_attempts FROM review_presentation_detail_v1').fetchone()[0])
 
-    def test_calendar_confirmation_overtakes_send(self):
-        digest = self.owner.pending('operating_calendar.review_batching.cutoff_time=16:30',
-                                    clock='2026-11-06T16:58:00Z')
+    def test_calendar_merge_overtakes_send(self):
         original = ReviewBatchStore.begin_delivery
         def fence(batch_store, *args):
             cancel = original(batch_store, *args)
-            result = self.owner.confirm(digest, clock='2026-11-06T16:59:00Z')
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            shown = self.owner.cli('show', '--json')
-            self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
-            value = json.loads(shown.stdout)
-            self.assertEqual('ACCEPTED', value['status'])
-            self.assertEqual('16:30', value['effective_operating_calendar']['review_batching']['cutoff_time'])
-            self.assertTrue(self.owner.calls.exists())
+            self.merged_change('operating_calendar.review_batching.cutoff_time=16:30')
+            snapshot = op.read_operating(self.owner.root, self.owner.gov)
+            self.assertEqual('16:30', op.effective_calendar(snapshot.config)['review_batching']['cutoff_time'])
             return cancel
         with patch.object(ReviewBatchStore, 'begin_delivery', fence):
             result = self.cycle('2026-11-06T16:59:00Z')
@@ -132,32 +122,27 @@ class WindowRegressions(unittest.TestCase):
         self.assertEqual(['DELIVERED'], self.intent_states())
         self.assert_attempts(1, 1)
 
-    def test_post_fence_protected_digest_refusal_cancels_without_attempt(self):
-        self.confirmed_change('operating_calendar.eod.time=18:00')
+    def test_post_fence_malformed_default_calendar_cancels_without_attempt(self):
         original = ReviewBatchStore.begin_delivery
-        config = self.owner.root / op.CONFIG
-        before = config.read_bytes()
-        self.addCleanup(config.write_bytes, before)
-        history = self.owner.root / op.STATE / 'changes'
-        original_events = set(history.iterdir())
+        accepted = op.read_operating(self.owner.root, self.owner.gov).config
         def fence(batch_store, *args):
             cancel = original(batch_store, *args)
-            value = json.loads(before)
-            value['operating_calendar']['eod']['time'] = '19:00'
-            self.owner.forge_config_event(value)  # Editable audit cannot confer owner admission.
-            shown = self.owner.cli('show', '--json')
-            self.assertEqual(0, shown.returncode, shown.stdout + shown.stderr)
-            self.assertEqual('OWNER_CONFIRMATION_REQUIRED', json.loads(shown.stdout)['status'])
+            value = deepcopy(accepted)
+            value['operating_calendar'] = None
+            publish_fixture_settings(self, self.owner.root, self.owner.gov, value)
+            # Working defaults cannot mask malformed accepted calendar policy.
+            (self.owner.root / op.CONFIG).write_bytes(op._json(accepted))
             return cancel
         with patch.object(ReviewBatchStore, 'begin_delivery', fence):
             result = self.cycle('2026-11-06T16:00:00Z')
         self.assertEqual([], self.delivered)
         self.assertEqual(['PENDING'], self.intent_states())
         self.assert_attempts(0, 0)
-        self.assertTrue(any('OWNER_SETTINGS_REFUSED' in error['reason'] for error in result['errors']))
-        config.write_bytes(before)
-        for event in set(history.iterdir()) - original_events:
-            event.unlink()
+        self.assertTrue(any(error['operation'] == 'review_recheck'
+                            and 'Protected default-branch settings unavailable:' in error['reason']
+                            and 'operating_calendar' in error['reason']
+                            for error in result['errors']))
+        publish_fixture_settings(self, self.owner.root, self.owner.gov, accepted)
         self.restart()
         self.cycle('2026-11-06T16:01:00Z')
         self.assertEqual(1, len(self.delivered))
@@ -229,13 +214,13 @@ class WindowRegressions(unittest.TestCase):
         self.assertEqual(['DELIVERED'], self.intent_states())
         self.assert_attempts(3, 2)
 
-    def test_exhausted_confirmed_disabled_batching_presents_saturday(self):
+    def test_exhausted_merged_disabled_batching_presents_saturday(self):
         self.exhaust_friday()
         with self.store.connection() as db:
             receipts = [tuple(row) for row in db.execute('SELECT * FROM review_presentation_outbox_v1 ORDER BY batch_id')]
-        self.confirmed_change('operating_calendar.review_batching.enabled=false')
+        self.merged_change('operating_calendar.review_batching.enabled=false')
         view = ReviewBatchStore(self.store).view('2026-11-07T10:00:00Z', op.effective_calendar(
-            json.loads((self.owner.root / op.CONFIG).read_bytes())))
+            op.read_operating(self.owner.root, self.owner.gov).config))
         self.assertEqual('2026-11-07T10:00:00Z', view['intents'][0]['retry_at'])
         self.restart()
         self.cycle('2026-11-07T10:00:00Z')
@@ -246,9 +231,9 @@ class WindowRegressions(unittest.TestCase):
                 self.assertEqual(receipt, tuple(db.execute(
                     'SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (receipt[0],)).fetchone()))
 
-    def test_exhausted_confirmed_earlier_opening_presents_at_six(self):
+    def test_exhausted_merged_earlier_opening_presents_at_six(self):
         self.exhaust_friday()
-        self.confirmed_change('operating_calendar.review_batching.presentation_time=06:00')
+        self.merged_change('operating_calendar.review_batching.presentation_time=06:00')
         self.restart()
         self.cycle('2026-11-09T05:59:59Z')
         self.assertEqual(2, len(self.delivered))
@@ -256,9 +241,9 @@ class WindowRegressions(unittest.TestCase):
         self.assertEqual(3, len(self.delivered))
         self.assert_attempts(3, 1)
 
-    def test_exhausted_confirmed_timezone_holds_until_current_local_opening(self):
+    def test_exhausted_merged_timezone_holds_until_current_local_opening(self):
         self.exhaust_friday()
-        self.confirmed_change('operating_calendar.timezone=America/New_York')
+        self.merged_change('operating_calendar.timezone=America/New_York')
         self.restart()
         self.cycle('2026-11-09T07:00:00Z')
         self.assertEqual(2, len(self.delivered))
@@ -267,7 +252,7 @@ class WindowRegressions(unittest.TestCase):
         self.assert_attempts(3, 1)
 
     def test_disabled_batching_pending_failure_gets_two_attempts_each_local_day(self):
-        self.confirmed_change('operating_calendar.review_batching.enabled=false')
+        self.merged_change('operating_calendar.review_batching.enabled=false')
         self.negative_delivery = True
         self.cycle('2026-11-07T23:59:00Z')
         self.restart()
@@ -283,7 +268,7 @@ class WindowRegressions(unittest.TestCase):
 
     def test_eod_only_change_does_not_grant_more_attempts_in_same_review_window(self):
         self.exhaust_friday()
-        self.confirmed_change('operating_calendar.eod.time=18:00')
+        self.merged_change('operating_calendar.eod.time=18:00')
         self.restart()
         self.cycle('2026-11-06T16:02:00Z')
         self.assertEqual(2, len(self.delivered))
@@ -304,9 +289,8 @@ class WindowRegressions(unittest.TestCase):
         self.assertEqual(['CLAIMED'], self.intent_states())
         self.assert_attempts(1, 1)
 
-    def test_unconfirmed_and_hand_edited_calendar_cannot_release_exhausted(self):
+    def test_branch_and_hand_edited_calendar_cannot_release_exhausted(self):
         self.exhaust_friday()
-        self.owner.pending('operating_calendar.review_batching.enabled=false', clock='2026-11-07T10:00:00Z')
         self.restart()
         self.cycle('2026-11-07T10:00:00Z')
         self.assertEqual(2, len(self.delivered))
@@ -314,9 +298,7 @@ class WindowRegressions(unittest.TestCase):
         value['operating_calendar'] = op.effective_calendar(value)
         value['operating_calendar']['review_batching']['enabled'] = False
         (self.owner.root / op.CONFIG).write_bytes(op._json(value))
-        from agentic import ValidationError
-        with self.assertRaises(ValidationError):
-            self.cycle('2026-11-07T10:01:00Z')
+        self.cycle('2026-11-07T10:01:00Z')
         self.assertEqual(2, len(self.delivered))
         self.assert_attempts(2, 2)
 
