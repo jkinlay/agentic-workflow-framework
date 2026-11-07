@@ -260,15 +260,142 @@ class SecondLookTests(unittest.TestCase):
                     self.assertEqual(before, self.git('rev-parse', 'origin/main'))
                     self.assertEqual('refs/remotes/origin/main', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
 
-    def test_readers_refuse_in_progress_ref_publication_without_writes(self):
+    def test_readers_ignore_fresh_and_old_refresh_locks_without_writes(self):
         self.publish(self.enabled())
         lock = self.root / '.git/awf-default-policy.lock'
         lock.write_text('Controller refresh')
-        inventory = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob('*') if p.is_file())
-        code, report = self.show()
-        self.assertEqual(2, code, report)
-        self.assertIn('refresh in progress', str(report))
-        self.assertEqual(inventory, sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob('*') if p.is_file()))
+        import time
+        for age in (0, 601):
+            with self.subTest(age=age):
+                stamp = time.time() - age
+                os.utime(lock, (stamp, stamp))
+                before = {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
+                          for p in self.root.rglob('*') if p.is_file()}
+                code, report = self.show()
+                self.assertEqual(0, code, report)
+                self.assertTrue(report['configuration']['budgeting']['enforcement_enabled'])
+                snapshot = op.read_operating(self.root, self.gov)
+                self.assertTrue(snapshot.config['budgeting']['enforcement_enabled'])
+                self.assertEqual(before, {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
+                                         for p in self.root.rglob('*') if p.is_file()})
+
+    def test_refresh_uses_only_git_230_ref_publication_commands(self):
+        from agentic.protected_settings import refresh_default_policy
+        from agentic.safeio import run_bounded
+        seen = []
+        def git230(args, **kwargs):
+            if 'update-ref' in args:
+                seen.append(args[args.index('update-ref'):])
+                self.assertNotIn('--stdin', args)
+                self.assertNotIn('symref-update', kwargs.get('stdin') or '')
+            return run_bounded(args, **kwargs)
+        with patch('agentic.safeio.run_bounded', side_effect=git230):
+            result = refresh_default_policy(self.root)
+        self.assertEqual('FETCHED', result['status'], result)
+        self.assertTrue(seen)
+
+    def test_failure_between_publications_retains_old_policy_then_completes(self):
+        from agentic.protected_settings import refresh_default_policy
+        from agentic.safeio import run_bounded
+        from agentic import ValidationError
+        before = self.git('rev-parse', 'origin/main')
+        self.git('checkout', '-qb', 'trunk')
+        self.write(self.enabled())
+        self.git('add', op.CONFIG)
+        self.git('commit', '-qm', 'Renamed default ON')
+        self.git('push', '-q', 'origin', 'trunk')
+        target = self.git('rev-parse', 'trunk')
+        self.git('update-ref', '-d', 'refs/remotes/origin/trunk')
+        self.git('--git-dir=' + str(self.bare), 'symbolic-ref', 'HEAD', 'refs/heads/trunk')
+        def fail_identity(args, **kwargs):
+            if 'symbolic-ref' in args:
+                self.assertEqual(target, self.git('rev-parse', 'origin/trunk'))
+                raise ValidationError('injected second-step failure')
+            return run_bounded(args, **kwargs)
+        with patch('agentic.safeio.run_bounded', side_effect=fail_identity):
+            result = refresh_default_policy(self.root)
+        self.assertEqual('UNAVAILABLE', result['status'], result)
+        self.assertEqual('default identity publication', result['step'])
+        self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+        self.assertEqual('refs/remotes/origin/main', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
+        self.assertFalse(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+        self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+        self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+        self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+
+    def test_fresh_lock_retains_policy_and_old_lock_is_replaced(self):
+        from agentic.protected_settings import refresh_default_policy
+        import time
+        before = self.git('rev-parse', 'origin/main')
+        self.publish(self.enabled())
+        target = self.git('rev-parse', 'main')
+        self.git('update-ref', 'refs/remotes/origin/main', before)
+        lock = self.root / '.git/awf-default-policy.lock'
+        lock.write_text('Dead controller refresh')
+        result = refresh_default_policy(self.root)
+        self.assertEqual('UNAVAILABLE', result['status'], result)
+        self.assertEqual('refresh ownership', result['step'])
+        self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+        self.assertFalse(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+        stamp = time.time() - 601
+        os.utime(lock, (stamp, stamp))
+        result = refresh_default_policy(self.root)
+        self.assertEqual('FETCHED', result['status'], result)
+        self.assertTrue(result['stale_lock_replaced'])
+        self.assertIn('replaced', result['reason'])
+        self.assertEqual(target, self.git('rev-parse', 'origin/main'))
+        self.assertFalse(lock.exists())
+
+    def test_fetched_commit_must_match_advertised_head(self):
+        from agentic.protected_settings import refresh_default_policy
+        from agentic.safeio import run_bounded
+        before = self.git('rev-parse', 'origin/main')
+        self.publish(self.enabled())
+        self.git('update-ref', 'refs/remotes/origin/main', before)
+        def concurrent_fetch(args, **kwargs):
+            result = run_bounded(args, **kwargs)
+            if 'fetch' in args:
+                self.git('fetch', '-q', '--refmap=', str(self.bare), before)
+            return result
+        with patch('agentic.safeio.run_bounded', side_effect=concurrent_fetch):
+            result = refresh_default_policy(self.root)
+        self.assertEqual('UNAVAILABLE', result['status'], result)
+        self.assertEqual('branch fetch', result['step'])
+        self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+        self.assertFalse(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+        self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+        self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+
+    def test_live_refresher_survives_clock_jump_and_readers_work_during_fetch(self):
+        from agentic.protected_settings import refresh_default_policy
+        from agentic.safeio import run_bounded
+        import time
+        lock = self.root / '.git/awf-default-policy.lock'
+        before = self.git('rev-parse', 'origin/main')
+        self.publish(self.enabled())
+        self.git('update-ref', 'refs/remotes/origin/main', before)
+        seen = []
+        def during_network(args, **kwargs):
+            if '--symref' in args:
+                self.assertFalse(lock.exists())
+            if 'fetch' in args:
+                seen.append('fetch')
+                self.assertTrue(lock.exists())
+                self.assertEqual(0, self.show()[0])
+                self.assertFalse(op.read_operating(self.root, self.gov).config['budgeting']['enforcement_enabled'])
+                future = time.time() + 3600
+                # Age appears stale, but a live kernel lock still excludes publication.
+                with patch('time.time', return_value=future), patch('agentic.safeio.run_bounded', side_effect=run_bounded):
+                    other = refresh_default_policy(self.root)
+                self.assertEqual('UNAVAILABLE', other['status'], other)
+                self.assertEqual('refresh ownership', other['step'])
+                self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+            return run_bounded(args, **kwargs)
+        with patch('agentic.safeio.run_bounded', side_effect=during_network):
+            result = refresh_default_policy(self.root)
+        self.assertEqual(['fetch'], seen)
+        self.assertEqual('FETCHED', result['status'], result)
+        self.assertFalse(lock.exists())
 
     def test_remote_default_rename_follows_with_old_branch_kept_or_deleted(self):
         from agentic.protected_settings import refresh_default_policy
