@@ -411,7 +411,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_config_diagnostics.py` | `0da55312385e970896facbffb79ac6d7ea7e2226be93d058f317632c919d38f6` |
 | `.agentic/tests/test_continuation.py` | `39c20ac2265ec9f01306b0dc45a46e63fb306515046c87c725191d8ee359217e` |
 | `.agentic/tests/test_continuous_controller.py` | `e5fc739eead4065ad1d77e5d6583b514e2d807cff874e0840231e4ccd6c31582` |
-| `.agentic/tests/test_continuous_controller_planning.py` | `a45b7480146f4729aa16e0630bf3ae1e3c4b60aab4fcb26f409c0fb6741f4e05` |
+| `.agentic/tests/test_continuous_controller_planning.py` | `9d20e368dc60bb4d7439899de126fa8273ff0cbb65f77b60eeaea86c123eda2f` |
 | `.agentic/tests/test_controller_state_sidecars.py` | `a43b48d4468b89970ce9fe706c6d4cc8d445c0172c757ad6f4fb500e25020ca0` |
 | `.agentic/tests/test_controller_switches_195.py` | `b4e107c5944ff08c7242d18ac870be6d67a4dbd94ef7c139a7e0fc21ea44e946` |
 | `.agentic/tests/test_external_resources.py` | `fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e` |

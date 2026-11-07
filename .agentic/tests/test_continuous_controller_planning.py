@@ -183,7 +183,7 @@ class PlanningFixtureRepositoryTests(unittest.TestCase):
             inputs = planning_fixture_inputs([], store, 1,
                 repository=dict(REPOSITORY, repository_root=repository))
             snapshot = inputs['planning_operating_snapshot']
-            self.assertEqual(repository.resolve(), Path(snapshot.provenance['path']).parent)
+            self.assertEqual(repository.resolve(), Path(snapshot.provenance['path']).parent.resolve())
             reread = read_operating(repository, inputs['planning_config'])
             self.assertEqual(snapshot.operating_hash, reread.operating_hash)
             self.assertEqual(snapshot.config, reread.config)
