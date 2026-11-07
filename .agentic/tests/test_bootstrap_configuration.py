@@ -603,6 +603,14 @@ class PostInstallCheckTests(unittest.TestCase):
 
 
 class RuntimeWheelArtifactTests(unittest.TestCase):
+    def test_shipped_timezone_lock_and_runtime_import_invariant(self):
+        dependencies, _ = adoption._locked_dependencies(ROOT / '.agentic/requirements.lock')
+        self.assertEqual('2026.6', dependencies['tzdata']['version'])
+        self.assertEqual(frozenset({'0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec'}),
+                         dependencies['tzdata']['artifact_hashes'])
+        self.assertEqual(set(dependencies), set(adoption._RUNTIME_IMPORTS))
+        self.assertEqual('tzdata', adoption._RUNTIME_IMPORTS['tzdata'])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awf-wheel-")
         self.addCleanup(self.temporary.cleanup)
@@ -732,7 +740,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         wheelhouse.mkdir()
         entries = []
         for name in ("PyYAML", "jsonschema", "attrs", "jsonschema-specifications",
-                     "referencing", "rpds-py", "typing-extensions"):
+                     "referencing", "rpds-py", "typing-extensions", "tzdata"):
             version, raw = installed_wheel(name)
             filename = name.replace("-", "_") + "-" + version + "-py3-none-any.whl"
             (wheelhouse / filename).write_bytes(raw)
@@ -1089,7 +1097,12 @@ class ConfiguredInstallerTests(unittest.TestCase):
         pyvenv = (self.dest / ".agentic/.venv/pyvenv.cfg").read_text(encoding="utf-8").lower()
         self.assertIn("include-system-site-packages = false", pyvenv)
         self.assertEqual(sha256((self.dest / ".agentic/requirements.lock").read_bytes()), runtime["requirements_lock_sha256"])
-        self.assertEqual(7, len(runtime["artifact_sha256"]))
+        self.assertEqual(8, len(runtime["artifact_sha256"]))
+        zone = subprocess.run([runtime["interpreter"], "-B", "-I", "-c",
+                               "import zoneinfo; zoneinfo.reset_tzpath(()); print(zoneinfo.ZoneInfo('Europe/London').key)"],
+                              cwd=self.dest, capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, zone.returncode, zone.stderr)
+        self.assertEqual('Europe/London', zone.stdout.strip())
         self.assertIn("complete wheel SHA-256", runtime["dependency_source"])
         sentinel = self.base / "unlisted" / "awf_unlisted_sentinel.py"
         sentinel.parent.mkdir()

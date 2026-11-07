@@ -226,7 +226,7 @@ class JiraMutationScopeTests(unittest.TestCase):
                 provider = {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
                             "project_id": "project-1", "project_key": "EX", "controller_actor_id": "controller"}
                 record = {"operation_id": "scope-operation", "binding": {"issue_id": KEY},
-                          "transition_id": "3", "from_status_id": "Ready", "jira_provider": provider, "producer_id": "controller"}
+                          "transition_id": "21", "from_status_id": "10118", "to_status_id": "10119", "jira_provider": provider, "producer_id": "controller"}
                 with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "fixture-token"}):
                     if parent == "EX-1":
                         adapters["write_transition"](record)

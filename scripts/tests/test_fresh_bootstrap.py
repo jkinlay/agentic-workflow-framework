@@ -64,7 +64,7 @@ class FreshBootstrapIntegrationTests(unittest.TestCase):
             wheelhouse.mkdir()
             entries = []
             for name in ("PyYAML", "jsonschema", "attrs", "jsonschema-specifications",
-                         "referencing", "rpds-py", "typing-extensions"):
+                         "referencing", "rpds-py", "typing-extensions", "tzdata"):
                 version, wheel = installed_wheel(name)
                 (wheelhouse / (name.replace("-", "_") + "-" + version + "-py3-none-any.whl")).write_bytes(wheel)
                 entries.append((name, version, wheel))
