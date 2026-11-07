@@ -121,6 +121,22 @@ class ReleaseHygieneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'documentation budget'):
             check_release(self.root)
 
+    def test_portable_skill_uses_distribution_word_count_and_600_word_limit(self):
+        from build_skill_distribution import count_words
+        path = self.root / 'global/awf-portable/SKILL.md'
+        path.parent.mkdir(parents=True)
+        # The front matter and Markdown tokens count, just as in the build.
+        body = '---\nname: awf\n---\n# AWF\n' + 'word\t' * 594
+        self.assertEqual(600, count_words(body))
+        path.write_text(body, encoding='utf-8')
+        result = check_release(self.root)
+        budget = next(item for item in result['documentation_file_budgets']
+                      if item['path'] == 'global/awf-portable/SKILL.md')
+        self.assertEqual((600, 600), (budget['words'], budget['limit']))
+        path.write_text(body + 'excess', encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, '601 > 600'):
+            check_release(self.root)
+
     def test_each_document_can_pass_even_when_total_exceeds_6000(self):
         for index in range(9):
             (self.root / f'guide-{index}.md').write_text('word ' * 800, encoding='utf-8')
