@@ -51,7 +51,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/37-PUBLICATION-READINESS.md` | `071448f174bd530c79c1b54a266d414607c3dc5a2cc763ca749ff43a8471b249` |
 | `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `b0319c6c7d8aef9e31c8b2c8ef48d865829e940925c18e061cc476956ca3e062` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `29249f73d2e2cb8c43eb19dba39a7db580fd0c687da19d98d977f0131b7115e1` |
-| `.agentic/docs/39-BUDGETING.md` | `aeb4a2fb521e5dc3bbc8f13014db91b79ad9b75bce7b2dce0af136cc68f8ee7d` |
+| `.agentic/docs/39-BUDGETING.md` | `2fa1bd08bb05d5b3c99f401a006b3502c3898fb33ab79d73e11cf9341a6979a8` |
 | `.agentic/docs/40-EXTERNAL-RESOURCES.md` | `7b648bc302fa826832162af193a14a6dfd793f8624b5c7cb1990581cb40f866e` |
 | `.agentic/docs/41-WRITER-CRITIC-PROVENANCE.md` | `bbaa1bfb2d3613ed28da29dbca16e20c8ab4f01231d055f7d3c5d3a82d1426cc` |
 | `.agentic/docs/42-PR-INTEGRATION-QUEUE.md` | `6645b3bc1b5568bcd2539562292f86ef40975e635fae6eb1971c0fded53933e7` |
@@ -133,7 +133,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/policy.py` | `0d3516af5ff5045e50f9d260758243289d0de21d3f1868355dde36d77e38d5f5` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
-| `.agentic/lib/agentic/protected_settings.py` | `e5e36d52185800981992cbf92aa99eacf539f772dfb3ff554f00fc2e5e0c627a` |
+| `.agentic/lib/agentic/protected_settings.py` | `ee43219617765c28463ea87c6b65b6809a6343655dbce137e127ad21ebd2d9ab` |
 | `.agentic/lib/agentic/provenance.py` | `1f5fafd6f76726edefae97869818a31b8e2e913cd32f3bcc9e90cb3832961ac3` |
 | `.agentic/lib/agentic/provider_identity.py` | `5a9e3e4b9a525edfcca125fcd902152d22639e4e43e39ac51943a772a4ca1271` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
@@ -371,7 +371,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf242_pre_a9.py` | `f00f144637bd3e531b63ec6ad1891cc900233d2c19f1626b46e658975aaa566a` |
 | `.agentic/tests/test_awf242_prereview.py` | `e2ed05715cbaae0e7869fbd45288d7ea7a78e7cf1c56f51138ce1fcd66ef3cc9` |
 | `.agentic/tests/test_awf242_settings_pr.py` | `8dda8c19de4f9810525ea487ceca4f522ac958e2f7582f31c212ff9dc1e3dcea` |
-| `.agentic/tests/test_awf242_settings_second_look.py` | `9af17778f731665aa6062cdd655bd386715a16640bb353e7f28c88e7b2d93390` |
+| `.agentic/tests/test_awf242_settings_second_look.py` | `4e3cf0968fc271ecd0938cff39c076dcd7f8e49595a34b95cc79be5261b7d2e8` |
 | `.agentic/tests/test_awf243_operator_recovery.py` | `706475f17bdc4685a51f41bf59829b7bb17bcf795e8be819ea98e274e72e3ef5` |
 | `.agentic/tests/test_awf243_review_regressions.py` | `e4372af19b8aa360a5a67923db2c9fb804b477bf52cc4f4238478d35379072e3` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |

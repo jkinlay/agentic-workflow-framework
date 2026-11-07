@@ -46,12 +46,13 @@ legacy policy stays until versioned adoption. No retrospective zero usage.
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
 ref, never evidence of policy refresh. New merges remain invisible until fetched.
 The controller's own checkout requires repository-local remote.origin.url;
-relative paths and paths inside the checkout refuse. It discovers remote HEAD,
-fetches that branch's objects, then publishes its tracking ref and origin/HEAD
-in one guarded Git transaction. Readers refuse overlapping publication. Discovery
-and fetch each have a 30-second bound and bounded output; existing credentials
-apply. Renames are reported, whether the old branch remains or is deleted.
-Failures report the step/remedy, retain policy refs and permit unrelated work.
+relative/inside-checkout paths refuse. Discovery/fetch have 30-second/output bounds.
+Fetched and advertised HEAD must match; mismatches retry next cycle. Publication
+atomically updates the tracking ref, then origin/HEAD on rename/absence, retaining
+old refs. Readers ignore refresh locks. Refreshers lock after discovery; unlocked
+locks older than ten minutes are replaced/reported. OS locking prevents clock-jump
+takeover of live refreshers. Renames work with old branches kept/deleted.
+Failures report step/remedy and retain policy; credentials apply.
 `show` never fetches. The skill fetches after owner merge, then shows settings.
 
 Merge authority rests with host rules and the owner. `show` reports rules UNOBSERVED
