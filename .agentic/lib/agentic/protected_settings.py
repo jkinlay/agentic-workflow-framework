@@ -232,7 +232,6 @@ def resolve_protected(root, governance, working):
             raw = _blob(root, commit, 'OPERATING_CONFIG.yaml')
             observation = 'file absent at default-branch commit; no accepted policy' if raw is None else 'accepted default-branch file'
             if raw is None:
-                budget_admission = False
                 for name, defaults, normalize in PROTECTED_DOMAINS:
                     if name in value:
                         value[name] = defaults()
@@ -240,9 +239,12 @@ def resolve_protected(root, governance, working):
                 sources = {name: 'fresh defaults' if name in value else 'legacy retained'
                            for name, _, _ in PROTECTED_DOMAINS}
             else:
-                accepted = load_operating_yaml(raw)
                 from .operating import validate_operating
-                validate_operating(accepted, governance)
+                try:
+                    accepted = load_operating_yaml(raw)
+                    validate_operating(accepted, governance)
+                except ValidationError as exc:
+                    raise ValidationError('OPERATING_CONFIG.yaml: ' + str(exc)) from exc
                 for name, _defaults, normalize in PROTECTED_DOMAINS:
                     if name in accepted:
                         value[name] = deepcopy(accepted[name])
@@ -292,8 +294,7 @@ def resolve_protected(root, governance, working):
     return value, dict(source=source, sources=sources, commit=commit, ref=ref, differences=differences,
         policy_observation=observation, branch_observation=branch_observation, fetch_attempt_at=fetched_at,
         budget_admission=budget_admission, remote_configured=remote_configured, unverified=unverified,
-        budget_refusal=(('Default branch unverified; protected decision refused; ' + remedy) if unverified else
-                        'Protected decision refused: no accepted default-branch operating file; restore it through a PR and fetch after owner merge')
+        budget_refusal=('Default branch unverified; protected decision refused; ' + remedy)
                        if not budget_admission else None,
         visibility='Locally fetched policy only; a newer merge is not visible until fetched. FETCH_HEAD time records a fetch attempt of any ref, not a successful policy refresh.',
         next_action=remedy if unverified else next_action)

@@ -10,6 +10,7 @@ from unittest.mock import patch
 import source_only
 from agentic import ValidationError, operating as op
 from agentic.canonical import canonical
+from agentic.budgeting import fresh_settings, legacy_settings, resolve_settings
 from agentic.continuous_controller import production_review_batching_cycle
 from agentic.operating_calendar import effective_calendar
 from agentic.protected_settings import effective_snapshot, require_budget_policy
@@ -69,15 +70,42 @@ class PolicyReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'refused'):
             require_budget_policy(snapshot)
 
-    def test_unavailable_default_file_refuses_shared_protected_decision_check(self):
+    def test_absent_default_file_accepts_defaults_or_legacy_for_each_domain(self):
         self.git('rm', '-q', op.CONFIG)
-        self.git('commit', '-qm', 'No accepted operating policy')
+        self.git('commit', '-qm', 'Accepted absent operating file')
         self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
-        self.write(self.value)
-        snapshot = op.read_operating(self.root, self.gov)
-        self.assertIn('no accepted policy', snapshot.provenance['protected_settings']['policy_observation'])
-        with self.assertRaisesRegex(ValidationError, 'refused'):
-            require_budget_policy(snapshot)
+        for legacy in ((), ('budgeting',), ('operating_calendar',), ('budgeting', 'operating_calendar')):
+            with self.subTest(legacy=legacy):
+                working = deepcopy(self.value)
+                working['budgeting'].update(accounting_enabled=True, enforcement_enabled=True)
+                working['operating_calendar']['review_batching']['enabled'] = False
+                working['operating_calendar']['timezone'] = 'UTC'
+                for name in legacy:
+                    working.pop(name)
+                self.write(working)
+                snapshot = op.read_operating(self.root, self.gov)
+                report = snapshot.provenance['protected_settings']
+                self.assertIn('absent', report['policy_observation'])
+                self.assertTrue(report['budget_admission'])
+                self.assertIsNone(report['budget_refusal'])
+                require_budget_policy(snapshot)
+                expected_budget = legacy_settings() if 'budgeting' in legacy else fresh_settings()
+                self.assertEqual(expected_budget, resolve_settings(snapshot.config))
+                self.assertEqual(effective_calendar({}), effective_calendar(snapshot.config))
+                for name in ('budgeting', 'operating_calendar'):
+                    self.assertEqual(name not in legacy, name in snapshot.config)
+                code, output = self.show('show', '--json')
+                self.assertEqual(0, code)
+                shown = json.loads(output)
+                self.assertTrue(shown['budget_admission'])
+                self.assertEqual(effective_calendar({}), shown['effective_operating_calendar'])
+                expected = {name: 'legacy retained' if name in legacy else 'fresh defaults'
+                            for name in ('budgeting', 'operating_calendar')}
+                self.assertEqual(expected, shown['protected_settings']['sources'])
+                code, output = self.show('show')
+                self.assertEqual(0, code)
+                for name, source in expected.items():
+                    self.assertIn(name + ': ' + source, output)
 
     def test_rejected_calendar_values_are_not_echoed_by_show_or_differences(self):
         sentinel = 'REJECTED_CALENDAR_SENTINEL'
@@ -130,6 +158,9 @@ class PolicyReaderTests(unittest.TestCase):
                     code, output = self.show(*arguments)
                     self.assertEqual(2, code)
                     self.assertNotIn(sentinel, output)
+                    if route == 'default':
+                        self.assertIn('OPERATING_CONFIG.yaml', output)
+                        self.assertIn('duplicate keys, malformed YAML or unsupported values', output)
                     report = op.inspect_operating(self.root, self.gov)
                     self.assertNotIn(sentinel, json.dumps(report))
 
@@ -189,6 +220,30 @@ class ProductionPolicyTests(unittest.TestCase):
             result = self.cycle('2026-11-07T10:00:00Z')
         self.assertEqual([], result['errors'])
         self.assertTrue(result['operating_calendar']['review_batching']['enabled'])
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+
+    def test_absent_default_file_allows_controller_and_batching_on_defaults(self):
+        working = self.supplied(False).config
+        working['budgeting'].update(accounting_enabled=True, enforcement_enabled=True)
+        working['operating_calendar']['timezone'] = 'UTC'
+        settings.SettingsPRTests.git(self.owner, 'rm', '-q', op.CONFIG)
+        settings.SettingsPRTests.git(self.owner, '-c', 'user.name=Fixture',
+            '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Accepted absent operating file')
+        settings.SettingsPRTests.git(self.owner, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+        (self.owner.root / op.CONFIG).write_bytes(op._json(working))
+        supplied = replace(op.validate_operating(working, self.owner.gov),
+            _provenance_json=canonical({'path': str(self.owner.root / op.CONFIG)}))
+        snapshot = op.read_operating(self.owner.root, self.owner.gov)
+        self.assertEqual(fresh_settings(), resolve_settings(snapshot.config))
+        self.assertEqual(effective_calendar({}), effective_calendar(snapshot.config))
+        result = self.batch(supplied)
+        self.assertEqual([], result['errors'])
+        self.assertEqual([], self.delivered)
+        self.assertEqual(['PENDING'], self.intent_states())
+        result = self.cycle('2026-11-07T10:00:00Z')
+        self.assertEqual([], result['errors'])
+        self.assertEqual(effective_calendar({}), result['operating_calendar'])
         self.assertEqual([], self.delivered)
         self.assertEqual(['PENDING'], self.intent_states())
 
