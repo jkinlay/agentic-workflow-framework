@@ -538,7 +538,7 @@ def read_operating(project_root, governance):
 def inspect_operating(project_root, governance):
     try:
         value = read_operating(project_root, governance)
-        return {"status": "ACCEPTED", "budget_admission": True, "protected_settings": value.provenance.get("protected_settings", {}), "hash": value.operating_hash, "source": value.source,
+        return {"status": "ACCEPTED", "budget_admission": value.provenance.get('protected_settings', {}).get('budget_admission', True), "protected_settings": value.provenance.get("protected_settings", {}), "hash": value.operating_hash, "source": value.source,
                 "streams": value.count, "last_change_id": value.last_change_id, "refusals": [],
                 "budgeting": resolve_settings(value.config),
                 **operating_ceiling(governance)}
@@ -650,8 +650,9 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     event, raw, event_raw, journal_raw = _prepare_commit(
         tree, governance, before, value, instruction, changed, applied_from,
         created_at=created_at)
-    from .protected_settings import resolve_protected
+    from .protected_settings import resolve_protected, require_mutation_policy
     effective, protected = resolve_protected(tree.root, governance, value)
+    require_mutation_policy(protected, value)
     effective = validate_operating(effective, governance)
     _new(tree, JOURNAL, journal_raw)
     # On any interruption retain the WAL. Never claim config/audit are a single rename.
@@ -972,8 +973,9 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         if budget_changes:
             fail('$.budgeting', 'Protected settings require a PR: open a PR changing only the requested OPERATING_CONFIG.yaml values; the owner merges, then fetch the default branch. The live file was not changed')
         # Complete all refusal checks before creating the lock/state directory.
-        from .protected_settings import resolve_protected
+        from .protected_settings import resolve_protected, require_mutation_policy
         effective, _report = resolve_protected(tree.root, governance, value)
+        require_mutation_policy(_report, value)
         validate_operating(effective, governance)
         _prepare_commit(tree, governance, before, value, instruction, changes, "chat")
         with _lock(tree):
@@ -1372,7 +1374,8 @@ def main(argv=None, default_root=None):
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
         from .protected_settings import repository_rules_warning
         protected = snapshot.provenance.get('protected_settings', {})
-        result.update(protected_settings=protected, repository_rules=repository_rules_warning())
+        result.update(protected_settings=protected, budget_admission=protected.get('budget_admission', True),
+                      repository_rules=repository_rules_warning())
         result['last_settings_pr'] = dict(status='UNOBSERVED', reason='Last settings PR and merger not observed; optional information only')
         result['table'] += '\nProtected settings: ' + str(protected.get('source', 'unobserved'))
         if protected.get('commit'):
@@ -1380,7 +1383,11 @@ def main(argv=None, default_root=None):
         for field in ('policy_observation', 'branch_observation', 'visibility'):
             if protected.get(field):
                 result['table'] += '\n' + protected[field]
-        result['table'] += '\nLast fetch (FETCH_HEAD): ' + str(protected.get('fetched_at') or 'UNOBSERVED')
+        result['table'] += '\nLast fetch attempt of any ref (FETCH_HEAD): ' + str(protected.get('fetch_attempt_at') or 'UNOBSERVED')
+        if protected.get('unverified'):
+            result['table'] += '\n' + protected['next_action']
+        if protected.get('budget_refusal'):
+            result['table'] += '\n' + protected['budget_refusal']
         if protected.get('differences'):
             result['table'] += '\n' + protected['next_action']
             for difference in protected['differences']:

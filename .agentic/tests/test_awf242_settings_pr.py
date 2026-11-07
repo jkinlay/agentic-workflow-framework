@@ -47,6 +47,7 @@ class SettingsPRTests(unittest.TestCase):
         self.git('add', op.CONFIG, op.GOVERNANCE)
         self.git('commit', '-qm', 'Fixture settings', '--allow-empty')
         self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+        self.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
         return self.git('rev-parse', 'HEAD')
 
     def enabled(self):

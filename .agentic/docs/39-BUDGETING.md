@@ -7,59 +7,63 @@ Missing fields preserve legacy budgeting/reviewed limits.
 
 ## Settings in chat and PRs
 
-Ask in AWF Codex chat to check budget settings. The skill runs read-only
-`workflow.py operating show` without approval. It presents accounting/enforcement
-on or off, both limits, source (fresh defaults, default branch at the reported
-commit, or legacy retained), and working-file differences. Last PR/merger is optional; report when unobserved.
+In AWF Codex chat, read-only `workflow.py operating show` needs no approval.
+Present both switches/limits, source/commit and working differences; last PR/merger
+is optional and may be unobserved.
 
-Ask in chat for a change to `budgeting.accounting_enabled`,
-`budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` or
-`budgeting.max_tokens_per_project`. Limits are signed 64-bit integers
-(1..9223372036854775807); switches are booleans. Validate with `operating validate --file PROPOSED`;
-refuse invalid combinations before preparing a PR. Accounting OFF also disables
-enforcement; a dormant limit enables nothing. No Epic overrides.
+Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
+`budgeting.max_tokens_per_ticket`, `budgeting.max_tokens_per_project`.
+Limits: integers 1..9223372036854775807; switches: booleans. No Epic overrides.
+Run `operating validate --file PROPOSED`; invalid combinations refuse before PR preparation.
 
-The skill branches from the fetched configured default branch and changes only
-requested values in `OPERATING_CONFIG.yaml`, preserving text/comments. The PR
-shows exact before/after under existing publication authority. Restricted agent
-pushes prepare branch/body for owner publication. The owner reviews and merges
-on GitHub; agents never merge. No owner terminal commands.
-Git history and the PR are the audit trail. Protected `operating set` writes
-nothing and explains the PR route; unprotected settings retain their existing flow.
+Branch from the fetched default, change requested values preserving text/comments,
+and show before/after under existing publication authority. Restricted pushes
+prepare branch/body for owner publication. The owner merges; agents never merge.
+No owner terminal commands. Git/PR history audits protected changes;
+protected `operating set` refuses without writes. Unprotected flow stays unchanged.
 
 Effective protected settings come from the locally fetched default-branch commit.
-Use `origin/HEAD`; otherwise use `github.base_branch` in the HEAD commit's
-PROJECT_CONFIG blob, never its working file. Report disagreements; origin/HEAD
-wins. Working-tree edits and PR branches have no effect on budget admission,
+Only `refs/remotes/origin/HEAD` identifies it. Configuration is never an identity
+input; `show` reports disagreement with configured `github.base_branch`.
+Working-tree edits and PR branches have no effect on budget admission,
 recovery, controller or routing, including disabling enforcement. Only merged
 and fetched changes take effect. Older checkouts read the same policy; differences
 mean update the checkout when behind, otherwise propose a PR.
 
-An absent default-branch file means no accepted policy: fresh OFF or legacy
-retained. No fetched default branch also permits fresh defaults or absent legacy
-blocks; nondefault working settings refuse with that reason. Present but empty,
-malformed, invalid or unavailable blobs refuse. Non-repositories run no Git/gh.
+An absent file means no accepted policy: fresh OFF or legacy
+retained. With configured origin but no origin/HEAD, the default is unverified.
+Show, validate-config and installation succeed with that warning; displayed working
+values are provisional. Admission tries refresh first. If still unverified,
+tracking refs or nondefault working values refuse budget work even if enforcement
+says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
+before planning/dispatch on that refusal; other commands remain available.
+The next controller cycle or `git remote set-head origin --auto` establishes identity.
+With no origin configured there is no remote policy refresh. Present but empty,
+malformed, invalid or unavailable policy blobs refuse. Non-repositories run no Git/gh.
 OFF needs no ledger, telemetry or reservations. Preserve upgrade choices/history;
 legacy policy stays until versioned adoption. No retrospective zero usage.
 
-`show` reports the commit, last FETCH_HEAD timestamp when available, and that a
-newer merge remains invisible until fetched. The controller's own checkout,
-never a worker's worktree, fetches the explicit default ref at cycle start with
-a 30-second bound and existing checkout credentials. Failure reports UNAVAILABLE,
-retains the last known policy and permits unrelated work. `show` never fetches. The skill fetches after owner merge, then shows settings.
+`show` reports commit and FETCH_HEAD time as the fetch attempt of any
+ref, never evidence of policy refresh. New merges remain invisible until fetched.
+The controller's own checkout requires repository-local remote.origin.url;
+relative paths and paths inside the checkout refuse. It discovers remote HEAD,
+fetches that branch's objects, then publishes its tracking ref and origin/HEAD
+in one guarded Git transaction. Readers refuse overlapping publication. Discovery
+and fetch each have a 30-second bound and bounded output; existing credentials
+apply. Renames are reported, whether the old branch remains or is deleted.
+Failures report the step/remedy, retain policy refs and permit unrelated work.
+`show` never fetches. The skill fetches after owner merge, then shows settings.
 
 Merge authority rests with host rules and the owner. `show` reports rules UNOBSERVED
 as a nonblocking warning; live rules are observed by publication readiness and
 adoption preflight, which report APPLIED/MISSING/UNOBSERVED. Offer the shipped
 ruleset separately. `merge_gate.trusted_owner_ids` keeps its merge-gate use.
 
-Git metadata and the native Git installation must remain outside worker write
-authority. Only that metadata requirement stops `update-ref` of remote-tracking
-refs, fetch-refspec steering, deleting refs, and repointing or emptying a linked
-worktree's `.git` gitfile, which sits inside the worktree. A linked gitfile must
-have a matching common-directory backlink; this check supplements host isolation.
-Direct pushes to an unprotected default branch or the owner's full rights can
-get around merge governance. Neither this reader nor its digest authenticates merges.
+Keep Git metadata/native Git outside worker write authority. This stops
+`update-ref`, fetch-refspec steering, ref deletion and linked `.git` gitfile
+replacement. Linked gitfiles need matching common-directory backlinks, supplementing
+host isolation. Direct default-branch pushes/owner rights bypass merge governance;
+reader digests cannot authenticate merges.
 
 ## Ledger and enrollment
 

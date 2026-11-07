@@ -42,7 +42,10 @@ Pins `epic_overrides.PROJ-123.streams.B.worker`. Matching `epic_id` selects allo
 
 Changes affect dispatch; running work retains route/hash. Surplus streams finish without packets or cancellation. A–F proves no availability.
 
-Read Jira; save IDs/paths in `operating-epics.schema.json`:
+Read Jira; save IDs/paths in `operating-epics.schema.json`.
+Unknown custom statuses need reviewed adapter mappings before planning.
+Operating and governance policy hashes bind separately; running reservations
+retain their admission-time bindings.
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating recommend --epics EPICS.json --inventory INVENTORY.json
@@ -65,32 +68,29 @@ Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
 budget adoption stays manual. Accounting OFF disables enforcement; limits enable
 neither switch. No Epic budget overrides.
 
-Ask in AWF Codex chat to check settings. The skill presents both switches,
-both limits, source (fresh defaults,
-default branch at a commit, or legacy retained), and working-file differences.
-Last PR/merger is optional information; unavailable observations never fail.
+Ask in AWF Codex chat to check switches, limits, source/commit and differences.
+Last PR/merger is optional. For changes, the skill prepares a validated PR
+preserving comments and showing before/after. The owner merges; restricted pushes
+prepare owner publication. Protected `set` refuses without writes. See the
+[chat/PR procedure](39-BUDGETING.md#settings-in-chat-and-prs).
 
-Ask for a change in chat. The skill branches from the configured default branch,
-changes only requested `budgeting.*` values preserving file text/comments, validates
-the proposed file with `operating validate --file PROPOSED` and presents exact before/after in a PR. Invalid values refuse;
-enforcement requires accounting. The owner reviews and merges on GitHub; agents
-never merge. Restricted agent pushes prepare the branch/body for owner publication.
-No terminal command is required of the owner. Protected `set` refuses
-without writing the live file and explains the PR route; unprotected set is unchanged.
-
-Effective protected settings come from `OPERATING_CONFIG.yaml` at
-`refs/remotes/origin/<github.base_branch>`, as locally known. Fetch after merge;
-the next controller load reads that commit, including older worktrees. Branch or
-working-file edits cannot enable or disable enforcement. `show` and
-`validate-config` report differences with the next step: open a PR.
-Unreadable/malformed default-branch bytes refuse budget work, never silently OFF.
-Fresh defaults without remote metadata and absent legacy blocks load without
-Git commands, gh or network; nondefault settings without a fetched ref refuse.
-Existing remote metadata must be inspected even when working bytes say OFF.
-OFF requires no usage ledger, telemetry or reservations.
+Effective protected settings come from `OPERATING_CONFIG.yaml` at the commit
+named by `refs/remotes/origin/HEAD` only. `github.base_branch` cannot select policy;
+`show` reports disagreement. Branch/working edits cannot change enforcement.
+Differences mean update an older checkout, otherwise propose a PR. At cycle start
+the controller discovers the remote default and fetches it, following renames.
+Failure retains the last policy with a step-specific remedy. FETCH_HEAD time is
+a fetch attempt, never proof of successful policy refresh.
+Absent policy there means fresh OFF or legacy retained; malformed bytes refuse.
+Missing origin/HEAD with configured origin is unverified: show, validation and
+installation work; admission first attempts refresh, then refuses if tracking
+refs exist or working protected values are nondefault. The remedy is the next
+controller cycle or `git remote set-head origin --auto`. Fresh OFF without refs
+can continue offline. Non-repositories invoke no Git/gh. OFF needs no ledger.
 
 Merge authority rests with the host's repository rules and the owner.
-`show` reports rules APPLIED, MISSING or UNOBSERVED as warnings, never a blocker.
+`show` reports rules UNOBSERVED as a warning. Adoption/publication observations
+report APPLIED, MISSING or UNOBSERVED; warnings never block local adoption.
 Git metadata must be outside worker write authority. A process able to push
 directly to an unprotected default branch, or one with the owner's full rights,
 can get around this: offer the shipped ruleset separately.

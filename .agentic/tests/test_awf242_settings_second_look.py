@@ -47,6 +47,12 @@ class SecondLookTests(unittest.TestCase):
     def write(self, value):
         (self.root / op.CONFIG).write_bytes(op._json(value))
 
+    def drop_origin_head(self):
+        from agentic.protected_settings import _default_ref
+        if _default_ref(self.root)[0]:
+            self.git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+        self.assertIsNone(_default_ref(self.root)[0])
+
     def publish(self, value):
         self.write(value)
         self.git('add', op.CONFIG)
@@ -133,11 +139,11 @@ class SecondLookTests(unittest.TestCase):
         self.assertEqual('refs/remotes/origin/main', report['protected_settings']['ref'])
         self.assertTrue(report['protected_settings']['differences'])
 
-    def test_committed_branch_fallback_and_origin_head_disagreement(self):
+    def test_missing_origin_head_is_unverified_and_working_disagreement_is_reported(self):
         self.publish(self.enabled())
         self.git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
         self.write(self.value)
-        self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+        self.assertIn('unverified', self.show()[1]['protected_settings']['branch_observation'])
         self.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
         committed = deepcopy(self.gov)
         committed['github']['base_branch'] = 'other'
@@ -146,6 +152,208 @@ class SecondLookTests(unittest.TestCase):
         self.git('commit', '-qm', 'Old configured branch')
         report = self.show()[1]['protected_settings']
         self.assertIn('disagree', report['branch_observation'])
+
+    def test_pushed_worker_off_and_absent_cannot_select_policy(self):
+        from agentic.budgeting import ControllerBudgeting
+        from agentic import ValidationError
+        self.publish(self.enabled())
+        main = self.git('rev-parse', 'origin/main')
+        self.git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+        for branch, absent in (('worker/off', False), ('worker/absent', True)):
+            with self.subTest(branch=branch):
+                self.git('checkout', '-qB', branch, 'main')
+                self.write(self.value)
+                edited = deepcopy(self.gov)
+                edited['github']['base_branch'] = branch
+                (self.root / op.GOVERNANCE).write_bytes(op._json(edited))
+                if absent:
+                    self.git('rm', '-qf', op.CONFIG)
+                self.git('add', '-A')
+                self.git('commit', '-qm', 'Unmerged worker identity')
+                self.git('push', '-q', 'origin', branch)
+                self.write(self.value)
+                snapshot = op.read_operating(self.root, edited)
+                self.assertIn('unverified', snapshot.provenance['protected_settings']['branch_observation'])
+                # Force offline admission: it must refuse even with OFF bytes.
+                with patch('agentic.protected_settings.refresh_default_policy', return_value={'status': 'UNAVAILABLE'}):
+                    with self.assertRaisesRegex(ValidationError, 'unverified'):
+                        ControllerBudgeting(None, edited, snapshot, None, worktree_roots=(self.root,))
+                self.assertEqual(main, self.git('rev-parse', 'origin/main'))
+        from agentic.protected_settings import refresh_default_policy
+        self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+        self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+
+    def test_no_origin_cannot_fetch_planted_worktree_repository(self):
+        from agentic.protected_settings import refresh_default_policy
+        self.publish(self.enabled())
+        before = self.git('rev-parse', 'origin/main')
+        self.git('config', '--remove-section', 'remote.origin')
+        planted = self.root / 'origin'
+        self.git('clone', '-q', '--bare', str(self.bare), str(planted))
+        initial = self.git('rev-list', '--max-parents=0', 'main')
+        self.git('--git-dir=' + str(planted), 'update-ref', 'refs/heads/main', initial)
+        with patch('agentic.safeio.run_bounded', side_effect=AssertionError('must not contact a remote')):
+            self.assertEqual('UNOBSERVED', refresh_default_policy(self.root)['status'])
+        self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+        self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+
+    def test_relative_and_checkout_local_origin_urls_are_refused(self):
+        from agentic.protected_settings import refresh_default_policy
+        for url in ('origin', './origin', str(self.root / 'origin'), (self.root / 'origin').as_uri()):
+            with self.subTest(url=url):
+                self.git('remote', 'set-url', 'origin', url)
+                with patch('agentic.safeio.run_bounded', side_effect=AssertionError('unsafe URL used')):
+                    result = refresh_default_policy(self.root)
+                self.assertEqual('UNAVAILABLE', result['status'])
+                self.assertEqual('remote identity', result['step'])
+
+    def test_url_rewrite_cannot_hide_checkout_local_remote(self):
+        from agentic.protected_settings import refresh_default_policy
+        self.git('config', 'url.' + str(self.root / 'origin') + '.insteadOf', str(self.bare))
+        result = refresh_default_policy(self.root)
+        self.assertEqual('UNAVAILABLE', result['status'])
+        self.assertEqual('remote identity', result['step'])
+
+    def test_hostile_refspec_and_failed_publication_keep_policy_identity(self):
+        from agentic.protected_settings import refresh_default_policy
+        from agentic.safeio import run_bounded
+        from agentic import ValidationError
+        before = self.git('rev-parse', 'origin/main')
+        self.publish(self.enabled())
+        self.git('config', '--replace-all', 'remote.origin.fetch', '+refs/heads/*:refs/heads/hostile/*')
+        self.git('update-ref', 'refs/remotes/origin/main', before)
+        original = self.git('rev-parse', 'main')
+        def fail_publish(args, **kwargs):
+            if 'update-ref' in args:
+                raise ValidationError('injected publication failure')
+            return run_bounded(args, **kwargs)
+        with patch('agentic.safeio.run_bounded', side_effect=fail_publish):
+            result = refresh_default_policy(self.root)
+        self.assertEqual('policy ref transaction', result['step'])
+        self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+        self.assertEqual('refs/remotes/origin/main', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
+        self.assertFalse((self.root / '.git/awf-default-policy.lock').exists())
+        self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+        self.assertEqual(original, self.git('rev-parse', 'main'))
+        self.assertEqual('', self.git('for-each-ref', 'refs/heads/hostile'))
+        self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+
+    def test_discovery_and_fetch_bounds_fail_without_changing_policy_refs(self):
+        from agentic.protected_settings import refresh_default_policy
+        from agentic.safeio import run_bounded
+        from agentic import ValidationError
+        before = self.git('rev-parse', 'origin/main')
+        for stage in ('default discovery', 'branch fetch'):
+            for failure in (TimeoutError, ValidationError):
+                with self.subTest(stage=stage, failure=failure):
+                    def fail(args, **kwargs):
+                        self.assertEqual(30, kwargs['timeout'])
+                        self.assertEqual(65536, kwargs['stdout_limit'])
+                        self.assertEqual(65536, kwargs['stderr_limit'])
+                        if ('--symref' in args if stage == 'default discovery' else 'fetch' in args):
+                            raise failure('timeout or output flood')
+                        return run_bounded(args, **kwargs)
+                    with patch('agentic.safeio.run_bounded', side_effect=fail):
+                        result = refresh_default_policy(self.root)
+                    self.assertEqual('UNAVAILABLE', result['status'])
+                    self.assertEqual(stage, result['step'])
+                    self.assertEqual(before, self.git('rev-parse', 'origin/main'))
+                    self.assertEqual('refs/remotes/origin/main', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
+
+    def test_readers_refuse_in_progress_ref_publication_without_writes(self):
+        self.publish(self.enabled())
+        lock = self.root / '.git/awf-default-policy.lock'
+        lock.write_text('Controller refresh')
+        inventory = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob('*') if p.is_file())
+        code, report = self.show()
+        self.assertEqual(2, code, report)
+        self.assertIn('refresh in progress', str(report))
+        self.assertEqual(inventory, sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob('*') if p.is_file()))
+
+    def test_remote_default_rename_follows_with_old_branch_kept_or_deleted(self):
+        from agentic.protected_settings import refresh_default_policy
+        for delete_old in (False, True):
+            with self.subTest(delete_old=delete_old):
+                self.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+                self.git('checkout', '-qB', 'trunk')
+                self.write(self.enabled())
+                self.git('add', op.CONFIG)
+                self.git('commit', '-qm', 'New default ON', '--allow-empty')
+                self.git('push', '-q', 'origin', 'trunk')
+                self.git('--git-dir=' + str(self.bare), 'symbolic-ref', 'HEAD', 'refs/heads/trunk')
+                if delete_old:
+                    self.git('--git-dir=' + str(self.bare), 'update-ref', '-d', 'refs/heads/main')
+                result = refresh_default_policy(self.root)
+                self.assertEqual('FETCHED', result['status'], result)
+                self.assertTrue(result['name_changed'])
+                self.assertEqual('refs/remotes/origin/trunk', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
+                self.assertTrue(self.show()[1]['configuration']['budgeting']['enforcement_enabled'])
+
+    def test_missing_head_clone_shapes_on_and_off_refresh_before_admission(self):
+        from agentic.budgeting import ControllerBudgeting
+        for enabled in (False, True):
+            self.publish(self.enabled() if enabled else self.value)
+            original = self.root
+            for shape in ('single', 'actions', 'never-fetched'):
+                with self.subTest(enabled=enabled, shape=shape):
+                    clone = self.base / (shape + str(enabled))
+                    if shape == 'single':
+                        self.git('clone', '-q', '--single-branch', '--branch', 'main', str(self.bare), str(clone))
+                    else:
+                        clone.mkdir()
+                        self.git('init', '-q', str(clone))
+                    self.root = clone
+                    try:
+                        if shape != 'single':
+                            self.git('remote', 'add', 'origin', str(self.bare))
+                            if shape == 'actions':
+                                self.git('fetch', '-q', 'origin', '+refs/heads/main:refs/remotes/origin/main')
+                        self.drop_origin_head()
+                        (clone / op.GOVERNANCE).parent.mkdir(exist_ok=True)
+                        (clone / op.GOVERNANCE).write_bytes(op._json(self.gov))
+                        self.write(self.value)
+                        snapshot = op.read_operating(clone, self.gov)
+                        self.assertIn('unverified', snapshot.provenance['protected_settings']['branch_observation'])
+                        context = ControllerBudgeting(self.base / (shape + str(enabled) + '.sqlite') if enabled else None,
+                            self.gov, snapshot, None, worktree_roots=(clone,))
+                        self.assertEqual(enabled, context.settings['enforcement_enabled'])
+                        self.assertEqual('refs/remotes/origin/main', self.git('symbolic-ref', 'refs/remotes/origin/HEAD'))
+                    finally:
+                        self.root = original
+
+    def test_offline_without_refs_keeps_fresh_off_nonbudget_work_available(self):
+        from agentic.budgeting import ControllerBudgeting
+        self.git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+        self.git('update-ref', '-d', 'refs/remotes/origin/main')
+        self.git('remote', 'set-url', 'origin', str(self.base / 'offline.git'))
+        snapshot = op.read_operating(self.root, self.gov)
+        context = ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,))
+        self.assertFalse(context.settings['accounting_enabled'])
+        self.assertEqual(0, self.show()[0])
+
+    def test_offline_with_tracking_refs_reports_failed_step_at_admission(self):
+        from agentic.budgeting import ControllerBudgeting
+        from agentic import ValidationError
+        self.drop_origin_head()
+        self.git('remote', 'set-url', 'origin', str(self.base / 'offline.git'))
+        snapshot = op.read_operating(self.root, self.gov)
+        self.assertFalse(snapshot.provenance['protected_settings']['budget_admission'])
+        with self.assertRaisesRegex(ValidationError, 'default discovery'):
+            ControllerBudgeting(None, self.gov, snapshot, None, worktree_roots=(self.root,))
+        with self.assertRaisesRegex(ValidationError, 'default discovery'):
+            self.cycle()
+        self.assertEqual(0, self.show()[0])
+
+    def test_malformed_committed_current_config_has_no_effect(self):
+        self.publish(self.enabled())
+        self.git('checkout', '-qb', 'worker/malformed')
+        (self.root / op.GOVERNANCE).write_text('{{{ malformed')
+        self.git('add', op.GOVERNANCE)
+        self.git('commit', '-qm', 'Malformed branch configuration')
+        (self.root / op.GOVERNANCE).write_bytes(op._json(self.gov))
+        code, report = self.show()
+        self.assertEqual(0, code, report)
+        self.assertTrue(report['configuration']['budgeting']['enforcement_enabled'])
 
     def test_relative_local_script_and_sandbox_writable_git_are_refused(self):
         for name in ('git.cmd', 'git.bat', 'git.ps1', 'git.exe'):
@@ -254,7 +462,8 @@ class SecondLookTests(unittest.TestCase):
         self.assertEqual(0, code, report)
         self.assertIn('update the checkout', report['protected_settings']['next_action'])
         self.assertIn('fetched', report['protected_settings']['visibility'])
-        self.assertIn('fetched_at', report['protected_settings'])
+        self.assertIn('fetch_attempt_at', report['protected_settings'])
+        self.assertIn('not a successful policy refresh', report['protected_settings']['visibility'])
 
     def test_legacy_source_empty_and_missing_blob_diagnostics(self):
         legacy = deepcopy(self.value)

@@ -274,11 +274,12 @@ def main(argv=None, default_root=ROOT):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
 		from agentic.operating import read_operating
-		from agentic.protected_settings import refresh_default_policy
+		from agentic.protected_settings import refresh_default_policy, require_budget_policy
 		if args.repository_root.resolve() != default_root.resolve():
 			raise ValidationError('Controller policy must use the controller own checkout, not a worker worktree')
 		policy_fetch = refresh_default_policy(default_root)
 		operating = read_operating(default_root, config)
+		require_budget_policy(operating, refresh=policy_fetch)
 		from agentic.store import Store
 		planning_store = Store(args.state.with_suffix('.planning.sqlite3'), config['project']['id'], worktree_roots=args.worktree_root)
 		provider = {'provider_id': 'reviewed-controller', 'implementation_sha256': args.adapter_sha256, 'verifier_implementation_sha256': args.adapter_sha256}

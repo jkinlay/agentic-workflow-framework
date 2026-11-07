@@ -192,10 +192,10 @@ class ControllerBudgeting:
         from .budget_enrollment import EnrollmentRegistry
         from .operating import validate_snapshot
         validate_snapshot(operating, governance)
-        from .protected_settings import effective_snapshot
+        from .protected_settings import budget_snapshot
         root = (Path(operating.provenance['path']).parent if operating.provenance.get('path') else
                 next(iter(worktree_roots), Path(__file__).resolve().parents[3]))
-        operating = effective_snapshot(root, governance, operating)
+        operating = budget_snapshot(root, governance, operating)
         self.governance = deepcopy(governance)
         self.operating = operating
         self.settings = resolve_settings(operating.config)

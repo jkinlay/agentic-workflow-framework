@@ -24,6 +24,7 @@ def publish_fixture_settings(case, root, governance, value):
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Fixture operating settings', '--allow-empty')
     git('update-ref', 'refs/remotes/origin/' + governance['github']['base_branch'], 'HEAD')
+    git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/' + governance['github']['base_branch'])
 
 
 def accepted_fixture_snapshot(case, root, value, governance):

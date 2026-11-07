@@ -750,6 +750,15 @@ class ConfiguredInstallerTests(unittest.TestCase):
         return install(self.source, self.dest, self.pin, configure=True, discover=False, overrides=explicit(), **kwargs)
 
     def test_adoption_into_clone_without_default_operating_file(self):
+        self.adopt_clone()
+
+    def test_adoption_into_off_clone_without_origin_head(self):
+        self.adopt_clone(policy_enabled=False)
+
+    def test_adoption_into_on_clone_without_origin_head(self):
+        self.adopt_clone(policy_enabled=True)
+
+    def adopt_clone(self, policy_enabled=None):
         import shutil
         # The minimal source fixture must include fresh defaults compatible with
         # its legacy six-lane governance, just as a full release includes defaults.
@@ -774,18 +783,32 @@ class ConfiguredInstallerTests(unittest.TestCase):
         git(seed, 'init', '-q', '-b', 'main')
         git(seed, 'init', '-q', '--bare', '-b', 'main', str(bare))
         (seed / 'README.md').write_bytes(b'Product fixture\n')
-        git(seed, 'add', 'README.md')
+        if policy_enabled is not None:
+            policy = load_yaml(operating_raw)
+            policy['budgeting'].update(accounting_enabled=policy_enabled, enforcement_enabled=policy_enabled)
+            (seed / 'OPERATING_CONFIG.yaml').write_bytes(_json(policy))
+        git(seed, 'add', '.')
         git(seed, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Product')
         git(seed, 'remote', 'add', 'origin', str(bare))
         git(seed, 'push', '-q', 'origin', 'main')
         git(seed, 'clone', '-q', str(bare), str(self.dest))
+        if policy_enabled is not None:
+            git(self.dest, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
         result = self.perform(defer_runtime=True)
         self.assertEqual('INSTALLED', result['status'])  # Runtime verification deliberately deferred.
         from agentic.operating import read_operating
         effective = read_operating(self.dest, load(self.dest / CONFIG))
-        self.assertFalse(effective.config['budgeting']['accounting_enabled'])
-        self.assertEqual('file absent at default-branch commit; no accepted policy',
-                         effective.provenance['protected_settings']['policy_observation'])
+        if policy_enabled is None:
+            self.assertFalse(effective.config['budgeting']['accounting_enabled'])
+            self.assertEqual('file absent at default-branch commit; no accepted policy',
+                             effective.provenance['protected_settings']['policy_observation'])
+        else:
+            self.assertEqual(policy_enabled, effective.config['budgeting']['accounting_enabled'])
+            self.assertIn('unverified', effective.provenance['protected_settings']['branch_observation'])
+            from agentic.operating_status import with_operating
+            report = with_operating(self.dest, load(self.dest / CONFIG), {'status': 'ACCEPTED', 'unresolved': []})
+            self.assertEqual('ACCEPTED', report['status'], report)
+            self.assertFalse(report['operating']['budget_admission'])
 
     def test_same_version_receipt_project_uuid_and_raw_config_survive_upgrade(self):
         first = self.perform()
