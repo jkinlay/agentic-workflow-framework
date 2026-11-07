@@ -808,7 +808,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         effective = read_operating(self.dest, load(self.dest / CONFIG))
         if policy_enabled is None:
             self.assertFalse(effective.config['budgeting']['accounting_enabled'])
-            self.assertEqual('accepted default-branch state: file absent at commit',
+            self.assertEqual('file absent at default-branch commit; no accepted policy',
                              effective.provenance['protected_settings']['policy_observation'])
         else:
             self.assertEqual(policy_enabled, effective.config['budgeting']['accounting_enabled'])
