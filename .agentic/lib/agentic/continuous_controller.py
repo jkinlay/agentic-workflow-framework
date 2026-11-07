@@ -3329,7 +3329,10 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 	from .budgeting import policy_repository_root
 	# Supplied snapshots and calendar values are data, never accepted policy.
 	repository_root = policy_repository_root(repository_root, operating_snapshot)
-	accepted = effective_snapshot(repository_root, config, operating_snapshot)
+	from .reporting.policy import prepared_snapshot
+	accepted = prepared_snapshot(repository_root, config, operating_snapshot)
+	if accepted is None:
+		accepted = effective_snapshot(repository_root, config, operating_snapshot)
 	require_budget_policy(accepted)
 	calendar = effective_calendar(accepted.config)
 	batch_store = ReviewBatchStore(store)
@@ -3525,10 +3528,12 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	validate_snapshot(planning_operating_snapshot, planning_config)
 	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
 	from .operating_calendar import effective_calendar
-	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots, accepted_budget_snapshot
+	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots
 	# All protected domains use the independently selected repository and refusal.
 	policy_root = Path(repository_root).resolve(strict=True)
-	accepted_operating = accepted_budget_snapshot(policy_root, planning_config, planning_operating_snapshot)
+	from .reporting.policy import ReportingPolicy
+	report_policy = ReportingPolicy(policy_root, planning_config, planning_operating_snapshot)
+	accepted_operating = report_policy.snapshot
 	planning_operating_snapshot = accepted_operating
 	calendar = effective_calendar(accepted_operating.config)
 	operating_config_sha256 = accepted_operating.operating_hash
@@ -3995,7 +4000,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			if report_settings['mode'] != 'off':
 				port = ReviewReportingPort(store, operating_root, report_binding, reporting_providers, post_provider_time,
 					observe_candidate=observe_review_candidate, delivery_budget=report_delivery_budget,
-					load_operating=lambda: accepted_budget_snapshot(policy_root, planning_config, accepted_operating).config)
+					load_operating=report_policy)
 				deliver_review_batch, observe_review_delivery = port.deliver_review_batch, port.observe_review_delivery
 	except Exception as exc:
 		# Invalid bindings and generation failure cannot fall back to a different

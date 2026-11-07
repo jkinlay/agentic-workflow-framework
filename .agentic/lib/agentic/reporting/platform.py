@@ -144,13 +144,13 @@ def build_reporting_providers(configuration, operating, binding, *, repository_r
     Construction validates everything without resolving any credential.
     """
     from ..operating import OperatingSnapshot
-    from ..budgeting import accepted_budget_snapshot, policy_repository_root
+    from ..budgeting import policy_repository_root
     require(isinstance(operating, OperatingSnapshot) and repository_root is not None
             and isinstance(governance, dict), 'REPORT_ACCEPTED_POLICY_REQUIRED')
     root = policy_repository_root(repository_root, operating)
-    operating = accepted_budget_snapshot(root, governance, operating)
-    def load_policy():
-        return accepted_budget_snapshot(root, governance, operating).config
+    from .policy import ReportingPolicy
+    load_policy = ReportingPolicy(root, governance, operating)
+    operating = load_policy.snapshot
     from .settings import effective_reporting
     from .http_transport import SlackTransport, TeamsTransport
     settings = effective_reporting(operating.config, binding=binding)

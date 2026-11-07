@@ -27,7 +27,13 @@ def load_operating_yaml(raw):
     try:
         return load_yaml(raw)
     except (ValidationError, ValueError, TypeError) as exc:
-        raise ValidationError('Invalid operating YAML: duplicate keys, malformed YAML or unsupported values; correct the file') from exc
+        kind = ('duplicate key' if str(exc).startswith('Duplicate mapping key:') else
+                'out of range' if str(exc).startswith('Integer exceeds') else
+                'wrong type' if str(exc).startswith(('Only JSON values', 'Mapping keys'))
+                else 'malformed YAML')
+        # The parser's message/cause can contain source lines and arbitrary keys.
+        # Suppress only that input-bearing chain, not unrelated programming errors.
+        raise ValidationError('OPERATING_CONFIG.yaml: Invalid operating YAML: duplicate keys, malformed YAML or unsupported values; problem: ' + kind + '; correct the file') from None
 
 
 def _nondefault(working):
@@ -49,7 +55,13 @@ def _display_domain(working, name, normalize):
     try:
         normalize(working[name])
     except ValidationError:
-        return 'REJECTED protected value; correct the proposed file before opening a PR'
+        from .operating import _schema
+        errors = _schema('operating-config', {name: working[name]})
+        detail = [item['path'] + ': ' + item['reason'] for item in errors
+                  if item['path'].startswith('$.' + name)]
+        return ('REJECTED protected value; OPERATING_CONFIG.yaml: ' +
+                ('; '.join(detail) if detail else name + ': not allowed') +
+                '; correct the proposed file before opening a PR')
     return deepcopy(working[name])
 
 

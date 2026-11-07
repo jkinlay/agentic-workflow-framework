@@ -17,12 +17,42 @@ def isolate_reporting_admission(case):
     import test_awf244_controller_wiring as calendar_fixture
     import settings_pr_fixtures
     publish = settings_pr_fixtures.accepted_fixture_snapshot
+    prepared = {}
     def snapshot(owner, root, value, governance):
         checked = calendar_fixture.validate_operating(value, governance)
-        return publish(owner, root, checked.config, governance)
+        # Reusing unchanged fixture input must not manufacture a new policy
+        # commit in a timed controller call. Independently observe its default
+        # ref; actual runtime admission remains unpatched on every cycle.
+        import subprocess
+        import shutil
+        from pathlib import Path
+        from agentic.canonical import canonical
+        from agentic.child_process import isolated_git_env
+        key = (Path(root), canonical(checked.config), canonical(governance))
+        prior = prepared.get(key)
+        def default_commit():
+            observed = subprocess.run([shutil.which('git'), '-C', str(root), 'rev-parse',
+                '--verify', 'refs/remotes/origin/HEAD'], env=isolated_git_env(),
+                capture_output=True, check=False)
+            return observed.stdout if observed.returncode == 0 else None
+        current = default_commit() if prior is not None else None
+        if prior is not None and current is not None and prior[0] == current:
+            return prior[1]
+        result = publish(owner, root, checked.config, governance)
+        prepared[key] = (default_commit(), result)
+        return result
     boundary = patch('settings_pr_fixtures.accepted_fixture_snapshot', snapshot)
     boundary.start()
     case.addCleanup(boundary.stop)
+    # The calendar harness publishes its final policy in its own repository.
+    # Its preliminary planning snapshot is synthetic input, not a policy read.
+    # Avoid reading a second, unused source clone inside runtime timing probes;
+    # production still independently admits the subsequently published policy.
+    from test_planning import operating_snapshot
+    planning = patch('test_continuous_controller_planning.fixture_operating_snapshot',
+                     lambda governance, count, **kwargs: operating_snapshot(governance, count))
+    planning.start()
+    case.addCleanup(planning.stop)
 
 
 def refresh_reporting_repository(case, root):

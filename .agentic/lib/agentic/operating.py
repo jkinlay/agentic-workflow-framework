@@ -134,11 +134,11 @@ def is_awf_source_repository(read):
 class OperatingError(ValidationError):
     def __init__(self, refusals):
         self.refusals = refusals
-        super().__init__("; ".join(item["path"] + ": " + item["reason"] for item in refusals))
+        super().__init__(CONFIG + ": " + "; ".join(item["path"] + ": " + item["reason"] for item in refusals))
 
 
 def refusal(path, reason, governance_path=None, governance_value=None):
-    return {"path": path, "reason": reason, "governance_path": governance_path,
+    return {"file": CONFIG, "path": path, "reason": reason, "governance_path": governance_path,
             "governance_value": governance_value,
             "remedy": ("Change the binding governance value through a reviewed PR to " + GOVERNANCE
                        if governance_path else "Correct the named operating input; preserve recovery evidence when present")}
@@ -283,34 +283,34 @@ def _schema(name, value, *, stream_ceiling=MAX_LANES):
             "^(?:" + "|".join(re.escape(label) for label in labels) + ")$": scoped_route
         }
     errors = sorted(Draft202012Validator(schema, format_checker=checker()).iter_errors(value), key=lambda e: str(list(e.absolute_path)))
-    result = []
-    for error in errors[:30]:
-        parts = list(error.absolute_path)
-        # jsonschema messages include rejected values. Protected settings and
-        # historical owner observations must refuse without displaying them.
-        domain = parts[0] if parts else None
-        if not parts or domain in {'reporting', 'budgeting', 'operating_calendar',
-                      'reporting_owner_observation', 'budget_owner_observation', 'calendar_owner_observation'}:
-            result.append(refusal('$.' + domain if parts else '$', 'Protected setting does not satisfy its schema'))
-        else:
-            reason = 'Operating input does not satisfy its schema'
-            if parts == ['streams'] and error.validator == 'additionalProperties':
-                # Public lane labels are safe diagnostic identifiers. Never
-                # interpolate arbitrary rejected keys or schema value messages.
-                labels = sorted(set(error.instance) & set(STREAM_LABELS)
-                                - set(schema['properties']['streams']['properties']))
-                if labels:
-                    reason = 'Stream labels outside configured ceiling: ' + ', '.join(labels)
-            result.append(refusal('$' + ''.join('.' + str(p) for p in parts),
-                                  reason))
-    return result
+    def safe_path(parts):
+        # Only literal schema properties are displayable. Pattern-matched map
+        # identities are input too, even when their spelling is syntactically valid.
+        node, path = schema, "$"
+        for part in parts:
+            if isinstance(part, int):
+                path += "[item]"
+                node = node.get("items", {})
+            elif part in node.get("properties", {}):
+                path += "." + part
+                node = node["properties"][part]
+            else:
+                matches = [child for pattern, child in node.get("patternProperties", {}).items()
+                           if re.search(pattern, str(part))]
+                if not matches:
+                    break
+                path += "[entry]"
+                node = matches[0]
+        return path
 
-
-def _safe_load_operating(raw):
-    try:
-        return load_yaml(raw)
-    except (ValidationError, ValueError, UnicodeError):
-        fail('$', 'Operating YAML is malformed or has duplicate keys; values withheld')
+    kinds = {"type": "wrong type", "additionalProperties": "Forbidden unknown key",
+             "unevaluatedProperties": "Forbidden unknown key", "propertyNames": "unknown key",
+             "required": "required field missing", "minimum": "out of range", "maximum": "out of range",
+             "minLength": "out of range", "maxLength": "out of range", "minItems": "out of range",
+             "maxItems": "out of range", "minProperties": "out of range", "maxProperties": "out of range"}
+    return [refusal(safe_path(e.absolute_path),
+                    "wrong type" if e.validator == 'const' and type(e.instance) is not type(e.validator_value)
+                    else kinds.get(e.validator, "not allowed")) for e in errors[:30]]
 
 
 @dataclass(frozen=True)
@@ -338,33 +338,23 @@ class OperatingSnapshot:
         return self.config["source"]
 
 
+def _calendar_problem_path(value):
+    from .operating_calendar import _zone
+    try:
+        _zone(value.get('timezone', 'Europe/London'))
+    except ValidationError:
+        return '$.operating_calendar.timezone'
+    return '$.operating_calendar.review_batching.presentation_time'
+
+
 def validate_operating(value, governance):
     """Validate choices against both allowlists/floors; never silently clamp."""
-    if isinstance(value, dict) and 'reporting' in value:
-        try:
-            reporting = effective_reporting(value)
-            if reporting['bindings']:
-                project = governance.get('project', {})
-                github = governance.get('github', {})
-                if (not isinstance(project, dict) or not isinstance(github, dict) or
-                        not project.get('id') or github.get('repository_id') is None):
-                    raise ValidationError('REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED')
-                effective_reporting(value, binding={'project': project['id'],
-                    'repository': str(github['repository_id'])})
-        except ValidationError as exc:
-            fail('$.reporting', str(exc))
-    if isinstance(value, dict) and 'operating_calendar' in value:
-        try:
-            effective_calendar(value)
-        except ValidationError as exc:
-            fail('$.operating_calendar', str(exc))
-    canonical(value)
-    if isinstance(value, dict) and 'budgeting' in value:
-        from .budgeting import validate_settings
-        try:
-            validate_settings(value['budgeting'])
-        except ValidationError as exc:
-            fail('$.budgeting', str(exc))
+    try:
+        canonical(value)
+    except ValidationError as exc:
+        reason = ('out of range: integer exceeds interoperable JSON range'
+                  if str(exc) == 'Integer exceeds interoperable JSON range' else 'wrong type or out of range')
+        raise OperatingError([refusal('$', reason)]) from None
     execution = governance.get("execution") if isinstance(governance, dict) else None
     if not isinstance(execution, dict) or not isinstance(execution.get("model_routing"), dict):
         fail("$", "A complete governing execution/model_routing policy is required", "$.execution", execution)
@@ -372,6 +362,41 @@ def validate_operating(value, governance):
     ceiling = capacity["effective_ceiling"]
     structural_ceiling = configured_lane_ceiling(governance)
     errors = _schema("operating-config", value, stream_ceiling=structural_ceiling)
+    # Structural refusals precede semantic consumers so malformed routes cannot
+    # become dictionary lookups, identifiers or diagnostic interpolation.
+    if not isinstance(value, dict) or not isinstance(value.get('streams'), dict):
+        raise OperatingError(errors)
+    if any(error['path'].startswith(('$.budgeting', '$.operating_calendar', '$.reporting')) for error in errors):
+        raise OperatingError(errors)
+    if isinstance(value, dict):
+        if 'reporting' in value:
+            try:
+                reporting = effective_reporting(value)
+                if reporting['bindings']:
+                    project = governance.get('project', {})
+                    github = governance.get('github', {})
+                    if (not isinstance(project, dict) or not isinstance(github, dict) or
+                            not project.get('id') or github.get('repository_id') is None):
+                        raise ValidationError('REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED')
+                    effective_reporting(value, binding={'project': project['id'],
+                        'repository': str(github['repository_id'])})
+            except ValidationError as exc:
+                codes = {'REPORT_SCOPE_BINDING_MISMATCH', 'REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED',
+                         'REPORT_BINDING_REQUIRED', 'REPORT_BINDING_DUPLICATE'}
+                code = str(exc) if str(exc) in codes else None
+                fail('$.reporting.bindings', 'not allowed' + (': ' + code if code else ''))
+        if 'operating_calendar' in value:
+            try:
+                effective_calendar(value)
+            except ValidationError:
+                fail(_calendar_problem_path(value['operating_calendar']), "not allowed")
+        if 'budgeting' in value:
+            from .budgeting import validate_settings
+            try:
+                validate_settings(value['budgeting'])
+            except ValidationError:
+                fail('$.budgeting', 'not allowed: enforcement requires accounting')
+
     configured_policy = execution["model_routing"]
     from .model_routing import EFFORTS
     try:
@@ -383,7 +408,7 @@ def validate_operating(value, governance):
         raise OperatingError(errors or [refusal("$.streams", "Streams must be an object")])
     count = streams.get("count")
     if type(count) is int and (count > ceiling or count < 1):
-        errors.append(refusal("$.streams.count", "Stream count must be 1.." + str(ceiling) + " within the effective governance ceiling; binding limits: "
+        errors.append(refusal("$.streams.count", "out of range: Stream count must be 1.." + str(ceiling) + " within the effective governance ceiling; binding limits: "
                               + ", ".join(capacity["effective_ceiling_sources"]), capacity["effective_ceiling_governance_path"], ceiling))
     reviewers = execution.get("independent_reviewers", {})
     if not isinstance(reviewers, dict) or not isinstance(execution.get("roles"), dict):
@@ -404,7 +429,7 @@ def validate_operating(value, governance):
         pairs.append(("$.simple_worker", "worker", value.get("simple_worker")))
     if isinstance(streams, dict):
         for label, entry in streams.items():
-            if label == "count" or not re.fullmatch(r"[A-Z]+", label):
+            if label not in stream_labels(structural_ceiling):
                 continue
             if isinstance(entry, dict):
                 pairs.extend(("$.streams." + label + "." + key, role, entry.get(key))
@@ -412,14 +437,14 @@ def validate_operating(value, governance):
     overrides = value.get("epic_overrides", {}) if isinstance(value, dict) else {}
     if isinstance(overrides, dict):
         for epic_id, scoped in overrides.items():
-            if not isinstance(scoped, dict):
+            if not re.fullmatch(EPIC_ID, epic_id) or len(epic_id) > 80 or not isinstance(scoped, dict):
                 continue
             prefix = "$.epic_overrides." + epic_id
             pairs.extend((prefix + "." + role, role, scoped[role]) for role in ("controller", "critic", "specialist") if role in scoped)
             scoped_streams = scoped.get("streams", {})
             if isinstance(scoped_streams, dict):
                 for label, entry in scoped_streams.items():
-                    if isinstance(entry, dict):
+                    if label in stream_labels(structural_ceiling) and isinstance(entry, dict):
                         pairs.extend((prefix + ".streams." + label + "." + key, role, entry[key])
                                      for key, role in (("worker", "worker"), ("reviewer", "critic")) if key in entry)
     order = policy["model_order"]
@@ -427,21 +452,24 @@ def validate_operating(value, governance):
         if not isinstance(pair, dict):
             continue
         model, effort = pair.get("model"), pair.get("reasoning_effort")
+        if not isinstance(model, str) or not isinstance(effort, str):
+            continue  # The schema already retained this missing/wrong-type refusal.
         if not isinstance(execution["roles"].get(role), dict):
             errors.append(refusal(path, "Role governance must declare its approved model IDs", "$.execution.roles." + role, execution["roles"].get(role)))
             continue
         for binding, allowed in (("$.execution.model_routing.role_allowed_models." + role, policy["role_allowed_models"].get(role, [])),
                                  ("$.execution.roles." + role + ".approved_model_ids", (execution["roles"].get(role) or {}).get("approved_model_ids", []))):
             if model not in allowed:
-                errors.append(refusal(path + ".model", "Model is outside the governing role allowlist", binding, allowed))
+                errors.append(refusal(path + ".model", "not allowed: Model is outside the governing role allowlist", binding, allowed))
         choices = policy["models"].get(model, {}).get("reasoning_efforts", []) if isinstance(model, str) else []
         if effort not in choices:
-            errors.append(refusal(path + ".reasoning_effort", "Unsupported model/effort pair",
-                                  "$.execution.model_routing.models." + str(model) + ".reasoning_efforts", choices))
+            errors.append(refusal(path + ".reasoning_effort", "not allowed: Unsupported model/effort pair",
+                                  ("$.execution.model_routing.models." + next(key for key in policy['models'] if key == model)
+                                   + ".reasoning_efforts") if model in policy['models'] else "$.execution.model_routing.models", choices))
         floor = policy["review_floor"]
         if role in {"critic", "specialist"} and model in order and effort in EFFORTS and (
                 order.index(model) < order.index(floor["model"]) or EFFORTS.index(effort) < EFFORTS.index(floor["reasoning_effort"])):
-            errors.append(refusal(path, "Reviewer route is below the review floor", "$.execution.model_routing.review_floor", floor))
+            errors.append(refusal(path, "not allowed: Reviewer route is below the review floor", "$.execution.model_routing.review_floor", floor))
     if errors:
         # Prefer the binding governance explanation to a duplicate structural cap error.
         bound = {e["path"] for e in errors if e["governance_path"]}
@@ -563,7 +591,7 @@ def _snapshot(tree, governance, *, working_only=False):
     raw = _read(tree, CONFIG)
     if raw is None:
         fail("$", "OPERATING_CONFIG.yaml is missing; initialize operating defaults or explicitly restore reviewed configuration")
-    working = _safe_load_operating(raw)
+    working = load_yaml(raw)
     protected = None
     if not working_only:
         from .protected_settings import resolve_protected
@@ -883,13 +911,16 @@ def _path(path, epic_id=None):
     qualified = re.fullmatch(r"epic_overrides\.([^.]+)\.(.+)", path)
     if qualified:
         if epic_id is not None:
-            fail("$." + path, "Use either a fully qualified Epic path or --epic, never both")
+            fail("$.epic_overrides", "not allowed: Use either a fully qualified Epic path or --epic, never both")
         return _path(qualified[2], qualified[1])
     if re.fullmatch(r"[A-Z]+\.(worker|reviewer)(\.pinned)?", path):
         path = "streams." + path
     if path not in {"streams.count", "controller", "critic", "specialist", "simple_worker", "simple_worker.enabled",
                     "controller.pinned", "critic.pinned", "specialist.pinned", "simple_worker.pinned"} and not re.fullmatch(r"streams\.[A-Z]+\.(worker|reviewer)(\.pinned)?", path):
-        fail("$." + path, "Unsupported operating path; use --epic with a stream/role route for an explicit Epic scope")
+        fail("$", "unknown key: Unsupported operating path; use --epic with a stream/role route for an explicit Epic scope")
+    label = re.match(r"streams\.([A-Z]+)\.", path)
+    if label and label[1] not in STREAM_LABELS:
+        fail('$.streams', 'unknown key: unsupported stream field')
     if epic_id is not None:
         if not isinstance(epic_id, str) or len(epic_id) > 80 or not re.fullmatch(EPIC_ID, epic_id):
             fail("$.epic", "Supply the exact observed Epic ID (for example PROJ-123); scope is never inferred")
@@ -1459,7 +1490,7 @@ def main(argv=None, default_root=None):
         if args.command == 'validate':
             if args.file.stat().st_size > MAX_BYTES:
                 fail('$', 'Proposed operating file exceeds its 1 MiB bound')
-            proposed = validate_operating(_safe_load_operating(args.file.read_bytes()), governance)
+            proposed = validate_operating(load_yaml(args.file.read_bytes()), governance)
             print(json_text(dict(status='ACCEPTED', proposed_configuration=proposed.config,
                                  execution_authority=False, reachability='UNOBSERVED: provider accessibility and membership are unobserved; no credentials resolved', next_action='Open a PR; the owner reviews and merges')))
             return 0
@@ -1521,5 +1552,8 @@ def main(argv=None, default_root=None):
             output = {"status": "REJECTED", "refusals": getattr(exc, "refusals", [refusal("$", str(exc))]),
                       "execution_authority": False,
                       "next_action": "Correct the named input or reconcile the pinned operating transaction; governance changes require a reviewed PR"}
+        output['file'] = args.file.name if args.command == 'validate' else CONFIG
+        for item in output.get('refusals', []):
+            item['file'] = output['file']
         print(json_text(output))
         return 2

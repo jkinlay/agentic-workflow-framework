@@ -1,6 +1,7 @@
 """Second-look regressions through operating entry points and local bare remotes."""
 from copy import deepcopy
 from contextlib import redirect_stdout
+import importlib.util
 import io
 import json
 import os
@@ -10,9 +11,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 import source_only
-from agentic import operating as op
+from agentic import ValidationError, operating as op
+from agentic.budgeting import ControllerBudgeting
+from agentic.canonical import sha256
+from agentic.providers.github_review_host import HostDriver
+from agentic.protected_settings import refresh_default_policy
+from agentic.safeio import Tree
+import test_awf242_pre_a3 as hosts
 from test_operating import governance
 
 class SecondLookTests(unittest.TestCase):
@@ -557,7 +565,10 @@ class SecondLookTests(unittest.TestCase):
     def test_legacy_event_chain_survives_merged_block(self):
         legacy = deepcopy(self.value)
         legacy.pop('budgeting')
-        legacy.pop('operating_calendar', None)  # Published 1.9.5 has neither domain.
+        from agentic.protected_settings import PROTECTED_DOMAINS
+        for name, _, _ in PROTECTED_DOMAINS:
+            if name != 'budgeting':
+                legacy.pop(name, None)  # Published 1.9.5 predates these domains.
         self.publish(legacy)
         import sys
         import tarfile
@@ -734,3 +745,207 @@ class NativeGitACLTests(unittest.TestCase):
                 self.assertTrue(admission._worker_writable(binary))
             finally:
                 kernel.LocalFree(descriptor)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SENTINEL = 'REJECTED_CONTENT_SENTINEL'
+
+
+class RoundThreeTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = SecondLookTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.root = self.fixture.root
+        self.gov = self.fixture.gov
+        self.value = self.fixture.value
+        self.addCleanup(patch.stopall)
+        patch.dict(os.environ, {'AWF_STATE_HOME': str(self.fixture.base / 'host-state')}).start()
+
+    def damage(self, kind):
+        path = self.root / op.CONFIG
+        if kind == 'deleted':
+            path.unlink()
+        elif kind == 'renamed':
+            path.rename(self.root / 'proposed.yaml')
+        else:
+            path.write_text('' if kind == 'empty' else 'budgeting: [' + SENTINEL,
+                            encoding='utf-8')
+
+    def publish(self, enabled):
+        value = deepcopy(self.value)
+        value['budgeting'].update(accounting_enabled=enabled, enforcement_enabled=enabled)
+        self.fixture.publish(value)
+        self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+        return value
+
+    def review_config(self):
+        prompts = self.root / '.agentic/review-loop'
+        shutil.copytree(ROOT / '.agentic/review-loop', prompts, dirs_exist_ok=True)
+        contract = self.fixture.base / 'contract.txt'
+        contract.write_text('Fixture scope', encoding='utf-8')
+        return dict(worker_checkout=str(self.fixture.base / 'worker'),
+            critic_checkout=str(self.fixture.base / 'critic'),
+            state_dir=str(self.fixture.base / 'review-state'), repository='fixture/project',
+            head_branch='codex/EX-10-fixture', allowed_paths=['fixture.txt'],
+            contract_path=str(contract), contract_sha256=sha256(contract.read_bytes()),
+            models={'critic': 'gpt-6.1-sol'}, reasoning_effort={'critic': 'high'},
+            budget_stream='A', agent_timeout_seconds=10)
+
+    def test_review_host_never_launches_after_working_file_loss(self):
+        config = self.review_config()
+        for enabled in (True, False):
+            for kind in ('deleted', 'renamed', 'empty', 'malformed'):
+                with self.subTest(enabled=enabled, kind=kind):
+                    self.publish(enabled)
+                    before = self.fixture.git('rev-parse', 'origin/main')
+                    if enabled:
+                        driver = hosts.ReviewCli.from_project(config, self.root)
+                        with self.assertRaisesRegex(ValidationError, 'observed host token limits'):
+                            driver.agent('critic', dict(repository_id=101, pr=7, head='a'*40, base='b'*40,
+                                     head_ref='codex/EX-10-fixture', base_ref='main'),
+                                [], str(uuid.uuid4()), ['fixture.txt'])
+                    self.damage(kind)
+                    # Construct exactly as the entry point does. A stand-in must
+                    # never receive an unenrolled launch after local file loss.
+                    with patch.object(hosts.ReviewCli, 'run', side_effect=AssertionError('critic launched')) as run:
+                        with self.assertRaises(ValidationError):
+                            hosts.ReviewCli.from_project(config, self.root)
+                    run.assert_not_called()
+                    self.assertEqual(before, self.fixture.git('rev-parse', 'origin/main'))
+                    (self.root / 'proposed.yaml').unlink(missing_ok=True)
+
+    def test_controller_cli_refuses_damaged_working_files_before_cycle(self):
+        spec = importlib.util.spec_from_file_location('round3_controller',
+            ROOT / '.agentic/scripts/continuous_controller.py')
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        args = ['--state', str(self.fixture.base / 'controller.sqlite3'), '--stream', 'A',
+            '--worktree-root', str(self.root), 'cycle', '--inventory-binding', 'unused.json',
+            '--repository-root', str(self.root), '--repository-head-sha', 'a'*40,
+            '--repository-tree-sha', 'b'*40, '--now', '2026-11-07T12:00:00Z']
+        for enabled in (True, False):
+            for kind in ('deleted', 'renamed', 'empty', 'malformed'):
+                with self.subTest(enabled=enabled, kind=kind):
+                    self.publish(enabled)
+                    self.damage(kind)
+                    with patch.object(cli, 'load', return_value=self.gov), \
+                         patch.object(cli, '_load_reviewed_adapters', return_value={}), \
+                         patch.object(cli, '_require_adapters', return_value={}), \
+                         patch.object(cli, 'production_controller_cycle') as cycle:
+                        with self.assertRaises(ValidationError):
+                            cli.main(args, default_root=self.root)
+                    cycle.assert_not_called()
+                    (self.root / 'proposed.yaml').unlink(missing_ok=True)
+
+    def test_unreadable_working_file_refuses_read_and_review_construction(self):
+        config = self.review_config()
+        read = Tree.read
+        def unreadable(tree, name, **kwargs):
+            if name == op.CONFIG:
+                raise PermissionError('Fixture read denied')
+            return read(tree, name, **kwargs)
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                self.publish(enabled)
+                with patch.object(Tree, 'read', unreadable):
+                    with self.assertRaises(PermissionError):
+                        op.read_operating(self.root, self.gov)
+                    with self.assertRaises(PermissionError):
+                        HostDriver.from_project(config, self.root)
+
+    def test_missing_working_file_uses_accepted_absence_for_legacy(self):
+        config = self.review_config()
+        for absent_file in (True, False):
+            with self.subTest(absent_file=absent_file):
+                legacy = deepcopy(self.value)
+                legacy.pop('budgeting')
+                self.fixture.publish(legacy)
+                if absent_file:
+                    self.fixture.git('rm', '-q', op.CONFIG)
+                    self.fixture.git('commit', '-qm', 'Owner removes operating file')
+                    self.fixture.git('push', '-q', 'origin', 'main')
+                self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+                (self.root / op.CONFIG).unlink(missing_ok=True)
+                driver = HostDriver.from_project(config, self.root)
+                self.assertIsNone(driver.budgeting)
+                self.assertFalse(driver.state.exists())
+
+    def test_supplied_snapshot_and_reference_adapter_resolve_policy_despite_file_loss(self):
+        import runpy
+        import test_reference_controller_adapter as reference
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                accepted = self.publish(enabled)
+                (self.root / op.CONFIG).unlink()
+                supplied = deepcopy(self.value)
+                supplied['budgeting'].update(accounting_enabled=not enabled, enforcement_enabled=not enabled)
+                snapshot = op.validate_operating(supplied, self.gov)
+                context = ControllerBudgeting(self.fixture.base / 'direct.sqlite3', self.gov,
+                    snapshot, None, repository_root=self.root, worktree_roots=(self.root,))
+                self.assertEqual(accepted['budgeting'], context.settings)
+                adapter_root = self.fixture.base / ('adapter-' + str(enabled))
+                adapter_root.mkdir()
+                config = reference._base_config(adapter_root)
+                adapters = runpy.run_path(str(ROOT / '.agentic/adapters/reference_controller_adapter.py'))['build_adapters'](
+                    dict(config, _runner=reference.FakeRunner(), _clock=reference.FakeClock()))
+                context = adapters['dispatch_ticket'].configure_budgeting(
+                    path=self.fixture.base / 'adapter.sqlite3', governance=self.gov, operating=snapshot,
+                    repository_root=self.root, worktree_roots=(self.root,))
+                self.assertEqual(accepted['budgeting'], context.settings)
+
+    def cli(self, *arguments):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = op.main(['--root', str(self.root), *arguments])
+        self.assertNotIn(SENTINEL, output.getvalue())
+        if code == 2:
+            self.assertIn(json.loads(output.getvalue())['file'], ('proposed.yaml', op.CONFIG))
+        return code, output.getvalue()
+
+    def test_validate_never_echoes_duplicate_keys_or_malformed_yaml(self):
+        path = self.fixture.base / 'proposed.yaml'
+        for raw in (f'{SENTINEL}: 1\n{SENTINEL}: 2\n', f'budgeting: [{SENTINEL}'):
+            for json_flag in ([], ['--json']):
+                with self.subTest(raw_kind='duplicate' if ': 1' in raw else 'malformed', json=json_flag):
+                    path.write_text(raw, encoding='utf-8')
+                    code, output = self.cli('validate', '--file', str(path), *json_flag)
+                    self.assertEqual(2, code)
+                    self.assertIn('YAML', output)
+
+    def test_show_never_echoes_rejected_default_branch_yaml_after_refresh(self):
+        for raw in (f'{SENTINEL}: 1\n{SENTINEL}: 2\n', f'budgeting: [{SENTINEL}'):
+            for json_flag in ([], ['--json']):
+                with self.subTest(json=json_flag, duplicate=': 1' in raw):
+                    (self.root / op.CONFIG).write_text(raw, encoding='utf-8')
+                    self.fixture.git('add', op.CONFIG)
+                    self.fixture.git('commit', '-qm', 'Rejected fixture', '--allow-empty')
+                    self.fixture.git('push', '-q', 'origin', 'main')
+                    self.fixture.write(self.value)
+                    self.assertEqual('FETCHED', refresh_default_policy(self.root)['status'])
+                    code, output = self.cli('show', *json_flag)
+                    self.assertEqual(2, code)
+                    self.assertIn('YAML', output)
+
+    def test_show_redacts_invalid_working_budget_differences(self):
+        self.publish(True)
+        working = deepcopy(self.value)
+        working['budgeting']['accounting_enabled'] = SENTINEL
+        self.fixture.write(working)
+        for json_flag in ([], ['--json']):
+            with self.subTest(json=json_flag):
+                code, output = self.cli('show', *json_flag)
+                self.assertEqual(0, code)
+                self.assertIn('REJECTED protected value', output)
+                if json_flag:
+                    self.assertTrue(json.loads(output)['configuration']['budgeting']['enforcement_enabled'])
+
+    def test_documented_limit_is_the_interoperable_json_maximum(self):
+        value = deepcopy(self.value)
+        value['budgeting']['max_tokens_per_ticket'] = 2**53 - 1
+        op.validate_operating(value, self.gov)
+        self.assertIn('1..9007199254740991',
+            (ROOT / '.agentic/docs/39-BUDGETING.md').read_text(encoding='utf-8'))
+        value['budgeting']['max_tokens_per_ticket'] += 1
+        with self.assertRaisesRegex(ValidationError, 'interoperable JSON range'):
+            op.validate_operating(value, self.gov)

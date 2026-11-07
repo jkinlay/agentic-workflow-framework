@@ -322,4 +322,9 @@ def main(argv=None, default_root=ROOT):
 	print(json.dumps(output, indent=2))
 	return 0
 if __name__ == '__main__':
-	raise SystemExit(main())
+	try:
+		raise SystemExit(main())
+	except ValidationError as exc:
+		print(json.dumps({'status': 'REJECTED', 'reason': str(exc),
+		                  'execution_authority': False}), file=sys.stderr)
+		raise SystemExit(2)

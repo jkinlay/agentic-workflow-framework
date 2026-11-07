@@ -13,8 +13,7 @@ have no effect; merge/fetch applies next load. Unverified/malformed policy refus
 UNOBSERVED. Missing/duplicate/foreign bindings refuse before credentials.
 Never retarget corrections/reset attempts.
 
-configure_reporting requires an explicit trusted repository root and rejects
-disagreeing snapshot provenance. The public provider factory requires a validated
+configure_reporting requires a trusted repository root matching snapshot provenance. The public provider factory requires a validated
 snapshot, governance and that root; it rederives accepted policy itself.
 Reviewed context/sender/channel IDs remain required.
 env:VARIABLE resolves references; owners manage permissions/rotation.
@@ -69,10 +68,10 @@ excluding storage/host time. Cancellation fences
 reservation/transport entry and bounds worker joins. Noncooperative workers
 are durably recorded REPORT_DESTINATION_WORKER_NOT_QUIESCENT with revoked tokens.
 
-Verification/payload/HTTP-budget admission precedes reservation. Reporting mode
-and destination/credential/revision bindings reload from accepted policy before
-each POST, including retained review ports and retries. OFF or changed bindings
-refuse without resetting delivery state. Candidate/window checks also repeat; remaining HTTP
+Verification/payload/HTTP-budget admission precedes reservation. Validate immutable
+policy before delivery; recheck default-ref identity and mode/destination/credential/revision
+bindings before every POST, including retained review ports/retries. Changed/unverified
+identity forces full derivation. OFF/changed bindings refuse without resetting state. Candidate/window checks also repeat; remaining HTTP
 time is recomputed afterward. API acceptance, including Graph 201/chatMessage, proves
 no landing. Timeouts require reconciliation; terminal rejection/absence permits one
 retry, two sends maximum across restart/concurrency. Missing listings remain UNKNOWN.

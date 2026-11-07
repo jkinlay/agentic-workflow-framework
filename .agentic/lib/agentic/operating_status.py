@@ -4,9 +4,9 @@ from __future__ import annotations
 from copy import deepcopy
 
 from . import ValidationError
-from .canonical import load_yaml
+from .protected_settings import load_operating_yaml as load_yaml
 from .operating import (inspect_operating, is_awf_source_repository,
-                        operating_ceiling, tree_reader, validate_operating, _safe_load_operating)
+                        operating_ceiling, tree_reader, validate_operating, refusal)
 from .safeio import Tree
 from .budgeting import resolve_settings
 from .reporting.settings import effective_reporting
@@ -22,7 +22,7 @@ def with_operating(root, governance, report):
         source_template = is_awf_source_repository(tree_reader(tree))
         if source_template:
             try:
-                value = validate_operating(_safe_load_operating(tree.read('OPERATING_CONFIG.yaml')), governance)
+                value = validate_operating(load_yaml(tree.read('OPERATING_CONFIG.yaml')), governance)
                 from .protected_settings import resolve_protected
                 # Source diagnostics need no mutable snapshot/audit metadata.
                 # Validate the resolved policy through the same source validator.
@@ -36,7 +36,7 @@ def with_operating(root, governance, report):
             except (ValidationError, OSError, ValueError) as exc:
                 operating = {'status': 'REJECTED', 'hash': None, 'source': None, 'streams': None,
                              'last_change_id': None, 'diagnostic': str(exc),
-                             'refusals': getattr(exc, 'refusals', [{'path': '$', 'reason': 'Restore the verified source operating template'}])}
+                             'refusals': getattr(exc, 'refusals', [refusal('$', str(exc) if isinstance(exc, ValidationError) else 'Restore the verified source operating template')])}
         else:
             operating = inspect_operating(root, governance)
     result['operating'] = operating

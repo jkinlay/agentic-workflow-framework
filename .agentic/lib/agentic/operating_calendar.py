@@ -34,11 +34,11 @@ def _zone(name):
     _require(isinstance(name, str) and bool(name), "Calendar timezone must be an IANA name")
     try:
         return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+    except (ZoneInfoNotFoundError, ValueError, OSError):
         raise ValidationError(
             "Calendar IANA timezone is unavailable or invalid; provision IANA tzdata "
             "for this Python runtime or correct operating_calendar.timezone; scheduling refused"
-        ) from exc
+        ) from None
 
 
 def _clock(value, path):

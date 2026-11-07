@@ -257,3 +257,75 @@ class PolicyReviewTests(unittest.TestCase):
         require_budget_policy(snapshot)
         self.assertEqual('off', snapshot.config['reporting']['mode'])
         self.assertFalse(snapshot.provenance['protected_settings']['unverified'])
+
+    def test_deleted_working_file_cannot_replace_accepted_reporting_with_defaults(self):
+        from agentic.reporting.platform import build_reporting_providers
+        from agentic.budgeting import accepted_budget_snapshot
+        case = self.fixture()
+        value = case.enabled()
+        destination = dict(case.bindings()[1], destination='CAPPROVED')
+        value['reporting'] = dict(mode='slack', bindings=[destination])
+        case.publish(value)
+        proposed = replace(op.validate_operating(case.value, case.gov),
+            _provenance_json=canonical({'path': str(case.root / op.CONFIG)}))
+        (case.root / op.CONFIG).unlink()
+        snapshot = accepted_budget_snapshot(case.root, case.gov, proposed)
+        self.assertEqual(value['reporting'], snapshot.config['reporting'])
+        binding = {k: destination[k] for k in ('project', 'repository', 'scope_revision')}
+        with patch('agentic.reporting.platform.environment_secret', side_effect=AssertionError('secret forbidden')):
+            providers = build_reporting_providers({'slack': dict(context='workspace', sender='sender')},
+                proposed, binding, repository_root=case.root, governance=case.gov)
+        self.assertEqual({'slack'}, set(providers))
+        self.assertEqual(destination, providers['slack'].binding)
+
+    def test_prepared_policy_rechecks_default_identity_and_reloads_on_change(self):
+        from agentic.reporting.policy import ReportingPolicy
+        import agentic.reporting.policy as policy
+        case = self.fixture()
+        snapshot = op.read_operating(case.root, case.gov)
+        with patch.object(policy, 'accepted_budget_snapshot', wraps=policy.accepted_budget_snapshot) as derive:
+            current = ReportingPolicy(case.root, case.gov, snapshot)
+            self.assertEqual('off', current()['reporting']['mode'])
+            self.assertEqual('off', current()['reporting']['mode'])
+            repeated = ReportingPolicy(case.root, case.gov, snapshot)
+            self.assertEqual(current.snapshot.config, repeated.snapshot.config)
+            shared = ReportingPolicy(case.root, case.gov, current.snapshot)
+            self.assertEqual(current.snapshot.config, shared.snapshot.config)
+            self.assertEqual(1, derive.call_count)
+            copied = replace(current.snapshot)
+            ReportingPolicy(case.root, case.gov, copied)
+            self.assertEqual(2, derive.call_count)
+            case.publish(case.enabled())
+            self.assertEqual('both', current()['reporting']['mode'])
+            self.assertEqual(3, derive.call_count)
+            case.git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+            case.git('remote', 'add', 'origin', str(case.root.parent / 'missing-policy-remote.git'))
+            with self.assertRaises(ValidationError):
+                current()
+            self.assertEqual(4, derive.call_count)
+
+    def test_review_stage_reuses_admitted_policy_but_observes_new_calendar(self):
+        from agentic.continuous_controller import ContinuousControllerStore, production_review_batching_cycle
+        from agentic.reporting.policy import ReportingPolicy
+        from agentic.review_batching import ReviewBatchStore
+        from test_awf244_controller_wiring import candidate
+        import agentic.protected_settings as protected
+        case = self.fixture()
+        snapshot = ReportingPolicy(case.root, case.gov, op.read_operating(case.root, case.gov)).snapshot
+        store = ContinuousControllerStore(case.root / 'review.sqlite', ['A'])
+        now = '2026-11-10T07:30:00Z'
+        ReviewBatchStore(store).enqueue(candidate(), now, {})
+        def observe():
+            return production_review_batching_cycle(store,
+                calendar={'review_batching': {'presentation_time': '09:00'}},
+                repository_root=case.root, config=case.gov, operating_snapshot=snapshot,
+                binding=dict(project_id=case.gov['project']['id'], repository_id='101', scope_sha256='a'*64),
+                clock=lambda: now)
+        with patch.object(protected, 'effective_snapshot', wraps=protected.effective_snapshot) as derive:
+            self.assertFalse(observe()['status']['intents'][0]['held'])
+            self.assertEqual(0, derive.call_count)
+            changed = deepcopy(case.value)
+            changed['operating_calendar']['review_batching']['presentation_time'] = '08:00'
+            case.publish(changed)
+            self.assertTrue(observe()['status']['intents'][0]['held'])
+            self.assertEqual(1, derive.call_count)

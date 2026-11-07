@@ -622,10 +622,11 @@ def migrate_step(bundle, previous, current, target):
     receipt = _target_receipt(bundle.receipt, current, target)
     provenance = _target_provenance(bundle.provenance, current, target)
     if bundle.operating_config is not None:
+        from .protected_settings import load_operating_yaml
         try:
-            load_yaml(bundle.operating_config)
-        except Exception as exc:
-            raise ValidationError("Migration is not deterministic. Owner question: which valid OPERATING_CONFIG.yaml should be retained?") from exc
+            load_operating_yaml(bundle.operating_config)
+        except ValidationError as exc:
+            raise ValidationError("Migration is not deterministic. Owner question: which valid OPERATING_CONFIG.yaml should be retained? " + str(exc)) from exc
     state = _migrate_state(bundle.state, previous, current)
     return MigrationBundle(config, bundle.operating_config, receipt, provenance,
                            MappingProxyType(state))
