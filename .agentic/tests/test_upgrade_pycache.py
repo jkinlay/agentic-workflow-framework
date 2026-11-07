@@ -29,6 +29,7 @@ DEPENDENCIES = (
     "referencing",
     "rpds-py",
     "typing-extensions",
+    "tzdata",
 )
 OBSERVED_MODULES = ("__init__", "adoption_config", "installer", "upgrade")
 
