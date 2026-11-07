@@ -3143,7 +3143,7 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (deepcopy(tickets), repository_binding, observation)
 
-def production_review_batching_cycle(store, *, calendar, binding, clock,
+def production_review_batching_cycle(store, *, calendar, binding, clock, load_calendar=None,
         observe_owner_ready=None, observe_review_candidate=None,
         deliver_review_batch=None, observe_review_delivery=None, candidate_limit=None):
 	"""Routine presentation only, through trusted injected ports; never transport.
@@ -3277,9 +3277,29 @@ def production_review_batching_cycle(store, *, calendar, binding, clock,
 					# cursor admits the next candidate on a subsequent cycle.
 					break
 				continue
-			# No intervening provider calls; the delivery port enforces idempotency.
-			batch_store.begin_delivery(batch['batch_id'], send_at)
-			receipt = deliver_review_batch(deepcopy(payload))
+			transport_payload = deepcopy(payload)
+			cancel_uninvoked = batch_store.begin_delivery(batch['batch_id'], send_at)
+			# The fence commit can cross cutoff or evidence expiry. Only this live
+			# serialized path knows transport was never invoked; restart stays UNKNOWN.
+			try:
+				if load_calendar is not None:
+					calendar = load_calendar()
+				send_at = clock()
+				window = next_review_presentation(send_at, calendar)
+				_require(utc_instant(window['presentation_at']) == utc_instant(send_at)
+					and all(utc_instant(item['expires_at']) > utc_instant(send_at) for item in checked.values()),
+					'Post-fence presentation window closed or evidence expired')
+			except Exception as exc:
+				cancel_uninvoked(send_at)
+				excluded.update(m['intent_id'] for m in batch['members'])
+				failed('review_recheck', exc)
+				if candidate_limit is not None:
+					# Same bounded destination deadline as the failure path above.
+					break
+				continue
+			# An unavoidable small gap remains from this last calendar/clock check to provider
+			# receipt (later confirmations, scheduling/transport latency); no atomic remote clock.
+			receipt = deliver_review_batch(transport_payload)
 			if receipt is not None:
 				reconcile(payload, receipt)
 			else:
@@ -3844,8 +3864,12 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	try:
 		if port is not None:
 			report_delivery_budget.remaining()
+		def load_calendar():
+			from .operating import CONFIG, read_operating
+			root = Path(planning_operating_snapshot.provenance.get('path', Path(repository_root) / CONFIG)).parent
+			return effective_calendar(read_operating(root, planning_config).config)
 		review_batching = production_review_batching_cycle(store, calendar=calendar,
-			binding=inventory_binding, clock=post_provider_time,
+			binding=inventory_binding, clock=post_provider_time, load_calendar=load_calendar,
 			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
 			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery,
 			candidate_limit=MAX_REVIEW_CANDIDATES if report_settings['mode'] != 'off' else None)

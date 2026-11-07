@@ -5,6 +5,7 @@ These fixtures exercise local wiring, never live delivery or qualification.
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -83,6 +84,9 @@ class ControllerBatchingTests(unittest.TestCase):
         root = Path(self.temp.name) / 'project'
         root.mkdir(exist_ok=True)
         snapshot = confirmed_fixture_snapshot(self, root, config, inputs['planning_config'])
+        (root / '.agentic').mkdir(exist_ok=True)
+        (root / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(inputs['planning_config']), encoding='utf-8')
+        (root / 'OPERATING_CONFIG.yaml').write_text(json.dumps(config), encoding='utf-8')
         inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
         def dispatch(payload):
             self.events.append(payload['lifecycle_stage'])
