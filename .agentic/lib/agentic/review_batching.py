@@ -187,6 +187,7 @@ class ReviewBatchStore:
             return result
         has_detail = db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_detail_v1'").fetchone()
         evidence = ReviewBatchStore._attempt_windows(db, calendar)
+        terminal = ReviewBatchStore._reporting_failure_intents(db)
         for row in db.execute("SELECT * FROM review_presentation_intent_v1 ORDER BY intent_id"):
             detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (row['intent_id'],)).fetchone() if has_detail else None
             try:
@@ -196,7 +197,9 @@ class ReviewBatchStore:
             except ValidationError:
                 schedule, held = None, True
             retry = detail['retry_at'] if detail else None
-            if row['state'] == 'EXHAUSTED':
+            if row['intent_id'] in terminal:
+                retry = None
+            elif row['state'] == 'EXHAUSTED':
                 try:
                     window = _window(now, calendar)
                     if schedule is None:
@@ -241,18 +244,29 @@ class ReviewBatchStore:
         """
         identities = set()
         with self.controller.connection() as db:
-            for row in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='FAILED'"):
-                payload = self._payload(row)
-                receipt = loads(row['receipt_json'])
-                _require(receipt['batch_id'] == payload['batch_id'] and
-                         receipt['payload_sha256'] == payload['payload_sha256'] and
-                         receipt['status'] == 'FAILED' and receipt['reason'] == 'REPORT_DELIVERY_EXHAUSTED',
-                         'Reporting failure receipt differs from its retained batch')
-                report = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
-                                    ('review-' + payload['batch_id'],)).fetchone()
-                _require(report is not None and loads(report[0]).get('review_batch') == payload,
-                         'Reporting failure has no matching retained report')
-                identities.update(m['intent_id'] for m in payload['members'])
+            identities = self._reporting_failure_intents(db)
+        return identities
+
+    @staticmethod
+    def _reporting_failure_intents(db):
+        """Use the durable handoff/receipt, never calendar or diagnostic text.
+
+        Ordinary review exhaustion has a per-window allowance. Reporting owns
+        a lifetime per-report/platform ceiling; recovery cannot replace it.
+        """
+        identities = set()
+        for row in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='FAILED'"):
+            payload = ReviewBatchStore._payload(row)
+            receipt = loads(row['receipt_json'])
+            _require(receipt['batch_id'] == payload['batch_id'] and
+                     receipt['payload_sha256'] == payload['payload_sha256'] and
+                     receipt['status'] == 'FAILED' and receipt['reason'] == 'REPORT_DELIVERY_EXHAUSTED',
+                     'Reporting failure receipt differs from its retained batch')
+            report = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                                ('review-' + payload['batch_id'],)).fetchone()
+            _require(report is not None and loads(report[0]).get('review_batch') == payload,
+                     'Reporting failure has no matching retained report')
+            identities.update(m['intent_id'] for m in payload['members'])
         return identities
 
     def enqueue(self, candidate, ready_at, calendar):
@@ -273,6 +287,8 @@ class ReviewBatchStore:
             existing = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?",
                                   (identity,)).fetchone()
             if existing is not None:
+                if identity in self._reporting_failure_intents(db):
+                    return None
                 if existing["state"] == "PENDING":
                     return identity
                 allowance_used = self._window_count(existing, _window(changed_at, calendar)['opening'],
@@ -361,8 +377,9 @@ class ReviewBatchStore:
             # fail/roll back claim. A broken observer or unresolved schedule
             # must not monopolize the bounded first-candidate slot on restart.
             with self.controller.transaction() as db:
+                terminal = self._reporting_failure_intents(db)
                 ids = [r[0] for r in db.execute("SELECT intent_id FROM review_presentation_intent_v1 WHERE state IN ('PENDING','EXHAUSTED') ORDER BY intent_id")
-                       if r[0] not in exclude]
+                       if r[0] not in exclude and r[0] not in terminal]
                 key = 'report-review-claim-cursor'
                 row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
                 cursor = row[0] if row else ''
@@ -373,6 +390,7 @@ class ReviewBatchStore:
         with self.controller.transaction() as db:
             presentation_window = _window(now, calendar)
             evidence = self._attempt_windows(db, calendar)
+            terminal = self._reporting_failure_intents(db)
             fenced = set()
             # Raw unresolved sends fence their PR until terminal readback.
             # REPORTING has transferred responsibility to the exact retained
@@ -390,7 +408,8 @@ class ReviewBatchStore:
                 if max_members is not None and index >= max_members:
                     break
                 candidate = _candidate(loads(row["candidate_json"]))
-                if row['intent_id'] in exclude or (candidate['repository_id'], candidate['pull_request']) in fenced:
+                if (row['intent_id'] in terminal or row['intent_id'] in exclude or
+                        (candidate['repository_id'], candidate['pull_request']) in fenced):
                     continue
                 count = self._window_count(row, presentation_window['opening'], evidence)
                 if count >= 2:
@@ -465,6 +484,9 @@ class ReviewBatchStore:
             row = db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?", (batch_id,)).fetchone()
             _require(row is not None and row["state"] in {"CLAIMED", "REPORTING"}, "Review batch is not claimed")
             payload = self._payload(row)
+            terminal = self._reporting_failure_intents(db)
+            _require(not any(m['intent_id'] in terminal for m in payload['members']),
+                     'REPORT_REVIEW_INTENT_TERMINAL')
             _require(current >= utc_instant(payload["prepared_at"]) and
                      utc_instant(window["presentation_at"]) == current and
                      window["calendar_sha256"] == payload["calendar_sha256"],
@@ -617,7 +639,11 @@ class ReviewBatchStore:
                      'Review delivery already started or has no unsent proof')
             _require(db.execute("SELECT 1 FROM review_presentation_check_v1 WHERE batch_id=?", (batch_id,)).fetchone(),
                      'Review delivery requires a pre-send recheck')
-            self._start(db, self._payload(row), now)
+            payload = self._payload(row)
+            terminal = self._reporting_failure_intents(db)
+            _require(not any(m['intent_id'] in terminal for m in payload['members']),
+                     'REPORT_REVIEW_INTENT_TERMINAL')
+            self._start(db, payload, now)
 
         def cancel_uninvoked(cancelled_at):
             # This continuation is exclusively for a post-fence check refusal,

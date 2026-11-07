@@ -402,10 +402,11 @@ def propose(root, governance, snapshot, instruction, intent, changes):
                   instruction=instruction, intent=deepcopy(intent), changes=deepcopy(changes),
                   created_at=created,
                   expires_at=(timestamp(created) + timedelta(seconds=TTL_SECONDS)).isoformat().replace('+00:00', 'Z'))
-    from .operating import _put
+    from .operating import _put, validate_operating
     produced = snapshot.config
     for change in changes:
         _put(produced, change['path'], deepcopy(change['after']))
+    validate_operating(produced, governance)
     record['protected_settings'] = protected_settings(produced)
     record['protected_values'] = {name: deepcopy(produced[name]) for name, _ in PROTECTED_DOMAINS if name in produced}
     store = ProposalStore.for_project(root, governance['project']['id'])
@@ -430,6 +431,7 @@ def confirmation_delta(store, governance, produced):
             if latest is not None:
                 row = db.execute('SELECT record FROM owner_proposals WHERE digest=?', (latest[0],)).fetchone()
                 prior = loads(row[0])['protected_values']
+    _validate_protected_values(prior)
     changes = []
     for name, _ in PROTECTED_DOMAINS:
         for key in sorted(set(prior.get(name, {})) | set(produced.get(name, {}))):
@@ -437,6 +439,37 @@ def confirmation_delta(store, governance, produced):
             if before != after:
                 changes.append(dict(path=name + '.' + key, before=before, after=after))
     return dict(confirmation_prior_digest=latest[0] if latest else None, confirmation_changes=changes)
+
+
+def _validate_protected_values(value):
+    """Refuse unsafe retained choices before displaying them; never rewrite history."""
+    from .budgeting import validate_settings
+    require(isinstance(value, dict), 'OWNER_PROPOSAL_SETTINGS_INVALID')
+    if 'budgeting' in value:
+        validate_settings(value['budgeting'])
+    effective_calendar(value)
+    effective_reporting(value)
+
+
+def _validate_proposal_display(record):
+    values = record['protected_values']
+    _validate_protected_values(values)
+    from .operating import _put
+    # Legacy records may have unsafe priors even when the resulting settings
+    # are safe. Validate both displayed sides without migrating stored bytes.
+    for changes in (record['changes'], record['confirmation_changes']):
+        for side in ('before', 'after'):
+            prior = deepcopy(values)
+            for change in changes:
+                if change['path'].split('.')[0] in dict(PROTECTED_DOMAINS):
+                    _put(prior, change['path'], change[side])
+                    if change[side] is None:
+                        cursor = prior
+                        keys = change['path'].split('.')
+                        for key in keys[:-1]:
+                            cursor = cursor[key]
+                        del cursor[keys[-1]]
+            _validate_protected_values(prior)
 
 
 def _windows_console(stream):
@@ -696,6 +729,7 @@ def confirm(root, governance, digest, *, stdin=None, stdout=None):
     store = ProposalStore.for_project(root, governance['project']['id'])
     record = store.load(digest)
     _check_time(record)
+    _validate_proposal_display(record)
     require(record['binding'] == accepted_binding(root, governance, admission_snapshot(root, governance)),
             'PROPOSAL_BINDING_MISMATCH: project, repository, governance or prior settings differ')
     identity = observe_github_owner(governance, root)

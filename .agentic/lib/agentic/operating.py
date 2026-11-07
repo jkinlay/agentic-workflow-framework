@@ -253,7 +253,18 @@ def _schema(name, value, *, stream_ceiling=MAX_LANES):
             "^(?:" + "|".join(re.escape(label) for label in labels) + ")$": scoped_route
         }
     errors = sorted(Draft202012Validator(schema, format_checker=checker()).iter_errors(value), key=lambda e: str(list(e.absolute_path)))
-    return [refusal("$" + "".join("." + str(p) for p in e.absolute_path), e.message) for e in errors[:30]]
+    result = []
+    for error in errors[:30]:
+        parts = list(error.absolute_path)
+        # jsonschema messages include rejected values. Protected settings and
+        # historical owner observations must refuse without displaying them.
+        domain = parts[0] if parts else None
+        if domain in {'reporting', 'budgeting', 'operating_calendar',
+                      'reporting_owner_observation', 'budget_owner_observation', 'calendar_owner_observation'}:
+            result.append(refusal('$.' + domain, 'Protected setting does not satisfy its schema'))
+        else:
+            result.append(refusal('$' + ''.join('.' + str(p) for p in parts), error.message))
+    return result
 
 
 @dataclass(frozen=True)
@@ -500,7 +511,17 @@ def _snapshot(tree, governance, *, owner_repair=False):
     raw = _read(tree, CONFIG)
     if raw is None:
         fail("$", "OPERATING_CONFIG.yaml is missing; initialize operating defaults or explicitly restore reviewed configuration")
-    snapshot = validate_operating(load_yaml(raw), governance)
+    try:
+        snapshot = validate_operating(load_yaml(raw), governance)
+    except OperatingError as exc:
+        if any(r['path'] == '$.reporting' and r['reason'].startswith('REPORT_BINDING_SHAPE_INVALID:')
+               for r in exc.refusals):
+            from .owner_admission import OwnerConfirmationRequired
+            raise OwnerConfirmationRequired(
+                'OWNER_SETTINGS_REFUSED: reporting settings have invalid field shapes; '
+                'restore the last audited operating bytes, then request fresh owner confirmation; '
+                'configuration values withheld and retained history unchanged') from None
+        raise
     from .owner_admission import validate_protected_settings
     if not owner_repair:
         validate_protected_settings(tree.root, governance, snapshot.config)
@@ -572,7 +593,7 @@ def inspect_operating(project_root, governance):
                 "last_change_id": None, "refusals": [], "diagnostic": diagnostic,
                 **operating_ceiling(governance)}
     except (ValidationError, ValueError) as exc:
-        return {"status": "REJECTED", "hash": None, "source": None, "streams": None, "last_change_id": None,
+        return {"status": getattr(exc, 'status', 'REJECTED'), "hash": None, "source": None, "streams": None, "last_change_id": None,
                 "refusals": getattr(exc, "refusals", [refusal("$", str(exc) if isinstance(exc, ValidationError) else
                     "Operating configuration could not be read; restore the project file and correct filesystem/runtime access")]),
                 "diagnostic": None if isinstance(exc, ValidationError) else str(exc)}
@@ -1579,6 +1600,16 @@ def main(argv=None, default_root=None, *, budget_registry=None, calendar_registr
     except PendingOwnerConfirmation as exc:
         print(json_text(exc.report))
         return 3
+    except OwnerConfirmationRequired as exc:
+        # A malformed externally edited binding cannot be displayed for repair.
+        # Preserve the existing read-only hand-edit diagnosis without exposing
+        # an unvalidated configuration or changing any retained bytes.
+        if args.command == 'show':
+            output = dict(status=exc.status, diagnostic=str(exc), execution_authority=False)
+            print(json_text(output) if args.json else exc.status + ': ' + str(exc))
+            return 0
+        print(json_text(dict(status='REJECTED', refusals=[refusal('$', str(exc))], execution_authority=False)))
+        return 2
     except (ValidationError, OSError, ValueError, UnicodeError) as exc:
         if isinstance(exc, OSError):
             from .activation import access_diagnostic

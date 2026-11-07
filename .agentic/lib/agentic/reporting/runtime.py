@@ -674,14 +674,22 @@ class ReviewReportingPort:
                 'Evidence': describe(payload), 'Owner action': 'Review the exact candidates; merge remains an owner decision'},
             coverage={'gates': 'CURRENT_AT_PRESENTATION', 'accounting': 'UNAVAILABLE'})
         body = prepare_body('final-human-review', data)
+        from ..review_batching import ReviewBatchStore
         with self.store.transaction() as db:
+            terminal = ReviewBatchStore._reporting_failure_intents(db)
+            if any(m['intent_id'] in terminal for m in payload['members']):
+                prior = db.execute('SELECT state FROM review_presentation_outbox_v1 WHERE batch_id=?',
+                                   (payload['batch_id'],)).fetchone()
+                # An idempotent call for the original failed batch is harmless.
+                # A stale replacement claim from an older runtime cannot take
+                # ownership or create another report/platform allowance.
+                require(prior is not None and prior[0] == 'FAILED', 'REPORT_REVIEW_INTENT_TERMINAL')
             existing = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (self._id(payload),)).fetchone()
             if existing:
                 require(loads(existing[0]).get('review_batch') == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
             else:
                 _retain(db, self._id(payload), 'final-human-review', body, self.binding, destinations, now,
                         extra={'review_batch': deepcopy(payload)}, senders=self.providers.values())
-        from ..review_batching import ReviewBatchStore
         ReviewBatchStore(self.store).track_reporting(payload['batch_id'])
 
     def deliver_review_batch(self, payload):
