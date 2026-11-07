@@ -2,13 +2,13 @@
 
 Run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`; paste in adoption PR; offer **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
-Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings, budgets, allowlists, floors, escalation and shared critic route; legacy per-stream routes accepted. Review changes; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
+Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings/allowlists/floors/routes; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
-Show/status/`operating.state` share `effective_ceiling`: minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. Disabled brokers do not bind; heavy/GPU limits are not stream counts; configuration cannot prove host/reviewer availability.
+Show/status/`operating.state` share `effective_ceiling`: minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, enabled `execution.host_broker.max_workers`.
 
-`effective_ceiling_governance_path`: binding path, project wins ties; null means only omitted six-lane default binds. `effective_ceiling_sources`: ties. Planning checks slots/ownership/spawn.
+`effective_ceiling_governance_path`: binding path; project wins ties; null: omitted default binds. `effective_ceiling_sources`: ties.
 
-Bound cycles accept trusted host callback capacities via `produce_planning_resource_observation`. Planning reauthenticates closed evidence/capacities; missing authentication, self-digests and operator values fail closed. Observed capacity: 0–1000; zero selects none (`safe_lane_count == 0`).
+Bound cycles reauthenticate `produce_planning_resource_observation`; capacity 0–1000; zero: `safe_lane_count == 0`.
 
 Schemas accept `streams.count` 1–12 with A–L routes and optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
@@ -22,35 +22,23 @@ Schemas accept `streams.count` 1–12 with A–L routes and optional project `ex
 | `host-lease` | `heavy_slots`, `gpu_slots` | 0–1000 |
 | `host-lease`, `run-attestation` | `resources_held[].slots` | 1–1000 |
 
-`OPERATING_CONFIG.yaml`: unprotected choices. Defaults: twelve `gpt-6.1-sol`/high workers; shared critic, controller, specialists `gpt-6.1-sol`/high; `gpt-6-luna`/high simple work. Preserve routes; invalid choices block CONFIGURED.
+`OPERATING_CONFIG.yaml`: choices. Defaults: twelve `gpt-6.1-sol`/high workers; shared critic, controller, specialists `gpt-6.1-sol`/high; `gpt-6-luna`/high simple work. Preserve routes; invalid choices block CONFIGURED.
 
-`independent_reviewers.allocation: shared_critic` uses slot. Legacy `one_per_stream` and fixed counts bind. `--propose-operating-capacity` proposes ceiling change.
+`independent_reviewers.allocation: shared_critic` uses one slot; legacy counts bind. `--propose-operating-capacity` proposes ceilings.
 
-Owner overrides require authenticated `fixed`/`max` decisions and audited history. sealed safe capacity: `fixed` selects count or refuses unsafe; `max` limits recommendations. Neither raises governance/observed capacity. Replans await round boundaries; assignments retain reservations. Triggers persist; durable plans constrain admission at start.
-
-Authenticated readers trim/casefold and collapse whitespace/ASCII-hyphen runs: `To Do`/`To-Do` → `ready`, `In Progress`/`In-Progress` → `in_progress`, `Done` → `closed`. Vocabulary: ready `open`/`ready`/`backlog`; active `in_flight`/`working`/`dispatched`/`in_progress`; closed `closed`/`done`/`merged`/`cancelled`/`canceled`. Unknown names grant neither admission nor closed dependencies; reviewed mappings required. Graph callers supply canonical vocabulary.
-
-Translate, echo and execute without reconfirmation:
+Audited authenticated `fixed` selects safe counts; `max` limits recommendations. Neither raises sealed safe capacity. Replan at round boundaries; preserve reservations/triggers.
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
 ```
 
-Show results; escalation pins; floors prevail.
-
-Refusals exit 2 with path, value, remedy; never clamp or partially apply mixed changes.
-
 Above-cap upgrades refuse; use `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Use three streams" --set streams.count=3` to repair four under cap three; surplus drains.
-
-Epic: echo ID:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Stream B's worker on Sol/high for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-5.6-sol/high
 ```
 
-Pins `epic_overrides.PROJ-123.streams.B.worker`. Matching `epic_id` selects scoped routes after global and before agent/ticket overrides, within allowlists/floors. Never broaden Epic identity. `--epic` supports no scoped counts/simple switches/recommendations. Unpinning requires a route.
-
-`--set epic_overrides.PROJ-123.streams.B.worker=...` works without `--epic`; repairs atomic.
+Pins `epic_overrides.PROJ-123.streams.B.worker`. Matching `epic_id` selects allowed scoped routes. `--epic` excludes counts/simple switches/recommendations. Unpinning requires a route.
 
 Changes affect dispatch; running work retains route/hash. Surplus streams finish without packets or cancellation. A–F proves no availability.
 
@@ -60,32 +48,62 @@ Read Jira; save IDs/paths in `operating-epics.schema.json`:
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating recommend --epics EPICS.json --inventory INVENTORY.json
 ```
 
-Inventory: `data/`, `data/**`, `data/*` are equivalent prefixes; other globs refuse by Epic/value. Unknown/overlapping scopes group work; refusals name Epic/value. Risk/specialist triggers raise routes; no Epics: keep/custom.
+Inventory: `data/`, `data/**`, `data/*` match prefixes; other globs refuse. Unknown/overlapping scopes group work; risk/specialists raise routes.
 
-Table; wait for adoption/keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Recompute stale hashes.
-
-Defaults unpinned; unchanged pins share footnote. Stored/named rows and replay checks remain. Adoption preserves pins/floors; custom instructions change them.
-
-Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`; audits retain instructions, hashes, changes and source. Bootstrap creates/appends/replaces AWF `.gitignore` block, preserving outside bytes; `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries and `added_lines`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
-
-Publish flushed journal/audit writes without replacement. Preserve conflicts/interrupted staging files outside audit chain within bounds. Recovery requires independently inspected journal SHA-256; unsupported primitives fail closed.
-
-Dispatch/reservation/settlement retain separate `operating_hash`/`policy_hash`; settlement uses its reservation hash. Absent/null historical hashes remain unobserved. Host authenticates instructions/routes; records establish consistency.
+Await adoption/keep; apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Recompute stale hashes.
 
 
-Generated `OPERATING_CONFIG.yaml` includes `budgeting`:
-accounting/enforcement `false`; dormant ticket limit `4000000`; lifetime-project
-limit `1000000000`. Older missing fields retain legacy budgeting. Limits enable
-neither switch; accounting OFF disables enforcement. Epic overrides cannot alter
-budget settings.
 
-Supported paths: `budgeting.accounting_enabled`,
-`budgeting.enforcement_enabled`, `budgeting.max_tokens_per_ticket` and
-`budgeting.max_tokens_per_project`. Mutations require trusted host registry
-injected into `set_operating` or `operating.main`; the standalone CLI lacks an
-authenticated owner observer and refuses them. Consume it under the operating
-lock after validation. Settings and owner observation share a journal and
-append-only audit, including pinned recovery after interruption. Show/status
-display persisted effective settings.
-See [budgeting](39-BUDGETING.md) for host integration, UNKNOWN attribution,
-canonical totals, preserved reservations and versioned upgrade decision.
+Commit `.agentic-state/operating/changes/` with `OPERATING_CONFIG.yaml`. Bootstrap preserves outside `.gitignore` bytes; `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries and `added_lines`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
+
+Publish flushed journal/audit without replacement; preserve conflicts. Inspect/pin journal SHA-256.
+Budgets require latest consumed confirmation's registered transaction. Unconfirmed/superseded journals
+refuse without writes. Register before publication: published transactions recover once;
+otherwise `set`/`confirm` afresh. Preserve evidence.
+
+
+Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
+4000000/ticket, 1000000000/project lifetime. Missing fields retain legacy policy;
+budget adoption stays manual. Accounting OFF disables enforcement; limits enable
+neither switch. No Epic budget overrides.
+
+Paths: `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
+`budgeting.max_tokens_per_ticket`, `budgeting.max_tokens_per_project`.
+`set` validates/stores a protected proposal, prints changes/digest, exits 3
+`PENDING_OWNER_CONFIRMATION`; settings stay unchanged. Initialize;
+protected `--initialize` refuses. Owner runs `workflow.py operating confirm
+--digest D` within 15 minutes in their terminal; type eight digest characters.
+Skills never confirm; verify with `show`.
+
+GitHub User ID matches `merge_gate.trusted_owner_ids`;
+empty refuses `OWNER_GATE_NOT_CONFIGURED`, naming `.agentic/PROJECT_CONFIG.yaml`.
+Token variables, foreign GH_HOST, noninteractive streams refuse. Windows requires
+console handles; NUL/pipes/files refuse. Resolve `gh` once; scripts and effective
+sandbox-group/capability modification/replacement grants refuse; owner/admin
+rights do not. Without sandbox principals this check passes. Audit retains
+path/SHA-256. Repository/governance/prior-settings/exact-change mismatches
+and replay refuse. Consume/journal/audit/readback under lock.
+
+Confirmations use protected OS-account storage: Windows token SID/HKLM ProfileList
+ProfileImagePath plus AppData/Local; POSIX password-database home.
+AWF_STATE_HOME, LOCALAPPDATA, USERPROFILE and HOME cannot select it.
+Binding hashes the Git common directory read from metadata;
+project ID only cross-checks. Editable IDs cannot hide confirmations.
+Worktrees share confirmations; other clones confirm afresh.
+Ignore Git environment overrides; gitfiles require registered backlinks outside sandbox write authority.
+Deny worker Git-metadata writes/replacement; binding protects clone identity,
+not against processes able to replace that boundary. Without Git, protected changes refuse.
+
+Loads never inspect Git/gh executables. Without a store/confirmation, fresh
+OFF/default dormant limits and absent legacy blocks load; nondefaults refuse budget admission. Protected changes
+report storage/Git refusals. OFF needs no usage ledger.
+Older checkouts/mismatches remain readable: show/validation report settings differing
+from this clone's latest confirmation; unrelated changes work, budget work refuses.
+Proposals report pending. Budgeting choices/confirmation repair admission
+without deleting audit. The screen/digest bind every difference from confirmed values,
+including external edits; display complete settings for no-change reconfirmation.
+Audit/journals prove nothing; transactions bind governance/prior settings.
+
+`trusted_owner_ids` comes from the working tree: a process that can edit it still
+needs a terminal and that login. A process with the owner's full rights can still
+get around this. See [budgeting](39-BUDGETING.md).

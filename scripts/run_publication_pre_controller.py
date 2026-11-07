@@ -30,9 +30,11 @@ import test_model_routing  # noqa: E402
 import test_publish_release  # noqa: E402
 import test_release_trust  # noqa: E402
 import test_skill_distribution_ordering  # noqa: E402
+import test_awf243_review_regressions  # noqa: E402
 
 
 INVENTORY_MODULES = {
+    ".agentic/tests/test_awf243_review_regressions.py": test_awf243_review_regressions,
     ".agentic/tests/test_bootstrap_configuration.py": test_bootstrap_configuration,
     ".agentic/tests/test_continuous_controller.py": test_continuous_controller,
     ".agentic/tests/test_five_slot_acceleration.py": test_five_slot_acceleration,

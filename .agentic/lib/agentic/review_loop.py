@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 import json
+import re
 from pathlib import Path
 import sqlite3
 import uuid
@@ -72,6 +73,30 @@ def first_draft_config_policy_hash(config):
     encoded = json.dumps(policy, ensure_ascii=False, sort_keys=True,
                          separators=(',', ':')).encode('utf-8')
     return sha256(encoded)
+
+
+def legacy_run_quota(config, budgeting=None):
+    """Only legacy hosts enforce the old total-run quota, including recovery."""
+    budgeting = budgeting if budgeting is not None else config.get('_budgeting_context')
+    if budgeting is None:
+        return True
+    from .budgeting import ControllerBudgeting
+    require(isinstance(budgeting, ControllerBudgeting), 'Review budgeting requires a validated controller context')
+    return 'legacy_behavior' in budgeting.settings
+
+
+def operational_recovery(config, project_id):
+    """Use the same canonical runtime/worker/critic exclusions on resume."""
+    from .budget_enrollment import OperationalRegistry
+    from .budgeting import protected_state_roots
+    context = config.get('_budgeting_context')
+    if context is not None:
+        legacy_run_quota(config)  # Validate the trusted context before use.
+        require(context.governance['project']['id'] == project_id, 'Operational recovery project differs')
+        return context.operations
+    roots = protected_state_roots(*(config[key] for key in (
+        '_runtime_root', 'worker_checkout', 'critic_checkout') if key in config))
+    return OperationalRegistry.for_project(project_id, roots)
 
 
 def require_first_draft_config_binding(state, config, *, allow_bound_pr=False):
@@ -230,7 +255,7 @@ def enroll(store, config, snapshot, *, first_draft_run=False):
     initial = deepcopy(config.get('initial_findings', []))
     validate_review({'candidate':snapshot,'verdict':'BLOCKED','reviewed_files':[],
         'findings':initial,'summary':'Operator-adopted initial finding ledger'}, snapshot, [], [])
-    require(not first_draft_run or config['max_agent_runs'] >= 1,
+    require(not legacy_run_quota(config) or not first_draft_run or config['max_agent_runs'] >= 1,
             'First-draft run cannot be charged against a zero agent-run budget')
     state = {'key': config['key'], 'owner': config['repository'] + ':' + snapshot['head_ref'],
         'config_hash': config['config_hash'], 'phase': 'REVIEW', 'candidate': snapshot,
@@ -247,11 +272,12 @@ def reserve_first_draft(store, config, *, git_controls=None):
     """Persist each worker charge and the original Git-control baseline.
 
     Recovery retains one reservation UUID, but every invocation that can call
-    the worker consumes another ``max_agent_runs`` unit before that call.  A
+    the worker records another attempt and, in legacy mode, a run-quota unit. A
     retained worker output or a prepared publication resumes without replaying
     or charging the worker.
     """
-    require(config['max_agent_runs'] >= 1, 'First-draft run cannot be charged against a zero agent-run budget')
+    require(not legacy_run_quota(config) or config['max_agent_runs'] >= 1,
+            'First-draft run cannot be charged against a zero agent-run budget')
     repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
     key = f"{repository_id}:0"
     state = {'key': key, 'owner': config['repository'] + ':' + config.get('head_branch', 'first-draft'),
@@ -281,7 +307,7 @@ def reserve_first_draft(store, config, *, git_controls=None):
         require(state['phase'] == 'FIRST_DRAFT' and state.get('resume_ready') is True,
                 'First-draft reservation already exists; reconcile it with resume before retrying')
         require_first_draft_config_binding(state, config)
-        require(1 <= state['agent_runs'] <= config['max_agent_runs']
+        require(1 <= state['agent_runs'] and (not legacy_run_quota(config) or state['agent_runs'] <= config['max_agent_runs'])
                 and state['cycles'] == 0 and state.get('inflight'),
                 'First-draft reservation accounting is invalid')
         require(state.get('first_draft_git_controls') == git_controls,
@@ -289,7 +315,7 @@ def reserve_first_draft(store, config, *, git_controls=None):
         worker_replay = (state.get('first_draft_publication') is None
                          and state.get('first_draft_worker_receipt') is None)
         if worker_replay:
-            require(state['agent_runs'] < config['max_agent_runs'],
+            require(not legacy_run_quota(config) or state['agent_runs'] < config['max_agent_runs'],
                     'First-draft worker retry exceeds max_agent_runs')
             state['agent_runs'] += 1
             state['inflight']['attempt'] = state['agent_runs']
@@ -486,7 +512,7 @@ def resume_first_draft(store, config, reconciled_run, *, publication_status=None
         require_first_draft_config_binding(state, config)
         require(state.get('inflight') and reconciled_run == state['inflight']['id'],
                 'Inspect and reconcile the retained first-draft run before resuming')
-        require(1 <= state['agent_runs'] <= config['max_agent_runs']
+        require(1 <= state['agent_runs'] and (not legacy_run_quota(config) or state['agent_runs'] <= config['max_agent_runs'])
                 and state['cycles'] == 0,
                 'First-draft retry accounting is invalid')
         publication = state.get('first_draft_publication')
@@ -496,6 +522,49 @@ def resume_first_draft(store, config, reconciled_run, *, publication_status=None
         else:
             require(publication_status in {'PUSHED', 'RETRY_PUSH'},
                     'Prepared first-draft publication requires exact remote-ref reconciliation')
+        # Recover the exact host attempt, not just the loop reservation UUID:
+        # retries retain that UUID but have distinct operational bindings.
+        from .safeio import Tree
+        from .budget_enrollment import validate_binding
+        run = store.directory / 'runs' / reconciled_run
+        if run.is_dir():
+            with Tree(run) as tree:
+                attempt = None
+                if tree.inspect('first-draft-attempt.json') is not None:
+                    attempt = json.loads(tree.read('first-draft-attempt.json', maximum=16384))
+                else:
+                    # Earlier hosts used the loop's durably charged attempt
+                    # number, without a pointer. Recover only that exact path.
+                    number = state['inflight'].get('attempt', 1)
+                    require(type(number) is int and 1 <= number < 1000,
+                            'Operational first-draft attempt number is invalid')
+                    directory = '.' if number == 1 else f'attempt-{number}'
+                    relative = '' if number == 1 else directory + '/'
+                    if tree.inspect(relative + 'execution-outcome.json') is not None:
+                        outcome = json.loads(tree.read(relative + 'execution-outcome.json', maximum=16384))
+                        if outcome.get('binding'):
+                            attempt = dict(controller_run_id=reconciled_run, directory=directory,
+                                           binding=outcome['binding'])
+                if attempt is not None:
+                    require(attempt['controller_run_id'] == reconciled_run,
+                            'Operational first-draft resume differs from retained reservation')
+                    directory = attempt['directory']
+                    require(directory == '.' or (re.fullmatch(r'attempt-[1-9][0-9]{0,2}', directory)
+                            and int(directory.split('-')[1]) >= 2),
+                            'Operational first-draft attempt path is invalid')
+                    outcome_path = 'execution-outcome.json' if directory == '.' else directory + '/execution-outcome.json'
+                    outcome = json.loads(tree.read(outcome_path, maximum=16384))
+                    binding = validate_binding(attempt['binding'])
+                    intent_path = 'budget-intent.json' if directory == '.' else directory + '/budget-intent.json'
+                    intent = json.loads(tree.read(intent_path, maximum=16384))
+                    expected = reconciled_run if directory == '.' else str(uuid.uuid5(
+                        uuid.NAMESPACE_URL, 'awf:review-execution:' + reconciled_run + ':' + directory))
+                    require(binding['run_id'] == expected and binding['dispatch_id'] == expected
+                            and binding['session_id'] == expected and binding['role'] == 'worker'
+                            and outcome['binding'] == binding and intent == binding,
+                            'Operational first-draft resume differs from retained execution')
+                    if not outcome['success']:
+                        operational_recovery(config, binding['project_id']).resolve(binding)
         state.update(phase='FIRST_DRAFT', resume_ready=True,
                      first_draft_publication_status=publication_status,
                      reason='Operator reconciled first-draft local and provider state; one retry is ready',
@@ -524,6 +593,18 @@ def resume(store, config, snapshot, reconciled_run, disposition=None):
         if disposition is None:
             require(not at_cap and not str(state.get('reason', '')).startswith((CAP_REASON, PARKED_REASON)),
                     'Amendment budget exhausted; resume cannot reset it. Record an owner cap disposition (MERGE_WITH_NOTES, PARK, RESCOPE or EXTEND_ONE_CYCLE)')
+            if state['inflight']:
+                from .safeio import Tree
+                from .budget_enrollment import validate_binding
+                run = store.directory / 'runs' / expected
+                if run.is_dir():
+                    with Tree(run) as tree:
+                        if tree.inspect('execution-outcome.json') is not None:
+                            outcome = json.loads(tree.read('execution-outcome.json', maximum=16384))
+                            if not outcome['success'] and outcome.get('binding'):
+                                binding = validate_binding(outcome['binding'])
+                                require(binding['run_id'] == expected, 'Operational resume differs from inflight execution')
+                                operational_recovery(config, binding['project_id']).resolve(binding)
             state.update(phase='REVIEW', candidate=snapshot, inflight=None, last_review=None,
                          wait_ticks=0, reason='Operator reconciled and resumed', generation=state['generation'] + 1)
             store.save(state)
@@ -673,7 +754,7 @@ def tick(store, config, driver):
                 require(isinstance(budgeting, ControllerBudgeting), 'Review budgeting requires a validated controller context')
             # Explicit modes use lifetime token admission when enforced. Legacy
             # total-run quotas are not recovery limits or amendment caps.
-            if budgeting is None or 'legacy_behavior' in budgeting.settings:
+            if legacy_run_quota(config, budgeting):
                 require(state['agent_runs'] < config['max_agent_runs'], 'Total agent-run budget exhausted')
             if phase == 'AMEND' and state['cycles'] >= cap_limit(config, state):
                 # Cap reached is a state, not a dead end: present the open findings

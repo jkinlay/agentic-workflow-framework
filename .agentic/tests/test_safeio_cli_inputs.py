@@ -94,10 +94,11 @@ class CliInputTests(unittest.TestCase):
         with ExitStack() as stack:
             for name, value in (("verify_installed", Mock(return_value="digest")),
                                 ("load_config", Mock(return_value=config)),
-                                ("HostDriver", Mock(return_value=driver)),
                                 ("LoopStore", Mock(return_value=store)),
                                 ("resume", consumer)):
                 stack.enter_context(patch.object(review_cli, name, value))
+            stack.enter_context(patch.object(review_cli.HostDriver, "from_project",
+                                             return_value=driver))
             stack.enter_context(redirect_stdout(out))
             stack.enter_context(redirect_stderr(err))
             code = review_cli.main(args)

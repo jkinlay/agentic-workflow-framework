@@ -6,9 +6,8 @@ from copy import deepcopy
 from . import ValidationError
 from .canonical import load_yaml
 from .operating import (inspect_operating, is_awf_source_repository,
-                        operating_ceiling, tree_reader, validate_operating)
+                        operating_ceiling, tree_reader, validate_operating, budgeting_diagnostic)
 from .safeio import Tree
-from .budgeting import resolve_settings
 
 
 def with_operating(root, governance, report):
@@ -22,8 +21,7 @@ def with_operating(root, governance, report):
         if source_template:
             try:
                 value = validate_operating(load_yaml(tree.read('OPERATING_CONFIG.yaml')), governance)
-                operating = {'status': 'ACCEPTED', 'hash': value.operating_hash, 'source': value.source,
-                             'budgeting': resolve_settings(value.config),
+                operating = {**budgeting_diagnostic(root, governance, value.config), 'hash': value.operating_hash, 'source': value.source,
                              'streams': value.count, 'last_change_id': None, 'refusals': [],
                              'provenance': 'source_template', **operating_ceiling(governance)}
             except (ValidationError, OSError, ValueError) as exc:
@@ -37,7 +35,7 @@ def with_operating(root, governance, report):
         # Filesystem observation failed; the already accepted project policy is
         # not thereby invalid. Activation reports this independent blocker.
         result['operating_observation'] = 'UNOBSERVED'
-    elif operating['status'] != 'ACCEPTED':
+    elif operating['status'] not in ('ACCEPTED', 'OWNER_CONFIRMATION_REQUIRED', 'PENDING_OWNER_CONFIRMATION'):
         result['status'] = 'REJECTED'
         for item in operating['refusals']:
             result['unresolved'].append({

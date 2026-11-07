@@ -116,6 +116,11 @@ def subprocess_budget_outcome(binding, selected, *, session_id, actual_tokens, s
     return result
 
 
+def protected_state_roots(*roots):
+    """Canonical exclusions including the loaded runtime, for every state store."""
+    return tuple(dict.fromkeys(Path(root).resolve() for root in (*roots, Path(__file__).resolve().parents[3])))
+
+
 def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_roots=(), previous_paths=()):
     """One host-owned lifetime ledger per project, independent of checkouts.
 
@@ -124,7 +129,7 @@ def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_r
     Resolution is read-only, and unavailable state never blocks OFF work.
     """
     from . import ValidationError
-    from .path_containment import is_within
+    from .path_containment import is_within, is_reparse_point
     explicit = path is not None
     try:
         require(text_id(project_id), 'Budget project identity is unavailable')
@@ -141,10 +146,10 @@ def project_ledger_path(project_id, *, path=None, accounting_enabled, worktree_r
         candidate = Path(path)
         require(candidate.is_absolute(), 'Project ledger path must be absolute')
         for parent in (candidate, *candidate.parents):
-            require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
+            require(not is_reparse_point(parent),
                     'Project ledger path traverses a link/reparse point')
         candidate = candidate.resolve()
-        require(not any(is_within(candidate, Path(root).resolve()) for root in worktree_roots),
+        require(not any(is_within(candidate, root) for root in protected_state_roots(*worktree_roots)),
                 'Project ledger must be outside worker and reviewer worktrees')
         require(explicit or not any(Path(prior).exists() and Path(prior).resolve() != candidate
                                     for prior in previous_paths),
@@ -188,15 +193,56 @@ class ControllerBudgeting:
         from .budget_enrollment import EnrollmentRegistry
         from .operating import validate_snapshot
         validate_snapshot(operating, governance)
+        from .owner_admission import validate_protected_settings
+        root = (Path(operating.provenance['path']).parent if operating.provenance.get('path') else
+                next(iter(worktree_roots), Path(__file__).resolve().parents[3]))
+        validate_protected_settings(root, governance, operating.config)
         self.governance = deepcopy(governance)
         self.operating = operating
         self.settings = resolve_settings(operating.config)
         self.host = host
         self.legacy_store = legacy_store
+        self.worktree_roots = worktree_roots = protected_state_roots(*worktree_roots)
         require(path is not None or not self.settings['accounting_enabled'],
                 'Enabled budgeting requires the canonical project ledger')
         self.database = None if path is None else ProtectedDatabase(path, worktree_roots)
         self.registry = None if path is None else EnrollmentRegistry(self.database.path.with_suffix('.enrollment.sqlite'), host, worktree_roots)
+
+    @property
+    def operations(self):
+        from .budget_enrollment import OperationalRegistry
+        operations = OperationalRegistry.for_project(self.governance['project']['id'], self.worktree_roots,
+            retry_limit=self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket'])
+        operations.ceiling_source = self._operational_retry_ceiling
+        return operations
+
+    def _operational_retry_ceiling(self):
+        # An optional ledger is a ceiling source, never an OFF availability
+        # dependency. Copy a readable protected ceiling into operational state;
+        # once recorded, that reduction survives loss/corruption of this source.
+        # No usage, failures, enrollment or accounting schema is read/created.
+        try:
+            from .model_routing import _current_retry_ceiling
+            db = self._recovery_database()
+            if db is not None:
+                try:
+                    ceiling = _current_retry_ceiling(db, self.governance['project']['id'])
+                    if ceiling is not None:
+                        require(type(ceiling['retry_limit']) is int and ceiling['retry_limit'] >= 0,
+                                'Optional protected retry ceiling is invalid')
+                        return ceiling['retry_limit']
+                finally:
+                    db.close()
+        except Exception:
+            # This entire source (including path validation, decoding, query
+            # and close) is optional. Required operational state is validated
+            # separately and never passes through this availability fallback.
+            pass
+        return None
+
+    def start_execution(self, binding):
+        limit = self.governance['execution']['model_routing']['reconciliation']['max_reconciled_incident_retries_per_ticket']
+        self.operations.begin(binding, limit)
 
     def advance(self, store, *args, **kwargs):
         """Advance local lifecycle with the validated, effective mode."""
@@ -216,17 +262,23 @@ class ControllerBudgeting:
         # Apply the same containment/link checks before RoutingLedger opens it.
         with self.database.transaction(''):
             pass
-        return RoutingLedger(self.database.path)
+        return RoutingLedger(self.database.path, worktree_roots=self.worktree_roots)
 
-    def admit(self, binding, selected, *, stream=None):
+    def admit(self, binding, selected, *, stream=None, enrolled=True):
         from .budget_enrollment import validate_binding
         from .model_routing import policy_from_config
+        require(type(enrolled) is bool, 'Enrollment classification must be boolean')
+        if not enrolled:
+            self.operations.admit(binding)
+            return None  # Operational recovery applies without enrollment/usage.
         if binding.get('role') not in ('worker', 'fix', 'critic', 'specialist'):
             return None
         if 'legacy_behavior' in self.settings:
             return None  # Existing legacy host controls remain the host's responsibility.
+        if binding['role'] in ('critic', 'specialist'):
+            self.operations.worker_contexts(binding)
+        self.operations.admit(binding)
         if not self.settings['accounting_enabled']:
-            self._retained_recovery(binding, selected, stream=stream)
             return None
         binding = validate_binding(binding)
         require(binding['project_id'] == self.governance['project']['id'], 'Budget project identity differs')
@@ -239,6 +291,10 @@ class ControllerBudgeting:
         require(not self.settings['enforcement_enabled'] or observed['limits_enforced'],
                 'Budget enforcement requires observed host token limits')
         request = deepcopy(observed['request'])
+        if binding['role'] in ('critic', 'specialist'):
+            contexts = self.operations.worker_contexts(binding)
+            request['worker_context_ids'] = sorted(set(request.get('worker_context_ids', [])) |
+                                                    {row['context_id'] for row in contexts})
         require(request.get('ticket_id') == binding['ticket_id'] and request.get('role') == binding['role'],
                 'Budget request differs from admission identity')
         # Verify the launch pair before creating a reservation, including floors.
@@ -257,19 +313,12 @@ class ControllerBudgeting:
                 'Budget recovery route differs from the host launch route')
         return {'binding': binding, 'reservation': reservation}
 
-    def _retained_recovery(self, binding, selected, *, stream=None):
-        """Read existing operational history in OFF mode, without creating state.
-
-        A missing/unusable destination with no ledger is fine. An existing
-        ledger must be readable and safe; OFF cannot erase its recovery stops.
-        No enrollment, usage observation, reservation or budget quota is needed.
-        """
+    def _recovery_database(self):
+        """Open existing protected recovery evidence read-only, never create it."""
         import sqlite3
-        from .model_routing import policy_from_config, recovery_admission, _current_retry_ceiling
-        from .budget_enrollment import validate_binding
         from .path_containment import is_within
         if self.database is None or not self.database.path.is_file():
-            return
+            return None
         path = self.database.path
         for parent in (path, *path.parents):
             require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
@@ -277,28 +326,38 @@ class ControllerBudgeting:
         require(path.stat().st_nlink == 1, 'Protected state has multiple hardlinks')
         require(not any(is_within(path, root) for root in self.database.worktree_roots),
                 'Protected state must be outside worker worktrees')
-        binding = validate_binding(binding)
-        require(binding['project_id'] == self.governance['project']['id'], 'Budget project identity differs')
-        policy = policy_from_config(self.governance)
-        request = subprocess_budget_request(binding, stream=stream)
-        capabilities = {'models': {selected['model']: [selected['reasoning_effort']]}}
         db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
         db.row_factory = sqlite3.Row
+        return db
+
+    def operational_failure_resolved(self, admission, binding=None):
+        """Admission trusts only bounded operational resolution, in every mode."""
+        if admission is not None:
+            require(binding is None or binding == admission['binding'],
+                    'Operational resolution differs from retained execution identity')
+            binding = admission['binding']
+        return binding is not None and self.operations.resolved(binding)
+
+    def migrate_operational_recovery(self):
+        """Explicit trusted upgrade step before resuming legacy-only history.
+
+        Quiesce dispatch, select the verified old ledger and import failures,
+        consumed resolutions and the retained retry ceiling. No usage/charge or
+        old ledger bytes change. OFF admission never performs this migration.
+        Missing/corrupt migration sources refuse rather than imply fresh state.
+        """
+        from .model_routing import RoutingLedger
+        db = self._recovery_database()
+        require(db is not None, 'Explicit recovery migration requires verified legacy budget history')
         try:
             db.execute('BEGIN')
-            ceiling = _current_retry_ceiling(db, binding['project_id'])
-            limit = policy['reconciliation']['max_reconciled_incident_retries_per_ticket']
-            require(ceiling is None or limit <= ceiling['retry_limit'],
-                    'configured retry cap exceeds the protected ledger ceiling; explicit human direction required')
-            route, _, _ = recovery_admission(db, binding['project_id'], policy, request, capabilities, limit,
-                operating=self.operating, governance=self.governance, enforcing=False)
-            require(route['status'] == 'ready', 'Operational recovery admission refused: ' + str(route))
-            require(all(route[key] == selected.get(key) for key in ('model', 'reasoning_effort')),
-                    'Operational recovery route differs from the host launch route')
+            return RoutingLedger._migrate_operational_recovery(db, self.governance['project']['id'],
+                self.operations)
         finally:
             db.close()
 
-    def complete(self, admission, observation):
+    def complete(self, admission, observation, *, failed=False):
+        require(type(failed) is bool, 'Operational failure classification must be boolean')
         if admission is None:
             return None
         observer = getattr(self.host, 'observe_budget_outcome', None)
@@ -306,6 +365,8 @@ class ControllerBudgeting:
         outcome = observer(deepcopy(admission), deepcopy(observation))
         require(isinstance(outcome, dict), 'Budget outcome observation is malformed')
         outcome = deepcopy(outcome)
+        if failed and outcome.get('success') is True:
+            outcome.update(success=False, failure_kind='unknown')
         outcome.setdefault('actual_tokens', None)  # RoutingLedger's UNKNOWN normalization.
         require(text_id(outcome.get('observation_id')), 'Budget outcome needs an immutable usage observation')
         binding = admission['binding']
@@ -323,11 +384,18 @@ class ControllerBudgeting:
                         {k: v for k, v in outcome.items() if k not in derived}
                         and ('operating_hash' not in outcome or outcome['operating_hash'] == row['operating_hash']),
                         'Budget completion replay differs from retained observation')
-                return {'status': row['status'], 'run_id': binding['run_id'],
+                result = {'status': row['status'], 'run_id': binding['run_id'],
                         'accepted': not saved['violations'], 'violations': saved['violations'],
                         'operating_hash': row['operating_hash'], 'policy_sha256': row['policy_hash'],
                         'actual_model': saved['actual_model'], 'actual_reasoning_effort': saved['actual_reasoning_effort']}
-        return ledger.settle(binding['run_id'], outcome)
+            else:
+                result = None
+        result = result if result is not None else ledger.settle(binding['run_id'], outcome)
+        security = [v for v in result['violations'] if v not in
+                    ('host token ceiling overrun', 'host cost ceiling overrun')]
+        if security:
+            self.operations.quarantine(binding, security)
+        return result
 
 
 def require_unused_usage_observation(db, observation_id):
@@ -454,7 +522,7 @@ class BudgetLedger(ProtectedDatabase):
         # Apply the protected-state path/permission checks before schema access.
         with self.transaction(''):
             pass
-        return RoutingLedger(self.path)
+        return RoutingLedger(self.path, worktree_roots=self.worktree_roots)
 
     @staticmethod
     def validate_legacy_imports(db, project_id, reservations):

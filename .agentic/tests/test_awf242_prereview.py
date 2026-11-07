@@ -3,9 +3,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 import json
+import os
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 import source_only  # noqa: F401
 from agentic import ValidationError
@@ -22,6 +24,9 @@ class PreReviewTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        environment = patch.dict(os.environ, {"AWF_STATE_HOME": self.temp.name})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.root = Path(self.temp.name)
         self.gov = governance()
         self.value = op.default_operating(self.gov['execution']['model_routing'])

@@ -4,6 +4,7 @@ from contextlib import closing
 from dataclasses import replace
 import itertools
 import json
+import os
 from pathlib import Path
 import random
 import sqlite3
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
@@ -75,6 +77,11 @@ def inventory(count=6):
 
 class OperatingRoutingTests(unittest.TestCase):
     def setUp(self):
+        state_home = tempfile.TemporaryDirectory(prefix="awf-operating-host-")
+        self.addCleanup(state_home.cleanup)
+        environment = patch.dict(os.environ, {"AWF_STATE_HOME": state_home.name})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.governance = governance()
         self.value = configuration()
 

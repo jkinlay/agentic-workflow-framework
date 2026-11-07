@@ -53,8 +53,7 @@ def main(argv=None):
         if args.command == 'first-draft':
             args.title = canonical_first_draft_title(args.title)
         require(config['runtime_manifest_sha256'] == digest, 'Runtime is not the enrolled approved release')
-        driver = HostDriver(config,ROOT)
-        driver.load_project_budgeting()
+        driver = HostDriver.from_project(config,ROOT)
         if args.command != 'qualify':
             driver.register_provenance_runtime()
         store = LoopStore(config['state_dir'])

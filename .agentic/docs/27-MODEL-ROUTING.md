@@ -17,7 +17,7 @@ result requires independent host admission.
 
 ## Policy and escalation
 
-Configure `execution.model_routing`; `defaults` prints settings. Upgrades preserve reviewer allocation.
+Configure `execution.model_routing`; `defaults` prints settings. New projects share one critic; upgrades preserve reviewer allocation.
 
 | Role/condition | Model | Effort |
 | --- | --- | --- |
@@ -55,7 +55,10 @@ Outstanding runs block duplicate admission. History survives policy changes; usa
 
 ### Settlement outcome shapes
 
-Every role supplies actual model, effort, context, nonnegative tokens, nullable cost, and booleans for success, validation, independent review and escaped defect. Failed runs add `failure_kind`; successful runs omit it.
+All roles supply model/effort/context and success/validation/independent-review/escaped-defect
+booleans. Legacy settlement requires nonnegative tokens/nullable cost; enabled
+accounting permits UNKNOWN tokens; OFF completion requires no telemetry. Failed
+runs add `failure_kind`; successful runs omit it.
 
 | Role | Required interpretation |
 | --- | --- |

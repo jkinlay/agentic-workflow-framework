@@ -1,13 +1,11 @@
 # AWF budgeting
 
-AWF-242 is Tier 3 with FULL closure. Fresh configuration has accounting/
-enforcement OFF, dormant limits exactly 4,000,000 tokens per ticket and
-1,000,000,000 per project lifetime. A limit enables neither switch; enforcement
-requires accounting, and disabling accounting disables enforcement. Missing
-budgeting fields preserve the legacy engine/reviewed limits; they never authorize
-disabling installed budgeting.
+AWF-242: Tier 3, FULL. Fresh accounting/enforcement default OFF; dormant limits:
+4,000,000 tokens/ticket, 1,000,000,000/project lifetime. Limits enable neither
+switch; enforcement requires accounting; accounting OFF disables enforcement.
+Missing fields preserve legacy budgeting/reviewed limits.
 
-## Operating choices and authenticated host boundary
+## Operating choices and authentication
 
 `OPERATING_CONFIG.yaml` block:
 
@@ -20,110 +18,103 @@ disabling installed budgeting.
 }
 ```
 
-`operating show`/diagnostics display settings. Paths:
-`budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
-`budgeting.max_tokens_per_ticket` and `budgeting.max_tokens_per_project`.
-Booleans are `true`/`false`; limits are positive integers within canonical JSON
-and SQLite bounds. Choices are project-wide, never Epic-scoped.
+Set `budgeting.*` booleans/positive integers within bounds.
 
-Trusted host calls `set_operating(..., budget_registry=registry)` or injects it
-into `operating.main`. The standalone CLI cannot authenticate an owner and
-refuses mutations without this boundary. Chat text, `source: user`, actor string
-or caller-authored observation file is insufficient; no config field registers a
-trusted host.
+Run `workflow.py operating set --instruction "REQUEST" --set
+budgeting.accounting_enabled=true`. Valid changes print exact changes/digest,
+store a protected proposal, exit 3 `PENDING_OWNER_CONFIRMATION`; settings stay
+unchanged. Owner runs `workflow.py operating confirm --digest D` in their
+terminal within 15 minutes, typing its first eight characters. Skills never
+confirm; verify persistence with `operating show`.
 
-Under lock, validate change before
-`EnrollmentRegistry.admit_owner_direction` consumes the observed direction. The
-observation binds immutable source identity, authenticated actor, project, prior
-settings hash and exact changes. Write to journal and append-only audit. Invalid
-mixed changes alter neither settings nor consume observation. Pinned
-journal recovery handles interruption without replay; a crash after consumption
-before journalling requires a new observation.
+Proposals bind clone/project/repository/governance, prior settings, changes, request/expiry.
+Confirmation retains protected digests. Audit: numeric owner ID/login/digest/time, never tokens. Register journal SHA-256/event ID once
+in protected storage within 15 minutes, before publication/configuration changes.
+Confirmations supersede unapplied transactions. Recovery
+finishes the latest registered transaction extending bound prior
+settings, or clears its terminal journal without reapplying; it never renews
+authority. Before journal publication, unchanged settings permit fresh `set`/`confirm`;
+afterwards inspect/pin and recover first. Preserve evidence. Disabling accounting recovers
+derived enforcement OFF too.
 
-Host supplies authenticated owner/UI source. Fixtures verify
-protocol, not live Codex authentication. APIs grant no dispatch, merge/release
-authority.
+Owner storage uses the Windows current token's account SID and HKLM ProfileList
+ProfileImagePath plus AppData/Local, or POSIX password-database home, outside worker
+writes. No override selects it; AWF_STATE_HOME, LOCALAPPDATA, USERPROFILE and HOME cannot.
+Usage state may use AWF_STATE_HOME; deny worker writes.
 
-## One usage ledger and explicit enrollment
+Budget admission/recovery/controller/routing require protected confirmation;
+schema validation supplies none. Latest confirmed values bind even defaults/absent blocks.
+Loads never inspect Git/gh executables. Without a store/confirmation, fresh OFF
+defaults and absent legacy blocks load; unconfirmed nondefaults refuse budget work. Unavailable profiles, junctions
+or missing password-database entries never brick defaults. New protected changes
+refuse with the reason. OFF needs no usage ledger.
 
-`RoutingLedger.model_runs` is canonical history. `BudgetLedger` enrolls rows, not
-a second ledger. Both check ticket and
-lifetime-project totals under that database's `BEGIN IMMEDIATE` transaction.
-History, including legacy rows, remains charged across days, restarts,
-policies and worktrees. Use one protected database; never switch databases
-to evade history.
-If that database has `budget_charges`, routing bridges
-each identity into `model_runs` in one write transaction. Rows remain
-sealed archival bytes. Reopens verify digest, preserve UNKNOWN
-timestamps/usage and never duplicate charges. Conflicting identities refuse
-rather than discard history. Separate old database needs explicit migration into
-the chosen canonical database.
+Binding hashes the Git common directory read from metadata;
+project ID cross-checks. Editable IDs cannot hide confirmations. Worktrees share them; moved/fresh clones and copies need fresh
+confirmation. Ignore Git environment overrides; gitfiles require registered backlinks outside sandbox write authority. Without Git, protected changes refuse. The host must deny worker Git-metadata
+writes/replacement: binding protects clone identity under that isolation, not processes
+able to replace it.
 
-`EnrollmentRegistry` stores identity/owner observations, not totals.
-Host enrolls eligible AWF runs with exact project, ticket, run,
-dispatch, observed session and role. The controller and independent Codex agents,
-including ULTRA agents, are excluded; repository, model, process ancestry or
-worker-authored requests cannot establish enrollment. Protect state outside
-worktrees; path checks supplement isolation.
+Older checkouts/mismatches remain inspectable: show/validate-config report differences
+from this clone's latest confirmation; unrelated changes work, budget work refuses.
+Pending proposals report pending. Explicit budgeting choices/terminal confirmation
+repair admission preserving audit. Screen/digest bind every difference from
+confirmed values, including prior disk edits; settings appear for
+no-change reconfirmation. Audit/journals prove nothing; transactions bind governance/prior settings.
+Bootstrap/adoption/upgrade preserve OFF defaults; migration/import preserve
+history, never authenticate. Missing legacy fields retain legacy policy
+until manual versioned budget adoption.
 
-For routed runs, call `RoutingLedger.reserve` with trusted
-`budget_registry` and `budget_binding`; its binding run ID is the ledger ID.
-Finish with `RoutingLedger.settle`, retaining model, effort, context and
-review-independence checks. The budget-only facade cannot settle routed runs or
-bypass checks. Host with operational checks may use `BudgetLedger.reserve/settle`.
-Never launch twice from an idempotent replay.
+Confirm requires interactive stdin/stdout (Windows console handles, excluding
+NUL/pipes/files); refuses token environment variables and foreign `GH_HOST`.
+`gh auth status --hostname github.com --active` and
+`gh api --hostname github.com --method GET user` verify numeric User ID
+against `merge_gate.trusted_owner_ids`; empty yields
+`OWNER_GATE_NOT_CONFIGURED` (`.agentic/PROJECT_CONFIG.yaml`). Resolve native `gh` once;
+refuse scripts and sandbox-group/capability SID modification/replacement rights.
+Inspect ancestors through volume root for ACL/ownership control; replacement needs
+parent creation plus DELETE or parent delete-child. Owner/admin rights pass.
+Without sandbox principals (POSIX), pass.
+Audit path/SHA-256.
+`trusted_owner_ids` comes from the working tree:
+a process editing it still needs that terminal/login. A process with the
+owner's full rights can still get around this. No execution authority.
 
-State store accepts explicit `budgeting`, `budget_ledger`, `budget_binding`.
-Enabled usage goes to canonical facade; no second state-store reservation is
-created. Legacy reservations remain intact. Enforcement refuses until history is
-imported, never silently counting from zero; migration qualification owns its
-identity/deduplication proof.
+## Ledger and enrollment
 
-## Mode and recovery semantics
+Only explicitly enrolled AWF sub-agents count; enrollment binds project/ticket/run/dispatch/session/role.
+Exclude controller/independent Codex agents, including ULTRA. Repository/model/ancestry/worker
+requests cannot enroll. Protect state outside worktrees; paths supplement isolation.
 
-OFF `BudgetLedger.reserve` returns before opening a database or consulting
-identity/telemetry; OFF state-store methods create no reservation/event. Routing
-can still persist run identity, incidents, ownership/draining history and
-bounded recovery without usage telemetry.
-`settle` needs security/result facts, but OFF requires no token/cost
-telemetry, budget warnings or overrun quarantine. Historical budget-only overruns
-do not block OFF/accounting-only work; security/context/review mismatches
-quarantine. Existing recovery limits and authorization to raise them bind in all
-modes.
+`RoutingLedger.model_runs` is canonical; `BudgetLedger` adds enrollment. Atomic
+checks retain history across days/restarts/policies/worktrees. Bridge legacy
+`budget_charges` transactionally; verify sealed archives, deduplicate identities,
+refuse conflicts. Separate databases require migration; enforcement refuses until
+history is imported. Never evade history by changing databases.
 
-`route_model reserve` without a ledger in OFF returns a proposal with
-`admitted: false`, `dispatch_performed: false` and
-`operational_admission_required: true`; it neither launches nor admits. Host
-must apply independent security, permission, ownership, review, merge,
-host-capacity and bounded-recovery controls. Operational ledger retains checks
-without budget telemetry.
+Routed reserve requires trusted registry/binding and matching run/ledger IDs;
+settlement retains model/effort/context/independence checks. Budget-only facade
+cannot settle routed runs or bypass checks. State-store uses that facade without
+duplicate reservations. Preserve legacy identities; never relaunch replays.
 
-Accounting-only records attributable usage without quota refusal, warnings or
-quarantine. An absent estimate is explicitly UNKNOWN; a storage sentinel is
-never zero, and unknown actual usage remains null. Enabled enforcement refuses
-when unknown history/estimates prevent a reliable total. Independent/unregistered
-runs remain UNKNOWN attribution; they do not enter AWF quotas.
+## Modes and preservation
 
-Enforced admission atomically counts known usage and outstanding reservations at
-ticket/lifetime scope. Runs retain admission-time settings/binding.
-OFF applies only to subsequent work and never deletes/refunds old charges,
-reservations, failures or unknowns; late settlements use the original mode.
-Known overruns remain charged; reconciliation may close incident without refund.
-Observations include only tools/retries attributable to that run; enroll retries.
+OFF requires no budget database, telemetry, reservations/events, warnings or
+overrun quarantine. Retain security/permissions/ownership/review/merge/host-capacity
+and bounded recovery controls; security/context/review mismatches quarantine.
+Existing recovery limits and owner authorization to raise them bind in every mode.
+Historical budget overruns do not block OFF/accounting-only work.
+Ledger-free routing proposals never admit/launch; operational admission remains required.
+Accounting-only records usage without quota refusal/warnings/quarantine. Unknown
+estimates/actuals stay UNKNOWN/null, never zero; independent runs remain outside quotas.
+Enforcement atomically counts known usage/outstanding reservations per ticket/lifetime;
+unreliable unknown totals refuse. Runs/late settlements retain admission-time bindings/mode.
+OFF applies only to subsequent work, never deletes/refunds history, reservations,
+failures or unknowns; known overruns stay charged. Reconciliation closes
+incidents without refund. Count only attributable tools/retries; enroll retries.
 
-## Versioned preservation and remaining integration
-
-Recommend versioned 1.9.6 preservation, not in-place 1.9.5 backport. Installed
-CMC Quant Foundry 1.9.5 remains unchanged/enabled. Owner may retain it or
-authorize qualified preservation with explicit budget disposition.
-Do not edit integrity-managed bytes, pins or receipts. Keep settings
-absent/legacy until adoption; never initialize fresh OFF settings over an upgrade.
-
-Controller/reference-adapter owners pass validated settings into lifecycle/state-
-store calls, enroll dispatches, use the same ledger and retain independent
-controls OFF. Review-host owners do likewise for critic/specialist runs, excluding
-the controller. Migration owners preserve old routing/state-store history/
-reservations before enabling totals. Live identity, usage and enforcement
-capability remain separate qualification evidence.
-Lane regenerates schemas/examples; orchestrator/release lane owns
-manifests/full candidate qualification.
+Use versioned 1.9.6 preservation, not in-place backport. Installed CMC Quant Foundry
+1.9.5 stays unchanged/enabled. Owner may retain it or authorize qualified preservation
+with explicit budget disposition. Never edit integrity-managed bytes/pins/receipts,
+or initialize fresh OFF over upgrades. Hosts share ledgers; migration preserves
+history/reservations. Live integration requires qualification; release owns manifests.
