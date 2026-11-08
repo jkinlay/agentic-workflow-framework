@@ -8,7 +8,7 @@ Missing fields preserve legacy budgeting/reviewed limits.
 ## Settings in chat and PRs
 
 In AWF Codex chat, read-only `workflow.py operating show` needs no approval.
-Present switches/limits, source/commit, differences; last PR/merger
+Present switches/limits, source/commit and differences; the last PR/merger
 is optional/unobserved.
 
 Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
@@ -18,8 +18,8 @@ Run `operating validate --file PROPOSED`; invalid combinations refuse before PR 
 
 Branch from the fetched default, change requested values preserving text/comments,
 and show before/after under existing publication authority. Restricted pushes
-prepare branch/body for owner publication. The owner merges; agents never merge.
-No owner terminal commands. Git/PR audits protected changes;
+prepare branch/body for owner publication. Owners merge; agents never merge.
+Owners need no terminal commands. Git/PR history audits protected changes;
 protected `operating set` refuses without writes. Calendar uses the same PR route,
 effective source and validation; see [calendar](operating-calendar.md).
 Reporting shares this route: OFF/Teams/Slack/both, project-bound destinations; preserve delivery state.
@@ -39,16 +39,15 @@ tracking refs or nondefault working values refuse budget work even if enforcemen
 says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
 before planning/dispatch on that refusal; other commands remain available.
 Next cycle or `git remote set-head origin --auto` establishes identity.
-With no origin configured there is no remote policy refresh. Present but empty,
+With no origin configured there is no remote policy refresh. Empty,
 malformed, invalid or unavailable policy blobs refuse. Non-repositories run no Git/gh.
-OFF needs no ledger, telemetry or reservations. Preserve upgrade choices/history;
+OFF requires no ledger/telemetry/reservations. Preserve upgrade choices/history;
 legacy policy stays until versioned adoption. No retrospective zero usage.
 
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
 ref, never evidence of policy refresh. New merges remain invisible until fetched.
 The controller's own checkout requires repository-local remote.origin.url;
-relative/inside-checkout paths refuse. Git 2.29+ ([notes](https://git-scm.com/docs/RelNotes/2.29.0));
-older-binary execution unproven. Lock before 30-second discovery/fetch,
+relative/inside-checkout paths refuse. Use Git 2.29+ ([notes](https://git-scm.com/docs/RelNotes/2.29.0)); older-binary execution remains unproven. Lock before 30-second discovery/fetch,
 advertised-commit checking and publication. Mismatches retry next cycle.
 UTF-8 names use check-ref-format. Preserve unverified tracking HEAD when identity
 is absent; delete conflicts, update target, then origin/HEAD. Hierarchical renames recover.
@@ -70,7 +69,7 @@ reader digests cannot authenticate merges.
 
 ## Ledger and enrollment
 
-Only explicitly enrolled AWF sub-agents count; enrollment binds project/ticket/run/dispatch/session/role.
+Only explicitly enrolled AWF sub-agents count, bound to project/ticket/run/dispatch/session/role.
 Exclude controller/independent Codex agents, including ULTRA. Repository/model/ancestry/worker
 requests cannot enroll. Protect state outside worktrees; paths supplement isolation.
 
@@ -80,7 +79,7 @@ checks retain history across days/restarts/policies/worktrees. Bridge legacy
 refuse conflicts. Separate databases require migration; enforcement refuses until
 history is imported. Never evade history by changing databases.
 
-Routed reserve requires trusted registry/binding and matching run/ledger IDs;
+Routed reserve requires trusted registry/binding matching run/ledger IDs;
 settlement retains model/effort/context/independence checks. Budget-only facade
 cannot settle routed runs or bypass checks. State-store uses that facade without
 duplicate reservations. Preserve legacy identities; never relaunch replays.

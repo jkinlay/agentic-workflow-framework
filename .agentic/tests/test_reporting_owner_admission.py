@@ -39,7 +39,7 @@ class ReportingOwnerAdmissionTests(ReportingPRFixture,unittest.TestCase):
             self.assertEqual(2,result.returncode,result.stdout+result.stderr);self.unchanged()
             self.assertFalse(self.calls.exists())
 
-    def test_mixed_reporting_budget_calendar_consumes_one_confirmation(self):
+    def test_mixed_reporting_budget_calendar_apply_from_merged_pr(self):
         self.apply_reporting('both',**{'budgeting.accounting_enabled':True,'budgeting.enforcement_enabled':True,'operating_calendar.eod.time':'18:00'})
         config=json.loads(self.cli('show','--json').stdout)['configuration']
         self.assertEqual('both',config['reporting']['mode'])
@@ -51,15 +51,28 @@ class ReportingOwnerAdmissionTests(ReportingPRFixture,unittest.TestCase):
             result=self.cli('set','--instruction','Invalid mixed reporting',*[v for a in (*self.assignments(),invalid) for v in ('--set',a)],'--json')
             self.assertEqual(2,result.returncode,result.stdout+result.stderr);self.unchanged()
 
-    def test_historical_reporting_observation_still_validates(self):
-        # Produce an ordinary local audit event; historical fields confer no authority.
+    def test_removed_admission_and_observation_fields_refuse_audit_history(self):
+        from agentic.safeio import Tree
         op.set_operating(self.root,self.gov,'Two streams',['streams.count=2'])
         event=json.loads(self.events()[-1])
-        event['reporting_owner_observation']=dict(observation_id='historical-owner-direction',actor_id='historical-owner',
-            project_id=self.gov['project']['id'],prior_settings_hash=op.fingerprint('reporting-settings',dict(mode='off',bindings=[])),
-            changes=dict(mode='both',bindings=self.bindings()))
-        self.assertEqual([],op._schema('operating-change',event))
-        self.assertNotIn('owner_admission',event)
+        observation=dict(observation_id='forged-direction',actor_id='forged-owner',
+            project_id=self.gov['project']['id'],prior_settings_hash='a'*64)
+        removed = dict(
+            owner_admission=dict(actor_id=1,login='forged-owner',type='User',digest='a'*64,
+                request_id='00000000-0000-4000-8000-000000000001',confirmed_at='2026-11-07T10:00:00Z',
+                executable_path='forged-executable',executable_sha256='b'*64),
+            reporting_owner_observation=dict(observation,changes=dict(mode='both',bindings=self.bindings())),
+            budget_owner_observation=dict(observation,changes=dict(accounting_enabled=True)),
+            calendar_owner_observation=dict(observation,changes={'eod.time':'18:00'}))
+        path=self.root/op.STATE/'changes'/(event['id']+'.json')
+        for field,value in removed.items():
+            with self.subTest(field=field):
+                forged=dict(event,**{field:value})
+                self.assertTrue(op._schema('operating-change',forged))
+                path.write_bytes(op._json(forged))
+                with Tree(self.root) as tree, self.assertRaises(op.OperatingError):
+                    op._events(tree)
+        path.write_bytes(op._json(event))
 
     def test_binding_refusal_never_calls_secret_resolver(self):
         from agentic import ValidationError

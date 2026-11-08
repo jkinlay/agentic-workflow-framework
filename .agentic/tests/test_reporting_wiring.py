@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import source_only
 from agentic import ValidationError
+from agentic.reporting import runtime
 from agentic import operating as op
 from agentic.canonical import fingerprint, sha256
 from agentic.continuous_controller import ContinuousControllerStore
@@ -137,7 +138,7 @@ class ReportingRuntimeTests(unittest.TestCase):
     def cycle(self, now, **kwargs):
         from agentic.reporting.runtime import reporting_cycle
         return reporting_cycle(self.store, operating=self.root, binding=self.binding, now=now,
-                               providers=self.providers, **kwargs)
+                               providers=self.providers, defer_delivery=False, load_operating=lambda: self.root, **kwargs)
 
     def test_weekend_idle_eod_continuity_restart_and_destination_independence(self):
         self.cycle('2026-11-07T16:59:59Z')
@@ -293,11 +294,14 @@ class ReportingRuntimeTests(unittest.TestCase):
             return dict(candidate=value, observed_at=now, expires_at='2026-11-10T10:01:00Z',
                 open=True, merged=False, readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True)
         payload = batch_store.claim(now, {}, observe)
+        batch_store.recheck(payload['batch_id'], now, {}, observe)
+        batch_store.begin_delivery(payload['batch_id'], now)
         # All-readback evidence timestamps must be current for this batch.
         for provider in self.providers.values():
             original = provider.reconcile
             provider.reconcile = lambda intent, attempts, f=original: dict(f(intent, attempts), observed_at=now)
-        port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now)
+        port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now,
+                                   load_operating=lambda: self.root)
         self.assertIsNone(port.deliver_review_batch(payload))
         self.assertEqual(len(self.sent), 2)
         self.assertIsNone(port.observe_review_delivery(payload))
@@ -322,9 +326,12 @@ class ReportingRuntimeTests(unittest.TestCase):
             return dict(candidate=value, observed_at=current, expires_at='2026-11-10T10:05:00Z',
                 open=True, merged=False, readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True)
         payload = batches.claim(now, {}, lambda c: observation(c, now))
+        batches.recheck(payload['batch_id'], now, {}, lambda c: observation(c, now))
+        batches.begin_delivery(payload['batch_id'], now)
         original = self.providers['slack'].reconcile
         self.providers['slack'].reconcile = lambda i, a: dict(original(i, a), status='ABSENT', terminal=True, observed_at=now)
-        port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now)
+        port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now,
+                                   load_operating=lambda: self.root)
         self.assertIsNone(port.deliver_review_batch(payload))
         self.assertEqual(len(self.sent), 1)
         now = '2026-11-10T10:01:00Z'
@@ -360,7 +367,7 @@ class ReportingRuntimeTests(unittest.TestCase):
             expires_at='2026-11-10T17:00:59Z', open=True, merged=False,
             readiness='READY_FOR_OWNER_AUTHORIZATION', final_gate_valid=True))
         port = ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: now,
-                                   observe_candidate=observe)
+                                   observe_candidate=observe, load_operating=lambda: self.root)
         with self.assertRaises(ValidationError):
             port.deliver_review_batch(payload)
         self.assertEqual(self.sent, [])
@@ -501,6 +508,78 @@ class MergeBatchFenceTests(unittest.TestCase):
             row = db.execute('SELECT state,attempts FROM review_presentation_intent_v1 WHERE intent_id=?',
                              (identity,)).fetchone()
         self.assertEqual(('CLAIMED', 1), tuple(row))
+
+
+class ReportingLibraryPolicyTests(unittest.TestCase):
+    setUp = ReportingRuntimeTests.setUp
+
+    def prepare(self):
+        for now in ('2026-11-07T16:59:59Z', '2026-11-07T17:00:00Z'):
+            runtime.reporting_cycle(self.store, operating=self.root, binding=self.binding,
+                now=now, providers=self.providers, defer_delivery=True)
+
+    def test_default_cycle_defers_injected_sender_without_policy_loader(self):
+        for now in ('2026-11-07T16:59:59Z', '2026-11-07T17:00:00Z'):
+            result = runtime.reporting_cycle(self.store, operating=self.root, binding=self.binding,
+                now=now, providers=self.providers)
+        self.assertGreater(result['generated'], 0)
+        self.assertEqual([], self.sent)
+        self.assertEqual([], result['deliveries'])
+
+    def test_direct_drain_without_final_policy_check_never_reserves_or_sends(self):
+        self.prepare()
+        runtime.drain(self.store, self.root, self.binding, self.providers)
+        self.assert_unsent()
+
+    def test_review_port_without_policy_loader_refuses_readmission(self):
+        port = runtime.ReviewReportingPort(self.store, self.root, self.binding, self.providers, lambda: '2026-11-07T17:00:00Z')
+        with self.assertRaisesRegex(ValidationError, 'REPORT_POLICY_CHECK_REQUIRED'):
+            port._readmit()
+
+    def test_explicit_cycle_delivery_rechecks_off_policy(self):
+        self.prepare()
+        current = deepcopy(self.root)
+        calls = []
+        def load():
+            calls.append(True)
+            return current
+        current['reporting'] = dict(mode='off', bindings=[])
+        runtime.reporting_cycle(self.store, operating=self.root, binding=self.binding,
+            now='2026-11-07T18:00:00Z', providers=self.providers, defer_delivery=False,
+            load_operating=load)
+        self.assertTrue(calls)
+        self.assert_unsent()
+
+    def test_provider_policy_reload_follows_destination_verification(self):
+        self.prepare()
+        current = deepcopy(self.root)
+        verified = []
+        def send_reserved(intent, attempt, reserve):
+            verified.append(intent['binding']['platform'])
+            current['reporting'] = dict(mode='off', bindings=[])
+            reserve()
+            self.fail('OFF policy reached POST')
+        for provider in self.providers.values():
+            provider.send_reserved = send_reserved
+            provider.load_policy = lambda: current
+        runtime.drain(self.store, self.root, self.binding, self.providers)
+        self.assertEqual({'teams', 'slack'}, set(verified))
+        self.assert_unsent()
+
+    def test_explicit_cycle_with_unchanged_policy_delivers_once(self):
+        for now in ('2026-11-07T16:59:59Z', '2026-11-07T17:00:00Z', '2026-11-07T17:00:00Z'):
+            runtime.reporting_cycle(self.store, operating=self.root, binding=self.binding,
+                now=now, providers=self.providers, defer_delivery=False, load_operating=lambda: self.root)
+        states = runtime.reporting_status(self.store, self.root, self.binding)['deliveries']
+        self.assertEqual(4, len(self.sent))
+        self.assertTrue(all(len(d['attempts']) == 1 for d in states))
+        self.assertEqual({'DELIVERED', 'UNKNOWN'}, {d['status'] for d in states})
+
+    def assert_unsent(self):
+        self.assertEqual([], self.sent)
+        states = runtime.reporting_status(self.store, self.root, self.binding)['deliveries']
+        self.assertTrue(states)
+        self.assertTrue(all(len(d['attempts']) == 0 and d['status'] != 'DELIVERED' for d in states))
 
 
 if __name__ == '__main__':

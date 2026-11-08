@@ -159,7 +159,7 @@ class ReviewBatchStore:
         started = "(p.phase='SENDING' OR p.phase IS NULL)" if has_phase else "1"
         for row in db.execute("SELECT o.* FROM review_presentation_outbox_v1 o " + join +
                               "WHERE o.state IN ('NOT_DELIVERED','DELIVERED') "
-                              "OR (o.state='CLAIMED' AND " + started + ")"):
+                              "OR (o.state IN ('CLAIMED','REPORTING') AND " + started + ")"):
             payload = ReviewBatchStore._payload(row)
             opening = payload.get('presentation_window', {}).get('opening')
             if opening is None:
@@ -730,10 +730,12 @@ class ReviewBatchStore:
                  "Review acknowledgement requires verified DELIVERED readback")
         return self.reconcile(receipt)
 
-    def check_delivery_window(self, batch_id, now, calendar):
+    def check_delivery_window(self, batch_id, now, calendar, *, reporting=False, restoration=False):
         """Recheck the fenced charge against the window immediately before send.
 
         The current SENDING attempt is already included in retained evidence.
+        Reporting must prove its exact durable handoff; a restoration retains
+        the original charge and cannot borrow an allowance in another window.
         A different opening cannot borrow its charge, including a return to an
         exhausted opening. Only the live caller can cancel an uninvoked send.
         """
@@ -744,9 +746,19 @@ class ReviewBatchStore:
             db.execute('BEGIN')
             row = db.execute('SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (batch_id,)).fetchone()
             phase = db.execute('SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?', (batch_id,)).fetchone()
-            _require(row is not None and row['state'] == 'CLAIMED' and phase is not None and phase[0] == 'SENDING',
+            states = {'REPORTING'} if reporting else {'CLAIMED'}
+            intent_states = {'CLAIMED'}
+            if reporting and restoration:
+                states.add('DELIVERED')
+                intent_states.add('DELIVERED')
+            _require(row is not None and row['state'] in states and phase is not None and phase[0] == 'SENDING',
                      'Review delivery has no current send fence')
             payload = self._payload(row)
+            if reporting:
+                retained = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                                      ('review-' + batch_id,)).fetchone()
+                _require(retained is not None and loads(retained[0]).get('review_batch') == payload,
+                         'Reporting handoff requires the exact retained batch')
             _require(current >= utc_instant(payload['prepared_at'])
                      and utc_instant(eligible['presentation_at']) == current
                      and payload.get('presentation_window') == window,
@@ -754,7 +766,7 @@ class ReviewBatchStore:
             evidence = self._attempt_windows(db, calendar)
             for member in payload['members']:
                 intent = db.execute('SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?', (member['intent_id'],)).fetchone()
-                _require(intent is not None and intent['state'] == 'CLAIMED'
+                _require(intent is not None and intent['state'] in intent_states
                          and intent['attempts'] == member['attempt']
                          and 0 < self._window_count(intent, window['opening'], evidence) <= 2,
                          'Post-fence current review window allowance exhausted or charge changed')

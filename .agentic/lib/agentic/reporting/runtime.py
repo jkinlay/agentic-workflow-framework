@@ -34,6 +34,7 @@ def _bindings(operating, binding):
 
 
 def _readmit_reporting(operating, binding, load_operating):
+    require(callable(load_operating), 'REPORT_POLICY_CHECK_REQUIRED')
     _, retained = _bindings(operating, binding)
     current = load_operating()
     settings, destinations = _bindings(current, binding)
@@ -416,7 +417,9 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                     continue
                 try:
                     state = outbox.advance(row[1], delivery_provider, allow_send=allow_send,
-                                           before_send=before_send, clock=getattr(provider, 'clock', None))
+                                           before_send=before_send if before_send is not None else
+                                               lambda: _readmit_reporting(operating, binding, getattr(provider, 'load_policy', None)),
+                                           clock=getattr(provider, 'clock', None))
                 except Exception:
                     state = dict(status='UNKNOWN', reason='REPORT_PROVIDER_UNAVAILABLE')
                 if monotonic() >= budget.deadline:
@@ -729,7 +732,7 @@ def _prepare_projection(snapshot, operating, binding, now, providers, context, c
 
 
 def reporting_cycle(store, *, operating, binding, now, providers=None, context=None, delivery_budget=None,
-                    defer_delivery=False):
+                    defer_delivery=True, load_operating=None):
     settings, destinations = _bindings(operating, binding)
     key = 'reporting:' + fingerprint('reporting-scope', binding)
     if settings['mode'] == 'off':
@@ -762,7 +765,8 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
         prepared, generated = _prepare_projection(snapshot, operating, binding, now, providers, context, calendar, destinations)
         delivery_budget.remaining()
     _commit_projection(store, binding, prepared)
-    deliveries = [] if defer_delivery else drain(store, operating, binding, providers or {}, budget=delivery_budget)
+    deliveries = [] if defer_delivery else drain(store, operating, binding, providers or {}, budget=delivery_budget,
+        before_send=(lambda: _readmit_reporting(operating, binding, load_operating)) if load_operating is not None else None)
     return dict(state='ENABLED', generated=len(generated), reports=generated, deliveries=deliveries,
                 coverage=deepcopy(context.get('coverage', {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})))
 
@@ -782,9 +786,12 @@ class ReviewReportingPort:
         self.load_operating = load_operating
 
     def _readmit(self):
-        if self.load_operating is None:
-            return self.operating  # Trusted in-process test/host port.
-        return _readmit_reporting(self.operating, self.binding, self.load_operating)
+        if self.load_operating is not None:
+            return _readmit_reporting(self.operating, self.binding, self.load_operating)
+        require(bool(self.providers), 'REPORT_POLICY_CHECK_REQUIRED')
+        for provider in self.providers.values():
+            current = _readmit_reporting(self.operating, self.binding, getattr(provider, 'load_policy', None))
+        return current
 
     def _id(self, payload):
         return 'review-' + payload['batch_id']
@@ -807,17 +814,17 @@ class ReviewReportingPort:
             now, checked = self.clock(), {}
             # Observe outside SQLite's write transaction: no remote callback
             # may hold persistence hostage or prevent a durable timeout record.
-            for member in payload['members']:
+            for member in payload['members'] if observe_candidate is not None else ():
                 source_timeout()
                 candidate = member['candidate']
                 value = observe_candidate(deepcopy(candidate), now)
                 source_timeout()
                 checked[fingerprint('review-candidate', candidate)] = value
-            if restoration:
+            if restoration and observe_candidate is not None:
                 from ..review_batching import _observation_valid
                 require(all(_observation_valid(checked[fingerprint('review-candidate', m['candidate'])],
                     m['candidate'], timestamp(now)) for m in payload['members']), 'REPORT_REVIEW_CHECK_EXPIRED')
-            else:
+            elif observe_candidate is not None:
                 checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar,
                     lambda candidate: checked[fingerprint('review-candidate', candidate)])
                 require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
@@ -827,6 +834,8 @@ class ReviewReportingPort:
             require(not window['held'] and (restoration or window['calendar_sha256'] == payload['calendar_sha256']) and
                     all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked.values()),
                     'REPORT_REVIEW_CHECK_EXPIRED')
+            ReviewBatchStore(self.store).check_delivery_window(payload['batch_id'], send_at, calendar,
+                reporting=True, restoration=restoration)
 
     def _retain_review_batch(self, payload, *, budget=None):
         """Retain the exact reporting handoff without provider side effects."""
@@ -866,7 +875,23 @@ class ReviewReportingPort:
         ReviewBatchStore(self.store).track_reporting(payload['batch_id'])
 
     def deliver_review_batch(self, payload):
+        from ..review_batching import ReviewBatchStore
         budget = self.delivery_budget or DeliveryBudget()
+        with self.store.connection() as db:
+            phase = db.execute('SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?',
+                               (payload['batch_id'],)).fetchone()
+        if phase is not None and phase[0] == 'PREPARED':
+            # Direct callers may hand off before fencing. Establish the same
+            # durable charge as the controller, using fresh candidate evidence.
+            require(callable(self.observe_candidate), 'REPORT_REVIEW_CHECK_REQUIRED')
+            with budget.checking():
+                calendar = effective_calendar(self._readmit())
+                now = self.clock()
+                pending = ReviewBatchStore(self.store)
+                checked = pending.recheck(payload['batch_id'], now, calendar,
+                    lambda candidate: self.observe_candidate(candidate, now))
+                require(checked == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
+                pending.begin_delivery(payload['batch_id'], self.clock())
         self._retain_review_batch(payload, budget=budget)
         # The controller already rechecked this claim. The mandatory port
         # recheck below runs after destination verification, immediately before
@@ -880,7 +905,7 @@ class ReviewReportingPort:
                 refused.append(exc)
                 raise
         drain(self.store, self.operating, self.binding, self.providers, report_ids={self._id(payload)}, budget=budget,
-              before_send=before_send if self.observe_candidate is not None else self._readmit)
+              before_send=before_send)
         if refused:
             self._defer(self._id(payload), str(refused[0]))
             raise refused[0]

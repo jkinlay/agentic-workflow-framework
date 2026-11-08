@@ -138,7 +138,7 @@ CLI forwards these additional callbacks when callable:
 - `reconcile_overlap_sync`: UNKNOWN receipt-only recovery.
 - `observe_dispatch_quiescence`: terminal proof for accepted dispatches.
 
-[Jira scope](JIRA-WRITE-SCOPE.md).
+See [Jira scope](JIRA-WRITE-SCOPE.md).
 
 Runtime overlap paths require the corresponding callback. This controller contract applies;
 the reference adapter lacks owner-publication and batch operations.

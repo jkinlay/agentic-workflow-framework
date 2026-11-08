@@ -40,6 +40,8 @@ class E10Tests(unittest.TestCase):
         for n in range(41, 46):
             batches.enqueue(dict(case.helper.current, pull_request=n), now, {})
         payload = batches.claim(now, {}, fast)
+        batches.recheck(payload['batch_id'], now, {}, fast)
+        batches.begin_delivery(payload['batch_id'], now)
         def reject(method, url):
             if method == 'POST':
                 raise HTTPError(url, 400, 'Synthetic rejection', {}, None)

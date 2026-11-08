@@ -1,6 +1,6 @@
 # Operating configuration
 
-In AWF Codex chat, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
+In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings/budgets/allowlists/floors/escalation/shared critic; legacy routes accepted; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
@@ -65,7 +65,7 @@ Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
 neither switch. No Epic budget overrides.
 
 Ask in AWF Codex chat to check switches, limits, source/commit and differences.
-Last PR/merger optional. Prepare a validated PR
+Last PR/merger is optional. Prepare a validated PR
 preserving comments and showing before/after. The owner merges; restricted pushes
 prepare owner publication. Protected `set` refuses without writes. See the
 [chat/PR procedure](39-BUDGETING.md#settings-in-chat-and-prs).
@@ -83,7 +83,7 @@ Configured origin without verified origin/HEAD: show/validation/installation
 work; admission refreshes, then refuses dangling identity, tracking refs or
 nondefault working protected values. The remedy is the next
 controller cycle or `git remote set-head origin --auto`. Fresh OFF without refs
-can continue offline. Non-repositories invoke no Git/gh. OFF needs no ledger.
+works offline. Non-repositories invoke no Git/gh. OFF needs no ledger.
 
 Host rules and owner retain merge authority.
 `show` reports rules UNOBSERVED as a warning. Adoption/publication observations
@@ -95,8 +95,8 @@ Calendar shares this PR route and effective source. Defaults: continuous 24/7 wo
 review batching enabled weekdays 07:00-17:00 Europe/London, EoD 17:00 daily.
 Absent calendar retains these defaults; malformed accepted values refuse.
 See [calendar](operating-calendar.md) and [budgeting](39-BUDGETING.md).
-Reporting shares PR route: default OFF; off/teams/slack/both require complete
+Reporting shares this PR route and defaults OFF. Teams/Slack/both require
 project/repository/scope/platform/destination/revision/secret_ref bindings.
-`show` withholds unsafe values; validate proposals offline; reachability UNOBSERVED.
-Unavailable policy refuses; accepted absence defaults. Preserve corrections
-and two-send ceiling across settings changes.
+`show` withholds unsafe values; validate offline. Reachability remains UNOBSERVED.
+Unavailable policy refuses; accepted absence means defaults. Preserve corrections
+and the two-send ceiling across changes.

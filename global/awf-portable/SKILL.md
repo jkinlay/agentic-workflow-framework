@@ -65,7 +65,7 @@ For chat settings questions, run verified `workflow.py operating show`
 read-only, without approval. Present both switches, both limits, source (fresh
 defaults, default branch at the reported commit, or legacy retained), working-file
 differences and offline rules UNOBSERVED warnings; publication readiness/adoption observe live rules.
-PR/merger optional; report unobserved. No owner terminal commands.
+PR/merger details are optional; report unobserved details. Owners need no terminal commands.
 
 For changes, branch from the fetched configured default branch. Edit requested
 `OPERATING_CONFIG.yaml` values, preserving text/comments; accounting OFF also
@@ -83,9 +83,9 @@ Defaults: continuous 24/7 work; weekday reviews 07:00-17:00 Europe/London;
 daily EoD 17:00. Validate proposals; only merged/fetched calendars apply;
 malformed accepted calendars refuse.
 
-Reporting shares this route: default OFF; off/teams/slack/both with complete
+Reporting shares this route and defaults OFF; off/teams/slack/both require complete
 project/repository/scope/platform/destination/revision/secret_ref bindings. Validate
-offline; reachability UNOBSERVED. Re-admit before POST; prepare links/secrets
+offline; reachability remains UNOBSERVED. Re-admit before POST; prepare links/secrets
 outside transactions. Preserve suspension/receipts/withdrawal/corrections/two-send ceilings.
 
 Budgets cover explicitly enrolled AWF sub-agents/attributable tools/retries;

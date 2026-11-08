@@ -15,11 +15,11 @@ class ReportingBoundaryTests(ReportingPRFixture,unittest.TestCase):
             self.assertEqual('off',effective_reporting(op.read_operating(self.root,self.gov).config)['mode'])
         self.assertFalse(self.calls.exists())
 
-    test_every_confirmed_reporting_value_and_removal_is_protected=policy.ReportingSettingsPRTests.test_working_and_pr_edits_in_both_directions_and_every_binding_field
+    test_every_accepted_reporting_value_and_removal_is_protected=policy.ReportingSettingsPRTests.test_working_and_pr_edits_in_both_directions_and_every_binding_field
     enabled=policy.ReportingSettingsPRTests.enabled
     test_defaults_load_without_git_gh_or_owner_profile=policy.ReportingSettingsPRTests.test_absent_empty_and_explicit_off_normalize_without_git
 
-    def test_one_confirmation_displays_all_external_changes_without_secrets(self):
+    def test_show_displays_all_merged_pr_changes_without_secrets(self):
         self.apply_reporting('both',**{'budgeting.accounting_enabled':True,'operating_calendar.eod.time':'18:00'})
         self.write(self.value)
         result=self.cli('show','--json')

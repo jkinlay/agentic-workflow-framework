@@ -213,16 +213,14 @@ class InputShapeTests(unittest.TestCase):
 
 
 class SchemaTests(unittest.TestCase):
-    def test_reporting_shapes_match_both_schemas_and_refusals_hide_values(self):
+    def test_reporting_config_shapes_and_refusals_hide_values(self):
         from agentic import operating
         from agentic.reporting.settings import BINDING_PATTERNS
         from jsonschema import Draft202012Validator
         value = 'ghp_' + 'd' * 36
-        for name in ('operating-config', 'operating-change'):
+        for name in ('operating-config',):
             schema = json.loads((operating.SCHEMAS / (name + '.schema.json')).read_text())
-            root = schema['properties']['reporting' if name == 'operating-config' else 'reporting_owner_observation']
-            if name == 'operating-change':
-                root = root['properties']['changes']
+            root = schema['properties']['reporting']
             properties = root['properties']['bindings']['items']['properties']
             self.assertTrue(Draft202012Validator(properties['repository']).is_valid('logical-repo'))
             for field, pattern in BINDING_PATTERNS.items():

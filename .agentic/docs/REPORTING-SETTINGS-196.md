@@ -2,8 +2,8 @@
 
 The owner operating route validates proposed files and displays accepted
 default-branch settings. Protected changes require an owner-merged PR. Refusals identify the field without echoing its value.
-The operating configuration and historical observation schemas share these
-allowlist shapes; project/repository/scope binding checks still apply.
+The operating configuration uses these allowlist shapes;
+project/repository/scope binding checks also apply.
 
 | Field | Permitted shape |
 | --- | --- |

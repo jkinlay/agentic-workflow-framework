@@ -346,6 +346,7 @@ class HTTPSDeadlineTests(unittest.TestCase):
                 left, right = socket.socketpair()
                 halted = threading.Event()
                 lookup_done = threading.Event()
+                handshake_entered = threading.Event()
                 class Wire:
                     def settimeout(self, seconds):
                         left.settimeout(seconds)
@@ -353,6 +354,7 @@ class HTTPSDeadlineTests(unittest.TestCase):
                         if stage == 'connect':
                             halted.wait(2)
                     def do_handshake(self):
+                        handshake_entered.set()
                         if stage == 'tls':
                             halted.wait(2)
                     def sendall(self, data):
@@ -369,9 +371,6 @@ class HTTPSDeadlineTests(unittest.TestCase):
                         # HTTPResponse owns the fd after Connection: close.
                         left.close()
                 wire = Wire()
-                class TLS:
-                    def wrap_socket(self, sock, **kwargs):
-                        return sock
                 def lookup(*args):
                     try:
                         if stage == 'dns':
@@ -403,10 +402,12 @@ class HTTPSDeadlineTests(unittest.TestCase):
                 try:
                     with patch.object(deadline.socket, 'socket', return_value=wire), \
                          patch.object(deadline.socket, 'getaddrinfo', side_effect=lookup), \
-                         patch('http.client._create_https_context', return_value=TLS()):
+                         patch('ssl.SSLContext.wrap_socket', new=lambda context, sock, **kwargs: sock):
                         with self.assertRaisesRegex(ValidationError, '^REPORT_HTTP_UNAVAILABLE$'):
                             http_json('POST', 'https://slack.com/api/chat.postMessage', {}, {}, timeout=.15)
                     self.assertLess(time.monotonic() - started, .8)
+                    if stage == 'tls':
+                        self.assertTrue(handshake_entered.is_set())
                 finally:
                     halted.set()
                     left.close()

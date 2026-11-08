@@ -64,9 +64,10 @@ reservation/transport entry and bounds worker joins. Noncooperative workers
 are durably recorded REPORT_DESTINATION_WORKER_NOT_QUIESCENT with revoked tokens.
 
 Verification/payload/HTTP-budget admission precedes reservation. Validate immutable
-policy before delivery; the controller rechecks default-ref identity and all selected
-binding fields before POST, including injected senders without policy loaders.
-Factory checks and review gates also remain. Changed/unverified
+policy before delivery. Controller sends recheck default-ref identity/bindings
+before POST, including injected senders. Library cycles defer by default;
+explicit sends require a fresh policy callback/loader.
+Factory checks and review gates remain. Changed/unverified
 identity forces full derivation. OFF/changed bindings refuse without resetting state. Candidate/window checks also repeat; remaining HTTP
 time is recomputed afterward. API acceptance, including Graph 201/chatMessage, proves
 no landing. Timeouts require reconciliation; terminal rejection/absence permits one
