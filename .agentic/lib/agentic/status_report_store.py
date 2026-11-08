@@ -23,7 +23,7 @@ from .planning import verify_override_state, verify_plan_record
 from .planning_graph import validate_ticket_plan
 from .provider_identity import (ProviderIdentityError, github_identity_preflight,
                                 jira_identity_preflight)
-from .status_report import (build_report, inputs_sha256, loads_report, render_json)
+from .status_report import (build_report, inputs_sha256, loads_report, render_json, report_diagnostic)
 from .store import Store
 
 
@@ -266,9 +266,9 @@ def prepare_report(config, request, *, operating=None, verify_inventory=None,
         except (ValidationError, KeyError, ValueError, TypeError, OverflowError) as exc:
             if key == 'lane_evidence':
                 projection.pop(key, None)
-                projection['plan'] = _unknown('INVALID_' + label + ': ' + str(exc))
+                projection['plan'] = _unknown('INVALID_' + label + ': ' + report_diagnostic(exc))
             else:
-                projection[key] = _unknown('INVALID_' + label + ': ' + str(exc))
+                projection[key] = _unknown('INVALID_' + label + ': ' + report_diagnostic(exc))
 
     if reason is not None:
         projection = _identity_failure_projection(config, reason)
@@ -365,9 +365,18 @@ class ReportStore(Store):
 def run_report(root, input_path, store_path):
     """CLI seam with explicit files and no implicit state initialization."""
     root = Path(root)
-    request = load(Path(input_path))
     contracts = Contracts(Path(__file__).resolve().parents[2] / 'schemas')
-    contracts.validate('status-report-input', request)
+    try:
+        request = load(Path(input_path))
+    except (ValidationError, ValueError, UnicodeError):
+        raise ValidationError('Status report input <key>: malformed JSON/YAML or unsupported values') from None
+    try:
+        contracts.validate('status-report-input', request)
+    except ValidationError:
+        from .operating import _schema
+        errors = _schema('status-report-input', request)
+        raise ValidationError('Status report input <key>: ' + '; '.join(
+            item['path'] + ': ' + item['reason'] for item in errors)) from None
     config = load(root / '.agentic/PROJECT_CONFIG.yaml')
     try:
         operating = read_operating(root, config)

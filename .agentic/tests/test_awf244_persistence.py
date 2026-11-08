@@ -61,8 +61,7 @@ class CalendarPersistenceTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         expected = effective_calendar({})
         for name in ('OPERATING_CONFIG.yaml', '.agentic/defaults/OPERATING_CONFIG.yaml',
-                     '.agentic/examples/OPERATING_CONFIG.yaml',
-                     '.agentic/templates/source-config/OPERATING_CONFIG.yaml'):
+                     '.agentic/examples/OPERATING_CONFIG.yaml'):
             with self.subTest(name=name):
                 self.assertEqual(json.loads((root / name).read_text())['operating_calendar'], expected)
         value = deepcopy(self.value)
@@ -73,6 +72,14 @@ class CalendarPersistenceTests(unittest.TestCase):
                     {'review_batching': {'weekdays': [True]}}):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
                 Contracts(op.SCHEMAS).validate('operating-config', {**value, 'operating_calendar': bad})
+
+    @source_only.skip_unless_source_repo(
+        "Source configuration forms are not shipped in installed runtimes",
+        '.agentic/templates/source-config/OPERATING_CONFIG.yaml')
+    def test_fresh_source_template_calendar_defaults(self):
+        root = Path(__file__).resolve().parents[2]
+        name = '.agentic/templates/source-config/OPERATING_CONFIG.yaml'
+        self.assertEqual(json.loads((root / name).read_text())['operating_calendar'], effective_calendar({}))
 
     def test_restart_persistence_and_unrelated_settings_preserved(self):
         before = deepcopy(self.value)

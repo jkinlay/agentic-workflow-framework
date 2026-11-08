@@ -46,8 +46,8 @@ def fixture_repository(root):
     def git(*args):
         return subprocess.run([shutil.which('git'), '-C', str(root), *args],
             env=isolated_git_env(), check=True, capture_output=True).stdout.decode().strip()
-    head, tree = git('rev-parse', 'HEAD', 'HEAD^{tree}').splitlines()
-    return dict(REPOSITORY, repository_root=root, repository_head_sha=head, repository_tree_sha=tree)
+    return dict(REPOSITORY, repository_root=root, repository_head_sha=git('rev-parse', 'HEAD'),
+                repository_tree_sha=git('rev-parse', 'HEAD^{tree}'))
 
 
 def fixture_reservations(root, request):

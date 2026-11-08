@@ -206,13 +206,13 @@ class ValidationTests(unittest.TestCase):
                                  (self.gov["execution"]["roles"], "$.execution.roles.worker.approved_model_ids")):
             allowed = section["worker"] if isinstance(section["worker"], list) else section["worker"]["approved_model_ids"]
             allowed.remove("gpt-5.6-sol")
-            self.refuse(value, "$.epic_overrides.FIX-1.streams.B.worker.model", binding)
+            self.refuse(value, "$.epic_overrides.<epic>.streams.<stream>.worker.model", binding)
             allowed.append("gpt-5.6-sol")
         value["epic_overrides"]["FIX-1"]["streams"]["B"]["reviewer"] = op._pair("gpt-5.6-sol", "medium")
-        self.refuse(value, "$.epic_overrides.FIX-1.streams.B.reviewer", "$.execution.model_routing.review_floor")
+        self.refuse(value, "$.epic_overrides.<epic>.streams.<stream>.reviewer", "$.execution.model_routing.review_floor")
         value["epic_overrides"]["FIX-1"]["streams"]["B"].pop("reviewer")
         value["epic_overrides"]["FIX-1"]["specialist"] = op._pair("gpt-5.6-sol", "medium")
-        self.refuse(value, "$.epic_overrides.FIX-1.specialist", "$.execution.model_routing.review_floor")
+        self.refuse(value, "$.epic_overrides.<epic>.specialist", "$.execution.model_routing.review_floor")
 
     def test_epic_schema_refuses_ambiguous_id_partial_routes_and_extra_scope(self):
         cases = [("this Epic", {"controller": op._pair("gpt-5.6-sol", "high")}),
@@ -415,12 +415,13 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(1, record["rows"][0]["recommended"])
         self.assertIn("FIX-2 value '../escape'", op.render_recommendation(record))
 
-    def test_unsupported_globs_refuse_with_epic_and_exact_value(self):
+    def test_unsupported_globs_refuse_with_placeholder_and_no_input_value(self):
         for value in ("data/**/*.py", "data*/", "data/?", "data/[ab]", "data/{a,b}", "data/**/nested/*"):
             with self.subTest(value=value), self.assertRaises(op.OperatingError) as caught:
                 self.recommend([epic(1, ["../unknown", value])])
-            self.assertEqual("$.epics.FIX-1.scope", caught.exception.refusals[0]["path"])
-            self.assertIn(repr(value), str(caught.exception))
+            self.assertEqual("$.epics.<epic>.scope", caught.exception.refusals[0]["path"])
+            self.assertNotIn(repr(value), str(caught.exception))
+            self.assertNotIn('FIX-1', str(caught.exception))
             self.assertIn("unsupported glob", str(caught.exception))
 
     def test_route_metadata_alone_never_creates_a_default_recommendation(self):

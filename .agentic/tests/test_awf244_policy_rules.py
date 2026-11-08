@@ -103,7 +103,8 @@ class PolicyReaderTests(unittest.TestCase):
                 self.assertTrue(shown['budget_admission'])
                 self.assertEqual(effective_calendar({}), shown['effective_operating_calendar'])
                 expected = {name: 'legacy retained' if name in legacy else 'fresh defaults'
-                            for name in ('budgeting', 'operating_calendar', 'reporting')}
+                            for name in ('budgeting', 'operating_calendar')}
+                expected['reporting'] = 'legacy retained'
                 self.assertEqual(expected, shown['protected_settings']['sources'])
                 from agentic.reporting.settings import effective_reporting
                 self.assertEqual({'mode': 'off', 'bindings': []}, effective_reporting(shown['configuration']))

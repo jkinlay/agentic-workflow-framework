@@ -3470,8 +3470,9 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 				_require(utc_instant(window['presentation_at']) == utc_instant(send_at)
 					and all(utc_instant(item['expires_at']) > utc_instant(send_at) for item in checked.values()),
 					'Post-fence presentation window closed or evidence expired')
+				batch_store.check_delivery_window(batch['batch_id'], send_at, calendar)
 			except Exception as exc:
-				cancel_uninvoked(send_at)
+				cancel_uninvoked(send_at, calendar)
 				excluded.update(m['intent_id'] for m in batch['members'])
 				failed('review_recheck', exc)
 				if candidate_limit is not None:

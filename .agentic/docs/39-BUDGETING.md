@@ -9,7 +9,7 @@ Missing fields preserve legacy budgeting/reviewed limits.
 
 In AWF Codex chat, read-only `workflow.py operating show` needs no approval.
 Present switches/limits, source/commit, differences; last PR/merger
-is optional and may be unobserved.
+is optional/unobserved.
 
 Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
 `budgeting.max_tokens_per_ticket`, `budgeting.max_tokens_per_project`.
@@ -19,9 +19,10 @@ Run `operating validate --file PROPOSED`; invalid combinations refuse before PR 
 Branch from the fetched default, change requested values preserving text/comments,
 and show before/after under existing publication authority. Restricted pushes
 prepare branch/body for owner publication. The owner merges; agents never merge.
-No owner terminal commands. Git/PR history audits protected changes;
+No owner terminal commands. Git/PR audits protected changes;
 protected `operating set` refuses without writes. Calendar uses the same PR route,
 effective source and validation; see [calendar](operating-calendar.md).
+Reporting shares this route: OFF/Teams/Slack/both, project-bound destinations; preserve delivery state.
 
 Effective protected settings come from the locally fetched default-branch commit.
 Only `refs/remotes/origin/HEAD` identifies it. Configuration is never an identity
@@ -34,10 +35,10 @@ mean update the checkout when behind, otherwise propose a PR.
 An absent file means no accepted policy: fresh OFF or legacy
 retained. With configured origin but no origin/HEAD, the default is unverified.
 Show/validation/installation retain the warning; working values are provisional. Admission tries refresh first. If still unverified,
-protected decisions refuse, including reporting and calendar decisions; working
-OFF cannot establish accepted policy. Fresh defaults in non-repositories remain offline. The cycle stops
+tracking refs or nondefault working values refuse budget work even if enforcement
+says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
 before planning/dispatch on that refusal; other commands remain available.
-The next controller cycle or `git remote set-head origin --auto` establishes identity.
+Next cycle or `git remote set-head origin --auto` establishes identity.
 With no origin configured there is no remote policy refresh. Present but empty,
 malformed, invalid or unavailable policy blobs refuse. Non-repositories run no Git/gh.
 OFF needs no ledger, telemetry or reservations. Preserve upgrade choices/history;
@@ -56,7 +57,7 @@ unlocked locks older than ten minutes are replaced/reported. Locking prevents
 clock-jump takeover. Shared filtering preserves Git helpers/home/PATH/SSH-agent.
 `show` never fetches. The skill fetches after owner merge, then shows settings.
 
-Merge authority rests with host rules and the owner. `show` reports rules UNOBSERVED
+Host rules and owner retain merge authority. `show` reports rules UNOBSERVED
 as a nonblocking warning; live rules are observed by publication readiness and
 adoption preflight, which report APPLIED/MISSING/UNOBSERVED. Offer the shipped
 ruleset separately. `merge_gate.trusted_owner_ids` keeps its merge-gate use.

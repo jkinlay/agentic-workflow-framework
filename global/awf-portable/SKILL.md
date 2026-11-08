@@ -8,8 +8,8 @@ metadata:
 
 # AWF
 
-Read [installation](references/skill-installation.md), [workflow](references/workflow.md),
-[channels](references/update-channel.md).
+Read [installation](references/skill-installation.md), [workflow](references/workflow.md)
+and [update channels](references/update-channel.md).
 
 Explain first: installing AWF changes repository governance files; prepare a
 draft PR for owner merge without rule preconditions. Report APPLIED/MISSING/
@@ -62,8 +62,9 @@ disables enforcement. Preserve upgrades; installed 1.9.5 stays unchanged/enabled
 Recommend versioned preservation, never in-place integrity-managed bytes/receipts.
 
 For chat settings questions, run verified `workflow.py operating show`
-read-only, without approval. Present switches/limits, source/commit, safe working-file
-differences and offline rules UNOBSERVED warnings; readiness/adoption observe live rules.
+read-only, without approval. Present both switches, both limits, source (fresh
+defaults, default branch at the reported commit, or legacy retained), working-file
+differences and offline rules UNOBSERVED warnings; publication readiness/adoption observe live rules.
 PR/merger optional; report unobserved. No owner terminal commands.
 
 For changes, branch from the fetched configured default branch. Edit requested
@@ -77,17 +78,15 @@ have no protected effect. Protected set explains the PR route.
 Keep Git metadata outside worker write authority. Host rules/owner govern merge;
 default-branch pushes/owner rights can bypass this. Offer the ruleset.
 `merge_gate.trusted_owner_ids` retains its merge-gate use.
-Calendar shares this route: show timezone/work/review/EoD settings. Defaults:
-24/7 work; weekday review 07:00-17:00 Europe/London; daily EoD 17:00.
-Validate proposals; only merged/fetched calendars apply; malformed policy refuses.
+Calendar shares the chat/PR route: show timezone/work/review/EoD settings.
+Defaults: continuous 24/7 work; weekday reviews 07:00-17:00 Europe/London;
+daily EoD 17:00. Validate proposals; only merged/fetched calendars apply;
+malformed accepted calendars refuse.
 
 Reporting shares this route: default OFF; off/teams/slack/both with complete
 project/repository/scope/platform/destination/revision/secret_ref bindings. Validate
-offline; reachability UNOBSERVED. Working edits cannot apply; fetch merged policy.
-Controller re-admits mode/bindings before POST, including injected senders.
-Prepare links/secrets outside transactions; recheck dependencies before retention.
-OFF retains suspension with cleared/absent bindings; exclude disabled hours.
-Preserve receipts/withdrawal/corrections/two-send ceilings.
+offline; reachability UNOBSERVED. Re-admit before POST; prepare links/secrets
+outside transactions. Preserve suspension/receipts/withdrawal/corrections/two-send ceilings.
 
 Budgets cover explicitly enrolled AWF sub-agents/attributable tools/retries;
 exclude controller/independent/ULTRA agents. Preserve UNKNOWN/history/failures/

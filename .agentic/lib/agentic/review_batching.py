@@ -412,9 +412,19 @@ class ReviewBatchStore:
             # REPORTING has transferred responsibility to the exact retained
             # per-destination outbox: it keeps these members claimed without
             # preventing a newer candidate from being presented independently.
-            for claimed in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='CLAIMED'"):
-                for member in self._payload(claimed)['members']:
-                    value = member['candidate']
+            reporting_intents = set()
+            for handed_off in db.execute("SELECT * FROM review_presentation_outbox_v1 WHERE state='REPORTING'"):
+                payload = self._payload(handed_off)
+                report = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                                    ('review-' + payload['batch_id'],)).fetchone()
+                _require(report is not None and loads(report[0]).get('review_batch') == payload,
+                         'Reporting handoff has no matching retained report')
+                reporting_intents.update(m['intent_id'] for m in payload['members'])
+            # Retain the target's intent-based fence even when no outbox row
+            # remains available. Only a verified durable handoff owns an exception.
+            for claimed in db.execute("SELECT intent_id,candidate_json FROM review_presentation_intent_v1 WHERE state='CLAIMED'"):
+                if claimed['intent_id'] not in reporting_intents:
+                    value = loads(claimed['candidate_json'])
                     fenced.add((value['repository_id'], value['pull_request']))
             selected = []
             rows = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE state IN ('PENDING','EXHAUSTED') ORDER BY intent_id").fetchall()
@@ -682,7 +692,7 @@ class ReviewBatchStore:
                      'REPORT_REVIEW_INTENT_TERMINAL')
             self._start(db, payload, now)
 
-        def cancel_uninvoked(cancelled_at):
+        def cancel_uninvoked(cancelled_at, calendar=None):
             # This continuation is exclusively for a post-fence check refusal,
             # before calling any transport. Never retain it or use after a send.
             with self.controller.transaction() as db:
@@ -690,6 +700,12 @@ class ReviewBatchStore:
                 phase = db.execute("SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?", (batch_id,)).fetchone()
                 _require(row['state'] == 'CLAIMED' and phase[0] == 'SENDING' and row['receipt_json'] is None,
                          'Uninvoked delivery cancellation is no longer current')
+                # Remove this provably uninvoked attempt from retained evidence
+                # before rebuilding the current window's charge, in one commit.
+                db.execute("UPDATE review_presentation_outbox_v1 SET state='UNSENT' WHERE batch_id=?", (batch_id,))
+                db.execute("UPDATE review_presentation_phase_v1 SET phase='RELEASED' WHERE batch_id=?", (batch_id,))
+                window = _window(cancelled_at, calendar) if calendar is not None else None
+                evidence = self._attempt_windows(db, calendar) if calendar is not None else None
                 for member in self._payload(row)['members']:
                     intent = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?", (member['intent_id'],)).fetchone()
                     detail = db.execute("SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?", (member['intent_id'],)).fetchone()
@@ -697,10 +713,15 @@ class ReviewBatchStore:
                              and detail['window_attempts'] > 0, 'Uninvoked delivery charge differs')
                     db.execute("UPDATE review_presentation_intent_v1 SET state='PENDING',attempts=attempts-1 WHERE intent_id=?",
                                (member['intent_id'],))
+                    count = detail['window_attempts'] - 1
+                    if window is not None:
+                        restored = db.execute("SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?", (member['intent_id'],)).fetchone()
+                        count = self._window_count(restored, window['opening'], evidence)
+                        if count >= 2:
+                            db.execute("UPDATE review_presentation_intent_v1 SET state='EXHAUSTED' WHERE intent_id=?", (member['intent_id'],))
                     self._detail(db, member['intent_id'], 'Post-fence window or expiry check refused; transport not invoked',
-                                 cancelled_at, attempts=detail['window_attempts'] - 1)
-                db.execute("UPDATE review_presentation_outbox_v1 SET state='UNSENT' WHERE batch_id=?", (batch_id,))
-                db.execute("UPDATE review_presentation_phase_v1 SET phase='RELEASED' WHERE batch_id=?", (batch_id,))
+                                 cancelled_at, attempts=count,
+                                 retry_at=window['next_opening'] if window is not None else None)
                 self._changed(db)
         return cancel_uninvoked
 
@@ -708,6 +729,35 @@ class ReviewBatchStore:
         _require(isinstance(receipt, dict) and receipt.get("status") == "DELIVERED",
                  "Review acknowledgement requires verified DELIVERED readback")
         return self.reconcile(receipt)
+
+    def check_delivery_window(self, batch_id, now, calendar):
+        """Recheck the fenced charge against the window immediately before send.
+
+        The current SENDING attempt is already included in retained evidence.
+        A different opening cannot borrow its charge, including a return to an
+        exhausted opening. Only the live caller can cancel an uninvoked send.
+        """
+        current = utc_instant(now)
+        window = _window(now, calendar)
+        eligible = next_review_presentation(now, calendar)
+        with self.controller.connection() as db:
+            db.execute('BEGIN')
+            row = db.execute('SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (batch_id,)).fetchone()
+            phase = db.execute('SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?', (batch_id,)).fetchone()
+            _require(row is not None and row['state'] == 'CLAIMED' and phase is not None and phase[0] == 'SENDING',
+                     'Review delivery has no current send fence')
+            payload = self._payload(row)
+            _require(current >= utc_instant(payload['prepared_at'])
+                     and utc_instant(eligible['presentation_at']) == current
+                     and payload.get('presentation_window') == window,
+                     'Post-fence review presentation window binding changed')
+            evidence = self._attempt_windows(db, calendar)
+            for member in payload['members']:
+                intent = db.execute('SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?', (member['intent_id'],)).fetchone()
+                _require(intent is not None and intent['state'] == 'CLAIMED'
+                         and intent['attempts'] == member['attempt']
+                         and 0 < self._window_count(intent, window['opening'], evidence) <= 2,
+                         'Post-fence current review window allowance exhausted or charge changed')
 
     def reconcile(self, receipt, calendar=None):
         """Persist verified readback; at most two attempts before next window.

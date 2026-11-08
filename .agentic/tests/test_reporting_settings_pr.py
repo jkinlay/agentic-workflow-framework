@@ -17,6 +17,7 @@ import test_awf242_settings_pr as fixture
 class ReportingSettingsPRTests(unittest.TestCase):
     def setUp(self):
         fixture.SettingsPRTests.setUp(self)
+        self.value['reporting'] = effective_reporting({})
         self.gov['github']['repository_id']=101
         (self.root/op.GOVERNANCE).write_bytes(op._json(self.gov))
         self.publish(self.value)
@@ -66,6 +67,27 @@ class ReportingSettingsPRTests(unittest.TestCase):
         snapshot=op.read_operating(self.root,self.gov)
         self.assertEqual('off',effective_reporting(snapshot.config)['mode'])
         self.assertEqual(commit,snapshot.provenance['protected_settings']['commit'])
+
+    def test_reporting_source_labels_follow_accepted_domain_presence(self):
+        for present in (False, True):
+            with self.subTest(accepted_reporting_present=present):
+                accepted = deepcopy(self.value)
+                if not present:
+                    accepted.pop('reporting')
+                self.publish(accepted)
+                self.write(self.enabled())
+                snapshot = op.read_operating(self.root, self.gov)
+                self.assertEqual('default branch' if present else 'legacy retained; default branch',
+                    snapshot.provenance['protected_settings']['sources']['reporting'])
+                self.assertEqual(dict(mode='off', bindings=[]), effective_reporting(snapshot.config))
+        self.publish(self.value)
+        self.git('rm', '-q', op.CONFIG)
+        self.git('commit', '-qm', 'Accepted absent reporting file')
+        self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+        self.write(self.enabled())
+        snapshot = op.read_operating(self.root, self.gov)
+        self.assertEqual('fresh defaults', snapshot.provenance['protected_settings']['sources']['reporting'])
+        self.assertEqual(dict(mode='off', bindings=[]), effective_reporting(snapshot.config))
 
     def test_absent_empty_and_explicit_off_normalize_without_git(self):
         from agentic.protected_settings import resolve_protected

@@ -64,6 +64,10 @@ class ReportingSettingsTests(unittest.TestCase):
         gov = deepcopy(self.gov)
         gov.pop('github')
         value = op.default_operating(gov['execution']['model_routing'])
+        from agentic.reporting.settings import effective_reporting
+        self.assertEqual(effective_reporting(op.validate_operating(value, gov).config),
+                         dict(mode='off', bindings=[]))
+        value['reporting'] = effective_reporting({})
         self.assertEqual(op.validate_operating(value, gov).config['reporting']['mode'], 'off')
         value['reporting'] = dict(mode='slack', bindings=[binding()])
         with self.assertRaisesRegex(ValidationError, 'REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED'):
@@ -479,6 +483,24 @@ class AccountingObservationTests(unittest.TestCase):
                 collect_sources(b, now, lambda request: bad, lambda auth, request: {})
         with self.assertRaises(ValidationError):
             collect_sources(b, now, lambda request: value, lambda auth, request: {})
+
+
+class MergeBatchFenceTests(unittest.TestCase):
+    def test_claimed_intent_without_outbox_still_fences_new_head(self):
+        from test_awf244_review_batching import BatchingTests, candidate
+        case = BatchingTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        identity = case.enqueue()
+        with case.controller.transaction() as db:
+            db.execute("UPDATE review_presentation_intent_v1 SET state='CLAIMED',attempts=1 WHERE intent_id=?",
+                       (identity,))
+        case.enqueue(dict(candidate(), head_sha='e' * 40))
+        self.assertIsNone(case.store.claim(case.now, {}, case.observe))
+        with case.controller.connection() as db:
+            row = db.execute('SELECT state,attempts FROM review_presentation_intent_v1 WHERE intent_id=?',
+                             (identity,)).fetchone()
+        self.assertEqual(('CLAIMED', 1), tuple(row))
 
 
 if __name__ == '__main__':

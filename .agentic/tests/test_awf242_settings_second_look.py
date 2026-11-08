@@ -565,10 +565,7 @@ class SecondLookTests(unittest.TestCase):
     def test_legacy_event_chain_survives_merged_block(self):
         legacy = deepcopy(self.value)
         legacy.pop('budgeting')
-        from agentic.protected_settings import PROTECTED_DOMAINS
-        for name, _, _ in PROTECTED_DOMAINS:
-            if name != 'budgeting':
-                legacy.pop(name, None)  # Published 1.9.5 predates these domains.
+        legacy.pop('operating_calendar', None)  # Published 1.9.5 has neither domain.
         self.publish(legacy)
         import sys
         import tarfile
