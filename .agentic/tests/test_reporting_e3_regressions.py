@@ -255,10 +255,8 @@ def cli_probe(latency, *, prepare=None, inspect=None):
         inputs = planning_fixture_inputs(inventory['tickets'], case.helper.store, 3,
             binding=inventory_binding, now=now)
         project = Path(case.helper.temp.name) / 'cli-project'
-        subprocess.run(['git', 'clone', '--shared', '--quiet', str(case.repository['repository_root']), str(project)],
-                       check=True, capture_output=True)
-        # This clone is a local fixture, not a remote-policy integration probe.
-        subprocess.run(['git','-C',str(project),'config','--local','--unset-all','remote.origin.url'], check=True, capture_output=True)
+        from test_reporting_fixtures import build_reporting_repository
+        build_reporting_repository(project)
         gov = inputs['planning_config']
         (project / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(gov), encoding='utf-8')
         operating = deepcopy(inputs['planning_operating_snapshot'].config)

@@ -64,8 +64,34 @@ def refresh_reporting_repository(case, root):
     case.repository.update(repository_root=root, repository_head_sha=head, repository_tree_sha=tree)
 
 
+def build_reporting_repository(root):
+    """Commit the runtime files under test, without using checkout Git history.
+
+    Installed projects deliberately have an unborn HEAD. Copy current bytes so
+    these CLI/admission probes also exercise uncommitted source amendments.
+    Tests, environments and local state are not needed in the fixture project.
+    """
+    from pathlib import Path
+    import shutil
+    import subprocess
+    from agentic.child_process import isolated_git_env
+    source = Path(__file__).resolve().parents[2]
+    root = Path(root)
+    shutil.copytree(source / '.agentic', root / '.agentic',
+        ignore=shutil.ignore_patterns('tests', '.venv', '__pycache__', '*.pyc'))
+    for name in ('AGENTS.md', 'OPERATING_CONFIG.yaml'):
+        shutil.copyfile(source / name, root / name)
+    def git(*args):
+        subprocess.run([shutil.which('git'), '-C', str(root), *args],
+            env=isolated_git_env(), check=True, capture_output=True)
+    git('init', '-q', '-b', 'main')
+    git('add', '.')
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Reporting runtime fixture')
+
+
 def prepare_reporting_repository(case, root):
-    """Give a source clone this probe's real accepted three-lane policy."""
+    """Give a disposable repository this probe's accepted three-lane policy."""
     from test_planning import config, operating_snapshot
     from settings_pr_fixtures import publish_fixture_settings
     governance = config(3)

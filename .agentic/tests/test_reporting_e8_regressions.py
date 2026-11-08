@@ -178,10 +178,8 @@ class E8ControllerTests(unittest.TestCase):
         # other bounded-delivery probes do. Unrelated source edits otherwise
         # add worktree-reservation scans to the fixed 47-second assertion.
         clean = Path(self.helper.temp.name) / 'noncooperative-repository'
-        subprocess.run(['git', 'clone', '--shared', '--quiet',
-                        str(self.repository['repository_root']), str(clean)],
-                       check=True, capture_output=True)
-        from test_reporting_fixtures import prepare_reporting_repository
+        from test_reporting_fixtures import build_reporting_repository, prepare_reporting_repository
+        build_reporting_repository(clean)
         prepare_reporting_repository(self, clean)
         self.repository['repository_root'] = clean
         self.network.latency = .3

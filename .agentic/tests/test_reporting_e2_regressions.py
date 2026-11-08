@@ -207,10 +207,10 @@ class ReportingE2Regressions(unittest.TestCase):
 
     def test_slow_destination_is_bounded_other_platform_and_next_cycle_proceed(self):
         # Keep real Git admission with policy matching this three-lane fixture;
-        # publishing the fixture policy preserves the clone's checkout head.
+        # publishing the fixture policy preserves its checkout head.
         clean = Path(self.helper.temp.name) / 'clean-repository'
-        subprocess.run(['git', 'clone', '--shared', '--quiet', str(self.repository['repository_root']), str(clean)],
-                       check=True, capture_output=True)
+        from test_reporting_fixtures import build_reporting_repository
+        build_reporting_repository(clean)
         from test_planning import config, operating_snapshot
         from settings_pr_fixtures import publish_fixture_settings
         governance = config(3)
@@ -384,6 +384,9 @@ class ReportingE2Regressions(unittest.TestCase):
         exec(compile(raw, '<merge-base-controller>', 'exec'), module.__dict__)
         return module.ContinuousControllerStore
 
+    @source_only.skip_unless_source_repo(
+        'requires pre-reporting controller Git history absent from installed projects',
+        'scripts/build_release.py')
     def test_rollback_merge_base_never_consumes_report_as_legacy_digest(self):
         self.cycle('2026-11-07T17:00:00Z')
         controller = self.merge_base_controller()
@@ -394,6 +397,9 @@ class ReportingE2Regressions(unittest.TestCase):
             older.acknowledge_digest(digest['delivery_id'], '2026-11-07T18:00:00Z')
         self.assertTrue(self.status()['reports'])
 
+    @source_only.skip_unless_source_repo(
+        'requires pre-reporting controller Git history absent from installed projects',
+        'scripts/build_release.py')
     def test_pre_release_report_rows_relocate_additively_with_attempts_intact(self):
         from agentic.continuous_controller import ContinuousControllerStore
         self.cycle('2026-11-07T17:00:00Z')
