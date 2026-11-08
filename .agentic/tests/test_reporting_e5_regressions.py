@@ -40,8 +40,9 @@ class BoundaryTests(unittest.TestCase):
                 outbox.enqueue(intent)
             self.assertEqual(self.helper.path.read_bytes(), before)
             with self.assertRaisesRegex(ValidationError, 'REPORT_CREDENTIAL_WITHHELD'):
+                prepared = outbox.prepare_enqueue(intent)
                 with self.helper.store.transaction() as db:
-                    outbox.enqueue_in_transaction(db, intent)
+                    outbox.enqueue_in_transaction(db, intent, prepared=prepared)
             self.assertNotIn(SENTINEL.encode(), self.helper.path.read_bytes())
 
     def test_real_factory_senders_refuse_legacy_envelope_before_any_http(self):

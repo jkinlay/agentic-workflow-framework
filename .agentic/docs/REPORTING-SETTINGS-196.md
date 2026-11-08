@@ -1,7 +1,7 @@
 # Reporting 1.9.6: setting validation
 
-The owner operating route validates settings before proposing, storing or
-displaying them. Refusals identify the field without echoing its value.
+The owner operating route validates proposed files and displays accepted
+default-branch settings. Protected changes require an owner-merged PR. Refusals identify the field without echoing its value.
 The operating configuration and historical observation schemas share these
 allowlist shapes; project/repository/scope binding checks still apply.
 
@@ -29,11 +29,11 @@ also requires the platform's channel shape; adapter aliases do not enable sendin
 Budget fields remain exact booleans or bounded positive integers; enforcement
 requires accounting. Calendar fields remain supported IANA timezones, continuous
 work mode, exact booleans, unique ISO weekdays 1–7 and strict HH:MM times, with
-opening before cutoff. Malformed values cannot reach the shared proposal/audit.
-
-Unsafe retained proposals refuse confirmation before display or authentication.
-Unsafe retained confirmation priors refuse new proposals. Existing store bytes
-are preserved; this introduces no migration.
+opening before cutoff. Rejected values are withheld from validation/show errors
+and differences. Git history and the PR provide the settings audit. Working
+changes, including OFF or deletion, cannot replace accepted policy. Accepted OFF
+with cleared/absent bindings preserves existing-scope suspension across restart;
+no marker or credentials are created for an unused scope.
 
 Reporting-owned delivery exhaustion is terminal for the exact candidate across
 windows, calendar edits and restart. Ordinary review-only exhaustion retains

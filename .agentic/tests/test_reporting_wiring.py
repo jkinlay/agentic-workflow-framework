@@ -210,6 +210,47 @@ class ReportingRuntimeTests(unittest.TestCase):
         self.assertEqual(result['generated'], 1)
         self.assertEqual(result['reports'][0]['body']['data']['period'].count('20:00'), 2)
 
+    def cleared_off(self, absent=False):
+        from agentic.canonical import loads
+        self.visible_platforms.add('teams')
+        self.cycle('2026-11-07T16:59:59Z')
+        self.cycle('2026-11-07T17:00:00Z')
+        from agentic.reporting.runtime import reporting_status
+        before = deepcopy(reporting_status(self.store, self.root, self.binding))
+        enabled = deepcopy(self.root)
+        if absent:
+            self.root.pop('reporting')
+        else:
+            self.root['reporting'] = dict(mode='off', bindings=[])
+        sent = len(self.sent)
+        result = self.cycle('2026-11-07T17:30:00Z')
+        self.assertEqual(0, result['generated'])
+        self.assertEqual(sent, len(self.sent))
+        key = 'reporting:' + fingerprint('reporting-scope', self.binding)
+        with self.store.connection() as db:
+            state = loads(db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()[0])
+        self.assertTrue(state['suspended'])
+        self.assertEqual('2026-11-07T17:30:00Z', state['cursor'])
+        with self.assertRaisesRegex(ValidationError, 'REPORT_CLOCK_REGRESSION'):
+            self.cycle('2026-11-07T17:29:00Z')
+        self.store = ContinuousControllerStore(self.path, ['A'])
+        self.root = enabled
+        result = self.cycle('2026-11-07T20:00:00Z')
+        self.assertEqual(1, result['generated'])
+        self.assertEqual('hourly', result['reports'][0]['kind'])
+        self.assertEqual('2026-11-07T20:00:00Z', result['reports'][0]['period']['end'])
+        self.assertFalse(result['reports'][0]['period']['catch_up'])
+        after = reporting_status(self.store, self.root, self.binding)
+        self.assertEqual(before['reports'], after['reports'][:-1])
+        self.assertEqual(before['deliveries'], after['deliveries'][:-2])
+        self.assertTrue(all(d['status'] == 'DELIVERED' and len(d['attempts']) == 1 for d in after['deliveries'][-2:]))
+
+    def test_cleared_bindings_off_period_is_not_backfilled_after_restart(self):
+        self.cleared_off()
+
+    def test_absent_reporting_block_off_period_is_not_backfilled_after_restart(self):
+        self.cleared_off(absent=True)
+
     def test_readiness_correction_is_immediate_but_final_notice_is_batched(self):
         c = dict(project='p', repository='101', scope_revision='s', pr=1, head='a'*40,
                  base='b'*40, gate='g', stage='READY_FOR_OWNER_AUTHORIZATION',

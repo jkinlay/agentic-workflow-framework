@@ -3917,7 +3917,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			errors.append({'operation': 'status_delivery', 'delivery_id': digest['delivery_id'], 'state': 'PENDING', 'reason': type(exc).__name__})
 	streams = store.snapshot()
 	from .reporting.settings import effective_reporting
-	from .reporting.runtime import reporting_cycle, ReviewReportingPort
+	from .reporting.runtime import reporting_cycle, ReviewReportingPort, _readmit_reporting
 	from .reporting.bounded import DeliveryBudget, SourceBudget, BoundedObserver, MAX_REVIEW_CANDIDATES
 	from .reporting.observations import attributed_accounting, collect_sources, collect_review_corrections
 	report_binding = dict(project=inventory_binding['project_id'], repository=inventory_binding['repository_id'],
@@ -4035,7 +4035,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			# one advance/platform for review; unused allowance stays available.
 			reporting['deliveries'] = drain(store, operating_root, report_binding, reporting_providers or {},
 				budget=report_delivery_budget.reporting_slice() if review_waiting and review_retry_first else report_delivery_budget,
-				reserve_review=port is not None, reserve_reconciliation=review_retry_first and review_waiting)
+				reserve_review=port is not None, reserve_reconciliation=review_retry_first and review_waiting,
+				before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy))
 		except Exception as exc:
 			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
 	if port is not None:

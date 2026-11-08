@@ -84,7 +84,10 @@ Validate proposals; only merged/fetched calendars apply; malformed policy refuse
 Reporting shares this route: default OFF; off/teams/slack/both with complete
 project/repository/scope/platform/destination/revision/secret_ref bindings. Validate
 offline; reachability UNOBSERVED. Working edits cannot apply; fetch merged policy.
-Re-admit mode/binding before POST; preserve receipts/withdrawal/corrections/two-send ceilings.
+Controller re-admits mode/bindings before POST, including injected senders.
+Prepare links/secrets outside transactions; recheck dependencies before retention.
+OFF retains suspension with cleared/absent bindings; exclude disabled hours.
+Preserve receipts/withdrawal/corrections/two-send ceilings.
 
 Budgets cover explicitly enrolled AWF sub-agents/attributable tools/retries;
 exclude controller/independent/ULTRA agents. Preserve UNKNOWN/history/failures/

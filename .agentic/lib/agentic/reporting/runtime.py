@@ -6,6 +6,7 @@ No usage write, Jira client or dispatch lives here. Admission resolves sender
 references transiently through the shared credential filter.
 """
 from copy import copy, deepcopy
+from dataclasses import dataclass
 from datetime import timedelta
 import threading
 import uuid
@@ -15,7 +16,7 @@ from .. import ValidationError
 from ..canonical import canonical, fingerprint, loads, timestamp
 from ..operating_calendar import effective_calendar, next_review_presentation
 from .bodies import prepare_body, render_body
-from .bounded import DeliveryBudget, MAX_ADVANCES
+from .bounded import DeliveryBudget, MAX_ADVANCES, source_timeout
 from .compose import compose_report, describe, number
 from .delivery import DeliveryOutbox, delivery_intent, require, same_destination
 from .events import approval_event, withdrawal_event, due_periods, owner_events, readiness_events, utc
@@ -32,7 +33,43 @@ def _bindings(operating, binding):
     return settings, destinations
 
 
-def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None, senders=(), threads=None):
+def _readmit_reporting(operating, binding, load_operating):
+    _, retained = _bindings(operating, binding)
+    current = load_operating()
+    settings, destinations = _bindings(current, binding)
+    require(settings['mode'] != 'off', 'REPORTING_OFF')
+    require(destinations == retained, 'REPORT_DESTINATION_MISMATCH')
+    return current
+
+
+@dataclass(frozen=True)
+class PreparedReport:
+    encoded: bytes
+    deliveries: tuple
+    created_at: str
+
+
+def _preparation_callback(callback):
+    def checked(*args, **kwargs):
+        source_timeout()
+        value = callback(*args, **kwargs)
+        source_timeout()
+        return value
+    return checked
+
+
+def _preparation_senders(senders):
+    prepared = []
+    for sender in senders:
+        if callable(getattr(sender, 'resolve_secret', None)):
+            sender = copy(sender)
+            sender.resolve_secret = _preparation_callback(sender.resolve_secret)
+        prepared.append(sender)
+    return prepared
+
+
+def _prepare_report(report_id, kind, body, binding, destinations, now, *, extra=None, senders=(), threads=None):
+    senders = _preparation_senders(senders)
     data = safe_report(body['data'], trusted_keys=True, senders=senders)
     if data != body['data']:
         body = prepare_body(kind, data)
@@ -40,19 +77,111 @@ def _retain(db, report_id, kind, body, binding, destinations, now, *, extra=None
             'REPORT_CREDENTIAL_WITHHELD')
     record = dict(report_id=report_id, kind=kind, binding=deepcopy(binding), body=body,
                   delivery_ids=[], **(extra or {}))
+    deliveries = []
     for destination in destinations:
         intent = delivery_intent(report_id, destination, render_body(body, destination['platform']),
                                  thread_id=(threads or {}).get(destination['platform']))
         sender = next((s for s in senders if getattr(s, 'binding', None) == destination), None)
-        DeliveryOutbox.enqueue_in_transaction(db, intent, resolve_secret=getattr(sender, 'resolve_secret', None))
+        deliveries.append(DeliveryOutbox.prepare_enqueue(intent, resolve_secret=getattr(sender, 'resolve_secret', None)))
         record['delivery_ids'].append(intent['delivery_id'])
-    raw = canonical(record).decode()
-    prior = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (report_id,)).fetchone()
+    return PreparedReport(canonical(record), tuple(deliveries), now)
+
+
+# Retain the legacy preparation seam used by historical-record fixtures.
+# It prepares bytes only; a database connection never enters this hook.
+_retain = _prepare_report
+
+
+def _retain_prepared(db, prepared):
+    record = loads(prepared.encoded.decode())
+    for delivery in prepared.deliveries:
+        DeliveryOutbox.enqueue_in_transaction(db, loads(delivery.encoded.decode()), prepared=delivery)
+    raw = prepared.encoded.decode()
+    prior = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (record['report_id'],)).fetchone()
     if prior:
         require(prior[0] == raw, 'REPORT_IDENTITY_REUSED_WITH_DIFFERENT_BYTES')
     else:
-        db.execute('INSERT INTO controller_reports VALUES(?,?,?,?)', (report_id, kind, now, raw))
+        db.execute('INSERT INTO controller_reports VALUES(?,?,?,?)',
+                   (record['report_id'], record['kind'], prepared.created_at, raw))
     return record
+
+
+def _projection_inputs(db, binding):
+    # Membership, ordered row identities and original bytes are dependencies.
+    # Review status is controller-wide, so its complete input sets are retained.
+    key = 'reporting:' + fingerprint('reporting-scope', binding)
+    row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+    reports = list(list(r) for r in db.execute("""SELECT rowid,* FROM controller_reports
+        WHERE (json_extract(payload_json,'$.binding.project')=? AND
+               json_extract(payload_json,'$.binding.repository')=?) OR kind='final-human-review' ORDER BY rowid""",
+        (binding['project'], binding['repository'])))
+    ids = canonical([r[1] for r in reports]).decode()
+    deliveries = list(list(r) for r in db.execute("""SELECT rowid,* FROM controller_report_delivery
+        WHERE (json_extract(intent_json,'$.binding.project')=? AND
+               json_extract(intent_json,'$.binding.repository')=?) OR
+              json_extract(intent_json,'$.report_id') IN (SELECT value FROM json_each(?)) ORDER BY rowid""",
+        (binding['project'], binding['repository'], ids)))
+    review = []
+    for table in ('review_presentation_intent_v1', 'review_presentation_detail_v1',
+                  'review_presentation_outbox_v1', 'review_presentation_phase_v1'):
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+        review.append([table, list(list(r) for r in db.execute('SELECT rowid,* FROM ' + table + ' ORDER BY rowid'))
+                       if exists else None])
+    deferred = list(list(r) for r in db.execute(
+        "SELECT key,value FROM controller_meta WHERE key LIKE 'report-review-deferred:%' ORDER BY key"))
+    return dict(cursor=row[0] if row else None, reports=reports, deliveries=deliveries,
+                review=review, deferred=deferred)
+
+
+def _read_projection_inputs(store, binding, now, calendar):
+    from ..review_batching import ReviewBatchStore
+    with store.connection() as db:
+        db.execute('BEGIN')
+        try:
+            expected = _projection_inputs(db, binding)
+            view = ReviewBatchStore.view_from_db(db, now, calendar)
+        finally:
+            db.execute('ROLLBACK')
+    return expected, view
+
+
+def _projection_attention(snapshot, binding):
+    deferred = {loads(raw)['report_id']: loads(raw) for _, raw in snapshot['deferred']}
+    states = {r[1]: loads(r[3]) for r in snapshot['deliveries']}
+    intents = {r[1]: loads(r[2]) for r in snapshot['deliveries']}
+    notices = []
+    for row in snapshot['reports']:
+        report = loads(row[4])
+        if report['binding'] != binding:
+            continue
+        destinations = [dict(delivery_id=i, platform=intents[i]['binding']['platform'],
+            status=states[i]['status'], attempts=len(states[i]['attempts'])) for i in report['delivery_ids']]
+        if any(d['status'] in {'FAILED', 'UNKNOWN', 'IN_FLIGHT'} for d in destinations) or (
+                report['report_id'] in deferred and any(d['status'] != 'DELIVERED' for d in destinations)):
+            notices.append(dict(report_id=report['report_id'], kind=report['kind'], destinations=destinations,
+                deferred=deferred.get(report['report_id']),
+                owner_action='Inspect delivery evidence, current gate, calendar and destination health; do not repost uncertain sends'))
+    return notices
+
+
+@dataclass(frozen=True)
+class PreparedProjection:
+    expected: bytes
+    cursor: bytes
+    reports: tuple
+    withdrawals: tuple
+
+
+def _commit_projection(store, binding, prepared):
+    with store.transaction() as db:
+        require(canonical(_projection_inputs(db, binding)) == prepared.expected, 'REPORT_PROJECTION_STATE_CHANGED')
+        for report in prepared.reports:
+            _retain_prepared(db, report)
+        for delivery_id, raw in prepared.withdrawals:
+            DeliveryOutbox._save(db, delivery_id, loads(raw.decode()))
+        key = 'reporting:' + fingerprint('reporting-scope', binding)
+        db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                   (key, prepared.cursor.decode()))
 
 
 def _body(kind, binding, now, calendar, context, period=None, action=None):
@@ -355,257 +484,284 @@ def delivery_attention(store, operating, binding):
     return notices
 
 
+def _prepare_projection(snapshot, operating, binding, now, providers, context, calendar, destinations):
+    existing = {r[1]: loads(r[4]) for r in snapshot['reports']}
+    delivery_values = {r[1]: (loads(r[2]), loads(r[3])) for r in snapshot['deliveries']}
+    originals = {i: canonical(v[1]) for i, v in delivery_values.items()}
+    prepared_reports, generated = [], []
+    def retain(*args, **kwargs):
+        prepared = _retain(*args, **kwargs)
+        record = loads(prepared.encoded.decode())
+        if record['report_id'] in existing:
+            require(existing[record['report_id']] == record, 'REPORT_IDENTITY_REUSED_WITH_DIFFERENT_BYTES')
+        prepared_reports.append(prepared)
+        existing[record['report_id']] = record
+        for delivery in prepared.deliveries:
+            intent = loads(delivery.encoded.decode())
+            identity = intent['delivery_id']
+            if identity not in delivery_values:
+                state = dict(status='PENDING', attempts=[], history=[], fence=None)
+                delivery_values[identity] = (intent, state)
+                originals[identity] = canonical(state)
+        return record
+    def withdraw(delivery_id, notice, *, basis=False):
+        intent, state = delivery_values[delivery_id]
+        delivery_values[delivery_id] = (intent, DeliveryOutbox.withdraw_state(state, notice, basis=basis))
+    attention = _projection_attention(snapshot, binding)
+    context['delivery_attention'] = attention
+    ordered = sorted(attention, key=lambda n: not any(d['status'] == 'FAILED' for d in n['destinations']))
+    context_for_body = dict(context, delivery_attention=dict(total=len(attention), records=ordered[:4],
+        remaining='Inspect reporting-status for all retained delivery identities') if attention else None)
+    state = loads(snapshot['cursor']) if snapshot['cursor'] is not None else dict(cursor=utc(timestamp(now) - timedelta(microseconds=1)), owner={})
+    require(timestamp(state['cursor']) <= timestamp(now), 'REPORT_CLOCK_REGRESSION')
+    if state.pop('suspended', False):
+        state['cursor'] = utc(timestamp(now) - timedelta(microseconds=1))
+    # Bound calendar generation as well as sends. Further downtime remains
+    # behind the durable cursor for the next controller cycle.
+    end = utc(min(timestamp(now), timestamp(state['cursor']) + timedelta(days=7)))
+    periods = due_periods(state['cursor'], end, operating, effective_calendar=effective_calendar)
+    hours = [p for p in periods if p['kind'] == 'hourly']
+    daily = [p for p in periods if p['kind'] == 'eod']
+    summary = hours[-1] if len(hours) > 1 else None
+    summarized = [p for p in periods if p['kind'] == 'hourly' or p in daily[:-2]] if summary else []
+    for period in periods:
+        period['catch_up'] = timestamp(period['end']) < timestamp(now) or period == summary
+        report_id = fingerprint('controller-report-period', [binding, period['id']])
+        extra = dict(period=deepcopy(period))
+        try:
+            body = _body(period['kind'], binding, now, calendar,
+                         dict(context_for_body, previous_daily_end=state.get('daily_end')), period)
+        except ValidationError as exc:
+            # Bad merge evidence fails this daily projection explicitly;
+            # rendering/identity failures still roll back atomically.
+            if str(exc) not in {'REPORT_MERGE_TIMESTAMP_INVALID', 'REPORT_FUTURE_MERGE'}:
+                raise
+            extra['generation_error'] = str(exc)
+            body = _body(period['kind'], binding, now, calendar, dict(context, records=None), period)
+            data = dict(body['data'], summary='UNAVAILABLE: ' + str(exc), generation_error=str(exc))
+            body = prepare_body(period['kind'], data)
+        if period == summary:
+            extra['catch_up_periods'] = deepcopy(summarized)
+            data = deepcopy(body['data'])
+            data['sections']['Changes since the previous report'] = (
+                data['sections'].get('Changes since the previous report', '')
+                + '\nCATCH-UP: missed hourly periods ending ' + ', '.join(p['end'] for p in hours)
+                + '\nSpan: ' + hours[0]['start'] + ' to ' + hours[-1]['end']
+                + '\nOlder End of Day dates (retained, no separate post): '
+                + (', '.join(p['local_end'][:10] for p in daily[:-2]) or 'None'))
+            body = prepare_body('hourly', data, verify_link=context.get('verify_link'))
+        send = (period['kind'] == 'hourly' and (summary is None or period == summary)
+                or period['kind'] == 'eod' and period in daily[-2:])
+        if not send:
+            extra['delivery_policy'] = 'LISTED_IN_CATCH_UP'
+        generated.append(retain(report_id, period['kind'], body, binding,
+                                 destinations if send else [], now, extra=extra,
+                                 senders=(providers or {}).values()))
+        if period['kind'] == 'eod':
+            state['daily_end'] = period['end']
+    notice = context.get('baseline_approval')
+    if notice is not None:
+        require(notice == approval_event(binding['scope_revision'], notice['record']['revision'],
+                                        notice['record']['approval']), 'REPORT_APPROVAL_SCOPE_MISMATCH')
+        report_id = fingerprint('report-approved-baseline-1', [binding, notice['id']])
+        # Prepare intent and delivery identities for atomic retention. A
+        # repeated observation never rebuilds a body with a newer time,
+        # even after intervening approvals or controller restarts.
+        if not existing.get(report_id):
+            generated.append(retain(report_id, 'jira-review',
+                _body('jira-review', binding, now, calendar, context), binding, destinations, now,
+                extra={'baseline_approval': notice}, senders=(providers or {}).values()))
+    withdrawal = context.get('baseline_withdrawal')
+    if withdrawal is not None:
+        require(withdrawal == withdrawal_event(binding['scope_revision'], withdrawal['record']['revision'],
+                withdrawal['record']['approval']), 'REPORT_APPROVAL_SCOPE_MISMATCH')
+    # Immutable baseline reports remain history. Delivery withdrawal is
+    # durable even if later sources disappear, or readback arrives later.
+    for prior in [r for r in existing.values() if r['kind'] == 'jira-review']:
+        approval = prior.get('baseline_approval')
+        if any(prior['binding'][k] != binding[k] for k in ('project', 'repository')) or not approval:
+            continue
+        scope_changed = prior['binding'] != binding
+        for delivery_id in prior['delivery_ids']:
+            if scope_changed:
+                withdraw(delivery_id,
+                    dict(reason='SCOPE_CHANGED', prior=prior['binding'], current=binding))
+            elif withdrawal and approval['record']['revision'] == withdrawal['record']['revision']:
+                withdraw(delivery_id, withdrawal)
+            intent, delivery = delivery_values[delivery_id]
+            invalidated = delivery.get('approval_withdrawal')
+            destination = next((d for d in destinations if same_destination(d, intent['binding'])), None)
+            if not invalidated or delivery['status'] != 'DELIVERED' or destination is None:
+                continue
+            correction_id = fingerprint('report-baseline-correction-1', delivery_id)
+            if existing.get(correction_id):
+                continue
+            readback = next(h for h in reversed(delivery['history']) if h.get('status') == 'DELIVERED')
+            notice = dict(prior_report=prior['report_id'], delivery_id=delivery_id, withdrawal=invalidated)
+            body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
+                timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=approval['record']['revision'],
+                summary='Correction: prior backlog approval withdrawn', sections={
+                    'Evidence': describe(notice),
+                    'Owner action': 'Do not rely on prior backlog approval; await current owner approval'}))
+            generated.append(retain(correction_id, 'owner-action', body, binding, [destination], now,
+                extra={'baseline_correction': notice},
+                threads={intent['binding']['platform']: intent.get('thread_id') or readback['message_id']},
+                senders=(providers or {}).values()))
+    # A prior scope's readiness may already have landed without readback.
+    # Fence new sends, but keep reconciling its immutable attempts so a
+    # later visible receipt can seed the original-thread correction.
+    for prior in [r for r in existing.values() if r['kind'] == 'final-human-review']:
+        if prior['binding'] == binding or any(prior['binding'][k] != binding[k] for k in ('project', 'repository')):
+            continue
+        for delivery_id in prior['delivery_ids']:
+            withdraw(delivery_id,
+                dict(reason='SCOPE_CHANGED', prior=prior['binding'], current=binding), basis=True)
+    if context.get('owner_actions') is not None:
+        events, state['owner'] = owner_events(fingerprint('reporting-scope', binding), context['owner_actions'], state['owner'])
+        current = {a['id']: a for a in context['owner_actions']}
+        predecessors = {}
+        for prior in [r for r in existing.values() if r['kind'] == 'owner-action']:
+            event = prior.get('owner_action_event')
+            if any(
+                    prior['binding'][k] != binding[k] for k in ('project', 'repository')):
+                continue
+            if not event:
+                # Pre-metadata immutable intents carry the original action
+                # fields in the body. Preserve a still-current request;
+                # otherwise fence it without rewriting historical bytes.
+                data = prior['body']['data']
+                if data.get('action_resolved'):
+                    reopened = [a for a in current.values() if data.get('sections', {}).get('Evidence') ==
+                        'Resolution observed for action ' + a['id'] + '; event: ' + prior['report_id']]
+                    for action in reopened:
+                        predecessors.setdefault(action['id'], []).extend(prior['delivery_ids'])
+                        for delivery_id in prior['delivery_ids']:
+                            withdraw(delivery_id,
+                                dict(reason='OWNER_ACTION_REOPENED', observed_at=now, action_id=action['id']), basis=True)
+                    continue
+                if data.get('summary') not in {'owner-action', 'owner-action-updated'}:
+                    continue
+                def matches(action):
+                    return all(data.get(field) == action.get(key, 'Unknown' if key == 'recommendation' else None)
+                        for field, key in (
+                        ('decision', 'decision'), ('decision_owner', 'owner'), ('requested_response', 'due'),
+                        ('delay_consequence', 'reason'), ('options', 'options'), ('resume', 'resume'),
+                        ('recommendation', 'recommendation')))
+                if prior['binding'] == binding and any(matches(a) for a in current.values()):
+                    continue
+                for notice in events:
+                    if matches(notice['record']['action']):
+                        predecessors.setdefault(notice['record']['action']['id'], []).extend(prior['delivery_ids'])
+                for delivery_id in prior['delivery_ids']:
+                    withdraw(delivery_id,
+                        dict(reason='OWNER_ACTION_BASIS_CHANGED', observed_at=now, prior_report=prior['report_id']), basis=True)
+                continue
+            action = event['record']['action']
+            resolved = event['kind'] == 'owner-action-resolved'
+            if (resolved and action['id'] not in current or not resolved
+                    and prior['binding'] == binding and current.get(action['id']) == action):
+                continue
+            predecessors.setdefault(action['id'], []).extend(prior['delivery_ids'])
+            for delivery_id in prior['delivery_ids']:
+                withdraw(delivery_id,
+                    dict(reason='OWNER_ACTION_BASIS_CHANGED', observed_at=now, action_id=action['id']), basis=True)
+        for action in events:
+            generated.append(retain(action['id'], 'owner-action',
+                _body('owner-action', binding, now, calendar, context, action=action), binding, destinations, now,
+                extra={'owner_action_event': action,
+                       'after_deliveries': predecessors.get(action['record']['action']['id'], [])},
+                senders=(providers or {}).values()))
+    for notice in context['delivery_attention']:
+        # Failures of an owner-action alert remain in periodic diagnostics;
+        # recursively alerting about alerts would create an infinite queue.
+        if notice['kind'] != 'final-human-review' or not (notice.get('deferred') or any(
+                d['status'] == 'FAILED' or d['status'] == 'UNKNOWN' and d['attempts'] == 2
+                for d in notice['destinations'])):
+            continue
+        notice_id = fingerprint('report-delivery-attention', [binding, notice['report_id']])
+        if existing.get(notice_id):
+            continue
+        body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
+            timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=notice['report_id'],
+            summary='Report delivery needs owner attention', sections={
+                'Owner action': notice['owner_action'], 'Evidence': describe(notice)}))
+        generated.append(retain(notice_id, 'owner-action', body, binding, destinations, now,
+                                 senders=(providers or {}).values()))
+    for notice in context.get('review_corrections', []):
+        destination = next((d for d in destinations if same_destination(d, notice['binding'])), None)
+        if destination is None:
+            continue  # Never retarget a correction after channel rotation.
+        if notice.get('restored'):
+            body = prepare_body('final-human-review', dict(project=binding['project'], observed_at=now,
+                timezone=calendar['timezone'], scope=binding['scope_revision'],
+                candidate=describe([m['candidate'] for m in notice['review_batch']['members']]),
+                summary='Readiness restored: current candidate ready for final human review',
+                sections={'Evidence': describe(notice),
+                          'Owner action': 'Review the current candidates; merge remains an owner decision'}))
+            generated.append(retain(notice['id'], 'final-human-review', body, binding, [destination], now,
+                extra={'review_restoration': notice, 'review_batch': notice['review_batch']},
+                threads={destination['platform']: notice['thread_id']}, senders=(providers or {}).values()))
+            continue
+        body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
+            timezone=calendar['timezone'], scope=binding['scope_revision'],
+            candidate=describe(notice['invalidated']), summary='Correction: prior readiness withdrawn',
+            sections={'Evidence': describe(notice),
+                      'Owner action': 'Do not rely on prior readiness; await current candidate review'}))
+        generated.append(retain(notice['id'], 'owner-action', body, binding, [destination], now,
+            extra={'review_correction': notice}, threads={destination['platform']: notice['thread_id']},
+            senders=(providers or {}).values()))
+    candidates = context.get('readiness_candidates')
+    if candidates is not None:
+        require(all(all(c.get(k) == binding[k] for k in binding) for c in candidates), 'REPORT_SCOPE_BINDING_MISMATCH')
+        events, state['readiness'] = readiness_events(candidates, state.get('readiness', {}))
+        for notice in events:
+            if notice['kind'] != 'correction':
+                continue  # Lane C exclusively presents final-review readiness.
+            body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
+                timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=describe(notice['record']),
+                summary='Correction: prior readiness withdrawn', sections={'Evidence': describe(notice),
+                    'Owner action': 'Do not rely on prior readiness; await current candidate review'}))
+            generated.append(retain(notice['id'], 'owner-action', body, binding, destinations, now,
+                                     senders=(providers or {}).values()))
+    state['cursor'] = end
+    withdrawals = tuple((i, canonical(v[1])) for i, v in delivery_values.items() if canonical(v[1]) != originals[i])
+    return PreparedProjection(canonical(snapshot), canonical(state), tuple(prepared_reports), withdrawals), generated
+
+
 def reporting_cycle(store, *, operating, binding, now, providers=None, context=None, delivery_budget=None,
                     defer_delivery=False):
     settings, destinations = _bindings(operating, binding)
-    if settings['mode'] == 'off' and not settings['bindings']:
-        return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
-    timestamp(now)
     key = 'reporting:' + fingerprint('reporting-scope', binding)
     if settings['mode'] == 'off':
         with store.connection() as db:
             existing = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
         if existing is None:
             return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
+        timestamp(now)
         with store.transaction() as db:
             row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
-            state = loads(row[0]) if row else dict(owner={})
+            if row is None:
+                return dict(state='OFF', generated=0, reports=[], deliveries=[])
+            state = loads(row[0])
             require('cursor' not in state or timestamp(state['cursor']) <= timestamp(now), 'REPORT_CLOCK_REGRESSION')
             state.update(cursor=now, suspended=True)
             db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                        (key, canonical(state).decode()))
         return dict(state='OFF', generated=0, reports=[], deliveries=[], coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})
-    calendar, context = effective_calendar(operating), safe_report(context or {}, senders=(providers or {}).values())
-    from ..review_batching import ReviewBatchStore
-    with store.connection() as db:
-        context['review_batching'] = ReviewBatchStore.view_from_db(db, now, calendar)
-    attention = delivery_attention(store, operating, binding)
-    context['delivery_attention'] = attention
-    # Channel size remains bounded; the read-only status command retains all
-    # identities. Prioritize terminal failures in the compact periodic view.
-    ordered = sorted(attention, key=lambda n: not any(d['status'] == 'FAILED' for d in n['destinations']))
-    context_for_body = dict(context, delivery_attention=dict(total=len(attention), records=ordered[:4],
-        remaining='Inspect reporting-status for all retained delivery identities') if attention else None)
-    generated = []
-    with store.transaction() as db:
-        row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
-        state = loads(row[0]) if row else dict(cursor=utc(timestamp(now) - timedelta(microseconds=1)), owner={})
-        require(timestamp(state['cursor']) <= timestamp(now), 'REPORT_CLOCK_REGRESSION')
-        if state.pop('suspended', False):
-            state['cursor'] = utc(timestamp(now) - timedelta(microseconds=1))
-        # Bound calendar generation as well as sends. Further downtime remains
-        # behind the durable cursor for the next controller cycle.
-        end = utc(min(timestamp(now), timestamp(state['cursor']) + timedelta(days=7)))
-        periods = due_periods(state['cursor'], end, operating, effective_calendar=effective_calendar)
-        hours = [p for p in periods if p['kind'] == 'hourly']
-        daily = [p for p in periods if p['kind'] == 'eod']
-        summary = hours[-1] if len(hours) > 1 else None
-        summarized = [p for p in periods if p['kind'] == 'hourly' or p in daily[:-2]] if summary else []
-        for period in periods:
-            period['catch_up'] = timestamp(period['end']) < timestamp(now) or period == summary
-            report_id = fingerprint('controller-report-period', [binding, period['id']])
-            extra = dict(period=deepcopy(period))
-            try:
-                body = _body(period['kind'], binding, now, calendar,
-                             dict(context_for_body, previous_daily_end=state.get('daily_end')), period)
-            except ValidationError as exc:
-                # Bad merge evidence fails this daily projection explicitly;
-                # rendering/identity failures still roll back atomically.
-                if str(exc) not in {'REPORT_MERGE_TIMESTAMP_INVALID', 'REPORT_FUTURE_MERGE'}:
-                    raise
-                extra['generation_error'] = str(exc)
-                body = _body(period['kind'], binding, now, calendar, dict(context, records=None), period)
-                data = dict(body['data'], summary='UNAVAILABLE: ' + str(exc), generation_error=str(exc))
-                body = prepare_body(period['kind'], data)
-            if period == summary:
-                extra['catch_up_periods'] = deepcopy(summarized)
-                data = deepcopy(body['data'])
-                data['sections']['Changes since the previous report'] = (
-                    data['sections'].get('Changes since the previous report', '')
-                    + '\nCATCH-UP: missed hourly periods ending ' + ', '.join(p['end'] for p in hours)
-                    + '\nSpan: ' + hours[0]['start'] + ' to ' + hours[-1]['end']
-                    + '\nOlder End of Day dates (retained, no separate post): '
-                    + (', '.join(p['local_end'][:10] for p in daily[:-2]) or 'None'))
-                body = prepare_body('hourly', data, verify_link=context.get('verify_link'))
-            send = (period['kind'] == 'hourly' and (summary is None or period == summary)
-                    or period['kind'] == 'eod' and period in daily[-2:])
-            if not send:
-                extra['delivery_policy'] = 'LISTED_IN_CATCH_UP'
-            generated.append(_retain(db, report_id, period['kind'], body, binding,
-                                     destinations if send else [], now, extra=extra,
-                                     senders=(providers or {}).values()))
-            if period['kind'] == 'eod':
-                state['daily_end'] = period['end']
-        notice = context.get('baseline_approval')
-        if notice is not None:
-            require(notice == approval_event(binding['scope_revision'], notice['record']['revision'],
-                                            notice['record']['approval']), 'REPORT_APPROVAL_SCOPE_MISMATCH')
-            report_id = fingerprint('report-approved-baseline-1', [binding, notice['id']])
-            # Retain intent and delivery identities in this transaction. A
-            # repeated observation never rebuilds a body with a newer time,
-            # even after intervening approvals or controller restarts.
-            if not db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (report_id,)).fetchone():
-                generated.append(_retain(db, report_id, 'jira-review',
-                    _body('jira-review', binding, now, calendar, context), binding, destinations, now,
-                    extra={'baseline_approval': notice}, senders=(providers or {}).values()))
-        withdrawal = context.get('baseline_withdrawal')
-        if withdrawal is not None:
-            require(withdrawal == withdrawal_event(binding['scope_revision'], withdrawal['record']['revision'],
-                    withdrawal['record']['approval']), 'REPORT_APPROVAL_SCOPE_MISMATCH')
-        # Immutable baseline reports remain history. Delivery withdrawal is
-        # durable even if later sources disappear, or readback arrives later.
-        for row in db.execute("SELECT payload_json FROM controller_reports WHERE kind='jira-review'").fetchall():
-            prior = loads(row[0])
-            approval = prior.get('baseline_approval')
-            if any(prior['binding'][k] != binding[k] for k in ('project', 'repository')) or not approval:
-                continue
-            scope_changed = prior['binding'] != binding
-            for delivery_id in prior['delivery_ids']:
-                if scope_changed:
-                    DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
-                        dict(reason='SCOPE_CHANGED', prior=prior['binding'], current=binding))
-                elif withdrawal and approval['record']['revision'] == withdrawal['record']['revision']:
-                    DeliveryOutbox.withdraw_in_transaction(db, delivery_id, withdrawal)
-                intent, delivery = DeliveryOutbox._load(db, delivery_id)
-                invalidated = delivery.get('approval_withdrawal')
-                destination = next((d for d in destinations if same_destination(d, intent['binding'])), None)
-                if not invalidated or delivery['status'] != 'DELIVERED' or destination is None:
-                    continue
-                correction_id = fingerprint('report-baseline-correction-1', delivery_id)
-                if db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (correction_id,)).fetchone():
-                    continue
-                readback = next(h for h in reversed(delivery['history']) if h.get('status') == 'DELIVERED')
-                notice = dict(prior_report=prior['report_id'], delivery_id=delivery_id, withdrawal=invalidated)
-                body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
-                    timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=approval['record']['revision'],
-                    summary='Correction: prior backlog approval withdrawn', sections={
-                        'Evidence': describe(notice),
-                        'Owner action': 'Do not rely on prior backlog approval; await current owner approval'}))
-                generated.append(_retain(db, correction_id, 'owner-action', body, binding, [destination], now,
-                    extra={'baseline_correction': notice},
-                    threads={intent['binding']['platform']: intent.get('thread_id') or readback['message_id']},
-                    senders=(providers or {}).values()))
-        # A prior scope's readiness may already have landed without readback.
-        # Fence new sends, but keep reconciling its immutable attempts so a
-        # later visible receipt can seed the original-thread correction.
-        for row in db.execute("SELECT payload_json FROM controller_reports WHERE kind='final-human-review'").fetchall():
-            prior = loads(row[0])
-            if prior['binding'] == binding or any(prior['binding'][k] != binding[k] for k in ('project', 'repository')):
-                continue
-            for delivery_id in prior['delivery_ids']:
-                DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
-                    dict(reason='SCOPE_CHANGED', prior=prior['binding'], current=binding), basis=True)
-        if context.get('owner_actions') is not None:
-            events, state['owner'] = owner_events(fingerprint('reporting-scope', binding), context['owner_actions'], state['owner'])
-            current = {a['id']: a for a in context['owner_actions']}
-            predecessors = {}
-            for row in db.execute("SELECT payload_json FROM controller_reports WHERE kind='owner-action'").fetchall():
-                prior = loads(row[0])
-                event = prior.get('owner_action_event')
-                if any(
-                        prior['binding'][k] != binding[k] for k in ('project', 'repository')):
-                    continue
-                if not event:
-                    # Pre-metadata immutable intents carry the original action
-                    # fields in the body. Preserve a still-current request;
-                    # otherwise fence it without rewriting historical bytes.
-                    data = prior['body']['data']
-                    if data.get('action_resolved'):
-                        reopened = [a for a in current.values() if data.get('sections', {}).get('Evidence') ==
-                            'Resolution observed for action ' + a['id'] + '; event: ' + prior['report_id']]
-                        for action in reopened:
-                            predecessors.setdefault(action['id'], []).extend(prior['delivery_ids'])
-                            for delivery_id in prior['delivery_ids']:
-                                DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
-                                    dict(reason='OWNER_ACTION_REOPENED', observed_at=now, action_id=action['id']), basis=True)
-                        continue
-                    if data.get('summary') not in {'owner-action', 'owner-action-updated'}:
-                        continue
-                    def matches(action):
-                        return all(data.get(field) == action.get(key, 'Unknown' if key == 'recommendation' else None)
-                            for field, key in (
-                            ('decision', 'decision'), ('decision_owner', 'owner'), ('requested_response', 'due'),
-                            ('delay_consequence', 'reason'), ('options', 'options'), ('resume', 'resume'),
-                            ('recommendation', 'recommendation')))
-                    if prior['binding'] == binding and any(matches(a) for a in current.values()):
-                        continue
-                    for notice in events:
-                        if matches(notice['record']['action']):
-                            predecessors.setdefault(notice['record']['action']['id'], []).extend(prior['delivery_ids'])
-                    for delivery_id in prior['delivery_ids']:
-                        DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
-                            dict(reason='OWNER_ACTION_BASIS_CHANGED', observed_at=now, prior_report=prior['report_id']), basis=True)
-                    continue
-                action = event['record']['action']
-                resolved = event['kind'] == 'owner-action-resolved'
-                if (resolved and action['id'] not in current or not resolved
-                        and prior['binding'] == binding and current.get(action['id']) == action):
-                    continue
-                predecessors.setdefault(action['id'], []).extend(prior['delivery_ids'])
-                for delivery_id in prior['delivery_ids']:
-                    DeliveryOutbox.withdraw_in_transaction(db, delivery_id,
-                        dict(reason='OWNER_ACTION_BASIS_CHANGED', observed_at=now, action_id=action['id']), basis=True)
-            for action in events:
-                generated.append(_retain(db, action['id'], 'owner-action',
-                    _body('owner-action', binding, now, calendar, context, action=action), binding, destinations, now,
-                    extra={'owner_action_event': action,
-                           'after_deliveries': predecessors.get(action['record']['action']['id'], [])},
-                    senders=(providers or {}).values()))
-        for notice in context['delivery_attention']:
-            # Failures of an owner-action alert remain in periodic diagnostics;
-            # recursively alerting about alerts would create an infinite queue.
-            if notice['kind'] != 'final-human-review' or not (notice.get('deferred') or any(
-                    d['status'] == 'FAILED' or d['status'] == 'UNKNOWN' and d['attempts'] == 2
-                    for d in notice['destinations'])):
-                continue
-            notice_id = fingerprint('report-delivery-attention', [binding, notice['report_id']])
-            if db.execute('SELECT 1 FROM controller_reports WHERE report_id=?', (notice_id,)).fetchone():
-                continue
-            body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
-                timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=notice['report_id'],
-                summary='Report delivery needs owner attention', sections={
-                    'Owner action': notice['owner_action'], 'Evidence': describe(notice)}))
-            generated.append(_retain(db, notice_id, 'owner-action', body, binding, destinations, now,
-                                     senders=(providers or {}).values()))
-        for notice in context.get('review_corrections', []):
-            destination = next((d for d in destinations if same_destination(d, notice['binding'])), None)
-            if destination is None:
-                continue  # Never retarget a correction after channel rotation.
-            if notice.get('restored'):
-                body = prepare_body('final-human-review', dict(project=binding['project'], observed_at=now,
-                    timezone=calendar['timezone'], scope=binding['scope_revision'],
-                    candidate=describe([m['candidate'] for m in notice['review_batch']['members']]),
-                    summary='Readiness restored: current candidate ready for final human review',
-                    sections={'Evidence': describe(notice),
-                              'Owner action': 'Review the current candidates; merge remains an owner decision'}))
-                generated.append(_retain(db, notice['id'], 'final-human-review', body, binding, [destination], now,
-                    extra={'review_restoration': notice, 'review_batch': notice['review_batch']},
-                    threads={destination['platform']: notice['thread_id']}, senders=(providers or {}).values()))
-                continue
-            body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
-                timezone=calendar['timezone'], scope=binding['scope_revision'],
-                candidate=describe(notice['invalidated']), summary='Correction: prior readiness withdrawn',
-                sections={'Evidence': describe(notice),
-                          'Owner action': 'Do not rely on prior readiness; await current candidate review'}))
-            generated.append(_retain(db, notice['id'], 'owner-action', body, binding, [destination], now,
-                extra={'review_correction': notice}, threads={destination['platform']: notice['thread_id']},
-                senders=(providers or {}).values()))
-        candidates = context.get('readiness_candidates')
-        if candidates is not None:
-            require(all(all(c.get(k) == binding[k] for k in binding) for c in candidates), 'REPORT_SCOPE_BINDING_MISMATCH')
-            events, state['readiness'] = readiness_events(candidates, state.get('readiness', {}))
-            for notice in events:
-                if notice['kind'] != 'correction':
-                    continue  # Lane C exclusively presents final-review readiness.
-                body = prepare_body('owner-action', dict(project=binding['project'], observed_at=now,
-                    timezone=calendar['timezone'], scope=binding['scope_revision'], candidate=describe(notice['record']),
-                    summary='Correction: prior readiness withdrawn', sections={'Evidence': describe(notice),
-                        'Owner action': 'Do not rely on prior readiness; await current candidate review'}))
-                generated.append(_retain(db, notice['id'], 'owner-action', body, binding, destinations, now,
-                                         senders=(providers or {}).values()))
-        state['cursor'] = end
-        db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                   (key, canonical(state).decode()))
+    timestamp(now)
+    calendar = effective_calendar(operating)
+    delivery_budget = delivery_budget or DeliveryBudget()
+    with delivery_budget.checking():
+        delivery_budget.remaining()
+        snapshot, review_view = _read_projection_inputs(store, binding, now, calendar)
+        context = safe_report(context or {}, senders=_preparation_senders((providers or {}).values()))
+        if callable(context.get('verify_link')):
+            context['verify_link'] = _preparation_callback(context['verify_link'])
+        delivery_budget.remaining()
+        context['review_batching'] = review_view
+        prepared, generated = _prepare_projection(snapshot, operating, binding, now, providers, context, calendar, destinations)
+        delivery_budget.remaining()
+    _commit_projection(store, binding, prepared)
     deliveries = [] if defer_delivery else drain(store, operating, binding, providers or {}, budget=delivery_budget)
     return dict(state='ENABLED', generated=len(generated), reports=generated, deliveries=deliveries,
                 coverage=deepcopy(context.get('coverage', {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})))
@@ -628,12 +784,7 @@ class ReviewReportingPort:
     def _readmit(self):
         if self.load_operating is None:
             return self.operating  # Trusted in-process test/host port.
-        current = self.load_operating()
-        settings, destinations = _bindings(current, self.binding)
-        _, retained = _bindings(self.operating, self.binding)
-        require(settings['mode'] != 'off', 'REPORTING_OFF')
-        require(destinations == retained, 'REPORT_DESTINATION_MISMATCH')
-        return current
+        return _readmit_reporting(self.operating, self.binding, self.load_operating)
 
     def _id(self, payload):
         return 'review-' + payload['batch_id']
@@ -677,7 +828,7 @@ class ReviewReportingPort:
                     all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked.values()),
                     'REPORT_REVIEW_CHECK_EXPIRED')
 
-    def _retain_review_batch(self, payload):
+    def _retain_review_batch(self, payload, *, budget=None):
         """Retain the exact reporting handoff without provider side effects."""
         settings, destinations = _bindings(self.operating, self.binding)
         require(settings['mode'] != 'off', 'REPORTING_OFF')
@@ -690,7 +841,15 @@ class ReviewReportingPort:
             coverage={'gates': 'CURRENT_AT_PRESENTATION', 'accounting': 'UNAVAILABLE'})
         body = prepare_body('final-human-review', data)
         from ..review_batching import ReviewBatchStore
+        budget = budget or self.delivery_budget or DeliveryBudget()
+        with budget.checking():
+            expected, _ = _read_projection_inputs(self.store, self.binding, now, effective_calendar(self.operating))
+            budget.remaining()
+            prepared = _prepare_report(self._id(payload), 'final-human-review', body, self.binding, destinations, now,
+                extra={'review_batch': deepcopy(payload)}, senders=self.providers.values())
+            budget.remaining()
         with self.store.transaction() as db:
+            require(_projection_inputs(db, self.binding) == expected, 'REPORT_PROJECTION_STATE_CHANGED')
             terminal = ReviewBatchStore._reporting_failure_intents(db)
             if any(m['intent_id'] in terminal for m in payload['members']):
                 prior = db.execute('SELECT state FROM review_presentation_outbox_v1 WHERE batch_id=?',
@@ -703,13 +862,12 @@ class ReviewReportingPort:
             if existing:
                 require(loads(existing[0]).get('review_batch') == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
             else:
-                _retain(db, self._id(payload), 'final-human-review', body, self.binding, destinations, now,
-                        extra={'review_batch': deepcopy(payload)}, senders=self.providers.values())
+                _retain_prepared(db, prepared)
         ReviewBatchStore(self.store).track_reporting(payload['batch_id'])
 
     def deliver_review_batch(self, payload):
         budget = self.delivery_budget or DeliveryBudget()
-        self._retain_review_batch(payload)
+        self._retain_review_batch(payload, budget=budget)
         # The controller already rechecked this claim. The mandatory port
         # recheck below runs after destination verification, immediately before
         # reservation/POST, rather than adding another identical remote read
@@ -744,7 +902,7 @@ class ReviewReportingPort:
                 phase = db.execute('SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?',
                                    (payload['batch_id'],)).fetchone()
             if phase is None or phase[0] == 'SENDING':
-                self._retain_review_batch(payload)
+                self._retain_review_batch(payload, budget=budget)
             return None
         report = reports[0]
         require(report.get('review_batch') == payload, 'REPORT_REVIEW_BATCH_MISMATCH')

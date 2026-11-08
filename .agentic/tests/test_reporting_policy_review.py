@@ -329,3 +329,98 @@ class PolicyReviewTests(unittest.TestCase):
             case.publish(changed)
             self.assertTrue(observe()['status']['intents'][0]['held'])
             self.assertEqual(1, derive.call_count)
+
+
+class InjectedPeriodicPolicyTests(unittest.TestCase):
+    controller = PolicyReviewTests.controller
+    def injected(self, change=None):
+        import test_continuous_controller as controller
+        from settings_pr_fixtures import publish_fixture_settings
+        from agentic.reporting.platform import SlackReportingAdapter
+        from agentic.reporting.http_transport import SlackTransport
+        case = self.controller()
+        case.settings['mode'] = 'slack'
+        case.settings['bindings'] = [b for b in case.settings['bindings'] if b['platform'] == 'slack']
+        sender = SlackReportingAdapter(SlackTransport(context='workspace', sender='sender',
+            http=case.network, clock=case.clock.now), case.settings['bindings'][0],
+            resolve_secret=lambda ref: 'synthetic-report-secret', mode='slack')
+        self.assertIsNone(sender.load_policy)
+        case.adapters.pop('configure_reporting', None)
+        case.adapters['reporting_providers'] = {'slack': sender}
+        real = controller.real_production_controller_cycle
+        original = type(case.network).__call__
+        observed = {}
+        def capture(*args, **kwargs):
+            observed.update(root=Path(kwargs['repository_root']), gov=kwargs['planning_config'])
+            return real(*args, **kwargs)
+        def http(net, method, url, headers, payload):
+            if net is case.network and 'conversations.info' in url and not observed.get('verified'):
+                observed['verified'] = True
+                if change:
+                    value = op.read_operating(observed['root'], observed['gov']).config
+                    change(value)
+                    publish_fixture_settings(case, observed['root'], observed['gov'], value)
+            return original(net, method, url, headers, payload)
+        with patch.object(controller, 'real_production_controller_cycle', capture), patch.object(type(case.network), '__call__', http):
+            case.cycle('2026-11-10T10:00:00Z')
+        self.assertTrue(observed.get('verified'))
+        states = case.status()['deliveries']
+        self.assertTrue(states)
+        if change:
+            self.assertEqual([], case.network.posts)
+            self.assertTrue(all(d['attempts'] == [] and d['status'] != 'DELIVERED' for d in states))
+        else:
+            self.assertEqual(1, len(case.network.posts))
+            self.assertTrue(all(len(d['attempts']) == 1 and d['status'] == 'DELIVERED' for d in states))
+            self.assertGreater(case.network.history_reads, 0)
+
+    def test_injected_periodic_sender_readmits_off_after_destination_verification(self):
+        self.injected(lambda v: v.update(reporting=dict(mode='off', bindings=[])))
+
+    def test_injected_periodic_sender_readmits_binding_rotation_after_destination_verification(self):
+        self.injected(lambda v: v['reporting']['bindings'][0].update(
+            destination='CROTATED', revision='2', secret_ref='env:ROTATED'))
+
+    def test_injected_periodic_sender_unchanged_policy_delivers_once(self):
+        self.injected()
+
+    def test_injected_periodic_sender_readmits_each_binding_field_and_mode_removal(self):
+        for field in ('project', 'repository', 'scope_revision', 'platform', 'destination', 'revision', 'secret_ref', 'mode'):
+            with self.subTest(field=field):
+                def change(value):
+                    if field == 'mode':
+                        value.pop('reporting')
+                    else:
+                        value['reporting']['bindings'][0][field] = {
+                            'repository': '202', 'platform': 'teams', 'secret_ref': 'env:ROTATED'
+                        }.get(field, 'rotated')
+                self.injected(change)
+
+    def test_controller_accepted_off_without_bindings_suspends_reporting_across_restart(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        from agentic.canonical import fingerprint, loads
+        case = self.controller()
+        case.cycle('2026-11-07T16:59:59Z')
+        case.cycle('2026-11-07T17:00:00Z')
+        before = deepcopy(case.status())
+        enabled = deepcopy(case.settings)
+        case.settings = dict(mode='off', bindings=[])
+        result = case.cycle('2026-11-07T17:30:00Z')
+        self.assertEqual(0, result['reporting']['generated'])
+        key = 'reporting:' + fingerprint('reporting-scope', case.binding)
+        with case.helper.store.connection() as db:
+            state = loads(db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()[0])
+        self.assertTrue(state['suspended'])
+        self.assertEqual('2026-11-07T17:30:00Z', state['cursor'])
+        case.helper.store = ContinuousControllerStore(case.helper.store.path, ['A', 'B', 'C'], cadence_seconds=3600)
+        case.settings = enabled
+        result = case.cycle('2026-11-07T20:00:00Z')
+        self.assertEqual(1, result['reporting']['generated'])
+        report = result['reporting']['reports'][0]
+        self.assertEqual('hourly', report['kind'])
+        self.assertEqual('2026-11-07T20:00:00Z', report['period']['end'])
+        self.assertFalse(report['period']['catch_up'])
+        after = case.status()
+        self.assertEqual(before['reports'], after['reports'][:-1])
+        self.assertEqual(before['deliveries'], after['deliveries'][:-2])
+        self.assertTrue(all(d['status'] == 'DELIVERED' and len(d['attempts']) == 1 for d in after['deliveries'][-2:]))

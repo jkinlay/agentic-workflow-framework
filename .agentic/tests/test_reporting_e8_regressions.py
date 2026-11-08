@@ -129,8 +129,9 @@ class E8ControllerTests(unittest.TestCase):
                         with self.subTest(transactional=transactional), self.assertRaisesRegex(
                                 ValidationError, 'REPORT_CREDENTIAL_WITHHELD'):
                             if transactional:
+                                prepared = outbox.prepare_enqueue(intent)
                                 with self.helper.store.transaction() as db:
-                                    outbox.enqueue_in_transaction(db, intent)
+                                    outbox.enqueue_in_transaction(db, intent, prepared=prepared)
                             else:
                                 outbox.enqueue(intent)
                         self.assertEqual(self.helper.path.read_bytes(), before)
@@ -149,8 +150,9 @@ class E8ControllerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, 'REPORT_BINDING_|REPORT_PLATFORM_'):
                 outbox.enqueue(value, resolve_secret=forbidden)
             with self.assertRaisesRegex(ValidationError, 'REPORT_BINDING_|REPORT_PLATFORM_'):
+                prepared = outbox.prepare_enqueue(value, resolve_secret=forbidden)
                 with self.helper.store.transaction() as db:
-                    outbox.enqueue_in_transaction(db, value, resolve_secret=forbidden)
+                    outbox.enqueue_in_transaction(db, value, prepared=prepared)
         destination['secret_ref'] = 'host:report-sender'
         opaque = 'OpaqueCustomE8SyntheticValue9'
         intent = legacy_intent('safe-report', destination, 'Contains ' + opaque)
@@ -164,8 +166,9 @@ class E8ControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'REPORT_CREDENTIAL_WITHHELD'):
             outbox.enqueue(intent, resolve_secret=resolver)
         with self.assertRaisesRegex(ValidationError, 'REPORT_CREDENTIAL_WITHHELD'):
+            prepared = outbox.prepare_enqueue(intent, resolve_secret=resolver)
             with self.helper.store.transaction() as db:
-                outbox.enqueue_in_transaction(db, intent, resolve_secret=resolver)
+                outbox.enqueue_in_transaction(db, intent, prepared=prepared)
         self.assertEqual(resolved, ['host:report-sender', 'host:report-sender'])
         self.assertEqual(self.helper.path.read_bytes(), before)
         self.assertNotIn(opaque.encode(), before)

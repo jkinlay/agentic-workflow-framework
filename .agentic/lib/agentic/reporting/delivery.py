@@ -7,6 +7,7 @@ not merely that a message is currently missing from a possibly stale listing.
 No lease expiration authorizes another send. Crash reservations consume attempts.
 """
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import re
@@ -15,7 +16,7 @@ import uuid
 from .. import ValidationError
 from ..canonical import canonical, fingerprint, loads, timestamp
 from .safety import safe_report
-from .bounded import send_guard, delivery_timeout
+from .bounded import send_guard, delivery_timeout, source_timeout
 
 
 def require(condition, reason):
@@ -103,6 +104,12 @@ def install_delivery_schema(db):
         SELECT RAISE(ABORT, 'Reporting intent already exists'); END''')
 
 
+@dataclass(frozen=True)
+class PreparedDelivery:
+    """Admitted immutable bytes only; never a credential or send permit."""
+    encoded: bytes
+
+
 class DeliveryOutbox:
     def __init__(self, controller_store):
         self.controller = controller_store
@@ -119,16 +126,27 @@ class DeliveryOutbox:
         expected = delivery_intent(intent['report_id'], binding, intent['payload'], thread_id=intent.get('thread_id'))
         require(intent == expected, 'REPORT_INTENT_MISMATCH')
 
+    @staticmethod
+    def prepare_enqueue(intent, *, resolve_secret=None):
+        source_timeout()
+        DeliveryOutbox._admit_persistence(intent, resolve_secret)
+        source_timeout()
+        return PreparedDelivery(canonical(intent))
+
     def enqueue(self, intent, *, resolve_secret=None):
-        self._admit_persistence(intent, resolve_secret)
+        prepared = self.prepare_enqueue(intent, resolve_secret=resolve_secret)
         with self.controller.transaction() as db:
-            self.enqueue_in_transaction(db, intent, resolve_secret=resolve_secret)
+            self.enqueue_in_transaction(db, intent, prepared=prepared)
         return intent['delivery_id']
 
     @staticmethod
-    def enqueue_in_transaction(db, intent, *, resolve_secret=None):
-        DeliveryOutbox._admit_persistence(intent, resolve_secret)
-        encoded = canonical(intent).decode()
+    def enqueue_in_transaction(db, intent, *, prepared=None):
+        require(isinstance(prepared, PreparedDelivery), 'REPORT_PERSISTENCE_PREPARATION_REQUIRED')
+        require(canonical(intent) == prepared.encoded, 'REPORT_PERSISTENCE_PREPARATION_MISMATCH')
+        binding = validate_binding(intent['binding'])
+        require(intent == delivery_intent(intent['report_id'], binding, intent['payload'],
+                thread_id=intent.get('thread_id')), 'REPORT_INTENT_MISMATCH')
+        encoded = prepared.encoded.decode()
         row = db.execute('SELECT intent_json FROM controller_report_delivery WHERE delivery_id=?',
                          (intent['delivery_id'],)).fetchone()
         if row:
@@ -162,10 +180,16 @@ class DeliveryOutbox:
         An uncertain send still needs readback; withdrawal never proves absence.
         """
         _, state = DeliveryOutbox._load(db, delivery_id)
+        DeliveryOutbox._save(db, delivery_id, DeliveryOutbox.withdraw_state(state, notice, basis=basis))
+
+    @staticmethod
+    def withdraw_state(state, notice, *, basis=False):
+        """Pure withdrawal projection; history and attempt ceilings survive."""
+        state = deepcopy(state)
         field = 'basis_withdrawal' if basis else 'approval_withdrawal'
         reason = 'REPORT_BASIS_CHANGED' if basis else 'BASELINE_APPROVAL_WITHDRAWN'
         if state.get(field):
-            return
+            return state
         # SEND cooldown follows definite non-acceptance (or a deferred
         # pre-send check). RECONCILE cooldown can still hide a landed message.
         nonacceptance = (state['status'] == 'THROTTLED' and state.get('retry_action') != 'RECONCILE'
@@ -176,7 +200,7 @@ class DeliveryOutbox:
             state.update(status='WITHDRAWN', fence=str(uuid.uuid4()), reason=reason)
         elif state['status'] == 'THROTTLED':
             state['retry_action'] = 'RECONCILE'
-        DeliveryOutbox._save(db, delivery_id, state)
+        return state
 
     @staticmethod
     def _rejection(raw, intent, attempt_id):
