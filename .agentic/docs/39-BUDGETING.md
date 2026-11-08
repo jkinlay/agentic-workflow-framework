@@ -54,8 +54,10 @@ change; update a stale checkout before proposing another.
 An absent default-branch file is accepted: fresh OFF or legacy; working values
 have no effect. Nondefault checks compare normalized values.
 With origin configured but origin/HEAD unavailable, show/validate/install warn;
-budget admission tries refresh and refuses unresolved identity, even without
-tracking refs. Non-repository fresh OFF/legacy continue offline. Malformed/unreadable policy refuses plainly. Git metadata must remain
+budget admission tries refresh and refuses unresolved identity except for fresh
+OFF/legacy installs with no tracking refs, no default ref and only default
+protected values. Non-repository fresh OFF/legacy continue offline.
+Malformed/unreadable policy refuses plainly. Git metadata must remain
 outside worker write authority. Repository rules and owner merge rights govern
 acceptance; direct default-branch push/full owner rights can bypass this control.
 Offer the shipped ruleset. Reader digests do not authenticate merges.

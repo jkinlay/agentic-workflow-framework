@@ -317,36 +317,32 @@ class AdoptionStatusTests(unittest.TestCase):
             release_source = profile / 'release-source'
             shutil.copytree(ROOT, release_source,
                             ignore=shutil.ignore_patterns('.git', '.tmp-tests', '__pycache__', '*.pyc'))
-            raw_modes = subprocess.run(
-                [self.git, '--no-replace-objects', '-c', 'core.useReplaceRefs=false', '-C', str(ROOT),
-                 'ls-tree', '-rz', '--full-tree', 'HEAD'], capture_output=True, check=True).stdout
+            # Preserve authoritative Git modes for the complete tested working
+            # tree, including untracked worker additions. A private index/object
+            # store leaves the source repository's index and objects untouched.
+            source_git = [self.git, '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
+                          '-C', str(ROOT)]
+            objects = subprocess.run(source_git + ['rev-parse', '--path-format=absolute',
+                '--git-path', 'objects'], capture_output=True, text=True, check=True).stdout.strip()
+            private_objects = profile / 'source-objects'
+            private_objects.mkdir()
+            source_env = {**os.environ, 'GIT_INDEX_FILE': str(profile / 'source-index'),
+                          'GIT_OBJECT_DIRECTORY': str(private_objects),
+                          'GIT_ALTERNATE_OBJECT_DIRECTORIES': objects}
+            for args in (['read-tree', 'HEAD'], ['add', '--all', '--', '.']):
+                subprocess.run(source_git + args, env=source_env, capture_output=True, check=True)
+            tree = subprocess.run(source_git + ['write-tree'], env=source_env,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            raw_modes = subprocess.run(source_git + ['ls-tree', '-rz', '--full-tree', tree],
+                                       env=source_env, capture_output=True, check=True).stdout
             mode_files = {}
             for record in raw_modes.split(b'\0'):
                 if record:
                     metadata, raw_path = record.split(b'\t', 1)
                     mode, kind, _oid = metadata.decode('ascii').split(' ')
                     self.assertEqual(kind, 'blob')
-                    mode_files[raw_path.decode('utf-8')] = mode
-            # D-1025-04 round 2 approves this retained fixture correction.
-            # The copied source is the tested working tree: apply Git's raw
-            # mode delta, including additions, to the baseline mode inventory.
-            # No default mode may hide a member absent from Git's inventory.
-            raw_changes = subprocess.run(
-                [self.git, '--no-replace-objects', '-c', 'core.useReplaceRefs=false', '-C', str(ROOT),
-                 'diff', '--raw', '-z', '--no-renames', '--no-abbrev', 'HEAD'],
-                capture_output=True, check=True).stdout
-            changes = iter(raw_changes.split(b'\0'))
-            for metadata in changes:
-                if not metadata:
-                    continue
-                raw_path = next(changes)
-                _old_mode, mode, _old_oid, _oid, _change = metadata[1:].decode('ascii').split(' ')
-                path = raw_path.decode('utf-8')
-                if mode == '000000':
-                    del mode_files[path]
-                else:
                     self.assertIn(mode, {'100644', '100755'})
-                    mode_files[path] = mode
+                    mode_files[raw_path.decode('utf-8')] = mode
             mode_manifest = profile / 'git-modes.json'
             mode_manifest.write_text(json.dumps({'format': 'awf-raw-git-modes-1',
                                                   'files': mode_files}, indent=2, sort_keys=True) + '\n',
@@ -1186,9 +1182,37 @@ class AdoptionStatusTests(unittest.TestCase):
         del provenance['installation']['install_id']
         (self.root / INSTALLED).write_bytes(json_bytes(receipt))
         (self.root / PROVENANCE).write_bytes(json_bytes(provenance))
-        result = self.observe()
-        self.assertEqual(result['project_state'], 'CONFIGURED')
-        self.assertIn('installation UUID', result['next_action'])
+        def inventory():
+            return {path.relative_to(self.root).as_posix(): (
+                path.read_bytes() if path.is_file() else None, path.stat().st_mode,
+                path.stat().st_mtime_ns, path.stat().st_ctime_ns,
+                getattr(path.stat(), 'st_file_attributes', None))
+                for path in [self.root, *self.root.rglob('*')]}
+        before = inventory()
+        from agentic import host_preflight
+        writable_row = host_preflight._repository_writable_row
+        probe_calls = []
+        def refuse_write_probe(root):
+            self.assertEqual(self.root.resolve(), root.resolve())
+            probe_calls.append(root.resolve())
+            return False
+        # This identity refusal observes a synthetic read-only host. Keep the
+        # real preflight and its warning without its create/delete write probe.
+        def observed_writability(root, probe=None):
+            self.assertIsNone(probe)
+            return writable_row(root, probe=refuse_write_probe)
+        with patch.object(host_preflight, '_repository_writable_row', side_effect=observed_writability):
+            result = self.observe()
+        self.assertEqual([self.root.resolve()], probe_calls)
+        self.assertIsNone(result['project_state'], result)
+        self.assertFalse(result['integrity_valid'])
+        self.assertFalse(result['execution_authority'])
+        check = next(item for item in result['checks'] if item['code'] == 'INSTALLATION_INTEGRITY')
+        self.assertEqual('INVALID', check['state'])
+        self.assertIn('install_id', check['evidence'])
+        self.assertIn('install_id', result['next_action'])
+        self.assertIn('verify-installation', result['next_action'])
+        self.assertEqual(before, inventory())
 
     def test_status_does_not_execute_product_clean_filters(self):
         marker = Path(self.temporary.name) / 'filter-executed.txt'

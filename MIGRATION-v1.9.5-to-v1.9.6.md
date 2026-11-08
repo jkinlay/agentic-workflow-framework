@@ -4,10 +4,10 @@ Use the separately verified release/pin. Stop dispatch/settlement; establish exc
 
 Earlier projects: follow the [adoption guide](.agentic/docs/20-NEW-PROJECT-SETUP.md).
 
-Before checkout, merge `.agentic/templates/installed.gitattributes` into root
-`.gitattributes`, preserving existing rules. This is required with
-`core.autocrlf=true` to prevent managed LF-to-CRLF corruption. Inspect nested/info
-overrides; never renormalize unrelated files. Repeat canonical checks after checkout.
+Before committing or checking out managed bytes, merge `.agentic/templates/installed.gitattributes`
+into root `.gitattributes`, preserving product rules. This prevents
+`core.autocrlf=true` LF-to-CRLF corruption. Inspect nested/info overrides; never
+renormalize unrelated files. Repeat verification after fresh checkout.
 
 `PYTHON` is the absolute interpreter in a separate bootstrap virtual environment, created with a supported Python using `python -m venv BOOTSTRAP`. Install the verified release dependencies there with `PYTHON -m pip install --require-hashes --no-index --find-links WHEELS -r RELEASE/.agentic/requirements.lock`. WHEELS must satisfy the release lock. Replace uppercase arguments; use absolute paths.
 

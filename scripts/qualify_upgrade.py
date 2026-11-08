@@ -642,7 +642,7 @@ def prepare_upgrade(source, project, pin, before):
         operating.read_bytes() if operating.exists() else None, receipt_raw,
         (project / PROVENANCE).read_bytes(), state,
         {'source_manifest_sha256': verified_pin, '_source_manifest_json': manifest_raw.decode('utf-8'),
-         '_immutable_files': immutable})
+         '_immutable_files': immutable}, install_id=identity['install_id'])
     exercised = [action for step in steps for action in step['state_migrations']]
     migrations = [action for action in exercised
                   if action['action'] == 'migrated_schema']

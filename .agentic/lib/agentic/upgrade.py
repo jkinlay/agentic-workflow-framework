@@ -429,19 +429,26 @@ def identify_installation(tree, table, config_raw, receipt_raw):
     if (provenance.get("template", {}).get("version") != claimed
             or provenance.get("installation", {}).get("source_manifest_sha256") != receipt_identity["source_manifest_sha256"]):
         raise ValidationError("Unrecognised AWF installation: workflow provenance does not match the registered receipt; no files changed")
+    install_id = _historical_install_id(receipt, provenance, claimed, schema,
+                                      primary=receipt_identity is entry)
+    return {"version": claimed, "entry": entry, "receipt": receipt, "immutable_files": expected,
+            "install_id": install_id}
+
+
+def _historical_install_id(receipt, provenance, claimed, schema, *, primary):
+    """Select identity only after the caller authenticates the registered source."""
     provenance_id = provenance.get("installation", {}).get("install_id")
     receipt_id = receipt.get("install_id")
     # Registered compatibility formats: 1.8.3's legacy-1 snapshot and the
     # primary 1.9.3/1.9.4 historical receipts with their exact fixture markers.
     # Those formats use provenance as the canonical UUID. No published 1.9.5
     # receipt (or registered variant) is eligible for the marker exception.
-    legacy_marker = (claimed in {"1.9.3", "1.9.4"} and receipt_identity is entry
+    legacy_marker = (claimed in {"1.9.3", "1.9.4"} and primary
                      and receipt_id == "fixture-install-" + claimed)
     if schema == CURRENT_RECEIPT_SCHEMA and not legacy_marker:
         if not isinstance(receipt_id, str) or not receipt_id or receipt_id != provenance_id:
             raise ValidationError("Installed receipt/provenance install_id values differ or are missing; no files changed")
-    return {"version": claimed, "entry": entry, "receipt": receipt, "immutable_files": expected,
-            "install_id": provenance_id or receipt_id}
+    return provenance_id or receipt_id
 
 
 def _replace_scalar(raw, key, previous, current, *, question):
@@ -579,11 +586,13 @@ class MigrationBundle:
     state: MappingProxyType
 
 
-def _target_receipt(raw, current, target):
+def _target_receipt(raw, current, target, install_id):
     value = loads(raw.decode("utf-8"))
     value["template_version"] = current
     value["source_manifest_sha256"] = target["source_manifest_sha256"]
     value["immutable_files"] = dict(target["_immutable_files"])
+    if install_id is not None:
+        value["install_id"] = install_id
     source_raw = target.get("_source_manifest_json")
     if source_raw is None:
         value.pop("source_manifest_json", None)
@@ -592,10 +601,12 @@ def _target_receipt(raw, current, target):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
-def _target_provenance(raw, current, target):
+def _target_provenance(raw, current, target, install_id):
     value = loads(raw.decode("utf-8"))
     value.setdefault("template", {})["version"] = current
     value.setdefault("installation", {})["source_manifest_sha256"] = target["source_manifest_sha256"]
+    if install_id is not None:
+        value["installation"]["install_id"] = install_id
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
@@ -832,7 +843,7 @@ def _migrate_state(state, previous, current):
     return migrated
 
 
-def migrate_step(bundle, previous, current, target):
+def migrate_step(bundle, previous, current, target, *, install_id=None):
     """Pure adjacent step with target-valid receipt/provenance and schema-classified state."""
     config = _replace_scalar(bundle.project_config, "expected_workflow_version", previous, current,
         question=f"should the unique template.expected_workflow_version scalar be changed from {previous} to {current}?")
@@ -840,8 +851,10 @@ def migrate_step(bundle, previous, current, target):
         config = _insert_legacy_routing(config)
     if previous == "1.9.2" and current == "1.9.3":
         config = _insert_unbound_jira_identity(config)
-    receipt = _target_receipt(bundle.receipt, current, target)
-    provenance = _target_provenance(bundle.provenance, current, target)
+    # Installation callers pass the canonical ID from authenticated source
+    # identification. Pure configuration-only callers need not supply identity.
+    receipt = _target_receipt(bundle.receipt, current, target, install_id)
+    provenance = _target_provenance(bundle.provenance, current, target, install_id)
     if bundle.operating_config is not None:
         try:
             load_yaml(bundle.operating_config)
@@ -852,30 +865,30 @@ def migrate_step(bundle, previous, current, target):
                            MappingProxyType(state))
 
 
-def migrate_1_8_3_to_1_8_9(bundle, target):
-    return migrate_step(bundle, "1.8.3", "1.8.9", target)
+def migrate_1_8_3_to_1_8_9(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.8.3", "1.8.9", target, install_id=install_id)
 
 
-def migrate_1_8_9_to_1_9_1(bundle, target):
-    return migrate_step(bundle, "1.8.9", "1.9.1", target)
+def migrate_1_8_9_to_1_9_1(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.8.9", "1.9.1", target, install_id=install_id)
 
 
-def migrate_1_9_1_to_1_9_2(bundle, target):
-    return migrate_step(bundle, "1.9.1", "1.9.2", target)
+def migrate_1_9_1_to_1_9_2(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.9.1", "1.9.2", target, install_id=install_id)
 
 
-def migrate_1_9_2_to_1_9_3(bundle, target):
-    return migrate_step(bundle, "1.9.2", "1.9.3", target)
+def migrate_1_9_2_to_1_9_3(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.9.2", "1.9.3", target, install_id=install_id)
 
 
-def migrate_1_9_3_to_1_9_4(bundle, target):
+def migrate_1_9_3_to_1_9_4(bundle, target, *, install_id=None):
     """The shipped 1.9.3 -> 1.9.4 step is version-only."""
-    return migrate_step(bundle, "1.9.3", "1.9.4", target)
+    return migrate_step(bundle, "1.9.3", "1.9.4", target, install_id=install_id)
 
 
-def migrate_1_9_4_to_1_9_5(bundle, target):
+def migrate_1_9_4_to_1_9_5(bundle, target, *, install_id=None):
     """Apply the additive review-tier migration while retaining all history."""
-    migrated = migrate_step(bundle, "1.9.4", "1.9.5", target)
+    migrated = migrate_step(bundle, "1.9.4", "1.9.5", target, install_id=install_id)
     return MigrationBundle(review_tier_defaults(migrated.project_config),
                             migrated.operating_config, migrated.receipt,
                             migrated.provenance, migrated.state)
@@ -1113,7 +1126,8 @@ def migration_chain(table, version):
     return tuple(steps)
 
 
-def apply_chain(table, version, project_config, operating_config, receipt, provenance, state, target_entry):
+def apply_chain(table, version, project_config, operating_config, receipt, provenance, state, target_entry,
+                *, install_id=None):
     bundle = MigrationBundle(project_config, operating_config, receipt, provenance,
                              MappingProxyType(dict(state)))
     reports = []
@@ -1121,7 +1135,8 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
         target = target_entry if current == table["target"] else table["versions"][current]
         migration = {("1.9.3", "1.9.4"): migrate_1_9_3_to_1_9_4,
                      ("1.9.4", "1.9.5"): migrate_1_9_4_to_1_9_5}.get((previous, current))
-        migrated = migration(bundle, target) if migration else migrate_step(bundle, previous, current, target)
+        migrated = (migration(bundle, target, install_id=install_id) if migration else
+                    migrate_step(bundle, previous, current, target, install_id=install_id))
         reports.append({"from": previous, "to": current, "configuration_diff":
                         config_diff(bundle.project_config, migrated.project_config, previous, current),
                         "new_required_settings": list(new_settings),

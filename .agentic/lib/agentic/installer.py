@@ -1253,6 +1253,10 @@ def _verify_installed(root, expected_version):
         version = loads(tree.read(PROVENANCE).decode())
         if version["template"]["version"] != expected_version or version["installation"]["source_manifest_sha256"] != manifest["source_manifest_sha256"]:
             raise ValidationError("Installed provenance is inconsistent")
+        receipt_id = manifest.get("install_id")
+        provenance_id = version.get("installation", {}).get("install_id")
+        if not isinstance(receipt_id, str) or not receipt_id or receipt_id != provenance_id:
+            raise ValidationError("Installed receipt/provenance install_id values differ or are missing; no files changed")
         from .adoption_config import verify_import_membership
         verify_import_membership(root, source_manifest)
         return manifest["source_manifest_sha256"]
@@ -2174,6 +2178,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             provenance_raw = _exists_read(dst, PROVENANCE)
             if provenance_raw is None:
                 raise ValidationError("Unrecognised AWF installation: workflow provenance is missing; no files changed")
+            planning_inputs[PROVENANCE] = provenance_raw
             existing_codeowners = _exists_read(dst, CODEOWNERS)
             if installed_version == VERSION:
                 _verify_installed(destination, VERSION)
@@ -2194,7 +2199,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                                 "_source_manifest_json": source_manifest_json,
                                 "_immutable_files": {path: sha256(data) for path, data in release_immutable.items()}}
                 bundle, step_reports = apply_chain(known_versions, identity["version"], existing_config,
-                                                   operating, receipt_raw, provenance_raw, state, target_entry)
+                                                   operating, receipt_raw, provenance_raw, state, target_entry,
+                                                   install_id=identity["install_id"])
                 migrated_config = bundle.project_config
                 total_diff = config_diff(existing_config, migrated_config, identity["version"], VERSION)
             assert_quiescent(existing_config)

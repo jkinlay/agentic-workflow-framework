@@ -348,6 +348,38 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertEqual(actual.splitlines().count(header), 1)
 
 
+    def test_new_migration_receipts_use_canonical_uuid_without_rewriting_sources(self):
+        from agentic.safeio import Tree
+        from agentic.upgrade import MigrationBundle, identify_installation, migrate_step
+        destination, _ = self.fixture('1.9.3')
+        receipt_raw = (destination / INSTALLED).read_bytes()
+        provenance_raw = (destination / PROVENANCE).read_bytes()
+        table = load_known_versions((ROOT / KNOWN_VERSIONS).read_bytes())
+        with Tree(destination) as tree:
+            identity = identify_installation(tree, table, (destination / CONFIG).read_bytes(), receipt_raw)
+        canonical_id = load_yaml(provenance_raw)['installation']['install_id']
+        self.assertEqual(canonical_id, identity['install_id'])
+        self.assertEqual('fixture-install-1.9.3', json.loads(receipt_raw)['install_id'])
+        bundle = MigrationBundle((destination / CONFIG).read_bytes(),
+            optional_bytes(destination / 'OPERATING_CONFIG.yaml'), receipt_raw, provenance_raw, {})
+        migrated = migrate_step(bundle, '1.9.3', '1.9.4', table['versions']['1.9.4'],
+                                install_id=identity['install_id'])
+        self.assertEqual(receipt_raw, (destination / INSTALLED).read_bytes())
+        self.assertEqual(provenance_raw, (destination / PROVENANCE).read_bytes())
+        self.assertEqual(receipt_raw, fixture_blob(fixture_manifest('1.9.3')['owner_files'][INSTALLED]['sha256']))
+        self.assertEqual(provenance_raw, fixture_blob(fixture_manifest('1.9.3')['owner_files'][PROVENANCE]['sha256']))
+        self.assertEqual(canonical_id, json.loads(migrated.receipt)['install_id'])
+        self.assertEqual(canonical_id, load_yaml(migrated.provenance)['installation']['install_id'])
+        self.assertEqual('1.9.4', advance_one_fixture_step(destination, '1.9.3'))
+        self.assertEqual(migrated.receipt, (destination / INSTALLED).read_bytes())
+        with Tree(destination) as tree:
+            next_identity = identify_installation(tree, table, migrated.project_config, migrated.receipt)
+        self.assertEqual(canonical_id, next_identity['install_id'])
+        following = migrate_step(migrated, '1.9.4', '1.9.5', table['versions']['1.9.5'],
+                                 install_id=next_identity['install_id'])
+        self.assertEqual(canonical_id, json.loads(following.receipt)['install_id'])
+        self.assertEqual(canonical_id, load_yaml(following.provenance)['installation']['install_id'])
+
     def test_direct_and_chained_real_fixture_upgrades_are_byte_identical(self):
         for version in VERSIONS:
             with self.subTest(version=version):

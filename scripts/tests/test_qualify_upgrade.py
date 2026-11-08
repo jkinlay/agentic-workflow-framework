@@ -256,16 +256,25 @@ class PreservationReportTests(unittest.TestCase):
         archive = self.root / '.agentic-state/archive'
         archive.mkdir(parents=True)
         (archive / 'owner-receipt.json').write_bytes(b'synthetic archived evidence')
+        before = inventory(self.root)
+        original_bytes = (archive / 'owner-receipt.json').read_bytes()
         original = os.scandir
+        archive_identity = archive.resolve()
+        attempts = []
 
         def deny_archive(path):
-            if Path(path) == archive:
-                raise PermissionError('Synthetic enumeration refusal')
+            if Path(path).resolve() == archive_identity:
+                attempts.append(path)
+                raise PermissionError(13, 'Synthetic enumeration refusal', str(archive_identity))
             return original(path)
 
         with patch('qualify_upgrade.os.scandir', side_effect=deny_archive):
             with self.assertRaisesRegex(ValueError, 'incomplete'):
                 inventory(self.root)
+        self.assertEqual(1, len(attempts))
+        self.assertEqual(archive_identity, Path(attempts[0]).resolve())
+        self.assertEqual(original_bytes, (archive / 'owner-receipt.json').read_bytes())
+        self.assertEqual(before, inventory(self.root))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows ownership/DACL regression')
     def test_windows_added_acl_entry_is_detected_without_disclosing_sids(self):
