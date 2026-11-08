@@ -148,9 +148,17 @@ class CreatedDirectorySafetyTests(unittest.TestCase):
             for identity in (None, [0, 0]):
                 with self.assertRaisesRegex(ValidationError, 'changed'):
                     _cleanup_transaction_directories(tree, {'created_directories': [dict(row, identity=identity)]})
-            _cleanup_transaction_directories(tree, {'created_directories': [row]})
-            _cleanup_transaction_directories(tree, {'created_directories': [row]})
-            self.assertFalse((root / 'created').exists())
+            if os.name == 'nt':
+                _cleanup_transaction_directories(tree, {'created_directories': [row]})
+                _cleanup_transaction_directories(tree, {'created_directories': [row]})
+                self.assertFalse((root / 'created').exists())
+            else:
+                # A path lookup is not creating-handle proof on POSIX. Keep the
+                # refusal assertions above and exercise repeated refusal here.
+                for _ in range(2):
+                    with self.assertRaisesRegex(ValidationError, 'cannot prove'):
+                        _cleanup_transaction_directories(tree, {'created_directories': [row]})
+                self.assertTrue((root / 'created').is_dir())
             self.assertTrue((root / 'owner').is_dir())
 
 
@@ -203,7 +211,8 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
             self.assertTrue((project / JOURNAL).is_file())
             self.assertEqual(1, len(list(project.rglob('.awf-*.tmp'))))
             from agentic.installer import _transaction_temporary_paths
-            recorded = _transaction_temporary_paths(json.loads((project / JOURNAL).read_bytes()))
+            journal, prepared = self.recovery_inventory_evidence(project)
+            recorded = _transaction_temporary_paths(journal)
             self.assertEqual([project / recorded['.agentic/lib/agentic/operating_status.py']],
                              list(project.rglob('.awf-*.tmp')))
             recovered = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/bootstrap_project.py'),
@@ -211,7 +220,8 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                 env=child_env(), timeout=120)
             self.assertEqual(0, recovered.returncode, recovered.stdout + recovered.stderr)
             self.assertEqual('ROLLED_BACK', json.loads(recovered.stdout)['status'])
-            self.assertEqual(before, inventory(project))
+            self.assert_recovered_inventory(project, before, json.loads(recovered.stdout),
+                                            journal, prepared)
             self.assertEqual(runtime_before, _runtime_tree_sha256(project / '.agentic/.venv'))
             self.assertFalse(list(project.rglob('.awf-*.tmp')))
             self.assertEqual('NO_PENDING_INSTALL', self.recover_cli(project)['status'])
@@ -239,9 +249,11 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                 if boundary == JOURNAL:
                     relative = leftovers[0].relative_to(project).as_posix()
                     expected['files'][relative] = inventory(project)['files'][relative]
+                journal, prepared = self.recovery_inventory_evidence(project)
+                recovered = self.recover_cli(project)
                 self.assertEqual('NO_PENDING_INSTALL' if boundary == JOURNAL else 'ROLLED_BACK',
-                                 self.recover_cli(project)['status'])
-                self.assertEqual(expected, inventory(project))
+                                 recovered['status'])
+                self.assert_recovered_inventory(project, expected, recovered, journal, prepared)
                 self.assertEqual(b'synthetic outside sentinel\n', sentinel.read_bytes())
                 self.assertEqual('NO_PENDING_INSTALL', self.recover_cli(project)['status'])
                 # An interrupted first journal publication leaves only unbound
@@ -278,10 +290,51 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                 self.interrupt_temporary(project, '.agentic/lib/agentic/operating.py', stage, 'recover')
                 self.assertEqual(0 if stage == 'replaced' else 1,
                                  len(list(project.rglob('.awf-*.tmp'))))
-                self.assertEqual('ROLLED_BACK', self.recover_cli(project)['status'])
-                self.assertEqual(before, inventory(project))
+                journal, prepared = self.recovery_inventory_evidence(project)
+                recovered = self.recover_cli(project)
+                self.assertEqual('ROLLED_BACK', recovered['status'])
+                self.assert_recovered_inventory(project, before, recovered, journal, prepared)
                 self.assertFalse(list(project.rglob('.awf-*.tmp')))
                 self.assertEqual('NO_PENDING_INSTALL', self.recover_cli(project)['status'])
+
+    def recovery_inventory_evidence(self, project):
+        path = project / JOURNAL
+        journal = json.loads(path.read_bytes()) if path.exists() else {}
+        # Capture metadata before recovery, independently of the final inventory.
+        return journal, inventory(project)['directories']
+
+    def assert_recovered_inventory(self, project, before, recovery, journal, prepared):
+        after = inventory(project)
+        reported = recovery.get('retained_directories', [])
+        self.assertIsInstance(reported, list)
+        self.assertEqual(len(reported), len(set(reported)), 'duplicate retained paths')
+        retained = {path + '/' for path in reported}
+        extra = set(after['directories']) - set(before['directories'])
+        self.assertEqual(retained, extra, 'directory residue must exactly match recovery reporting')
+        unproved = {row['path'] + '/' for row in journal.get('created_directories', [])
+                    if row['identity'] is None}
+        self.assertLessEqual(retained, unproved, 'retention requires recorded unproved creation')
+        expected = deepcopy(before)
+        for relative in retained:
+            directory = project / relative
+            # Retained parents can contain retained children. Leaves are empty;
+            # every other entry must itself be a reported, unproved directory.
+            members = list(directory.iterdir())
+            children = {child.relative_to(project).as_posix() + '/' for child in members}
+            self.assertTrue(all(child.is_dir() and not child.is_symlink() for child in members))
+            self.assertLessEqual(children, retained, 'retained directory contains an unreported entry')
+            expected_children = {path for path in retained
+                                 if (project / path).parent == directory}
+            self.assertEqual(expected_children, children)
+            if not expected_children:
+                self.assertEqual([], members, 'retained leaf must be empty')
+            expected['directories'][relative] = prepared[relative]
+        # With no reported retention this is the original exact assertion,
+        # including the Windows creating-handle case. No files or metadata differ.
+        if not reported:
+            self.assertEqual(set(), extra)
+            self.assertEqual(before, after)
+        self.assertEqual(expected, after)
 
     def interrupt_temporary(self, project, boundary, stage='replace', action='install'):
         stopped = subprocess.run([sys.executable, '-B', '-c', TEMPORARY_CRASH,
@@ -355,15 +408,14 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                     with hook, self.assertRaises(SimulatedTermination):
                         install(target, project, pin, mode='upgrade', configure=True, discover=False)
                     self.assertTrue(reached)
+                    journal, prepared = self.recovery_inventory_evidence(project)
                     observed = self.recover_fresh(project)
                     self.assertNotIn(observed['recovery']['status'], ('CONFIGURED', 'ACTIVE'))
                     self.assertEqual('NO_PENDING_INSTALL', self.recover_fresh(project)['recovery']['status'])
                     if boundary != 'commit_cleanup':
                         self.assertEqual('ROLLED_BACK', observed['recovery']['status'])
-                        # Installer lock and empty transaction directories are
-                        # coordination residue, not adopted project content.
-                        after = inventory(project)
-                        self.assertEqual(before, after)
+                        self.assert_recovered_inventory(project, before, observed['recovery'],
+                                                        journal, prepared)
                     else:
                         self.assertEqual(pin, observed['integrity'])
 

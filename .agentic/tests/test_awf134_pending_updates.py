@@ -163,7 +163,7 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertIsNone(journal["runtime"]["new_sha256"])
         self.assertFalse((destination / journal["runtime"]["stage"]).exists())
         self.assertEqual("managed_after", marker["pending_update_kind"])
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
         self.assertFalse((destination / installer.JOURNAL).exists())
         self.assertFalse((destination / installer.MARKER).exists())
@@ -175,13 +175,23 @@ class PendingJournalUpdateTests(unittest.TestCase):
                 destination, before, kind = self.interrupt_update(
                     "directory_prepare", crash_point)
                 self.assertEqual("directory_prepare", kind)
-                self.assertEqual("object_prepare", json.loads(
-                    (destination / installer.JOURNAL).read_bytes())["phase"])
-                self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+                journal = json.loads((destination / installer.JOURNAL).read_bytes())
+                self.assertEqual("object_prepare", journal["phase"])
+                expected = {"status": "ROLLED_BACK"}
+                if crash_point == "marker":
+                    # Numeric reconstruction cannot replace creating-handle proof.
+                    paths = [row['path'] for row in reversed(journal['created_directories'])]
+                    expected['retained_directories'] = paths
+                self.assertEqual(expected, installer.recover(destination))
                 self.assertEqual(before, self.snapshot_project(destination))
                 self.assertFalse((destination / installer.JOURNAL).exists())
                 self.assertFalse((destination / installer.MARKER).exists())
-                self.assertFalse((destination / installer.RECOVERY_OBJECTS).exists())
+                if crash_point == "marker":
+                    for path in paths:
+                        self.assertTrue((destination / path).is_dir(), path)
+                    self.assertEqual([], list((destination / installer.RECOVERY_OBJECTS).iterdir()))
+                else:
+                    self.assertFalse((destination / installer.RECOVERY_OBJECTS).exists())
 
     @unittest.skipUnless(os.name == "nt", "Windows authenticated directory ownership publication")
     def test_awf134_directory_prepare_replacement_retains_exact_artifacts(self):
@@ -234,7 +244,7 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual("activate", kind)
         self.assertEqual("object_prepare", json.loads(
             (destination / installer.JOURNAL).read_text(encoding="utf-8"))["phase"])
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_crash_after_activation_journal_replace_before_final_marker_rolls_back(self):
@@ -242,7 +252,7 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual("activate", kind)
         self.assertEqual("active", json.loads(
             (destination / installer.JOURNAL).read_text(encoding="utf-8"))["phase"])
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_crash_after_managed_after_journal_replace_before_final_marker_rolls_back(self):
@@ -254,14 +264,14 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual("managed_after", marker["pending_update_kind"])
         self.assertEqual(marker["pending_journal_sha256"],
                          installer.sha256(installer.json_bytes(journal)))
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_recovery_round_trip_restores_exact_bytes_modes_and_runtime(self):
         destination, before, before_mode, before_runtime = (
             self.interrupt_after_managed_after_publish())
 
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
 
         target = destination / ".agentic/adopted-clone/0000.bin"
         self.assertEqual(before, self.snapshot_project(destination))
@@ -321,9 +331,10 @@ except (ValidationError, OSError, ValueError) as exc:
         self.assertFalse((destination / runtime["backup"]).exists())
         self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
 
+        expected = journal_tests.expected_rollback_result(destination)
         result = self.run_awf215_recovery(destination)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual({"status": "ROLLED_BACK"}, json.loads(result.stdout))
+        self.assertEqual(expected, json.loads(result.stdout))
         self.assertFalse(stage.exists())
         moved = list((destination / "_to_delete").iterdir())
         self.assertEqual(1, len(moved))
@@ -432,9 +443,10 @@ except (ValidationError, OSError, ValueError) as exc:
         self.assertFalse((destination / runtime["backup"]).exists())
         self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
 
+        expected = journal_tests.expected_rollback_result(destination)
         result = self.run_awf215_recovery(destination)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual({"status": "ROLLED_BACK"}, json.loads(result.stdout))
+        self.assertEqual(expected, json.loads(result.stdout))
         self.assertFalse(stage.exists())
         moved = list((destination / "_to_delete").iterdir())
         self.assertEqual(1, len(moved))
@@ -527,13 +539,13 @@ except (ValidationError, OSError, ValueError) as exc:
 
         marker = json.loads((destination / installer.MARKER).read_text(encoding="utf-8"))
         self.assertEqual("runtime_stage", marker["pending_update_kind"])
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_crash_after_commit_precommit_before_journal_replace_rolls_back(self):
         destination, before, kind = self.interrupt_update("commit_cleanup", "marker")
         self.assertEqual("commit_cleanup", kind)
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_crash_after_commit_journal_replace_before_final_marker_commits(self):
@@ -604,7 +616,7 @@ except (ValidationError, OSError, ValueError) as exc:
 
         marker = json.loads((destination / installer.MARKER).read_text(encoding="utf-8"))
         self.assertEqual("rollback_cleanup", marker["pending_update_kind"])
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_managed_after_pending_digest_mismatch_fails_closed(self):

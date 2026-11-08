@@ -98,4 +98,4 @@ Use versioned preservation; installed CMC Quant Foundry 1.9.5 stays unchanged/en
 
 ## Upgrade and adoption
 
-Absent budgeting remains LEGACY_RETAINED. Owner-requested `operating set --adopt-budgeting` prepares dormant OFF controls by PR; owner merge/fetch applies. Enabling needs another settings PR/locked shared-ledger import proofs. Quiesce writers; independently verify `prepare_budget_import`/`check_budget_import`, retained sources, reservations, UNKNOWN usage and recovery history. See [migration](../../MIGRATION-v1.9.5-to-v1.9.6.md).
+Absent budgeting remains LEGACY_RETAINED. Owner-requested `operating set --adopt-budgeting` prepares dormant OFF controls by PR; owner merge/fetch applies. Enabling needs another settings PR/locked shared-ledger import proofs. Quiesce writers; independently verify `prepare_budget_import`/`check_budget_import`, retained sources, reservations, UNKNOWN usage and recovery history. See `MIGRATION-v1.9.5-to-v1.9.6.md`.

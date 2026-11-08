@@ -1044,6 +1044,11 @@ class Tree:
             return
         parent, handle, name = self.parent(relative, create=True)
         info = self.inspect(relative)
+        mode = getattr(self, 'write_modes', {}).get(relative)
+        if os.name != 'nt' and mode is None and info is not None:
+            # inspect reads the leaf through its pinned parent. Preserve existing
+            # owner and managed modes; only new files use the private default.
+            mode = stat.S_IMODE(info.st_mode)
         if os.name == 'nt' and windows_metadata is None and info is not None:
             windows_metadata = self.windows_metadata(relative)
         # Transaction owners may precommit exact sibling names before a write.
@@ -1061,10 +1066,9 @@ class Tree:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
                 stream.flush()
-                mode = getattr(self, 'write_modes', {}).get(relative)
                 if os.name != 'nt' and mode is not None:
-                    # Recovery publishes old bytes and their old mode together;
-                    # interruption after replace must not leave a mode-only edit.
+                    # Forward replacement and recovery publish bytes and mode
+                    # together. Failure here leaves the original leaf intact.
                     os.fchmod(stream.fileno(), mode)
                 os.fsync(stream.fileno())
             if os.name == 'nt' and windows_metadata is not None:

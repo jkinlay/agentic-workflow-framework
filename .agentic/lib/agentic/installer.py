@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 from pathlib import Path
 import uuid
 
@@ -69,7 +70,8 @@ RELEASE_EXCLUDED_PATHS = frozenset({
 })
 
 
-# safeio.Tree.write creates files with this mode before replacing the target.
+# New files and private temporaries start with this mode. Tree.write preserves
+# existing POSIX modes before publication, including managed files and ledgers.
 INSTALLER_WRITE_MODE = 0o600
 INSTALL_JOURNAL_HEADROOM_BYTES = 520 * 1024
 INSTALL_JOURNAL_MAX_BYTES = MAX_DOCUMENT_BYTES - INSTALL_JOURNAL_HEADROOM_BYTES
@@ -257,7 +259,8 @@ def _validate_pending_new_journal(tree, journal, update_kind):
     runtime = _validated_runtime_journal(journal)
     if update_kind == "directory_prepare":
         valid = (_compact_journal(journal) and journal["phase"] == "object_prepare" and
-                 all(row["identity"] == _directory_identity(tree, row["path"])
+                 all(row["identity"] is None or
+                     row["identity"] == _directory_identity(tree, row["path"])
                      for row in journal.get("created_directories", [])))
     elif update_kind == "activate":
         valid = (journal["format"] == "awf-install-journal-4" and
@@ -320,11 +323,12 @@ def _reconstruct_pending_old_journal(tree, journal, update_kind):
     if update_kind == "directory_prepare":
         if not (_compact_journal(journal) and journal["phase"] == "object_prepare"):
             _pending_transition_mismatch()
-        # The pending digest binds identities captured by atomic creation. An
-        # observed replacement cannot reproduce that digest and grants no
-        # cleanup authority. No object or project payload has been written yet.
+        # Reconstruct numbers only to authenticate the pending transition. IDs
+        # can be reused: a matching digest proves no object continuity and must
+        # never grant deletion authority. No project payload has been written.
         for row in candidate.get("created_directories", []):
-            row["identity"] = _directory_identity(tree, row["path"])
+            row["identity"] = (_directory_identity(tree, row["path"])
+                               if os.name == "nt" else None)
     elif update_kind == "activate":
         if not (_compact_journal(journal) and journal["phase"] == "object_prepare"):
             _pending_transition_mismatch()
@@ -401,7 +405,15 @@ def _recover_pending_journal_update(tree, journal, journal_raw, marker, *, publi
                        "rollback_cleanup"}:
         _load_recovery_objects(tree, journal)
 
-    if update_kind in {"directory_prepare", "runtime_stage", "commit_cleanup_authenticated"}:
+    if update_kind == "directory_prepare":
+        # Keep the old unproved identities durably, including across another
+        # interruption. Only the creating handle can publish ownership proof.
+        if publish:
+            tree.write(MARKER, json_bytes(_journal_marker(
+                journal["transaction_id"], observed_digest)))
+        return journal
+
+    if update_kind in {"runtime_stage", "commit_cleanup_authenticated"}:
         if publish:
             tree.write(JOURNAL, candidate_raw)
             tree.write(MARKER, json_bytes(_journal_marker(
@@ -709,13 +721,34 @@ def _prepare_transaction_directories(tree, journal):
             # mkdir has no creating handle. A subsequent open/stat could refer
             # to a replacement: leave ownership unproved and retain on rollback.
             row["identity"] = None
-    # Publish ownership before objects or project payload can change. An
-    # interrupted ownership publication refuses unproved directories.
+    # Publish creating-handle identities before objects or project payload can
+    # change. Unproved directories remain recorded for retention on rollback.
     _write_bound_journal_update(tree, journal, "directory_prepare")
 
 
 def _cleanup_transaction_directories(tree, journal):
+    retained = []
     for row in reversed(journal.get("created_directories", [])):
+        if row["identity"] is None:
+            # Retention belongs to a declared rollback transaction. An unbound
+            # cleanup request cannot classify a pre-existing owner directory as
+            # transaction residue. Normal callers validate the complete journal.
+            if journal.get("format") != "awf-install-journal-4" or journal.get("phase") not in {
+                    "object_prepare", "active", "rollback_cleanup"}:
+                raise ValidationError("Created directory changed or unbound; journal retained: " + row["path"])
+            # POSIX mkdir supplies no creating handle, and interrupted ownership
+            # publication supplies no continuity proof on any OS. Retain these
+            # paths in every phase; never promote a later lookup or recycled ID.
+            try:
+                # This lookup establishes existence for reporting only. Its
+                # numbers never grant ownership or deletion authority.
+                _directory_identity(tree, row["path"])
+            except FileNotFoundError:
+                continue
+            retained.append(row["path"])
+            print("WARNING: Directory retained; ownership unproved: " + row["path"],
+                  file=sys.stderr)
+            continue
         # Release cached child handles (Windows denies deletion while pinned),
         # then pin the parent again before checking identity and empty removal.
         tree.close()
@@ -723,7 +756,7 @@ def _cleanup_transaction_directories(tree, journal):
             identity = _directory_identity(tree, row["path"])
         except FileNotFoundError:
             continue
-        if row["identity"] is None or identity != row["identity"]:
+        if identity != row["identity"]:
             raise ValidationError("Created directory changed; journal retained: " + row["path"])
         parent, handle, name = tree.parent(row["path"])
         try:
@@ -751,6 +784,7 @@ def _cleanup_transaction_directories(tree, journal):
                                       "identity-bound deletion on POSIX; journal retained: " + row["path"])
         except OSError as exc:
             raise ValidationError("Created directory is not safely empty; journal retained: " + row["path"]) from exc
+    return retained
 
 
 def _write_recovery_objects(tree, objects):
@@ -826,10 +860,22 @@ def _finalize_compact_rollback(tree, journal, *, marker_present):
     _verify_compact_old_endpoint(tree, journal, "at compact rollback endpoint")
     _cleanup_transaction_temporaries(tree, journal)
     _cleanup_recovery_objects(tree, journal)
-    _cleanup_transaction_directories(tree, journal)
+    # Retaining unproved directories does not waive unrelated owner additions.
+    # At the old endpoint their installer files are gone; unexpected file bytes
+    # still refuse finalization, independently of any directory deletion proof.
+    for row in journal.get("created_directories", []):
+        if row["identity"] is None:
+            try:
+                members = tree.file_list(subtree=row["path"])
+            except FileNotFoundError:
+                continue
+            if members:
+                raise ValidationError("Recovery found an external directory member; journal retained: " + members[0])
+    retained = _cleanup_transaction_directories(tree, journal)
     if marker_present:
         tree.unlink(MARKER)
     tree.unlink(JOURNAL)
+    return retained
 
 
 def _old_file_bytes(journal, item, objects):
@@ -1531,8 +1577,7 @@ def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
 def rollback(tree, journal):
     _validate_transaction_journal(journal)
     if _compact_journal(journal) and journal["phase"] in {"object_prepare", "rollback_cleanup"}:
-        _finalize_compact_rollback(tree, journal, marker_present=True)
-        return
+        return _finalize_compact_rollback(tree, journal, marker_present=True)
     # Resolve and authenticate every recovery object before any project or
     # runtime mutation, so one missing/tampered object fails the whole rollback.
     recovery_objects = _load_recovery_objects(tree, journal)
@@ -1635,7 +1680,7 @@ def rollback(tree, journal):
         # then prove the old state from hashes even after partial object cleanup.
         journal["phase"] = "rollback_cleanup"
         _write_bound_journal_update(tree, journal, "rollback_cleanup")
-        _finalize_compact_rollback(tree, journal, marker_present=True)
+        return _finalize_compact_rollback(tree, journal, marker_present=True)
     else:
         tree.unlink(MARKER)
         tree.unlink(JOURNAL)
@@ -1847,14 +1892,16 @@ def _finalize_committed(tree, journal):
     tree.unlink(JOURNAL)
 
 
-def _finalize_journal_only(tree, journal):
+def _finalize_journal_only(tree, journal, *, retained_directories=None):
     """Prove an endpoint before retiring its journal and coordination residue."""
     _validate_transaction_journal(journal)
     _bind_transaction_temporaries(tree, journal)
     if journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"}:
         raise ValidationError("Legacy journal-only recovery failed closed")
     if journal["phase"] in {"object_prepare", "rollback_cleanup"}:
-        _finalize_compact_rollback(tree, journal, marker_present=False)
+        retained = _finalize_compact_rollback(tree, journal, marker_present=False)
+        if retained_directories is not None:
+            retained_directories.extend(retained)
         return "ROLLED_BACK"
     if journal["phase"] == "active":
         _verify_journal_managed_state(tree, journal, "before", "at journal-only rollback endpoint")
@@ -1943,7 +1990,11 @@ def recover(destination):
                 _validate_transaction_journal(journal)
             except (UnicodeDecodeError, ValueError, ValidationError) as exc:
                 raise ValidationError("Unauthenticated journal-only recovery failed closed") from exc
-            return {"status": _finalize_journal_only(tree, journal)}
+            retained = []
+            result = {"status": _finalize_journal_only(tree, journal, retained_directories=retained)}
+            if retained:
+                result["retained_directories"] = retained
+            return result
         journal, bound_raw, bound_marker = _read_bound_journal(tree)
         _bind_transaction_temporaries(tree, journal)
         if _compact_journal(journal):
@@ -1969,8 +2020,11 @@ def recover(destination):
                 return {"status": "COMMITTED_CLEANUP_PENDING", "transaction_cleanup_failures": cleanup}
             _finalize_committed(tree, journal)
             return {"status": "COMMITTED"}
-        rollback(tree, journal)
-        return {"status": "ROLLED_BACK"}
+        retained = rollback(tree, journal)
+        result = {"status": "ROLLED_BACK"}
+        if retained:
+            result["retained_directories"] = retained
+        return result
 
 
 def install(source, destination, expected_digest, mode="install", conflict="error", overrides=None,
