@@ -51,26 +51,24 @@ class PendingJournalUpdateTests(unittest.TestCase):
         (runtime / "runtime.bin").write_bytes(b"exact prior runtime\n")
         before = self.snapshot_project(destination)
         original_write = installer.Tree.write
-        pending_updates = 0
         managed_precommitted = False
 
-        def interrupt_write(tree, relative, data):
-            nonlocal pending_updates, managed_precommitted
+        def interrupt_write(tree, relative, data, **kwargs):
+            nonlocal managed_precommitted
             if relative == installer.MARKER:
                 marker = json.loads(data.decode("utf-8"))
                 if marker.get("pending_journal_sha256") is not None:
-                    pending_updates += 1
-                    if pending_updates == 2:
+                    if marker.get("pending_update_kind") == "managed_after":
                         managed_precommitted = True
-                        original_write(tree, relative, data)
+                        original_write(tree, relative, data, **kwargs)
                         if crash_point == "marker":
                             raise CapturedIntent
                         return None
             if (relative == installer.JOURNAL and managed_precommitted and
                     crash_point == "journal"):
-                original_write(tree, relative, data)
+                original_write(tree, relative, data, **kwargs)
                 raise CapturedIntent
-            return original_write(tree, relative, data)
+            return original_write(tree, relative, data, **kwargs)
 
         with patch.object(installer, "verify_release", return_value=(pin, content)), \
                 patch.object(installer.Tree, "write", new=interrupt_write), \
@@ -116,30 +114,29 @@ class PendingJournalUpdateTests(unittest.TestCase):
         object_path = destination / installer.RECOVERY_OBJECTS / entry["old_sha256"]
         return destination, entry, object_path
 
-    def interrupt_numbered_update(self, pending_number, crash_point, *, fail_after=None):
+    def interrupt_update(self, update_kind, crash_point, *, fail_after=None):
         source, destination, pin, content = self.prepare_install(
             unchanged_files=0, changed_files=1)
         before = self.snapshot_project(destination)
         original_write = installer.Tree.write
-        observed = {"pending": 0, "selected": False, "kind": None}
+        observed = {"selected": False, "kind": None}
 
-        def interrupt_write(tree, relative, data):
+        def interrupt_write(tree, relative, data, **kwargs):
             if relative == installer.MARKER:
                 marker = json.loads(data.decode("utf-8"))
                 if marker.get("pending_journal_sha256") is not None:
-                    observed["pending"] += 1
-                    if observed["pending"] == pending_number:
+                    if marker.get("pending_update_kind") == update_kind:
                         observed["selected"] = True
                         observed["kind"] = marker.get("pending_update_kind")
-                        original_write(tree, relative, data)
+                        original_write(tree, relative, data, **kwargs)
                         if crash_point == "marker":
                             raise CapturedIntent
                         return None
             if (relative == installer.JOURNAL and observed["selected"] and
                     crash_point == "journal"):
-                original_write(tree, relative, data)
+                original_write(tree, relative, data, **kwargs)
                 raise CapturedIntent
-            return original_write(tree, relative, data)
+            return original_write(tree, relative, data, **kwargs)
 
         with patch.object(installer, "verify_release", return_value=(pin, content)), \
                 patch.object(installer.Tree, "write", new=interrupt_write), \
@@ -171,8 +168,69 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertFalse((destination / installer.JOURNAL).exists())
         self.assertFalse((destination / installer.MARKER).exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows authenticated directory ownership publication")
+    def test_awf134_directory_prepare_crash_points_restore_exact_endpoint(self):
+        for crash_point in ("marker", "journal"):
+            with self.subTest(crash_point=crash_point):
+                destination, before, kind = self.interrupt_update(
+                    "directory_prepare", crash_point)
+                self.assertEqual("directory_prepare", kind)
+                self.assertEqual("object_prepare", json.loads(
+                    (destination / installer.JOURNAL).read_bytes())["phase"])
+                self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+                self.assertEqual(before, self.snapshot_project(destination))
+                self.assertFalse((destination / installer.JOURNAL).exists())
+                self.assertFalse((destination / installer.MARKER).exists())
+                self.assertFalse((destination / installer.RECOVERY_OBJECTS).exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows authenticated directory ownership publication")
+    def test_awf134_directory_prepare_replacement_retains_exact_artifacts(self):
+        destination, _before, kind = self.interrupt_update("directory_prepare", "marker")
+        self.assertEqual("directory_prepare", kind)
+        journal = json.loads((destination / installer.JOURNAL).read_bytes())
+        path = destination / journal["created_directories"][-1]["path"]
+        retained = path.with_name(path.name + "-retained")
+        path.rename(retained)
+        path.mkdir()
+        directories = sorted(item.relative_to(destination).as_posix()
+                             for item in destination.rglob("*") if item.is_dir())
+        self.assert_recovery_damage_fails_closed(
+            destination, "Pending directory-prepare journal update digest mismatch; journal retained")
+        self.assertEqual(directories, sorted(item.relative_to(destination).as_posix()
+                                           for item in destination.rglob("*") if item.is_dir()))
+
+    def test_awf134_specific_damage_precedes_unrelated_inventory_drift(self):
+        for damage in ("missing", "hash", "size", "activation_digest"):
+            with self.subTest(damage=damage):
+                if damage == "activation_digest":
+                    destination, _before, kind = self.interrupt_update("activate", "marker")
+                    self.assertEqual("activate", kind)
+                else:
+                    destination, _before = self.interrupt_managed_after_update("marker")
+                journal = json.loads((destination / installer.JOURNAL).read_bytes())
+                entry = next(item for item in journal["files"]
+                             if item["old_sha256"] is not None)
+                path = destination / installer.RECOVERY_OBJECTS / entry["old_sha256"]
+                if damage == "missing":
+                    path.unlink()
+                    message = "Recovery object is missing; journal retained: " + entry["old_sha256"]
+                elif damage == "hash":
+                    path.write_bytes(b"x" * entry["old_size"])
+                    message = "Recovery object hash mismatch; journal retained: " + entry["old_sha256"]
+                elif damage == "size":
+                    path.write_bytes(path.read_bytes() + b"x")
+                    message = "Recovery object size mismatch; journal retained: " + entry["old_sha256"]
+                else:
+                    marker_path = destination / installer.MARKER
+                    marker = json.loads(marker_path.read_bytes())
+                    marker["pending_journal_sha256"] = "f" * 64
+                    marker_path.write_bytes(installer.json_bytes(marker))
+                    message = "Pending activate journal update digest mismatch; journal retained"
+                (destination / ".agentic/external.bin").write_bytes(b"external owner bytes")
+                self.assert_recovery_damage_fails_closed(destination, message)
+
     def test_awf134_crash_after_activation_precommit_before_journal_replace_rolls_back(self):
-        destination, before, kind = self.interrupt_numbered_update(1, "marker")
+        destination, before, kind = self.interrupt_update("activate", "marker")
         self.assertEqual("activate", kind)
         self.assertEqual("object_prepare", json.loads(
             (destination / installer.JOURNAL).read_text(encoding="utf-8"))["phase"])
@@ -180,7 +238,7 @@ class PendingJournalUpdateTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_crash_after_activation_journal_replace_before_final_marker_rolls_back(self):
-        destination, before, kind = self.interrupt_numbered_update(1, "journal")
+        destination, before, kind = self.interrupt_update("activate", "journal")
         self.assertEqual("activate", kind)
         self.assertEqual("active", json.loads(
             (destination / installer.JOURNAL).read_text(encoding="utf-8"))["phase"])
@@ -450,13 +508,13 @@ except (ValidationError, OSError, ValueError) as exc:
             self.interrupt_after_managed_after_publish())
         original_write = installer.Tree.write
 
-        def interrupt_write(tree, relative, data):
+        def interrupt_write(tree, relative, data, **kwargs):
             if relative == installer.MARKER:
                 marker = json.loads(data.decode("utf-8"))
                 if marker.get("pending_update_kind") == "runtime_stage":
-                    original_write(tree, relative, data)
+                    original_write(tree, relative, data, **kwargs)
                     raise CapturedIntent
-            return original_write(tree, relative, data)
+            return original_write(tree, relative, data, **kwargs)
 
         with installer.Tree(destination) as tree, \
                 patch.object(installer.Tree, "write", new=interrupt_write), \
@@ -473,13 +531,13 @@ except (ValidationError, OSError, ValueError) as exc:
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_crash_after_commit_precommit_before_journal_replace_rolls_back(self):
-        destination, before, kind = self.interrupt_numbered_update(3, "marker")
+        destination, before, kind = self.interrupt_update("commit_cleanup", "marker")
         self.assertEqual("commit_cleanup", kind)
         self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
 
     def test_awf134_crash_after_commit_journal_replace_before_final_marker_commits(self):
-        destination, _before, kind = self.interrupt_numbered_update(3, "journal")
+        destination, _before, kind = self.interrupt_update("commit_cleanup", "journal")
         target = destination / ".agentic/adopted-clone/0000.bin"
         self.assertEqual("commit_cleanup", kind)
         self.assertEqual(b"n" * self.PAYLOAD_SIZE, target.read_bytes())
@@ -493,13 +551,13 @@ except (ValidationError, OSError, ValueError) as exc:
         transaction_id = journal["transaction_id"]
         original_write = installer.Tree.write
 
-        def interrupt_write(tree, relative, data):
+        def interrupt_write(tree, relative, data, **kwargs):
             if relative == installer.MARKER:
                 marker = json.loads(data.decode("utf-8"))
                 if marker.get("pending_update_kind") == "commit_cleanup_authenticated":
-                    original_write(tree, relative, data)
+                    original_write(tree, relative, data, **kwargs)
                     raise CapturedIntent
-            return original_write(tree, relative, data)
+            return original_write(tree, relative, data, **kwargs)
 
         def build_runtime(transaction):
             transaction.stage.mkdir()
@@ -527,17 +585,17 @@ except (ValidationError, OSError, ValueError) as exc:
         original_write = installer.Tree.write
         rollback_precommitted = False
 
-        def interrupt_write(tree, relative, data):
+        def interrupt_write(tree, relative, data, **kwargs):
             nonlocal rollback_precommitted
             if relative == installer.MARKER:
                 marker = json.loads(data.decode("utf-8"))
                 if marker.get("pending_update_kind") == "rollback_cleanup":
                     rollback_precommitted = True
-                    return original_write(tree, relative, data)
+                    return original_write(tree, relative, data, **kwargs)
             if relative == installer.JOURNAL and rollback_precommitted:
-                original_write(tree, relative, data)
+                original_write(tree, relative, data, **kwargs)
                 raise CapturedIntent
-            return original_write(tree, relative, data)
+            return original_write(tree, relative, data, **kwargs)
 
         with patch.object(installer, "verify_release", return_value=(pin, content)), \
                 patch.object(installer.Tree, "write", new=interrupt_write), \
@@ -598,10 +656,10 @@ except (ValidationError, OSError, ValueError) as exc:
         second.write_bytes(b"p" * (self.PAYLOAD_SIZE + 1))
         original_write = installer.Tree.write
 
-        def interrupt_first_payload(tree, relative, data):
+        def interrupt_first_payload(tree, relative, data, **kwargs):
             if relative == ".agentic/adopted-clone/0000.bin":
                 raise CapturedIntent
-            return original_write(tree, relative, data)
+            return original_write(tree, relative, data, **kwargs)
 
         with patch.object(installer, "verify_release", return_value=(pin, content)), \
                 patch.object(installer.Tree, "write", new=interrupt_first_payload), \

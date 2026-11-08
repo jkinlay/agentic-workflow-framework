@@ -205,7 +205,7 @@ def _write_bound_journal_update(tree, journal, update_kind=None):
     tree.write(MARKER, json_bytes(_journal_marker(transaction_id, updated_digest)))
 
 
-def _recover_legacy_pending_update(tree, journal, journal_raw, marker):
+def _recover_legacy_pending_update(tree, journal, journal_raw, marker, *, publish=True):
     """Retain recovery compatibility for pending markers emitted before marker v2."""
     if (marker["pending_journal_sha256"] is None or
             sha256(journal_raw) != marker["journal_sha256"]):
@@ -231,9 +231,10 @@ def _recover_legacy_pending_update(tree, journal, journal_raw, marker):
     candidate_raw = json_bytes(candidate)
     if sha256(candidate_raw) != marker["pending_journal_sha256"]:
         raise ValidationError("Staged runtime does not prove the pending journal update; journal retained")
-    tree.write(JOURNAL, candidate_raw)
-    tree.write(MARKER, json_bytes(_journal_marker(
-        candidate["transaction_id"], sha256(candidate_raw))))
+    if publish:
+        tree.write(JOURNAL, candidate_raw)
+        tree.write(MARKER, json_bytes(_journal_marker(
+            candidate["transaction_id"], sha256(candidate_raw))))
     return candidate
 
 
@@ -317,7 +318,13 @@ def _reconstruct_pending_old_journal(tree, journal, update_kind):
     candidate = _copy_journal(journal)
     runtime = _validated_runtime_journal(candidate)
     if update_kind == "directory_prepare":
-        raise ValidationError("Interrupted directory ownership publication; journal retained")
+        if not (_compact_journal(journal) and journal["phase"] == "object_prepare"):
+            _pending_transition_mismatch()
+        # The pending digest binds identities captured by atomic creation. An
+        # observed replacement cannot reproduce that digest and grants no
+        # cleanup authority. No object or project payload has been written yet.
+        for row in candidate.get("created_directories", []):
+            row["identity"] = _directory_identity(tree, row["path"])
     elif update_kind == "activate":
         if not (_compact_journal(journal) and journal["phase"] == "object_prepare"):
             _pending_transition_mismatch()
@@ -360,13 +367,13 @@ def _reconstruct_pending_old_journal(tree, journal, update_kind):
     return candidate
 
 
-def _recover_pending_journal_update(tree, journal, journal_raw, marker):
+def _recover_pending_journal_update(tree, journal, journal_raw, marker, *, publish=True):
     """Resolve one explicitly named, digest-bound journal replacement."""
     pending_digest = marker["pending_journal_sha256"]
     if pending_digest is None:
         return journal
     if marker["format"] == "awf-install-marker-1":
-        return _recover_legacy_pending_update(tree, journal, journal_raw, marker)
+        return _recover_legacy_pending_update(tree, journal, journal_raw, marker, publish=publish)
     update_kind = marker.get("pending_update_kind")
     if update_kind not in PENDING_UPDATE_KINDS:
         raise ValidationError(
@@ -374,8 +381,9 @@ def _recover_pending_journal_update(tree, journal, journal_raw, marker):
     observed_digest = sha256(journal_raw)
     if observed_digest == pending_digest:
         _validate_pending_new_journal(tree, journal, update_kind)
-        tree.write(MARKER, json_bytes(_journal_marker(
-            journal["transaction_id"], observed_digest)))
+        if publish:
+            tree.write(MARKER, json_bytes(_journal_marker(
+                journal["transaction_id"], observed_digest)))
         return journal
     if observed_digest != marker["journal_sha256"]:
         raise ValidationError(
@@ -393,16 +401,18 @@ def _recover_pending_journal_update(tree, journal, journal_raw, marker):
                        "rollback_cleanup"}:
         _load_recovery_objects(tree, journal)
 
-    if update_kind in {"runtime_stage", "commit_cleanup_authenticated"}:
-        tree.write(JOURNAL, candidate_raw)
-        tree.write(MARKER, json_bytes(_journal_marker(
-            candidate["transaction_id"], sha256(candidate_raw))))
+    if update_kind in {"directory_prepare", "runtime_stage", "commit_cleanup_authenticated"}:
+        if publish:
+            tree.write(JOURNAL, candidate_raw)
+            tree.write(MARKER, json_bytes(_journal_marker(
+                candidate["transaction_id"], sha256(candidate_raw))))
         return candidate
 
     # Old-side activate/managed/commit/rollback transitions deliberately keep
     # the old journal. Collapse the precommit and follow its recovery rule.
-    tree.write(MARKER, json_bytes(_journal_marker(
-        journal["transaction_id"], observed_digest)))
+    if publish:
+        tree.write(MARKER, json_bytes(_journal_marker(
+            journal["transaction_id"], observed_digest)))
     return journal
 
 
@@ -1937,6 +1947,13 @@ def recover(destination):
         journal, bound_raw, bound_marker = _read_bound_journal(tree)
         _bind_transaction_temporaries(tree, journal)
         if _compact_journal(journal):
+            # Authenticate specific recovery evidence before a broader inventory
+            # refusal can mask it. Endpoint cleanup legitimately permits objects
+            # already retired; active rollback still requires every exact object.
+            if journal["phase"] == "active":
+                _load_recovery_objects(tree, journal)
+            _recover_pending_journal_update(
+                tree, journal, bound_raw, bound_marker, publish=False)
             # Refuse unrelated additions before cleaning any recorded residue or
             # resuming a pending journal/marker write with a reused sibling name.
             _verify_compact_unchanged_inventory(

@@ -1,6 +1,6 @@
 # Operating configuration
 
-In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED permits authorized work; ACTIVE/adapter enablement never follows.
+In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings/budgets/allowlists/floors/escalation/shared critic; legacy routes accepted; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
@@ -10,7 +10,7 @@ Show/status/`operating.state` `effective_ceiling`: minimum of `execution.max_lan
 
 Cycles reauthenticate `produce_planning_resource_observation`; capacity 0-1000; zero: `safe_lane_count == 0`.
 
-Schemas: `streams.count` 1–12 with A–L routes; optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
+Schemas: `streams.count` 1–12 with A–L routes; optional project `execution.max_lanes` 1–12. Omitting `execution.max_lanes` retains six. Lower binding limits, including `execution.max_parallel_tickets` and enabled `execution.host_broker.max_workers`, still apply. Migration: raise protected ceilings only through review. Schema acceptance grants no dispatch authority.
 
 | Contract | Fields | Range |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ Defaults: twelve `gpt-6.1-sol`/high workers, shared critic/controller/specialist
 
 `independent_reviewers.allocation: shared_critic`: one slot; legacy counts bind. `--propose-operating-capacity` proposes ceilings.
 
-Authenticated/audited `fixed` selects safe counts; `max` bounds recommendations. Neither raises sealed capacity. Replan between rounds; retain reservations/triggers.
+Audited authenticated `fixed` selects safe counts; `max` limits recommendations. Neither raises sealed safe capacity. Replan at round boundaries; preserve reservations/triggers.
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
@@ -40,9 +40,10 @@ Above-cap upgrades refuse; use `& '.agentic\.venv\Scripts\python.exe' -B -I '.ag
 
 Pins `epic_overrides.PROJ-123.streams.B.worker`. Matching `epic_id` selects allowed scoped routes. `--epic` excludes counts/simple switches/recommendations. Unpinning requires a route.
 
-Dispatch changes; running routes/hashes persist. Surplus drains; labels prove no availability.
+Dispatch changes; running work retains route/hash. Surplus finishes without packets/cancellation. Labels prove no availability.
 
-Save Jira IDs/paths in `operating-epics.schema.json`; unknown statuses require reviewed adapter mappings before planning.
+Read Jira; save IDs/paths in `operating-epics.schema.json`.
+Unknown custom statuses need reviewed adapter mappings before planning.
 Operating and governance policy hashes bind separately; running reservations
 retain their admission-time bindings.
 
@@ -67,7 +68,8 @@ Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
 neither switch. No Epic budget overrides.
 
 Ask in AWF Codex chat to check switches, limits, source/commit and differences.
-Last PR/merger is optional. Changes use validated PRs preserving comments/before/after. The owner merges; restricted pushes
+Last PR/merger is optional. For changes, the skill prepares a validated PR
+preserving comments and showing before/after. The owner merges; restricted pushes
 prepare owner publication. Protected `set` refuses without writes. See the
 [chat/PR procedure](39-BUDGETING.md#settings-in-chat-and-prs).
 
@@ -92,9 +94,7 @@ report APPLIED, MISSING or UNOBSERVED; warnings never block local adoption.
 Git metadata must be outside worker write authority. Direct pushes to an unprotected default branch or the owner's full rights
 bypass this: offer the shipped ruleset separately.
 `merge_gate.trusted_owner_ids` remains for merge-gate use.
-Calendar shares PR route/source. Defaults: continuous 24/7 work;
+Calendar shares this PR route and effective source. Defaults: continuous 24/7 work;
 review batching enabled weekdays 07:00-17:00 Europe/London, EoD 17:00 daily.
-Absent calendar retains defaults; malformed accepted values refuse.
+Absent calendar retains these defaults; malformed accepted values refuse.
 See [calendar](operating-calendar.md) and [budgeting](39-BUDGETING.md).
-
-Legacy upgrades retain absent budgeting/history. Owner-requested budget adoption with `--adopt-budgeting` prepares dormant OFF controls by PR; owner merge/fetch applies. Enabling needs another settings PR/verified history import.
