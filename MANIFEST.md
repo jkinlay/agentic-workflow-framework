@@ -600,6 +600,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `VERSION` | `d2f636954f2853db41fd4852001b207d595890b13bc1fe89305668c5a287052d` |
 | `docs/AWF-1.9.2-Showcase-Presentation.html` | `e22beff2c81e6672bb171a824d53755efcda0b13d2090e30a42b1b7989b8b57a` |
 | `docs/AWF-1.9.2-Speaker-Script.md` | `1defc7b9c2e59e59d62a65f54883f81076bf67a1fa418b409c4f65af370b1f3b` |
+| `docs/AWF-1.9.5-Showcase-Presentation.html` | `a4586b58a00e8f64729f604a4b9f21230873daa01a10f7fba899065d29b0597e` |
 | `docs/AWF-1.9.5-User-Interface.md` | `2bc6448fbf0af8d9b76a83c9c24df8bd47ca3352f2880b1259fa8dc1f4a1b336` |
 | `docs/AWF-1.9.5-Whats-New.md` | `9aa3be89cbd4b3fd8644a2eeb5966757daf0bba74a30dcb8a05a12ebab5499ae` |
 | `docs/runbook/00-runbook-introduction.md` | `75a442d54b01878d933d3e71eaa8556fb94b407b5a30666c6b84fc28d8325589` |
