@@ -10,9 +10,13 @@ import re
 
 from . import ValidationError
 from .budgeting import fresh_settings, validate_settings
+from .operating_calendar import fresh_calendar, validate_calendar
 from .canonical import canonical, load_yaml
 
-PROTECTED_DOMAINS = (('budgeting', fresh_settings),)
+PROTECTED_DOMAINS = (
+    ('budgeting', fresh_settings, validate_settings),
+    ('operating_calendar', fresh_calendar, validate_calendar),
+)
 MAX_BYTES = 1024 * 1024
 
 
@@ -21,7 +25,26 @@ def load_operating_yaml(raw):
     try:
         return load_yaml(raw)
     except (ValidationError, ValueError, TypeError) as exc:
-        raise ValidationError('Invalid operating YAML: duplicate keys, malformed YAML or unsupported values; correct the file') from exc
+        kind = ('duplicate key' if str(exc).startswith('Duplicate mapping key:') else
+                'out of range' if str(exc).startswith('Integer exceeds') else
+                'wrong type' if str(exc).startswith(('Only JSON values', 'Mapping keys'))
+                else 'malformed YAML')
+        # The parser's message/cause can contain source lines and arbitrary keys.
+        # Suppress only that input-bearing chain, not unrelated programming errors.
+        raise ValidationError('OPERATING_CONFIG.yaml: Invalid operating YAML: duplicate keys, malformed YAML or unsupported values; problem: ' + kind + '; correct the file') from None
+
+
+def _nondefault(working):
+    for name, defaults, normalize in PROTECTED_DOMAINS:
+        if name in working:
+            try:
+                if canonical(normalize(working[name])) != canonical(normalize(defaults())):
+                    return True
+            except ValidationError:
+                # Invalid working bytes cannot mask valid accepted policy. They
+                # still require policy, and are never printed in differences.
+                return True
+    return False
 
 
 def _display_domain(working, name, normalize):
@@ -30,14 +53,20 @@ def _display_domain(working, name, normalize):
     try:
         normalize(working[name])
     except ValidationError:
-        return 'REJECTED protected value; correct the proposed file before opening a PR'
+        from .operating import _schema
+        errors = _schema('operating-config', {name: working[name]})
+        detail = [item['path'] + ': ' + item['reason'] for item in errors
+                  if item['path'].startswith('$.' + name)]
+        return ('REJECTED protected value; OPERATING_CONFIG.yaml: ' +
+                ('; '.join(detail) if detail else name + ': not allowed') +
+                '; correct the proposed file before opening a PR')
     return deepcopy(working[name])
 
 
 def unprotected_hash(value):
     from .canonical import fingerprint
     return fingerprint('operating-unprotected', {k: v for k, v in value.items()
-                       if k not in dict(PROTECTED_DOMAINS)})
+                       if k not in {name for name, _, _ in PROTECTED_DOMAINS}})
 
 
 def audit_matches(value, event):
@@ -47,15 +76,26 @@ def audit_matches(value, event):
     values, the legacy absent block or fresh defaults; arbitrary edits still fail.
     """
     from .canonical import fingerprint
-    if event.get('unprotected_after_hash') is not None:
-        return event['unprotected_after_hash'] == unprotected_hash(value)
-    if event['after_hash'] == fingerprint('operating', value):
+    projection = event.get('unprotected_after_hash')
+    if projection == unprotected_hash(value):
         return True
-    legacy, fresh = deepcopy(value), deepcopy(value)
-    for name, defaults in PROTECTED_DOMAINS:
-        legacy.pop(name, None)
-        fresh[name] = defaults()
-    return any(event['after_hash'] == fingerprint('operating', candidate) for candidate in (legacy, fresh))
+    # Older projections excluded budgeting only. Keep those exact records and
+    # their absent/fresh calendar forms verifiable without rewriting history.
+    candidates = [deepcopy(value)]
+    for name, defaults, normalize in PROTECTED_DOMAINS:
+        expanded = []
+        for candidate in candidates:
+            absent, fresh = deepcopy(candidate), deepcopy(candidate)
+            absent.pop(name, None)
+            fresh[name] = defaults()
+            expanded.extend((candidate, absent, fresh))
+        candidates = expanded
+    if projection is not None:
+        return any(projection == fingerprint('operating-unprotected',
+                   {k: v for k, v in candidate.items() if k != 'budgeting'})
+                   for candidate in candidates)
+    return any(event['after_hash'] == fingerprint('operating', candidate)
+               for candidate in candidates)
 
 
 def _metadata(root):
@@ -175,8 +215,7 @@ def resolve_protected(root, governance, working):
     if not isinstance(working, dict):
         raise ValidationError('Operating settings must be an object; restore OPERATING_CONFIG.yaml')
     value = deepcopy(working)
-    needed = any(name in working and canonical(working[name]) != canonical(defaults())
-                 for name, defaults in PROTECTED_DOMAINS)
+    needed = _nondefault(working)
     commit = ref = fetched_at = None
     unverified = False
     budget_admission = True
@@ -213,30 +252,44 @@ def resolve_protected(root, governance, working):
             raw = _blob(root, commit, 'OPERATING_CONFIG.yaml')
             observation = 'file absent at default-branch commit; no accepted policy' if raw is None else 'accepted default-branch file'
             if raw is None:
-                for name, defaults in PROTECTED_DOMAINS:
+                for name, defaults, normalize in PROTECTED_DOMAINS:
                     if name in value:
                         value[name] = defaults()
                 source = 'fresh defaults' if 'budgeting' in value else 'legacy retained'
+                sources = {name: 'fresh defaults' if name in value else 'legacy retained'
+                           for name, _, _ in PROTECTED_DOMAINS}
             else:
-                accepted = load_operating_yaml(raw)
                 from .operating import validate_operating
-                validate_operating(accepted, governance)
-                for name, _defaults in PROTECTED_DOMAINS:
+                try:
+                    accepted = load_operating_yaml(raw)
+                    validate_operating(accepted, governance)
+                except ValidationError as exc:
+                    raise ValidationError('OPERATING_CONFIG.yaml: ' + str(exc)) from exc
+                for name, _defaults, normalize in PROTECTED_DOMAINS:
                     if name in accepted:
                         value[name] = deepcopy(accepted[name])
                     else:
                         value.pop(name, None)
                 source = 'default branch' if 'budgeting' in accepted else 'legacy retained; default branch'
+                sources = {name: 'default branch' if name in accepted else 'legacy retained; default branch'
+                           for name, _, _ in PROTECTED_DOMAINS}
         else:
             if needed and not unverified:
                 raise ValidationError('Nondefault protected settings refused: no fetched default branch policy; open a PR and fetch after owner merge')
             source = ('unverified working settings; no accepted default-branch policy' if unverified else
                       'fresh defaults' if 'budgeting' in working else 'legacy retained')
+            sources = {name: 'unverified working settings; no accepted default-branch policy' if unverified else
+                       'fresh defaults' if name in working else 'legacy retained'
+                       for name, _, _ in PROTECTED_DOMAINS}
     except (OSError, ValueError, UnicodeError, ValidationError) as exc:
         raise ValidationError('Protected default-branch settings unavailable: ' + str(exc)) from exc
-    differences = [{'path': name, 'working': _display_domain(working, name, validate_settings),
-                    'effective': _display_domain(value, name, validate_settings)}
-                   for name, _defaults in PROTECTED_DOMAINS if working.get(name) != value.get(name)]
+    # Preserve the established budget-only source label; mixed domains carry
+    # their own source in both the summary and the structured report.
+    if any(name != 'budgeting' and (name in working or name in value) for name, _, _ in PROTECTED_DOMAINS):
+        source = (next(iter(sources.values())) if len(set(sources.values())) == 1 else
+                  '; '.join(name + ': ' + label for name, label in sources.items()))
+    differences = [{'path': name, 'working': _display_domain(working, name, normalize), 'effective': _display_domain(value, name, normalize)}
+                   for name, _defaults, normalize in PROTECTED_DOMAINS if working.get(name) != value.get(name)]
     next_action = ('Working protected values differ; open a PR for the requested change, then fetch after owner merge'
                    if differences else 'Change protected settings through a PR; fetch after owner merge')
     if differences and commit:
@@ -255,13 +308,14 @@ def resolve_protected(root, governance, working):
                         prior = load_operating_yaml(prior) if prior is not None else None
                     except (ValidationError, ValueError, OSError):
                         continue  # Historical guidance cannot invalidate current accepted policy.
-                    if isinstance(prior, dict) and all(prior.get(name) == working.get(name) for name, _ in PROTECTED_DOMAINS):
+                    if isinstance(prior, dict) and all(prior.get(name) == working.get(name) for name, _, _ in PROTECTED_DOMAINS):
                         next_action = 'Working settings match an older default-branch commit; update the checkout before proposing further changes'
                         break
-    return value, dict(source=source, commit=commit, ref=ref, differences=differences,
+    return value, dict(source=source, sources=sources, commit=commit, ref=ref, differences=differences,
         policy_observation=observation, branch_observation=branch_observation, fetch_attempt_at=fetched_at,
         budget_admission=budget_admission, remote_configured=remote_configured, unverified=unverified,
-        budget_refusal='Default branch unverified; budget admission refused; ' + remedy if not budget_admission else None,
+        budget_refusal=('Default branch unverified; protected decision refused; ' + remedy)
+                       if not budget_admission else None,
         visibility='Locally fetched policy only; a newer merge is not visible until fetched. FETCH_HEAD time records a fetch attempt of any ref, not a successful policy refresh.',
         next_action=remedy if unverified else next_action)
 
@@ -469,6 +523,11 @@ def budget_snapshot(root, governance, snapshot, *, credential_envs=()):
 
 
 def require_budget_policy(snapshot, *, refresh=None):
+    """Refuse protected decisions when working values could affect the outcome.
+
+    Shared by budget, calendar and reporting consumers. Diagnostic reads remain
+    available; this admission bit covers every registered protected domain.
+    """
     report = snapshot.provenance.get('protected_settings', {})
     if report.get('budget_admission') is False:
         detail = '; ' + refresh['reason'] if refresh and refresh.get('reason') else ''
@@ -476,8 +535,7 @@ def require_budget_policy(snapshot, *, refresh=None):
 
 
 def require_mutation_policy(report, working):
-    if report.get('unverified') and any(name in working and canonical(working[name]) != canonical(defaults())
-                                      for name, defaults in PROTECTED_DOMAINS):
+    if report.get('unverified') and _nondefault(working):
         raise ValidationError('Nondefault protected settings refused for mutation: default branch unverified; ' + report['next_action'])
 
 

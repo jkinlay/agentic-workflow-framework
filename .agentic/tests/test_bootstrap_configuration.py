@@ -1159,6 +1159,11 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertIn("include-system-site-packages = false", pyvenv)
         self.assertEqual(sha256((self.dest / ".agentic/requirements.lock").read_bytes()), runtime["requirements_lock_sha256"])
         self.assertEqual(8, len(runtime["artifact_sha256"]))
+        self.assertEqual(
+            {"attrs", "jsonschema", "jsonschema-specifications", "PyYAML",
+             "referencing", "rpds-py", "typing-extensions", "tzdata"},
+            set(runtime["artifact_sha256"]),
+        )
         zone = subprocess.run([runtime["interpreter"], "-B", "-I", "-c",
                                "import zoneinfo; zoneinfo.reset_tzpath(()); print(zoneinfo.ZoneInfo('Europe/London').key)"],
                               cwd=self.dest, capture_output=True, text=True, timeout=60)

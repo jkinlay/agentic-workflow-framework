@@ -180,15 +180,21 @@ def subprocess_budget_request(binding, *, worker_context_id=None, stream=None):
     return value
 
 
+def policy_repository_root(repository_root, operating):
+    """Only trusted construction selects the checkout; provenance is data."""
+    root = Path(repository_root).resolve(strict=True)
+    provenance_path = operating.provenance.get('path')
+    require(not provenance_path or Path(provenance_path).resolve().parent == root,
+            'Operating snapshot provenance disagrees with the accepted repository root')
+    return root
+
+
 def accepted_budget_snapshot(repository_root, governance, operating, *, credential_envs=()):
     """Read policy only from the repository selected by trusted construction."""
     from .operating import validate_snapshot
     from .protected_settings import budget_snapshot
     validate_snapshot(operating, governance)
-    root = Path(repository_root).resolve(strict=True)
-    provenance_path = operating.provenance.get('path')
-    require(not provenance_path or Path(provenance_path).resolve().parent == root,
-            'Operating snapshot provenance disagrees with controller repository root')
+    root = policy_repository_root(repository_root, operating)
     return budget_snapshot(root, governance, operating, credential_envs=credential_envs)
 
 

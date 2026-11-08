@@ -4,9 +4,9 @@ from __future__ import annotations
 from copy import deepcopy
 
 from . import ValidationError
-from .canonical import load_yaml
+from .protected_settings import load_operating_yaml as load_yaml
 from .operating import (inspect_operating, is_awf_source_repository,
-                        operating_ceiling, tree_reader, validate_operating)
+                        operating_ceiling, tree_reader, validate_operating, refusal)
 from .safeio import Tree
 from .budgeting import resolve_settings
 
@@ -34,7 +34,7 @@ def with_operating(root, governance, report):
             except (ValidationError, OSError, ValueError) as exc:
                 operating = {'status': 'REJECTED', 'hash': None, 'source': None, 'streams': None,
                              'last_change_id': None, 'diagnostic': str(exc),
-                             'refusals': getattr(exc, 'refusals', [{'path': '$', 'reason': 'Restore the verified source operating template'}])}
+                             'refusals': getattr(exc, 'refusals', [refusal('$', str(exc) if isinstance(exc, ValidationError) else 'Restore the verified source operating template')])}
         else:
             operating = inspect_operating(root, governance)
     result['operating'] = operating

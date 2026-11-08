@@ -565,6 +565,7 @@ class SecondLookTests(unittest.TestCase):
     def test_legacy_event_chain_survives_merged_block(self):
         legacy = deepcopy(self.value)
         legacy.pop('budgeting')
+        legacy.pop('operating_calendar', None)  # Published 1.9.5 has neither domain.
         self.publish(legacy)
         import sys
         import tarfile
