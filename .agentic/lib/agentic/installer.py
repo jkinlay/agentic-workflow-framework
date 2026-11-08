@@ -164,6 +164,7 @@ def _publish_initial_intent(tree, journal):
     """Create recoverable intent before any destination payload can change."""
     _validate_transaction_journal(journal)
     journal_raw = _journal_bytes(journal)
+    _bind_transaction_temporaries(tree, journal, initial=True)
     tree.write(JOURNAL, journal_raw)
     tree.write(MARKER, json_bytes(_journal_marker(journal["transaction_id"], sha256(journal_raw))))
 
@@ -432,6 +433,8 @@ def _managed_file_inventory(tree):
     def add(relative, info):
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValidationError("Managed inventory contains a non-regular or linked file: " + relative)
+        if relative in getattr(tree, '_installer_temporary_paths', ()):
+            return
         entries.append({"path": relative, "mode": stat.S_IMODE(info.st_mode),
                         "sha256": sha256(tree.read(relative))})
 
@@ -519,6 +522,51 @@ def _managed_inventory_sha256(inventory):
 
 def _compact_journal(journal):
     return journal["format"] == "awf-install-journal-4"
+
+
+def _temporary_targets(journal):
+    """Every atomic-write destination, including recovery and coordination writes."""
+    targets = {JOURNAL, MARKER, *(item['path'] for item in journal['files'])}
+    targets.update(_recovery_object_path(item['old_sha256']) for item in journal['files']
+                   if item['old_sha256'] is not None)
+    targets.update(_recovery_object_path(row['sha256'])
+                   for row in journal.get('windows_metadata', {}).values())
+    return targets
+
+
+def _transaction_temporary_paths(journal):
+    """Derive exact sibling names from the bound transaction and recorded targets.
+
+    The versioned scheme avoids duplicating every target in the compact journal.
+    A journal cannot nominate an arbitrary adopter look-alike for deletion.
+    """
+    # Older journals deliberately acquire no authority over unrecorded names.
+    if 'temporary_files' not in journal:
+        return {}
+    if not _compact_journal(journal) or journal['temporary_files'] != 'sibling-uuid5-v1':
+        raise ValidationError('Invalid installation temporary-file inventory')
+    namespace = uuid.UUID(journal['transaction_id'])
+    return {target: (Path(target).parent / f'.awf-{uuid.uuid5(namespace, target).hex}.tmp').as_posix()
+            for target in sorted(_temporary_targets(journal))}
+
+
+def _bind_transaction_temporaries(tree, journal, *, initial=False):
+    paths = _transaction_temporary_paths(journal)
+    for path in paths.values():
+        info = tree.inspect(path)
+        if info is not None:
+            if initial:
+                raise ValidationError('Installation temporary path already exists; no payload changed')
+            # Confined read rejects links, hardlinks and unsafe Windows metadata.
+            tree.read(path)
+    tree.write_temporary_names = {target: Path(path).name for target, path in paths.items()}
+    tree._installer_temporary_paths = frozenset(paths.values())
+
+
+def _cleanup_transaction_temporaries(tree, journal):
+    """Remove only exact journal-bound sibling names, never glob look-alikes."""
+    for path in _transaction_temporary_paths(journal).values():
+        tree.unlink(path)
 
 
 def _recovery_object_path(digest):
@@ -766,6 +814,7 @@ def _verify_compact_old_endpoint(tree, journal, context):
 def _finalize_compact_rollback(tree, journal, *, marker_present):
     """Retire recovery objects before the artifacts that track their ownership."""
     _verify_compact_old_endpoint(tree, journal, "at compact rollback endpoint")
+    _cleanup_transaction_temporaries(tree, journal)
     _cleanup_recovery_objects(tree, journal)
     _cleanup_transaction_directories(tree, journal)
     if marker_present:
@@ -1250,7 +1299,7 @@ def _validated_runtime_journal(journal):
                             "managed_before", "managed_after"}:
             raise ValidationError("Invalid recovery journal")
     elif journal["format"] == "awf-install-journal-4":
-        keys = set(journal) - {'windows_metadata'}
+        keys = set(journal) - {'windows_metadata', 'temporary_files'}
         if keys not in ({"format", "transaction_id", "phase", "files", "runtime",
                             "managed_before_sha256", "managed_after_sha256"},
                            {"format", "transaction_id", "phase", "files", "runtime",
@@ -1413,6 +1462,7 @@ def _validate_transaction_journal(journal):
                 raise ValidationError("Invalid recovery file mode")
     if set(metadata) - {item['path'] for item in journal['files']}:
         raise ValidationError('Windows recovery metadata has no journalled path')
+    _transaction_temporary_paths(journal)
     return journal
 
 
@@ -1541,11 +1591,15 @@ def rollback(tree, journal):
             raise ValidationError("Recovery backup contains an external file; marker retained")
     # Restore or remove the canonical runtime before changing the managed files
     # that it executes. A runtime proof failure retains the whole transaction.
+    _cleanup_transaction_temporaries(tree, journal)
     _rollback_runtime(
         tree, runtime,
         preserve_partial_stage=(_compact_journal(journal) and
                                 journal["phase"] == "active" and
                                 journal["managed_after_sha256"] is not None))
+    if mode_aware:
+        tree.write_modes = {item['path']: item['old_mode'] for item in journal['files']
+                            if item['old_mode'] is not None}
     for item in reversed(journal["files"]):
         old = _old_file_bytes(journal, item, recovery_objects)
         if old is None:
@@ -1771,6 +1825,7 @@ def _verify_outer_commit_state(tree, journal, transaction):
 def _finalize_committed(tree, journal):
     _verify_committed_payload(tree, journal, "during authenticated commit cleanup")
     _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
+    _cleanup_transaction_temporaries(tree, journal)
     # A durable commit can no longer roll back, so its recovery objects may be
     # removed before retiring the bound journal and marker.
     _cleanup_recovery_objects(tree, journal)
@@ -1779,8 +1834,9 @@ def _finalize_committed(tree, journal):
 
 
 def _finalize_journal_only(tree, journal):
-    """Resolve a one-artifact endpoint without trusting it to rewrite state."""
+    """Prove an endpoint before retiring its journal and coordination residue."""
     _validate_transaction_journal(journal)
+    _bind_transaction_temporaries(tree, journal)
     if journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"}:
         raise ValidationError("Legacy journal-only recovery failed closed")
     if journal["phase"] in {"object_prepare", "rollback_cleanup"}:
@@ -1796,6 +1852,7 @@ def _finalize_journal_only(tree, journal):
         _verify_file_state(tree, journal, "new")
         _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
         status = "COMMITTED"
+    _cleanup_transaction_temporaries(tree, journal)
     _cleanup_recovery_objects(tree, journal)
     tree.unlink(JOURNAL)
     return status
@@ -1807,6 +1864,7 @@ def complete_runtime_transaction(destination, transaction_id, builder):
     cleanup = []
     with Tree(destination) as tree, install_lock(tree):
         journal, _raw, _marker = _read_bound_journal(tree)
+        _bind_transaction_temporaries(tree, journal)
         runtime = _validated_runtime_journal(journal)
         if (journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"} or
                 runtime is None or
@@ -1873,6 +1931,13 @@ def recover(destination):
                 raise ValidationError("Unauthenticated journal-only recovery failed closed") from exc
             return {"status": _finalize_journal_only(tree, journal)}
         journal, bound_raw, bound_marker = _read_bound_journal(tree)
+        _bind_transaction_temporaries(tree, journal)
+        if _compact_journal(journal):
+            # Refuse unrelated additions before cleaning any recorded residue or
+            # resuming a pending journal/marker write with a reused sibling name.
+            _verify_compact_unchanged_inventory(
+                journal, _managed_file_inventory(tree), 'during rollback; marker retained')
+        _cleanup_transaction_temporaries(tree, journal)
         journal = _recover_pending_journal_update(
             tree, journal, bound_raw, bound_marker)
         if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"} and journal["phase"] in {
@@ -2330,6 +2395,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 journal['windows_metadata'] = metadata_references
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
+            # Commit each exact sibling name before it can be created. Reusing
+            # the same bound names also covers interrupted recovery writes.
+            journal['temporary_files'] = 'sibling-uuid5-v1'
             # Bind the complete object inventory before creating it. An abrupt
             # stop during side-store creation therefore leaves recoverable intent,
             # while no destination payload changes before every object validates.

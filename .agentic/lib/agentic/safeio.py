@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path, PurePosixPath
 import signal
 import stat
@@ -1045,7 +1046,11 @@ class Tree:
         info = self.inspect(relative)
         if os.name == 'nt' and windows_metadata is None and info is not None:
             windows_metadata = self.windows_metadata(relative)
-        temp = f".awf-{uuid.uuid4().hex}.tmp"
+        # Transaction owners may precommit exact sibling names before a write.
+        # Ordinary Tree users retain fresh, exclusively created random names.
+        temp = getattr(self, 'write_temporary_names', {}).get(relative, f".awf-{uuid.uuid4().hex}.tmp")
+        if not isinstance(temp, str) or re.fullmatch(r'\.awf-[0-9a-f]{32}\.tmp', temp) is None:
+            raise ValidationError('Invalid atomic-write temporary name')
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         if os.name == 'nt':
             fd = (_win_metadata_temp(parent / temp) if windows_metadata is not None
@@ -1056,6 +1061,11 @@ class Tree:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
                 stream.flush()
+                mode = getattr(self, 'write_modes', {}).get(relative)
+                if os.name != 'nt' and mode is not None:
+                    # Recovery publishes old bytes and their old mode together;
+                    # interruption after replace must not leave a mode-only edit.
+                    os.fchmod(stream.fileno(), mode)
                 os.fsync(stream.fileno())
             if os.name == 'nt' and windows_metadata is not None:
                 _apply_windows_metadata(parent / temp, windows_metadata)
