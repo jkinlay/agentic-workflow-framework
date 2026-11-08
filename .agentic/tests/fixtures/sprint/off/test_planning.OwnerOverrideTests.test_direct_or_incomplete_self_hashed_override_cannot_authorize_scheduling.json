@@ -1,0 +1,1 @@
+["{\"function\":\"planning.plan_lanes\",\"message\":\"Planning overrides must come from authenticated controller-owned state\",\"refusal\":\"ValidationError\"}\n","{\"function\":\"planning.plan_lanes\",\"message\":\"Planning override requires the complete owner-source and audit chain\",\"refusal\":\"ValidationError\"}\n"]

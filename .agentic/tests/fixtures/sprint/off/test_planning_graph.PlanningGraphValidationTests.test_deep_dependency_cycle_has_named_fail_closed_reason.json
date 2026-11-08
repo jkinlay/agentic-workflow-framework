@@ -1,0 +1,1 @@
+["{\"function\":\"planning_graph.build_ticket_plan\",\"message\":\"DEPENDENCY_CYCLE: cycle includes AWF-1\",\"refusal\":\"PlanningGraphError\"}\n"]

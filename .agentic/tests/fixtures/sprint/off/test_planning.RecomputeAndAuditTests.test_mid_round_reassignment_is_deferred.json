@@ -1,0 +1,1 @@
+["{\"function\":\"planning.recompute_plan\",\"result\":{\"reason\":\"In-flight work is never reassigned mid-round\",\"status\":\"DEFERRED_UNTIL_ROUND_END\",\"trigger\":\"files_changed\"}}\n"]

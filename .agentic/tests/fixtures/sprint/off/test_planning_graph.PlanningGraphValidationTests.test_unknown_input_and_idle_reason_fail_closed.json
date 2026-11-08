@@ -1,0 +1,1 @@
+["{\"function\":\"planning_graph.build_ticket_plan\",\"message\":\"UNKNOWN_FIELD: ticket has unknown fields surprise\",\"refusal\":\"PlanningGraphError\"}\n","{\"function\":\"planning_graph.build_ticket_plan\",\"message\":\"UNKNOWN_IDLE_LANE_REASON: idle_lane_reason 'UNKNOWN' is not recognized\",\"refusal\":\"PlanningGraphError\"}\n"]
