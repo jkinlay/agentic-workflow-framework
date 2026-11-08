@@ -1,6 +1,6 @@
 # Operating configuration
 
-In AWF Codex chat, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED permits authorized work, not ACTIVE/adapter enablement.
+In AWF Codex chat, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings/budgets/allowlists/floors/escalation/shared critic; legacy routes accepted; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
@@ -95,8 +95,8 @@ Calendar shares this PR route and effective source. Defaults: continuous 24/7 wo
 review batching enabled weekdays 07:00-17:00 Europe/London, EoD 17:00 daily.
 Absent calendar retains these defaults; malformed accepted values refuse.
 See [calendar](operating-calendar.md) and [budgeting](39-BUDGETING.md).
-Reporting shares this PR route: default OFF; off/teams/slack/both with complete
+Reporting shares PR route: default OFF; off/teams/slack/both require complete
 project/repository/scope/platform/destination/revision/secret_ref bindings.
-`show` withholds unsafe values; validate proposals offline, reachability UNOBSERVED.
-Unavailable policy refuses; accepted absence means defaults. Preserve corrections
-and the two-send ceiling across settings changes.
+`show` withholds unsafe values; validate proposals offline; reachability UNOBSERVED.
+Unavailable policy refuses; accepted absence defaults. Preserve corrections
+and two-send ceiling across settings changes.

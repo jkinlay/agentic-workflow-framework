@@ -38,7 +38,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/24-STREAM-STARTUP.md` | `2b6555b25742a0036502f5c6812197153e08d19e7dfef46a31746983b3b1db43` |
 | `.agentic/docs/27-MODEL-ROUTING.md` | `089594a6ccd384a047cbb9a55f89d9518e050fd9d10e2ec7baa611ccafd51e50` |
 | `.agentic/docs/28-EXTERNAL-REVIEW.md` | `d4ac3884ea24f40153cf87690edbc495b975ffc4510ba3c64cdcf38830d78b42` |
-| `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `28a6ed97baa9438940e71fdb2d40e42f5826dfb4db2e191ca1704649cfd69db3` |
+| `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `46040338354cda85e8609c54b1448ab53807a21ceb8708c7acf76e655660bc64` |
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `9ba85f949aceeb0b6276a897d2ba7426f2a74719d9680697ef85348c49711e65` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `501389c7d706862d0501f8b00b465d153190f2a68e19508a23c425e90e94ca0d` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `44cf0fed1a4ba1c31f8ec6ccc9924391f170aeced98efcd41ce89835a73a3d54` |
