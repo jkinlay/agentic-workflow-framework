@@ -344,7 +344,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/routing_fixtures.py` | `6856f82ca5887958fbfcb9578fbaf1f78e6c3ed936c3c2abe13a41c269beef47` |
 | `.agentic/tests/settings_pr_fixtures.py` | `504ec5ca8fe537eeaee79f51696c30a8b396a0924a80137e951aa0f5a6d02501` |
 | `.agentic/tests/source_only.py` | `7880bf7dde397f8cc71e2ee9b6b0183a904a130c6caf6fea98e1e2cb9f4e4e3c` |
-| `.agentic/tests/test_adoption_status.py` | `ef219f262d7abb7ccd2d73267c02118514af8eb7e51ef50d7ea65ff413609bc0` |
+| `.agentic/tests/test_adoption_status.py` | `12eed0908eea8c60046e950e4d324d1015a7d74678c6e1f1acffa07cd7094950` |
 | `.agentic/tests/test_adoption_validation.py` | `eb5e578ddf1367c46aca02cc3c091af8a1e36d50653cd36f8435d6603d84c01d` |
 | `.agentic/tests/test_approved_models_awf82.py` | `006351548c9a5803ac29b303b767aac15603c9db740a42e357de4bb6731559b0` |
 | `.agentic/tests/test_authorization_awf73.py` | `a40a73c244805c86bdf5d9a8e3e7a4fcff21cd0f65b2074ba4f761a94c037375` |
