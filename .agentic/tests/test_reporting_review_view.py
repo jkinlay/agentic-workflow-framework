@@ -189,7 +189,8 @@ class ReportingWindowFenceTests(unittest.TestCase):
                 _, destinations = runtime._bindings(self.root, self.binding)
                 prepared = runtime._prepare_report('restore-' + payload['batch_id'], 'final-human-review',
                     original['body'], self.binding, destinations, self.now,
-                    extra=dict(review_restoration=dict(id='restoration'), review_batch=payload))
+                    extra=dict(review_restoration=dict(id='restoration', prior_report=original['report_id'],
+                        binding=destinations[0]), review_batch=payload))
                 with self.store.transaction() as db:
                     runtime._retain_prepared(db, prepared)
             port.resume(self.root['operating_calendar'], self.observe)

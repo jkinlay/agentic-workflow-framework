@@ -95,10 +95,13 @@ _retain = _prepare_report
 
 def _retain_prepared(db, prepared):
     record = loads(prepared.encoded.decode())
+    prior = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (record['report_id'],)).fetchone()
+    if not prior and (record.get('review_restoration') or record.get('review_correction')):
+        from ..review_batching import ReviewBatchStore
+        ReviewBatchStore.validate_review_notice(db, record)
     for delivery in prepared.deliveries:
         DeliveryOutbox.enqueue_in_transaction(db, loads(delivery.encoded.decode()), prepared=delivery)
     raw = prepared.encoded.decode()
-    prior = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (record['report_id'],)).fetchone()
     if prior:
         require(prior[0] == raw, 'REPORT_IDENTITY_REUSED_WITH_DIFFERENT_BYTES')
     else:
@@ -953,6 +956,7 @@ class ReviewReportingPort:
         from ..review_batching import ReviewBatchStore
         pending = ReviewBatchStore(self.store)
         budget = self.delivery_budget or DeliveryBudget()
+        pending.finish_restoration_readback(self.clock())
         # Restoration is a new presentation occurrence, never a reopened batch
         # or a reset of its previous per-platform delivery attempts.
         status = reporting_status(self.store, self.operating, self.binding)
@@ -1017,6 +1021,7 @@ class ReviewReportingPort:
                   report_ids=report_ids, budget=budget, before_send=before_send)
             for exc, accepted_calendar in refusals:
                 defer(exc, accepted_calendar)
+            pending.finish_restoration_readback(self.clock())
 
         for payload in payloads:
             report_id = self._id(payload)

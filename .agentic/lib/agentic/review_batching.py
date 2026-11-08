@@ -193,29 +193,86 @@ class ReviewBatchStore:
             'JOIN review_presentation_outbox_v1 o USING(batch_id)')]
 
     @staticmethod
-    def restoration_identity(db, report_id):
-        """One occurrence across destinations, stable when only one remains pending.
+    def _review_chain(db, payload, binding, destination):
+        """Reconstruct one destination's immutable chain in retention order."""
+        from .reporting.delivery import DeliveryOutbox, same_destination
+        original = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                              ('review-' + payload['batch_id'],)).fetchone()
+        _require(original is not None, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        original = loads(original[0])
+        _require(original.get('review_batch') == payload and original['binding'] == binding,
+                 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        _require(any(same_destination(DeliveryOutbox._load(db, identity)[0]['binding'], destination)
+                     for identity in original['delivery_ids']), 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        chain, identities = [original], {original['report_id']}
+        for row in db.execute('SELECT payload_json FROM controller_reports ORDER BY rowid'):
+            report = loads(row[0])
+            notice = report.get('review_restoration') or report.get('review_correction')
+            if (not notice or any(report['binding'][k] != binding[k] for k in ('project', 'repository'))
+                    or not same_destination(notice.get('binding', {}), destination)):
+                continue
+            if notice.get('prior_report') not in identities and report.get('review_batch') != payload:
+                continue
+            _require(notice.get('prior_report') == chain[-1]['report_id']
+                     and (not report.get('review_restoration') or
+                          report.get('review_batch') == payload and report['binding'] == binding),
+                     'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+            chain.append(report)
+            identities.add(report['report_id'])
+        return chain
 
-        Each correction/restoration generation has its own allowance. Derive the
-        generation from retained ancestry, never the changing set of pending rows.
+    @staticmethod
+    def validate_review_notice(db, report):
+        """Reject stale/forked ancestry before enqueuing any delivery or charge."""
+        notice = report.get('review_restoration') or report.get('review_correction')
+        if not notice:
+            return
+        prior = notice.get('prior_report')
+        seen = set()
+        while prior not in seen:
+            seen.add(prior)
+            row = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (prior,)).fetchone()
+            _require(row is not None, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+            ancestor = loads(row[0])
+            parent = ancestor.get('review_restoration') or ancestor.get('review_correction')
+            if not parent:
+                break
+            prior = parent.get('prior_report')
+        else:
+            raise ValidationError('REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        payload = ancestor.get('review_batch')
+        _require(payload is not None and (not report.get('review_restoration') or report.get('review_batch') == payload),
+                 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        # Corrections withdraw an old scope on its original destination even
+        # when the diagnostic report belongs to a newer scope. Restoration
+        # cannot carry that old readiness into the new scope.
+        binding = ancestor['binding']
+        _require(all(report['binding'][k] == binding[k] for k in ('project', 'repository')),
+                 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        chain = ReviewBatchStore._review_chain(db, payload, binding, notice.get('binding', {}))
+        if report.get('review_restoration'):
+            _require(report['binding'] == binding, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        _require(notice.get('prior_report') == chain[-1]['report_id'], 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+
+    @staticmethod
+    def restoration_identity(db, report_id):
+        """Count restorations in the validated retained chain, across corrections.
+
+        Destinations at the same generation share an occurrence, even when only
+        one remains pending. Caller pointers cannot skip retained predecessors.
         """
-        seen, generation = set(), 0
         row = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (report_id,)).fetchone()
         _require(row is not None, 'Reporting restoration requires a retained report')
         report = loads(row[0])
-        payload, binding = report.get('review_batch'), report['binding']
-        while report.get('review_restoration'):
-            _require(report['report_id'] not in seen and report.get('review_batch') == payload
-                     and report['binding'] == binding, 'Reporting restoration ancestry changed')
-            seen.add(report['report_id'])
-            generation += 1
-            prior = report['review_restoration'].get('prior_report', 'review-' + payload['batch_id'])
-            row = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (prior,)).fetchone()
-            _require(row is not None, 'Reporting restoration ancestry is unavailable')
-            report = loads(row[0])
-        _require(generation > 0 and report.get('review_batch') == payload and report['binding'] == binding,
-                 'Reporting restoration requires the exact retained batch')
-        return fingerprint('review-restoration-occurrence-v1', [payload['batch_id'], binding, generation])
+        _require(report.get('review_restoration'), 'Reporting restoration requires a retained restoration')
+        payload, binding = report['review_batch'], report['binding']
+        chain = ReviewBatchStore._review_chain(db, payload, binding, report['review_restoration'].get('binding', {}))
+        generation = 0
+        for retained in chain:
+            generation += bool(retained.get('review_restoration'))
+            if retained['report_id'] == report_id:
+                return fingerprint('review-restoration-occurrence-v1', [payload['batch_id'], binding, generation])
+        raise ValidationError('REPORT_REVIEW_CHAIN_TIP_CHANGED')
 
     @staticmethod
     def _window_count(row, opening, evidence):
@@ -859,6 +916,37 @@ class ReviewBatchStore:
             self._detail(db, member['intent_id'], 'Restoration reserved; unresolved until terminal readback', now,
                          attempts=self._window_count(intent, window['opening'], evidence), retry_at=window['next_opening'])
         self._changed(db)
+
+    def finish_restoration_readback(self, now):
+        """Close detail for the latest charged occurrence after terminal readback.
+
+        Inspect all its destinations, including those delivered on earlier turns.
+        Original batch/intent identities and attempt counts remain unchanged.
+        """
+        from .reporting.delivery import DeliveryOutbox
+        with self.controller.transaction() as db:
+            charges = db.execute('SELECT * FROM review_restoration_charge_v1 WHERE rowid IN '
+                '(SELECT max(rowid) FROM review_restoration_charge_v1 GROUP BY batch_id)').fetchall()
+            if not charges:
+                return
+            reports = [loads(r[0]) for r in db.execute('SELECT payload_json FROM controller_reports')]
+            for charge in charges:
+                group = [r for r in reports if r.get('review_restoration') and
+                         r['review_batch']['batch_id'] == charge['batch_id'] and
+                         self.restoration_identity(db, r['report_id']) == charge['occurrence_id']]
+                states = [DeliveryOutbox._load(db, d)[1]['status'] for r in group for d in r['delivery_ids']]
+                if not states or any(s not in {'DELIVERED', 'FAILED'} for s in states):
+                    continue
+                reason = 'Restoration ' + ('FAILED' if 'FAILED' in states else 'DELIVERED')
+                for member in group[0]['review_batch']['members']:
+                    detail = db.execute('SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?',
+                                        (member['intent_id'],)).fetchone()
+                    if detail and (detail['reason'] != reason or detail['retry_at'] is not None):
+                        self._detail(db, member['intent_id'], reason, now,
+                                     attempts=detail['window_attempts'], retry_at=None)
+                        db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
+                                   (member['intent_id'],))
+                        self._changed(db)
 
     def reconcile(self, receipt, calendar=None):
         """Persist verified readback; at most two attempts before next window.

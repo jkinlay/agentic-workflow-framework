@@ -203,7 +203,7 @@ def collect_review_corrections(store, binding, now, observe):
                         invalid.append(dict(withdrawn=prior, current=current))
                 if restoring and not invalid:
                     readback = next(h for h in reversed(state['history']) if h.get('status') == 'DELIVERED')
-                    notices.append(dict(id=restoration_id, prior_report=report['report_id'],
+                    notices.append(dict(id=restoration_id, prior_report=correction_id,
                         correction_id=correction_id, delivery_id=delivery_id, binding=intent['binding'],
                         thread_id=intent.get('thread_id') or readback['message_id'], restored=True,
                         review_batch=deepcopy(report['review_batch'])))
