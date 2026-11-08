@@ -380,7 +380,7 @@
     ".agentic/tests/test_awf244_controller_wiring.py": "3b5da7fc45bdd6cc330ea4eb74d22306952ef09b2c22367a8ae62de04a27b38f",
     ".agentic/tests/test_awf244_digest_contract.py": "ec547c9adab857951dde01ae2ccd2fd4ba273fce3332fc81efda3cd17e779133",
     ".agentic/tests/test_awf244_merge_policy.py": "5577937b376b7c34213bf9d2630c702ffb0149089c9f6a6c63eb84bc23cec4ed",
-    ".agentic/tests/test_awf244_persistence.py": "44618506af3c01af8597233f130cf525da9878c64e3259dd2f2e3df126966cde",
+    ".agentic/tests/test_awf244_persistence.py": "928b628a1ca34c5adaf58d1213ad635da324f9c51f938ada8f58b002e9bff894",
     ".agentic/tests/test_awf244_policy_rules.py": "6cddfa52a3903fb58dae84491f2db45aaaa1dea279bbed8f8d00031da52e7b67",
     ".agentic/tests/test_awf244_recovery.py": "9bf287a25730c1fc9726bc71d71bc8a61e768078bb34995e1cdb79f9836b066a",
     ".agentic/tests/test_awf244_review_batching.py": "423ece57265b2726e1d25a5bc8ce87f95b93c1f346a6e6e28b8160483f80d4bb",
