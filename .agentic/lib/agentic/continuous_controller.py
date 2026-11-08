@@ -17,6 +17,7 @@ from . import ValidationError
 from .child_process import child_env
 from .canonical import MAX_DOCUMENT_BYTES, _pairs, canonical, loads, now_text, timestamp, validate_value
 from .controller_state import STATE_SCHEMA_VERSION, configure_database, protected_state_path, restrict_state_permissions
+from .reporting.policy import policy_cycle
 STREAM_STATES = {'WORKING', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 TICKET_STATES = {'ELIGIBLE', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 LIFECYCLE_ROLES = {'implementation': 'writer', 'independent_review': 'critic', 'amendment': 'writer'}
@@ -3494,6 +3495,7 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 	return finish()
 
 
+@policy_cycle
 def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None, observe_owner_ready=None, observe_review_candidate=None, deliver_review_batch=None, observe_review_delivery=None, reporting_providers=None, configure_reporting=None, observe_reporting_sources=None, verify_reporting_sources=None, verify_reporting_link=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')

@@ -151,6 +151,7 @@ class ControllerAdmissionTests(unittest.TestCase):
         original = type(self.network).__call__
         slack_hourly = threading.Event()
         teams_wait = threading.Event()
+        stage_started = threading.Event()
         completed, errors = [], []
         def http(network, method, url, headers, payload):
             if method == 'POST' and 'graph.microsoft.com' in url:
@@ -171,10 +172,18 @@ class ControllerAdmissionTests(unittest.TestCase):
                 completed.append(self.cycle('2026-11-10T10:00:00Z'))
             except BaseException as exc:
                 errors.append(exc)
-        with patch.object(type(self.network), '__call__', http):
+        from agentic.reporting import runtime
+        original_drain = runtime.drain
+        def drain(*args, **kwargs):
+            stage_started.set()
+            return original_drain(*args, **kwargs)
+        with patch.object(type(self.network), '__call__', http), patch.object(runtime, 'drain', drain):
             worker = threading.Thread(target=cycle)
             worker.start()
             try:
+                # Fixture publication, dispatch and source collection precede
+                # the destination stage whose isolation these waits measure.
+                self.assertTrue(stage_started.wait(45))
                 self.assertTrue(teams_wait.wait(2))
                 self.assertTrue(slack_hourly.wait(1.5))
                 self.assertTrue(worker.is_alive())
@@ -254,11 +263,6 @@ class DeadlineControllerTests(unittest.TestCase):
         self.addCleanup(stop.set)
         class Opener:
             def open(inner, req, timeout):
-                nonlocal started
-                if started is None:
-                    # Measure the network stage; repository admission and local
-                    # storage before its first request are outside that bound.
-                    started = time.monotonic()
                 payload = json.loads(req.data) if req.data else None
                 value = original(network, req.method, req.full_url, dict(req.headers), payload)
                 if req.method == 'POST':
@@ -269,10 +273,14 @@ class DeadlineControllerTests(unittest.TestCase):
                 data = json.dumps(value).encode()
                 right.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: ' + str(len(data)).encode() + b'\r\n\r\n')
                 if req.method == 'POST':
+                    # Frequent bytes defeat an inactivity timeout, while the
+                    # full response still needs longer than the overall limit.
+                    # A two-second cadence added a full second of wake-up lag.
+                    self.assertGreater(len(data) * .1, timeout)
                     def drip():
                         try:
                             for byte in data:
-                                if stop.wait(2):
+                                if stop.wait(.1):
                                     break
                                 right.sendall(bytes([byte]))
                         except OSError:
@@ -296,11 +304,24 @@ class DeadlineControllerTests(unittest.TestCase):
             reporting={'slack': dict(context='workspace', sender='sender')})
         self.adapters = self.namespace['build_adapters'](config)
         self.settings['mode'] = 'slack'
-        started = None
+        elapsed_requests = []
+        real_call = transport.BaseTransport.call
+        def timed_call(owner, method, *args, **kwargs):
+            started = time.monotonic()
+            try:
+                return real_call(owner, method, *args, **kwargs)
+            finally:
+                if method == 'POST':
+                    elapsed_requests.append(time.monotonic() - started)
         try:
-            with patch.object(transport, 'build_opener', return_value=Opener()):
+            # Measure the complete POST transport call, including pre-POST
+            # re-admission, opener setup and full-body read. Other requests and
+            # later controller work do not belong to this request deadline.
+            with patch.object(transport, 'build_opener', return_value=Opener()), \
+                 patch.object(transport.BaseTransport, 'call', timed_call):
                 result = self.cycle('2026-11-10T10:00:00Z')
-            self.assertLess(time.monotonic() - started, 17)
+            self.assertEqual(len(elapsed_requests), 1)
+            self.assertLess(elapsed_requests[0], 17)
             self.assertEqual(result['errors'], [])
             self.assertEqual(len(network.posts), 1)
             self.assertEqual(len(self.status()['deliveries'][0]['attempts']), 1)

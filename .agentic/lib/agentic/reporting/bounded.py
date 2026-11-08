@@ -79,6 +79,7 @@ class DeliveryBudget:
         self.http_counts = {}
         self.reconciliations = {}
         self.lock = threading.Lock()
+        self.observer_deadlines = {}
         # A destination's reservation/POST cannot race cancellation. Separate
         # gates preserve destination isolation during a slow HTTP operation.
         self.send_locks = {p: threading.RLock() for p in ('slack', 'teams')}
@@ -140,12 +141,36 @@ class DeliveryBudget:
     @contextmanager
     def checking(self):
         token = _checking.set(self)
+        worker = threading.get_ident()
+        prior = None
+        registered = False
         try:
             self.remaining()
+            with self.lock:
+                prior = self.observer_deadlines.get(worker)
+                deadline = monotonic() + HTTP_TIMEOUT_SECONDS
+                self.observer_deadlines[worker] = min(prior, deadline) if prior is not None else deadline
+                registered = True
             yield
             self.remaining()
         finally:
+            if registered:
+                with self.lock:
+                    if prior is None:
+                        self.observer_deadlines.pop(worker, None)
+                    else:
+                        self.observer_deadlines[worker] = prior
             _checking.reset(token)
+
+    def join_deadline(self, thread):
+        """Bound observer grace from entry, within the original stage ceiling.
+
+        A late observation can still quiesce during the request grace. One
+        already stalled for the full request maximum gets no second allowance.
+        Revocation still prevents every subsequent reservation and POST.
+        """
+        with self.lock:
+            return min(self.stage_deadline, self.observer_deadlines.get(thread.ident, self.stage_deadline))
 
     @contextmanager
     def destination(self, platform):

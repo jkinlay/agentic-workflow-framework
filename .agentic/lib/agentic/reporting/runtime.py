@@ -320,7 +320,7 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
         # Revocation comes first; spend the already documented request grace
         # joining workers, rather than returning while rechecks can still send.
         for thread in threads:
-            thread.join(max(0, budget.stage_deadline - monotonic()))
+            thread.join(max(0, budget.join_deadline(thread) - monotonic()))
     alive = [d['platform'] for d, t in zip(destinations, threads) if t.is_alive()]
     if alive:
         # A trusted port violating its timeout must be visible after restart.

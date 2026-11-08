@@ -2,6 +2,8 @@
 from copy import deepcopy
 from threading import RLock
 from collections import OrderedDict
+from contextvars import ContextVar
+from functools import wraps
 
 from .. import ValidationError
 from ..canonical import canonical
@@ -13,6 +15,19 @@ from ..protected_settings import _git
 _prepared = OrderedDict()
 _MAX_PREPARED = 8
 _prepared_lock = RLock()
+_cycle_prepared = ContextVar('reporting_policy_cycle', default=None)
+
+
+def policy_cycle(operation):
+    """Share preparation within one controller call; POST still re-admits Git."""
+    @wraps(operation)
+    def cycle(*args, **kwargs):
+        token = _cycle_prepared.set({})
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            _cycle_prepared.reset(token)
+    return cycle
 
 
 class ReportingPolicy:
@@ -27,14 +42,19 @@ class ReportingPolicy:
         self.governance = deepcopy(governance)
         self.original = operating
         key = (id(operating), self.root, canonical(self.governance))
+        cycle = _cycle_prepared.get()
         with _prepared_lock:
-            prepared = _prepared.get(key)
+            prepared = cycle.get(key) if cycle is not None else None
+            same_cycle = prepared is not None
+            if prepared is None:
+                prepared = _prepared.get(key)
         # Identity here is an in-process object, never a supplied hash or
         # provenance assertion. Only independently admitted objects enter it.
-        # The bounded cache holds no resolved credentials and never skips the
-        # fresh Git identity observation, including across controller cycles.
+        # The bounded cache holds no resolved credentials. Cycle-local reuse
+        # skips preparation only; POST and cross-cycle reads observe Git anew.
         if prepared is not None and (operating is prepared.snapshot or operating is prepared.original):
-            prepared()  # Fresh Git identity observation, even on reuse.
+            if not same_cycle:
+                prepared()  # Fresh identity across cycles and standalone uses.
             self.snapshot = prepared.snapshot
         else:
             self.snapshot = accepted_budget_snapshot(self.root, self.governance, operating)
@@ -43,6 +63,8 @@ class ReportingPolicy:
                 identity = (id(candidate), self.root, canonical(self.governance))
                 _prepared[identity] = self
                 _prepared.move_to_end(identity)
+                if cycle is not None:
+                    cycle[identity] = self
             while len(_prepared) > _MAX_PREPARED:
                 _prepared.popitem(last=False)
 

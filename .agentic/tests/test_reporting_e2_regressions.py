@@ -4,7 +4,7 @@ Only reporting network I/O is substituted. No fake provider or delivery receipt.
 The existing controller fixture supplies planning/host observations, never sends.
 """
 from copy import deepcopy
-from contextlib import closing
+from contextlib import closing, nullcontext
 from pathlib import Path
 import os
 import runpy
@@ -74,7 +74,8 @@ class ReportingE2Regressions(unittest.TestCase):
         value['reporting'] = deepcopy(self.settings)
         return accepted_fixture_snapshot(self, Path(self.helper.temp.name) / 'reporting-policy', value, gov)
 
-    def cycle(self, now, items=None):
+    def cycle(self, now, items=None, *, before_controller=None):
+        import test_continuous_controller as controller
         from agentic.operating import validate_operating
         self.clock.value = now
         # Populate the real factory's current, identity-checked inventory cache.
@@ -87,9 +88,14 @@ class ReportingE2Regressions(unittest.TestCase):
                  'verify_reporting_sources', 'verify_reporting_link') if k in self.adapters}
         if 'configure_reporting' not in calls:
             calls['reporting_providers'] = self.adapters.get('reporting_providers', {})
+        original = controller.real_production_controller_cycle
+        def invoke(*args, **kwargs):
+            before_controller()
+            return original(*args, **kwargs)
         with patch('test_awf244_controller_wiring.validate_operating', operating), \
              patch.object(controller_fixture, 'REPOSITORY', self.repository), \
-             patch('test_continuous_controller.ROOT', self.repository['repository_root']):
+             patch('test_continuous_controller.ROOT', self.repository['repository_root']), \
+             patch.object(controller, 'real_production_controller_cycle', invoke) if before_controller else nullcontext():
             return self.helper.cycle(now, items, **calls)
 
     def test_supplied_working_and_pr_snapshot_cannot_change_reporting_decisions(self):
@@ -260,9 +266,13 @@ class ReportingE2Regressions(unittest.TestCase):
         self.assertCountEqual([p for p, _ in self.network.posts], ['teams', 'slack'])
         self.assertEqual(result['reporting']['state'], 'ENABLED')
         self.assertEqual({d['status'] for d in self.status()['deliveries'] if d['platform'] == 'teams'}, {'UNKNOWN'})
-        started = time.monotonic()
-        continued = self.cycle('2026-11-07T18:00:01Z', [ticket('EX-1', 1, paths=['README.md'])])
-        self.assertLess(time.monotonic() - started, 1.5)
+        # Time the complete production cycle, including its Git admission.
+        # The harness publishes/observes fixture inputs before entering it.
+        def before_controller():
+            timing['next_cycle_start'] = time.monotonic()
+        continued = self.cycle('2026-11-07T18:00:01Z', [ticket('EX-1', 1, paths=['README.md'])],
+                               before_controller=before_controller)
+        self.assertLess(time.monotonic() - timing['next_cycle_start'], 1.5)
         self.assertEqual(len(continued['dispatch_receipts']), 1)
         self.assertEqual(len(self.network.posts), 2)
         self.network.block.set()
