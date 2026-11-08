@@ -175,7 +175,20 @@ class WindowsFinalCandidateCiTests(unittest.TestCase):
         self.assertEqual(1, len(manifest))
         self.assertNotIn("if", manifest[0])
         self.assertEqual(["3.11", "3.12", "3.13"], checks["strategy"]["matrix"]["python-version"])
+        self.assertEqual(8, len(checks["steps"]))
         preserved = deepcopy(checks)
+        # Restore only the four intentionally moved discovery steps so the
+        # original digest still protects every static step and job setting.
+        for name, arguments in (
+            (".agentic/tests", "-s .agentic/tests -t .agentic/tests"),
+            ("scripts/tests", "-s scripts/tests -t scripts/tests"),
+            ("portable core", "-s global/awf/tests"),
+            ("portable host", "-s global/awf-portable/tests"),
+        ):
+            preserved["steps"].append({
+                "name": f"Unit tests ({name})",
+                "run": f'"$PY" -B -m unittest discover {arguments}\n',
+            })
         preserved["strategy"]["matrix"]["python-version"] = ["3.11", "3.13"]
         self.assertEqual(
             "94cb1791a3e2f1cb3e00976f8f9467a6da91a95a1d8b1c66330eac64abf37f49",

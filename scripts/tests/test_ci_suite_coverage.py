@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
+import importlib.util
 from pathlib import Path
 import re
 import subprocess
@@ -70,6 +72,13 @@ def runner_shards():
     return tuple(shards)
 
 
+def runner_module():
+    spec = importlib.util.spec_from_file_location("ci_shard_runner", RUN_WINDOWS_UNITTESTS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def discovered_suites(job):
     suites = set()
     for step in job.get("steps", []):
@@ -87,15 +96,59 @@ def steps_with(job, fragment):
 
 
 class CiSuiteCoverageTests(unittest.TestCase):
+    def test_linux_shards_and_installed_self_test_have_bounded_matching_matrices(self):
+        jobs = workflow()["jobs"]
+        versions = ["3.11", "3.12", "3.13"]
+        for job_id in ("linux_unittests", "linux_installed_self_test"):
+            self.assertIn(job_id, jobs)
+            job = jobs[job_id]
+            self.assertEqual("ubuntu-latest", job["runs-on"])
+            self.assertNotIn("if", job)
+            self.assertNotIn("needs", job)
+            self.assertNotIn("continue-on-error", job)
+            self.assertLessEqual(job["timeout-minutes"], 60)
+            self.assertFalse(job["strategy"]["fail-fast"])
+            self.assertEqual(versions, job["strategy"]["matrix"]["python-version"])
+            setup = next(step for step in job["steps"]
+                         if step.get("uses") == "actions/setup-python@v5")
+            self.assertEqual("${{ matrix.python-version }}", setup["with"]["python-version"])
+            # Reuse the static job's checkout, identity, resolved interpreter and pip.
+            self.assertEqual(jobs["checks"]["steps"][:5], job["steps"][:5])
+            for step in job["steps"]:
+                self.assertNotIn("if", step)
+                self.assertNotIn("continue-on-error", step)
+        self.assertEqual(
+            {"python-version": versions, "shard": list(runner_shards())},
+            jobs["linux_unittests"]["strategy"]["matrix"],
+        )
+        installed = jobs["linux_installed_self_test"]
+        self.assertEqual({"python-version": versions}, installed["strategy"]["matrix"])
+        self.assertEqual(6, len(installed["steps"]))
+        self.assertEqual(
+            '"$PY" -B -m unittest discover -s scripts/tests -t scripts/tests '
+            '-p test_installed_self_test.py',
+            installed["steps"][-1]["run"].strip(),
+        )
+        self.assertFalse(discovered_suites(jobs["checks"]))
+        self.assertFalse(discovered_suites(jobs["linux_unittests"]))
+
     def test_windows_unittest_matrix_matches_runner_shards_and_invocation_contract(self):
-        job = workflow()["jobs"]["windows_unittests"]
+        self.assert_shard_invocations("windows_unittests", "& $env:PY")
+
+    def test_linux_unittest_matrix_matches_runner_shards_and_invocation_contract(self):
+        self.assert_shard_invocations("linux_unittests", '"$PY"')
+
+    def assert_shard_invocations(self, job_id, interpreter):
+        job = workflow()["jobs"][job_id]
+        self.assertEqual(["3.11", "3.12", "3.13"],
+                         job["strategy"]["matrix"]["python-version"])
         self.assertEqual(
             job["strategy"]["matrix"]["shard"],
             list(runner_shards()),
         )
 
         matrix_expression = "${{ matrix.shard }}"
-        command = "& $env:PY -B scripts/run_windows_unittests.py --shard"
+        command = f"{interpreter} -B scripts/run_windows_unittests.py --shard"
         expected_guard = f"{command} {matrix_expression} --list"
         expected_execution = f"{command} {matrix_expression}"
         invocations = [
@@ -114,6 +167,8 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertLess(guard_index, execution_index)
         self.assertNotIn("continue-on-error", guard_step)
         self.assertNotIn("continue-on-error", execution_step)
+        self.assertNotIn("if", guard_step)
+        self.assertNotIn("if", execution_step)
         self.assertIn(matrix_expression, guard_command)
         self.assertIn(matrix_expression, execution_command)
 
@@ -122,17 +177,42 @@ class CiSuiteCoverageTests(unittest.TestCase):
         triggers = document.get("on", document.get(True))
         self.assertIn("pull_request", triggers)
 
-        checks = document["jobs"]["checks"]
-        self.assertEqual(
-            {"3.11", "3.12", "3.13"},
-            {str(version) for version in checks["strategy"]["matrix"]["python-version"]},
-        )
+        runner = runner_module()
         expected = publish_release_suites()
         self.assertTrue(expected, "default_validations must declare at least one portable suite")
-        self.assertEqual(expected, expected & discovered_suites(checks))
-        for step in checks["steps"]:
-            if expected & discovered_suites({"steps": [step]}):
-                self.assertFalse(step.get("continue-on-error", False), step.get("name"))
+        self.assertEqual(expected, expected & set(runner.SUITES))
+        self.assertEqual(
+            {".agentic/tests", "scripts/tests"} | expected, set(runner.SUITES),
+        )
+        inventory = runner.inventory(ROOT)
+        allocation = runner.allocate(inventory)
+        runner.guard(ROOT, allocation)
+        excluded = "scripts/tests/test_installed_self_test.py"
+        self.assertEqual({excluded}, set(runner.EXCLUDED_MODULES))
+        for job_id in ("linux_unittests", "windows_unittests"):
+            job = document["jobs"][job_id]
+            self.assertNotIn("if", job)
+            self.assertNotIn("continue-on-error", job)
+            self.assertEqual(
+                {"python-version": ["3.11", "3.12", "3.13"],
+                 "shard": list(runner_shards())}, job["strategy"]["matrix"],
+            )
+            for version in job["strategy"]["matrix"]["python-version"]:
+                with self.subTest(job=job_id, version=version):
+                    counts = Counter(
+                        path for suite in runner.SUITES
+                        for shard in job["strategy"]["matrix"]["shard"]
+                        for path in allocation[suite][shard]
+                    )
+                    self.assertEqual(
+                        Counter({path: runner.copies(path)
+                                 for paths in inventory.values() for path in paths
+                                 if path != excluded}), counts,
+                    )
+                    self.assertNotIn(excluded, counts)
+                    # The existing runner tests prove the split module's two
+                    # fixed halves execute disjoint cases exactly once.
+                    self.assertEqual({runner.UPGRADE_MATRIX}, set(runner.SPLIT_MODULES))
 
     def test_windows_installed_runtime_job_is_single_and_path_gated(self):
         document = workflow()

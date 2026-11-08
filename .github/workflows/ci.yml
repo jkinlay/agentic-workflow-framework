@@ -53,18 +53,68 @@ jobs:
           # New-branch pushes report an all-zero "before" SHA; fall back to the parent commit.
           if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then BASE="$(git rev-parse HEAD~1)"; fi
           git diff --check "$BASE" HEAD
-      - name: Unit tests (.agentic/tests)
+
+  linux_unittests:
+    name: Linux unit tests (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Configure git identity for local-git fixtures
         run: |
-          "$PY" -B -m unittest discover -s .agentic/tests -t .agentic/tests
-      - name: Unit tests (scripts/tests)
+          git config --global user.name "awf-ci"
+          git config --global user.email "awf-ci@users.noreply.github.com"
+      - name: Resolve non-alias interpreter (framework refuses symlinked Python)
         run: |
-          "$PY" -B -m unittest discover -s scripts/tests -t scripts/tests
-      - name: Unit tests (portable core)
+          echo "PY=$(python -c 'import os,sys;print(os.path.realpath(sys.executable))')" >> "$GITHUB_ENV"
+      - name: Install hash-locked dependencies
         run: |
-          "$PY" -B -m unittest discover -s global/awf/tests
-      - name: Unit tests (portable host)
+          "$PY" -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - name: Guard complete module allocation and list this shard
         run: |
-          "$PY" -B -m unittest discover -s global/awf-portable/tests
+          "$PY" -B scripts/run_windows_unittests.py --shard ${{ matrix.shard }} --list
+      - name: Run all four suites for this shard
+        run: |
+          "$PY" -B scripts/run_windows_unittests.py --shard ${{ matrix.shard }}
+
+  linux_installed_self_test:
+    name: Linux installed-runtime self-test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Configure git identity for local-git fixtures
+        run: |
+          git config --global user.name "awf-ci"
+          git config --global user.email "awf-ci@users.noreply.github.com"
+      - name: Resolve non-alias interpreter (framework refuses symlinked Python)
+        run: |
+          echo "PY=$(python -c 'import os,sys;print(os.path.realpath(sys.executable))')" >> "$GITHUB_ENV"
+      - name: Install hash-locked dependencies
+        run: |
+          "$PY" -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - name: Run the installed self-test acceptance suite alone
+        run: |
+          "$PY" -B -m unittest discover -s scripts/tests -t scripts/tests -p test_installed_self_test.py
 
   windows_runtime_paths:
     name: Detect Windows installed-runtime paths
