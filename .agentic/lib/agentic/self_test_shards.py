@@ -5,7 +5,8 @@ from collections import Counter
 import hashlib
 import importlib
 import json
-from pathlib import Path, PurePosixPath
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import sys
 import unittest
@@ -15,6 +16,18 @@ FIXTURE_PREREQUISITES = {
 }
 SHARDS = tuple(range(9))
 UPGRADE_MATRIX = '.agentic/tests/test_upgrade_matrix.py'
+COMPONENT_CHECKS = {
+    'discovery': ('integrity', 'schema_catalog_and_workflow', 'host_loop_output_schemas',
+                  'default_automatic_policy_unqualified_until_enrolled',
+                  'repository_ruleset_template', 'complete_unfilled_forms'),
+    'syntax': ('python_syntax_files', 'launch_surfaces'),
+    'documentation': ('local_markdown_links', 'windows_command_document_lint'),
+    'release_hygiene': ('source_release_hygiene',),
+}
+# These controls do not add or redirect import/search paths. Unknown PYTHON*
+# controls fail closed, including future interpreter path controls.
+NON_PATH_PYTHON_ENV = frozenset({'PYTHONDONTWRITEBYTECODE', 'PYTHONUNBUFFERED',
+                               'PYTHONHASHSEED', 'PYTHONIOENCODING', 'PYTHONUTF8'})
 
 
 def load_fixture_prerequisites(root, selected_path):
@@ -28,25 +41,126 @@ def load_fixture_prerequisites(root, selected_path):
             raise ValueError('fixture prerequisite origin mismatch: ' + name)
 
 
-def assert_isolation(root):
-    """Refuse preloaded source AWF or test helpers; never repair sys.modules."""
+def isolation_inventory(root):
+    """Classify both file and spec origins with one policy for guards/probes."""
     root = Path(root).resolve()
     library = root / '.agentic/lib'
     tests = root / '.agentic/tests'
-    import agentic
-    if not getattr(agentic, '__file__', None) or not Path(agentic.__file__).resolve().is_relative_to(library):
-        raise ValueError('source contamination: agentic is outside installed library')
+    runtime = root / '.agentic/.venv'
+    entry_point = root / '.agentic/scripts/self_test.py'
     helper_names = {p.stem for p in tests.rglob('*.py')}
-    for name, module in list(sys.modules.items()):
+    version = f'python{sys.version_info.major}.{sys.version_info.minor}'
+    sites = (runtime / 'Lib/site-packages', runtime / 'lib' / version / 'site-packages',
+             runtime / 'lib64' / version / 'site-packages')
+    standard = []
+    for prefix in sorted({Path(sys.base_prefix).resolve(), Path(sys.base_exec_prefix).resolve()}):
+        standard.extend((prefix / 'Lib', prefix / 'DLLs', prefix / 'lib' / version,
+                         prefix / f'python{sys.version_info.major}{sys.version_info.minor}.zip',
+                         prefix / 'lib' / f'python{sys.version_info.major}{sys.version_info.minor}.zip'))
+    roots = {'installed_lib': (library,), 'installed_tests': (tests,),
+             'installed_site_packages': sites, 'stdlib': tuple(standard),
+             'entry_point': (entry_point,)}
+    resolved_roots = {label: tuple(p.resolve() for p in paths) for label, paths in roots.items()}
+    root_counts = dict.fromkeys((*roots, 'originless', 'outside_roots'), 0)
+    path_counts = {str(p): 0 for paths in resolved_roots.values() for p in paths}
+
+    def classify(path, name, file_path):
+        if name == '__main__' and file_path == entry_point and path == entry_point:
+            return 'entry_point', str(entry_point)
+        for label in ('installed_lib', 'installed_tests', 'installed_site_packages'):
+            for resolved in resolved_roots[label]:
+                if resolved.is_relative_to(root) and path.is_relative_to(resolved):
+                    return label, str(resolved)
+        # A base interpreter's third-party packages are not its standard library.
+        if any(part.casefold() in {'site-packages', 'dist-packages'} for part in path.parts):
+            return 'outside_roots', None
+        for candidate in resolved_roots['stdlib']:
+            if path.is_relative_to(candidate):
+                return 'stdlib', str(candidate)
+        return 'outside_roots', None
+
+    def spec_path(value):
+        if value is None or (isinstance(value, str) and value in {'built-in', 'frozen'}):
+            return None
+        try:
+            text = os.fsdecode(os.fspath(value))
+        except TypeError:
+            return None  # A non-path origin, not a filesystem location.
+        path = Path(text)
+        if (path.is_absolute() or PureWindowsPath(text).drive
+                or '/' in text or '\\' in text or path.suffix.lower() in {
+                    '.py', '.pyc', '.pyo', '.pyd', '.so', '.dll', '.zip'} or path.exists()):
+            return path.resolve()
+        return None
+
+    refused, loaded = [], []
+    for name, module in sorted(list(sys.modules.items())):
         if module is None:
             continue
         origin = getattr(module, '__file__', None)
-        if name == 'agentic' or name.startswith('agentic.'):
-            if not origin or not Path(origin).resolve().is_relative_to(library):
-                raise ValueError('source contamination: ' + name)
-        elif name.rsplit('.', 1)[-1] in helper_names:
-            if not origin or not Path(origin).resolve().is_relative_to(tests):
-                raise ValueError('test/helper contamination: ' + name)
+        spec_origin = getattr(getattr(module, '__spec__', None), 'origin', None)
+        file_path = Path(os.fsdecode(os.fspath(origin))).resolve() if origin is not None else None
+        resolved_spec = spec_path(spec_origin)
+        record = {'module': name, 'file': str(file_path) if file_path is not None else None,
+                  'spec_origin': str(spec_origin) if spec_origin is not None else None,
+                  'spec_path': str(resolved_spec) if resolved_spec is not None else None}
+        reason = None
+        # Retain the narrower AWF/test origin restrictions as well as the
+        # general allowlist: another allowed directory cannot impersonate AWF.
+        required = (library if name == 'agentic' or name.startswith('agentic.') else
+                    tests if name.rsplit('.', 1)[-1] in helper_names else None)
+        if required is not None and (file_path is None or not file_path.is_relative_to(required)):
+            reason = 'AWF/test origin outside its required installed directory'
+        if name == '__main__' and file_path != entry_point:
+            reason = '__main__ is not the installed self-test entry point'
+        label, matched_root = 'originless', None
+        # Cython runtime modules (_cython_*/cython_runtime), and typing.io /
+        # typing.re, are examples of origin-less bookkeeping. They receive no
+        # name exceptions: absent/None file plus a non-path spec is the rule.
+        for kind, path in (('file', file_path), ('spec origin', resolved_spec)):
+            if path is None:
+                continue
+            candidate_label, candidate_root = classify(path, name, file_path)
+            if label == 'originless':
+                label, matched_root = candidate_label, candidate_root
+            if candidate_label == 'outside_roots':
+                reason = kind + ' outside allowed roots'
+            elif required is not None and not path.is_relative_to(required):
+                reason = kind + ' outside its required AWF/test directory'
+        if reason is not None:
+            record['reason'] = reason
+            label, matched_root = 'outside_roots', None
+            refused.append(record)
+        record.update(root=label, root_path=matched_root)
+        root_counts[label] += 1
+        if matched_root is not None:
+            path_counts[matched_root] += 1
+        loaded.append(record)
+    return {'root_counts': root_counts, 'path_counts': path_counts,
+            'allowed_roots': {key: [str(p) for p in paths] for key, paths in resolved_roots.items()},
+            'loaded_modules': loaded, 'outside_roots': refused}
+
+
+def isolation_origins(root):
+    """Enumerate all refusals using the same classification as the host probe."""
+    return isolation_inventory(root)['outside_roots']
+
+
+def assert_isolation(root):
+    """Refuse path environments and every foreign module; never repair modules."""
+    path_env = sorted(name for name in os.environ
+                      if name.upper().startswith('PYTHON') and name.upper() not in NON_PATH_PYTHON_ENV)
+    if path_env:
+        raise ValueError('Python path environment is set: ' + ', '.join(path_env))
+    root = Path(root).resolve()
+    library = root / '.agentic/lib'
+    import agentic
+    if not getattr(agentic, '__file__', None) or not Path(agentic.__file__).resolve().is_relative_to(library):
+        raise ValueError('source contamination: agentic is outside installed library')
+    refused = isolation_origins(root)
+    if refused:
+        raise ValueError('module isolation refused: ' + '; '.join(
+            item['module'] + ' (' + item['reason'] + ')' for item in refused))
     return 'PASS'
 
 

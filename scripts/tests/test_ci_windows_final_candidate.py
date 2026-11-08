@@ -222,7 +222,7 @@ class WindowsFinalCandidateCiTests(unittest.TestCase):
         self.assertEqual("windows-installed-runtime-self-test-${{ matrix.python-version }}-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}", upload["with"]["name"])
         upload["with"]["name"] = "windows-installed-runtime-self-test-${{ github.run_attempt }}"
         self.assertEqual(
-            "e522214a468f3bb8229f9b6c2a08f8235bf6118e285e1b243a6e35ca9b9ef1d6",
+            "f5a1b0479b44180e8ac8d4b5ffc87720149039482b23fa82a235fbd224c1742f",
             digest({key: value for key, value in preserved.items() if key != "if"}),
         )
 

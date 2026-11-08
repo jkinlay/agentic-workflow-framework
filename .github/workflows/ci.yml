@@ -249,6 +249,9 @@ jobs:
           $reportPath = "$env:AWF_ARTIFACT_DIR\self-test.json"
           $selectionFile = "$env:AWF_ARTIFACT_DIR\selection.json"
           $selectionDigest = (Get-Content -Raw -LiteralPath "$selectionFile.sha256").Trim()
+          Get-ChildItem Env: | Where-Object { $_.Name -like 'PYTHON*' } |
+            ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
+
           Push-Location $env:AWF_INSTALLED_PROJECT
           try {
             & $installedPython -B -I $selfTest --checks-only --report $reportPath --shard ${{ matrix.shard }} --selection-file $selectionFile --expected-selection-sha256 $selectionDigest
@@ -337,7 +340,7 @@ jobs:
         run: >-
           python -B scripts/check_installed_self_test_shards.py
           --artifacts installed-shard-artifacts --matrix-result "$MATRIX_RESULT"
-          --event-name "$EVENT_NAME" --event-file "$GITHUB_EVENT_PATH"
+          --event-name "$EVENT_NAME" --event-file "$GITHUB_EVENT_PATH" --run-id "$GITHUB_RUN_ID"
 
   windows_unittests:
     name: Windows unit tests (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})

@@ -48,6 +48,9 @@ class SelfTestProgress:
         self.current_test = None
         self.last_test = None
         self.timings = {}
+        self.component_checks = None
+        self.component_check_names = {}
+        self.component_phases = {}
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._thread = None
@@ -69,11 +72,21 @@ class SelfTestProgress:
                       last_completed_phase=self.last_completed_phase, current_test=self.current_test)
 
     def begin_phase(self, name):
+        if self.component_checks is not None and name in self.component_check_names:
+            phase = self.component_phases.setdefault(name, {'count': 0, 'results': []})
+            phase['count'] += 1
+            phase['results'].append({'status': 'FAILED', 'checks': {}})
         self.current_phase = name
         self.phase_started = self.clock()
         self.emit('self_test_phase_start', phase=name, last_completed_phase=self.last_completed_phase)
 
     def complete_phase(self, name):
+        if self.component_checks is not None and name in self.component_check_names:
+            from copy import deepcopy
+            result = self.component_phases[name]['results'][-1]
+            result['checks'] = {key: {'status': 'PASS', 'result': deepcopy(self.component_checks[key])}
+                                for key in self.component_check_names[name]}
+            result['status'] = 'PASS'
         elapsed = round(self.clock() - self.phase_started, 3)
         self.timings[name] = elapsed
         self.last_completed_phase = name
@@ -288,8 +301,10 @@ def main(argv=None):
     try:
         if sharded:
             from agentic.self_test_shards import (assert_isolation, installed_inventory,
-                                                 validate_selection, InstalledLoader)
+                                                 validate_selection, InstalledLoader, COMPONENT_CHECKS)
             report['isolation'] = assert_isolation(ROOT)
+            progress.component_checks = report['checks']
+            progress.component_check_names = COMPONENT_CHECKS
         if not sharded or args.shard == 0:
             progress.begin_phase('discovery')
         from agentic import ValidationError
@@ -488,7 +503,7 @@ def main(argv=None):
                           zero_test_modules=loader.zero_test_modules)
         if report['status'] not in {'SHARD_PASS', 'FAILED'}:
             report['status'] = 'FAILED'
-        report['component_phases'] = {name: 'PASS' for name in PHASES[:-1] if name in progress.timings}
+        report['component_phases'] = progress.component_phases
         if report['component_phases']:
             report['tested_components'].append('installed_component_checks')
     report['review'] = report['current_review']['status']

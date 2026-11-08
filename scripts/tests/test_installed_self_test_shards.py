@@ -44,10 +44,12 @@ def sample_records(plan):
                 selection_sha256=hashlib.sha256(planner.encode(plan)).hexdigest(),
                 source_manifest_sha256=plan['source_manifest_sha256'],
                 selected_modules=selected[:], discovered_modules=selected[:], completed_modules=selected[:],
-                component_phases=dict.fromkeys(('discovery', 'syntax', 'documentation', 'release_hygiene'), 'PASS') if n == 0 else {},
+                component_phases={phase: {'count': 1, 'results': [{'status': 'PASS', 'checks': {
+                    key: {'status': 'PASS', 'result': 'synthetic passing check'} for key in keys}}]}
+                    for phase, keys in installed.COMPONENT_CHECKS.items()} if n == 0 else {},
                 checks={'integrity': 'PASS'},
                 tests=dict(run=1, failures=0, errors=0, successful=True, skipped=[]),
-                split_cases={installed.UPGRADE_MATRIX: parts[n]} if n in parts else {},
+                split_cases={installed.UPGRADE_MATRIX: deepcopy(parts[n])} if n in parts else {},
                 split_all_cases={installed.UPGRADE_MATRIX: sorted(parts[1] + parts[8])} if n in parts else {},
                 zero_test_modules={})))
     return records, parts
@@ -125,7 +127,7 @@ class AggregateTests(unittest.TestCase):
             if fault == 'missing shard':
                 records.pop()
             elif fault == 'overlapping split':
-                records[8][1]['split_cases'][installed.UPGRADE_MATRIX] = parts[1]
+                records[8][1]['split_cases'][installed.UPGRADE_MATRIX] = deepcopy(parts[1])
             else:
                 records[3][1]['isolation'] = 'FAILED'
             with self.subTest(fault=fault), self.assertRaises(ValueError):
@@ -260,7 +262,12 @@ class LoaderProcessTests(unittest.TestCase):
         self.tests.mkdir(parents=True)
 
     def child(self, code, *args):
-        return subprocess.run([sys.executable, '-B', '-I', '-c', code, str(self.root), str(ROOT), *args],
+        # Synthetic installed layouts must not inherit the host venv's .pth or
+        # third-party imports. Put the child entry itself in an allowed root.
+        entry = self.root / '.agentic/scripts/self_test.py'
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_text(code, encoding='utf-8')
+        return subprocess.run([sys.executable, '-B', '-I', '-S', str(entry), str(self.root), str(ROOT), *args],
                               cwd=self.root, capture_output=True, text=True, timeout=120)
 
     def test_both_loaders_use_same_prerequisite_before_consumer_cases_across_shards(self):
@@ -286,7 +293,13 @@ else:
  from agentic.self_test_shards import InstalledLoader,assert_isolation
  assert_isolation(root)
  loader=InstalledLoader(root,dict(shards={'3':[p]},split={},zero_test_modules=[]),3)
+from agentic import self_test_shards as shared
+original_rule=shared.load_fixture_prerequisites;rule_calls=[]
+def observed_rule(root,path):
+ rule_calls.append(path);return original_rule(root,path)
+shared.load_fixture_prerequisites=observed_rule
 suite=loader.discover(str(root/'.agentic/tests'),top_level_dir=str(root/'.agentic/tests'))
+assert rule_calls==[p],('shared prerequisite rule bypassed',rule_calls)
 r=unittest.TextTestRunner().run(suite)
 completed=loader.executed if mode=='source' else loader.completed
 assert loader.discovered==completed==[p]
@@ -320,7 +333,9 @@ root=pathlib.Path(sys.argv[1]);source=pathlib.Path(sys.argv[2])
 assert str(source/'.agentic/lib') not in sys.path
 sys.path.insert(0,str(root/'.agentic/lib'))
 from agentic.self_test_shards import assert_isolation
-assert assert_isolation(root)=='PASS'
+try: assert_isolation(root)
+except ValueError as exc: assert 'PYTHONPATH' in str(exc)
+else: raise AssertionError('inherited PYTHONPATH was accepted')
 ''')
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 
@@ -402,8 +417,14 @@ r=unittest.TextTestRunner().run(suite);loader.reconcile();assert r.testsRun==1
         shutil.copytree(ROOT / '.agentic', self.root / '.agentic',
                         ignore=shutil.ignore_patterns('.venv', '__pycache__'))
         shutil.copyfile(ROOT / '.agentic/defaults/OPERATING_CONFIG.yaml', self.root / 'OPERATING_CONFIG.yaml')
+        import sysconfig
+        # Copy dependency bytes into the simulated installed runtime; loading
+        # them from the host source-test venv would now correctly be refused.
+        shutil.copytree(sysconfig.get_path('purelib'), self.root / '.agentic/.venv/Lib/site-packages',
+                        ignore=shutil.ignore_patterns('__pycache__'))
         done = self.child('''import pathlib,sys,unittest
 root=pathlib.Path(sys.argv[1]);sys.path[:0]=[str(root/'.agentic/lib'),str(root/'.agentic/tests')]
+sys.path.insert(0,str(root/'.agentic/.venv/Lib/site-packages'))
 from agentic.self_test_shards import InstalledLoader,assert_isolation
 assert_isolation(root)
 p='.agentic/tests/test_awf36_controller_automation.py'
