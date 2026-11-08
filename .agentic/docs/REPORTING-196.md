@@ -43,8 +43,7 @@ One controller owns snapshots/intents.
 Sources have 30 seconds via source_timeout(); expiry retains PARTIAL coverage,
 unavailable totals and separate delivery admission. Delivered batches rotate:
 one reobservation/cycle. Withdrawal corrects each delivery once;
-delivered corrections seed review-port restorations, preserving attempts and
-rechecking before POST.
+delivered corrections seed restorations.
 
 Destination threads admit alerts, hourly, EoD, then review: four advances,
 one historical reconciliation and 32 HTTP calls/platform per 30-second admission
@@ -108,7 +107,8 @@ PENDING/ABSENT retry through rotation/fresh gates; THROTTLED waits for cooldown.
 IN_FLIGHT/UNKNOWN reconcile without reposts. Missing gates, changed calendar or
 observation-budget refusal retain visible deferred evidence; restore evidence/calendar
 or present a newly verified tuple.
-Restoration readback proceeds after withdrawal/cutoff; sends require fresh gates.
+Restoration readback survives withdrawal/cutoff; sends atomically charge windows
+with fresh gates; exhaustion visibly defers until reopening.
 Landed restorations seed withdrawal corrections. Correction/restoration chains
 retain original channel roots separately from reply receipts across restarts.
 WITHDRAWN/EXHAUSTED and

@@ -83,7 +83,7 @@ Defaults: continuous 24/7 work; weekday reviews 07:00-17:00 Europe/London;
 daily EoD 17:00. Validate proposals; only merged/fetched calendars apply;
 malformed accepted calendars refuse.
 
-Reporting shares this route and defaults OFF; off/teams/slack/both require complete
+Reporting shares this route and defaults OFF; teams/slack/both require complete
 project/repository/scope/platform/destination/revision/secret_ref bindings. Validate
 offline; reachability remains UNOBSERVED. Re-admit before POST; prepare links/secrets
 outside transactions. Preserve suspension/receipts/withdrawal/corrections/two-send ceilings.

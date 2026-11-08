@@ -8,6 +8,7 @@ Uncertain sends remain claimed across restart until explicit reconciliation.
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
 from datetime import timedelta
 import re
 
@@ -40,6 +41,9 @@ _DDL = (
     """CREATE TABLE IF NOT EXISTS review_presentation_detail_v1(
         intent_id TEXT PRIMARY KEY, reason TEXT NOT NULL, changed_at TEXT NOT NULL,
         retry_at TEXT, window_attempts INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS review_restoration_charge_v1(
+        occurrence_id TEXT NOT NULL, opening TEXT NOT NULL, batch_id TEXT NOT NULL,
+        reserved_at TEXT NOT NULL, PRIMARY KEY(occurrence_id,opening))""",
 )
 
 
@@ -171,7 +175,47 @@ class ReviewBatchStore:
                 identity = member['intent_id']
                 counts[identity, opening] = counts.get((identity, opening), 0) + 1
                 totals[identity] = totals.get(identity, 0) + 1
+        for payload, opening in ReviewBatchStore._restoration_charges(db):
+            for member in payload['members']:
+                identity = member['intent_id']
+                counts[identity, opening] = counts.get((identity, opening), 0) + 1
+                # Intent attempts retain the original batch fence identity.
+                # Only original attempts offset unexplained legacy charges.
         return counts, totals
+
+    @staticmethod
+    def _restoration_charges(db):
+        # Read-only status must also support controller databases predating this table.
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='review_restoration_charge_v1'").fetchone():
+            return []
+        return [(ReviewBatchStore._payload(row), row['opening']) for row in db.execute(
+            'SELECT o.*,c.opening FROM review_restoration_charge_v1 c '
+            'JOIN review_presentation_outbox_v1 o USING(batch_id)')]
+
+    @staticmethod
+    def restoration_identity(db, report_id):
+        """One occurrence across destinations, stable when only one remains pending.
+
+        Each correction/restoration generation has its own allowance. Derive the
+        generation from retained ancestry, never the changing set of pending rows.
+        """
+        seen, generation = set(), 0
+        row = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (report_id,)).fetchone()
+        _require(row is not None, 'Reporting restoration requires a retained report')
+        report = loads(row[0])
+        payload, binding = report.get('review_batch'), report['binding']
+        while report.get('review_restoration'):
+            _require(report['report_id'] not in seen and report.get('review_batch') == payload
+                     and report['binding'] == binding, 'Reporting restoration ancestry changed')
+            seen.add(report['report_id'])
+            generation += 1
+            prior = report['review_restoration'].get('prior_report', 'review-' + payload['batch_id'])
+            row = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (prior,)).fetchone()
+            _require(row is not None, 'Reporting restoration ancestry is unavailable')
+            report = loads(row[0])
+        _require(generation > 0 and report.get('review_batch') == payload and report['binding'] == binding,
+                 'Reporting restoration requires the exact retained batch')
+        return fingerprint('review-restoration-occurrence-v1', [payload['batch_id'], binding, generation])
 
     @staticmethod
     def _window_count(row, opening, evidence):
@@ -730,20 +774,21 @@ class ReviewBatchStore:
                  "Review acknowledgement requires verified DELIVERED readback")
         return self.reconcile(receipt)
 
-    def check_delivery_window(self, batch_id, now, calendar, *, reporting=False, restoration=False):
+    def check_delivery_window(self, batch_id, now, calendar, *, reporting=False, restoration=False,
+                              restoration_report_id=None, restoration_window=None, _db=None):
         """Recheck the fenced charge against the window immediately before send.
 
         The current SENDING attempt is already included in retained evidence.
-        Reporting must prove its exact durable handoff; a restoration retains
-        the original charge and cannot borrow an allowance in another window.
-        A different opening cannot borrow its charge, including a return to an
-        exhausted opening. Only the live caller can cancel an uninvoked send.
+        Reporting must prove its exact durable handoff. Restorations need a new
+        current-window charge, committed with the reporting reservation. Only
+        the live caller can cancel an uninvoked send.
         """
         current = utc_instant(now)
         window = _window(now, calendar)
         eligible = next_review_presentation(now, calendar)
-        with self.controller.connection() as db:
-            db.execute('BEGIN')
+        with (nullcontext(_db) if _db is not None else self.controller.connection()) as db:
+            if _db is None:
+                db.execute('BEGIN')
             row = db.execute('SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (batch_id,)).fetchone()
             phase = db.execute('SELECT phase FROM review_presentation_phase_v1 WHERE batch_id=?', (batch_id,)).fetchone()
             states = {'REPORTING'} if reporting else {'CLAIMED'}
@@ -759,17 +804,61 @@ class ReviewBatchStore:
                                       ('review-' + batch_id,)).fetchone()
                 _require(retained is not None and loads(retained[0]).get('review_batch') == payload,
                          'Reporting handoff requires the exact retained batch')
+            is_restoration = reporting and restoration
             _require(current >= utc_instant(payload['prepared_at'])
                      and utc_instant(eligible['presentation_at']) == current
-                     and payload.get('presentation_window') == window,
+                     and (restoration_window == window if is_restoration
+                          else payload.get('presentation_window') == window),
                      'Post-fence review presentation window binding changed')
             evidence = self._attempt_windows(db, calendar)
+            charged = False
+            if is_restoration:
+                _require(restoration_report_id is not None, 'Reporting restoration identity is required')
+                occurrence = self.restoration_identity(db, restoration_report_id)
+                retained = loads(db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
+                    (restoration_report_id,)).fetchone()[0])
+                _require(retained.get('review_batch') == payload, 'Reporting restoration batch changed')
+                charged = db.execute('SELECT 1 FROM review_restoration_charge_v1 WHERE occurrence_id=? AND opening=?',
+                                     (occurrence, window['opening'])).fetchone() is not None
             for member in payload['members']:
                 intent = db.execute('SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?', (member['intent_id'],)).fetchone()
+                if is_restoration:
+                    _require(intent is not None and intent['state'] in intent_states
+                             and intent['attempts'] == member['attempt'],
+                             'Post-fence current review restoration charge changed')
+                    count = self._window_count(intent, window['opening'], evidence)
+                    if not (0 <= count < 2 or charged and count == 2):
+                        refusal = ValidationError('REPORT_REVIEW_WINDOW_EXHAUSTED')
+                        refusal.retry_at = window['next_opening']
+                        raise refusal
+                    continue
                 _require(intent is not None and intent['state'] in intent_states
                          and intent['attempts'] == member['attempt']
                          and 0 < self._window_count(intent, window['opening'], evidence) <= 2,
                          'Post-fence current review window allowance exhausted or charge changed')
+
+    def reserve_restoration(self, db, batch_id, report_id, now, calendar, window):
+        """Called inside the delivery reservation transaction, never before it.
+
+        A committed charge survives even a crash before transport entry. No
+        restart or provider failure establishes that a send was uninvoked.
+        """
+        self.check_delivery_window(batch_id, now, calendar, reporting=True, restoration=True,
+                                   restoration_report_id=report_id, restoration_window=window, _db=db)
+        occurrence = self.restoration_identity(db, report_id)
+        window = _window(now, calendar)
+        if db.execute('SELECT 1 FROM review_restoration_charge_v1 WHERE occurrence_id=? AND opening=?',
+                      (occurrence, window['opening'])).fetchone():
+            return
+        row = db.execute('SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (batch_id,)).fetchone()
+        db.execute('INSERT INTO review_restoration_charge_v1 VALUES(?,?,?,?)',
+                   (occurrence, window['opening'], batch_id, utc_text(now)))
+        evidence = self._attempt_windows(db, calendar)
+        for member in self._payload(row)['members']:
+            intent = db.execute('SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?', (member['intent_id'],)).fetchone()
+            self._detail(db, member['intent_id'], 'Restoration reserved; unresolved until terminal readback', now,
+                         attempts=self._window_count(intent, window['opening'], evidence), retry_at=window['next_opening'])
+        self._changed(db)
 
     def reconcile(self, receipt, calendar=None):
         """Persist verified readback; at most two attempts before next window.

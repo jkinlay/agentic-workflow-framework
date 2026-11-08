@@ -796,15 +796,18 @@ class ReviewReportingPort:
     def _id(self, payload):
         return 'review-' + payload['batch_id']
 
-    def _defer(self, report_id, reason):
+    def _defer(self, report_id, reason, *, retry_at=None):
         with self.store.transaction() as db:
             db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                 ('report-review-deferred:' + report_id, canonical(dict(
                     report_id=report_id, reason='REPORT_DESTINATION_BUDGET' if reason == 'REPORT_DESTINATION_BUDGET'
+                    else reason if reason == 'REPORT_REVIEW_WINDOW_EXHAUSTED'
                     else 'REPORT_REVIEW_CHECK_REFUSED', observed_at=self.clock(),
+                    retry_at=retry_at,
                     owner_action='Inspect review observation latency, gate and calendar; newer presentations remain independent')).decode()))
 
-    def _check(self, payload, calendar, observe_candidate, *, budget=None, restoration=False):
+    def _check(self, payload, calendar, observe_candidate, *, budget=None, restoration=False,
+               restoration_report_id=None, restoration_window=None):
         from ..review_batching import ReviewBatchStore
         require(all(str(m['candidate']['repository_id']) == self.binding['repository'] for m in payload['members']),
                 'REPORT_SCOPE_BINDING_MISMATCH')
@@ -835,7 +838,9 @@ class ReviewReportingPort:
                     all(timestamp(v['expires_at']) > timestamp(send_at) for v in checked.values()),
                     'REPORT_REVIEW_CHECK_EXPIRED')
             ReviewBatchStore(self.store).check_delivery_window(payload['batch_id'], send_at, calendar,
-                reporting=True, restoration=restoration)
+                reporting=True, restoration=restoration, restoration_report_id=restoration_report_id,
+                restoration_window=restoration_window)
+            return calendar
 
     def _retain_review_batch(self, payload, *, budget=None):
         """Retain the exact reporting handoff without provider side effects."""
@@ -957,7 +962,8 @@ class ReviewReportingPort:
         payloads = pending.pending_batches(batch_ids=batch_ids)
         restoration_groups = {}
         for report in restorations:
-            key = fingerprint('report-review-restoration-work', report['review_batch'])
+            with self.store.connection() as db:
+                key = pending.restoration_identity(db, report['report_id'])
             restoration_groups.setdefault(key, []).append(report)
         work = sorted([(key, 'restoration', group) for key, group in restoration_groups.items()] +
                       [(self._id(p), 'batch', p) for p in payloads])
@@ -972,21 +978,45 @@ class ReviewReportingPort:
         restorations = [report for _, kind, group in selected if kind == 'restoration' for report in group]
         payloads = [v for _, kind, v in selected if kind == 'batch']
         if restorations:
+            from ..review_batching import _window
             report_ids = {r['report_id'] for r in restorations}
             payload = restorations[0]['review_batch']
+            # A later controller turn can admit the next opening. Crossing it
+            # during this turn's provider verification must still refuse.
+            admission_window = _window(self.clock(), calendar)
+            def defer(exc, accepted_calendar):
+                from ..review_batching import _window
+                retry = (getattr(exc, 'retry_at', _window(self.clock(), accepted_calendar)['next_opening'])
+                         if str(exc) == 'REPORT_REVIEW_WINDOW_EXHAUSTED' else None)
+                for report_id in report_ids:
+                    self._defer(report_id, str(exc), retry_at=retry)
             def before_send():
                 try:
-                    self._check(payload, calendar, observe_candidate, budget=budget, restoration=True)
+                    accepted_calendar = self._check(payload, calendar, observe_candidate, budget=budget,
+                        restoration=True, restoration_report_id=restorations[0]['report_id'],
+                        restoration_window=admission_window)
                 except ValidationError as exc:
-                    for report_id in report_ids:
-                        self._defer(report_id, str(exc))
+                    defer(exc, calendar)
                     raise
+                def reserve(db, intent):
+                    try:
+                        pending.reserve_restoration(db, payload['batch_id'], intent['report_id'],
+                                                    self.clock(), accepted_calendar, admission_window)
+                    except ValidationError as exc:
+                        # The delivery transaction rolls back; retain the refusal
+                        # after it releases the writer lock (see below).
+                        refusals.append((exc, accepted_calendar))
+                        raise
+                return reserve
             # The outbox invokes this guard only at reservation/POST. UNKNOWN
             # readback needs neither readiness nor an open presentation window.
             # Submit the whole occurrence to the ordinary concurrent drain;
             # per-report drains would serialize its destination-specific rows.
+            refusals = []
             drain(self.store, self.operating, self.binding, self.providers,
                   report_ids=report_ids, budget=budget, before_send=before_send)
+            for exc, accepted_calendar in refusals:
+                defer(exc, accepted_calendar)
 
         for payload in payloads:
             report_id = self._id(payload)

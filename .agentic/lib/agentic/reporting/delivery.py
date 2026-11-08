@@ -302,12 +302,15 @@ class DeliveryOutbox:
             def reserve():
                 nonlocal reserved, fence, attempts
                 require(not reserved, 'REPORT_SEND_ALREADY_STARTED')
-                if before_send is not None:
-                    before_send()
+                reservation = before_send() if before_send is not None else None
                 with send_guard(), self.controller.transaction() as db:
                     delivery_timeout()
                     _, current = self._load(db, delivery_id)
                     require(current == state, 'REPORT_SEND_STATE_CHANGED')
+                    # A review guard may return a local persistence continuation.
+                    # Its window charge and delivery fence commit or roll back together.
+                    if callable(reservation):
+                        reservation(db, intent)
                     current['attempts'].append(attempt_id)
                     current['history'].append(dict(kind='ATTEMPT_RESERVED', attempt_id=attempt_id))
                     current.pop('retry_not_before', None)
