@@ -23,12 +23,13 @@ from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
 from .lane_labels import MAX_LANES, STREAM_LABELS
-from .canonical import canonical, fingerprint, loads, now_text, sha256, timestamp
+from .canonical import canonical, fingerprint, loads as _canonical_loads, now_text, sha256, timestamp
 from .canonical import load_yaml as load_governance_yaml
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 from .budgeting import resolve_settings
 from .protected_settings import audit_matches, unprotected_hash, load_operating_yaml as load_yaml
+from .operating_calendar import effective_calendar, SETTING_PATHS
 
 CONFIG = "OPERATING_CONFIG.yaml"
 GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
@@ -43,6 +44,14 @@ MAX_BYTES = 1024 * 1024
 SCHEMAS = Path(__file__).resolve().parents[2] / "schemas"
 SOURCE_MANIFEST = "MANIFEST.json"
 SOURCE_MARKER = "scripts/build_release.py"
+
+
+def loads(text):
+    """Operating JSON diagnostics must not carry parser-selected input keys."""
+    try:
+        return _canonical_loads(text)
+    except (ValidationError, ValueError, UnicodeError):
+        raise ValidationError('Invalid operating JSON: <key>; malformed or unsupported values') from None
 
 
 def stream_labels(count):
@@ -104,18 +113,25 @@ def is_awf_source_repository(read):
 class OperatingError(ValidationError):
     def __init__(self, refusals):
         self.refusals = refusals
-        super().__init__("; ".join(item["path"] + ": " + item["reason"] for item in refusals))
+        super().__init__(CONFIG + ": " + "; ".join(item["path"] + ": " + item["reason"] for item in refusals))
 
 
 def refusal(path, reason, governance_path=None, governance_value=None):
-    return {"path": path, "reason": reason, "governance_path": governance_path,
+    return {"file": CONFIG, "path": path, "reason": reason, "governance_path": governance_path,
             "governance_value": governance_value,
             "remedy": ("Change the binding governance value through a reviewed PR to " + GOVERNANCE
                        if governance_path else "Correct the named operating input; preserve recovery evidence when present")}
 
 
 def fail(path, reason, governance_path=None, governance_value=None):
-    raise OperatingError([refusal(path, reason, governance_path, governance_value)])
+    raise OperatingError([refusal(_input_path(path), reason, governance_path, governance_value)])
+
+
+def _input_path(path):
+    """Display field names, never identities selected by input mapping keys."""
+    path = re.sub(r'(\.epic_overrides\.)[^.]+', r'\1<epic>', path)
+    path = re.sub(r'(\.epics\.)[^.]+', r'\1<epic>', path)
+    return re.sub(r'(\.streams\.)(?!count(?:\.|$))[^.]+', r'\1<stream>', path)
 
 
 def _pair(model, effort):
@@ -144,6 +160,7 @@ def default_operating(policy=None, *, count=3):
     defaults = policy["role_defaults"]
     stream = _stream(policy)
     return {"version": 1, "source": "default", "budgeting": fresh_settings(),
+            "operating_calendar": effective_calendar({}),
             "streams": {"count": count,
                         **{label: deepcopy(stream) for label in stream_labels(count)}},
             "critic": deepcopy(defaults["critic"]),
@@ -174,6 +191,7 @@ def _upgrade_safe_operating(governance):
                for role in ("controller", "worker", "critic", "specialist")) or not isinstance(simple, dict):
         legacy = default_operating()
         legacy.pop('budgeting')
+        legacy.pop('operating_calendar')
         return legacy
     stream = {"worker": dict(defaults["worker"])}
     return {"version": 1, "source": "default",
@@ -249,7 +267,34 @@ def _schema(name, value, *, stream_ceiling=MAX_LANES):
             "^(?:" + "|".join(re.escape(label) for label in labels) + ")$": scoped_route
         }
     errors = sorted(Draft202012Validator(schema, format_checker=checker()).iter_errors(value), key=lambda e: str(list(e.absolute_path)))
-    return [refusal("$" + "".join("." + str(p) for p in e.absolute_path), e.message) for e in errors[:30]]
+    def safe_path(parts):
+        # Only literal schema properties are displayable. Pattern-matched map
+        # identities are input too, even when their spelling is syntactically valid.
+        node, path = schema, "$"
+        for part in parts:
+            if isinstance(part, int):
+                path += "[item]"
+                node = node.get("items", {})
+            elif part in node.get("properties", {}):
+                path += "." + part
+                node = node["properties"][part]
+            else:
+                matches = [child for pattern, child in node.get("patternProperties", {}).items()
+                           if re.search(pattern, str(part))]
+                if not matches:
+                    break
+                path += "[entry]"
+                node = matches[0]
+        return path
+
+    kinds = {"type": "wrong type", "additionalProperties": "Forbidden unknown key",
+             "unevaluatedProperties": "Forbidden unknown key", "propertyNames": "unknown key",
+             "required": "required field missing", "minimum": "out of range", "maximum": "out of range",
+             "minLength": "out of range", "maxLength": "out of range", "minItems": "out of range",
+             "maxItems": "out of range", "minProperties": "out of range", "maxProperties": "out of range"}
+    return [refusal(safe_path(e.absolute_path),
+                    "wrong type" if e.validator == 'const' and type(e.instance) is not type(e.validator_value)
+                    else kinds.get(e.validator, "not allowed")) for e in errors[:30]]
 
 
 @dataclass(frozen=True)
@@ -277,15 +322,23 @@ class OperatingSnapshot:
         return self.config["source"]
 
 
+def _calendar_problem_path(value):
+    from .operating_calendar import _zone
+    try:
+        _zone(value.get('timezone', 'Europe/London'))
+    except ValidationError:
+        return '$.operating_calendar.timezone'
+    return '$.operating_calendar.review_batching.presentation_time'
+
+
 def validate_operating(value, governance):
     """Validate choices against both allowlists/floors; never silently clamp."""
-    canonical(value)
-    if isinstance(value, dict) and 'budgeting' in value:
-        from .budgeting import validate_settings
-        try:
-            validate_settings(value['budgeting'])
-        except ValidationError as exc:
-            fail('$.budgeting', str(exc))
+    try:
+        canonical(value)
+    except ValidationError as exc:
+        reason = ('out of range: integer exceeds interoperable JSON range'
+                  if str(exc) == 'Integer exceeds interoperable JSON range' else 'wrong type or out of range')
+        raise OperatingError([refusal('$', reason)]) from None
     execution = governance.get("execution") if isinstance(governance, dict) else None
     if not isinstance(execution, dict) or not isinstance(execution.get("model_routing"), dict):
         fail("$", "A complete governing execution/model_routing policy is required", "$.execution", execution)
@@ -293,6 +346,25 @@ def validate_operating(value, governance):
     ceiling = capacity["effective_ceiling"]
     structural_ceiling = configured_lane_ceiling(governance)
     errors = _schema("operating-config", value, stream_ceiling=structural_ceiling)
+    # Structural refusals precede semantic consumers so malformed routes cannot
+    # become dictionary lookups, identifiers or diagnostic interpolation.
+    if not isinstance(value, dict) or not isinstance(value.get('streams'), dict):
+        raise OperatingError(errors)
+    if any(error['path'].startswith(('$.budgeting', '$.operating_calendar')) for error in errors):
+        raise OperatingError(errors)
+    if isinstance(value, dict):
+        if 'operating_calendar' in value:
+            try:
+                effective_calendar(value)
+            except ValidationError:
+                fail(_calendar_problem_path(value['operating_calendar']), "not allowed")
+        if 'budgeting' in value:
+            from .budgeting import validate_settings
+            try:
+                validate_settings(value['budgeting'])
+            except ValidationError:
+                fail('$.budgeting', 'not allowed: enforcement requires accounting')
+
     configured_policy = execution["model_routing"]
     from .model_routing import EFFORTS
     try:
@@ -304,7 +376,7 @@ def validate_operating(value, governance):
         raise OperatingError(errors or [refusal("$.streams", "Streams must be an object")])
     count = streams.get("count")
     if type(count) is int and (count > ceiling or count < 1):
-        errors.append(refusal("$.streams.count", "Stream count must be 1.." + str(ceiling) + " within the effective governance ceiling; binding limits: "
+        errors.append(refusal("$.streams.count", "out of range: Stream count must be 1.." + str(ceiling) + " within the effective governance ceiling; binding limits: "
                               + ", ".join(capacity["effective_ceiling_sources"]), capacity["effective_ceiling_governance_path"], ceiling))
     reviewers = execution.get("independent_reviewers", {})
     if not isinstance(reviewers, dict) or not isinstance(execution.get("roles"), dict):
@@ -324,45 +396,48 @@ def validate_operating(value, governance):
     if isinstance(value, dict):
         pairs.append(("$.simple_worker", "worker", value.get("simple_worker")))
     if isinstance(streams, dict):
-        for label, entry in streams.items():
-            if label == "count" or not re.fullmatch(r"[A-Z]+", label):
-                continue
+        # These labels are literal schema fields, not input-selected identities.
+        for label in stream_labels(structural_ceiling):
+            entry = streams.get(label)
             if isinstance(entry, dict):
                 pairs.extend(("$.streams." + label + "." + key, role, entry.get(key))
                              for key, role in (("worker", "worker"), ("reviewer", "critic")))
     overrides = value.get("epic_overrides", {}) if isinstance(value, dict) else {}
     if isinstance(overrides, dict):
         for epic_id, scoped in overrides.items():
-            if not isinstance(scoped, dict):
+            if not re.fullmatch(EPIC_ID, epic_id) or len(epic_id) > 80 or not isinstance(scoped, dict):
                 continue
-            prefix = "$.epic_overrides." + epic_id
+            prefix = "$.epic_overrides.<epic>"
             pairs.extend((prefix + "." + role, role, scoped[role]) for role in ("controller", "critic", "specialist") if role in scoped)
             scoped_streams = scoped.get("streams", {})
             if isinstance(scoped_streams, dict):
                 for label, entry in scoped_streams.items():
-                    if isinstance(entry, dict):
-                        pairs.extend((prefix + ".streams." + label + "." + key, role, entry[key])
+                    if label in stream_labels(structural_ceiling) and isinstance(entry, dict):
+                        pairs.extend((prefix + ".streams.<stream>." + key, role, entry[key])
                                      for key, role in (("worker", "worker"), ("reviewer", "critic")) if key in entry)
     order = policy["model_order"]
     for path, role, pair in pairs:
         if not isinstance(pair, dict):
             continue
         model, effort = pair.get("model"), pair.get("reasoning_effort")
+        if not isinstance(model, str) or not isinstance(effort, str):
+            continue  # The schema already retained this missing/wrong-type refusal.
         if not isinstance(execution["roles"].get(role), dict):
             errors.append(refusal(path, "Role governance must declare its approved model IDs", "$.execution.roles." + role, execution["roles"].get(role)))
             continue
         for binding, allowed in (("$.execution.model_routing.role_allowed_models." + role, policy["role_allowed_models"].get(role, [])),
                                  ("$.execution.roles." + role + ".approved_model_ids", (execution["roles"].get(role) or {}).get("approved_model_ids", []))):
             if model not in allowed:
-                errors.append(refusal(path + ".model", "Model is outside the governing role allowlist", binding, allowed))
+                errors.append(refusal(path + ".model", "not allowed: Model is outside the governing role allowlist", binding, allowed))
         choices = policy["models"].get(model, {}).get("reasoning_efforts", []) if isinstance(model, str) else []
         if effort not in choices:
-            errors.append(refusal(path + ".reasoning_effort", "Unsupported model/effort pair",
-                                  "$.execution.model_routing.models." + str(model) + ".reasoning_efforts", choices))
+            errors.append(refusal(path + ".reasoning_effort", "not allowed: Unsupported model/effort pair",
+                                  ("$.execution.model_routing.models." + next(key for key in policy['models'] if key == model)
+                                   + ".reasoning_efforts") if model in policy['models'] else "$.execution.model_routing.models", choices))
         floor = policy["review_floor"]
         if role in {"critic", "specialist"} and model in order and effort in EFFORTS and (
                 order.index(model) < order.index(floor["model"]) or EFFORTS.index(effort) < EFFORTS.index(floor["reasoning_effort"])):
-            errors.append(refusal(path, "Reviewer route is below the review floor", "$.execution.model_routing.review_floor", floor))
+            errors.append(refusal(path, "not allowed: Reviewer route is below the review floor", "$.execution.model_routing.review_floor", floor))
     if errors:
         # Prefer the binding governance explanation to a duplicate structural cap error.
         bound = {e["path"] for e in errors if e["governance_path"]}
@@ -469,8 +544,7 @@ def _events(tree, *, additional_bytes=0):
         if (previous and event["before_hash"] != previous["after_hash"]
                 and not (previous.get("unprotected_after_hash") is not None
                          and event.get("unprotected_before_hash") == previous["unprotected_after_hash"])
-                and not (previous.get("unprotected_after_hash") is None
-                         and isinstance(event.get("legacy_before_configuration"), dict)
+                and not (isinstance(event.get("legacy_before_configuration"), dict)
                          and fingerprint("operating", event["legacy_before_configuration"]) == event["before_hash"]
                          and unprotected_hash(event["legacy_before_configuration"]) == event.get("unprotected_before_hash")
                          and audit_matches(event["legacy_before_configuration"], previous))):
@@ -627,7 +701,7 @@ def _prepare_commit(tree, governance, before, value, instruction, changed, appli
              "previous_change_id": events[-1]["id"] if events else None, "governance_hash": after.governance_hash}
     event['unprotected_before_hash'] = unprotected_hash(load_yaml(before)) if before is not None else None
     event['unprotected_after_hash'] = unprotected_hash(value)
-    if events and events[-1].get('unprotected_after_hash') is None and before_hash != events[-1]['after_hash']:
+    if events and events[-1].get('unprotected_after_hash') != unprotected_hash(load_yaml(before)) and before_hash != events[-1]['after_hash']:
         # Preserve authentic old records. Bind the exact pre-change configuration
         # so readers can independently verify the legacy/fresh projection bridge.
         event['legacy_before_configuration'] = load_yaml(before)
@@ -765,7 +839,7 @@ def recover_operating(project_root, governance, expected_journal_sha256):
         prior_value = load_yaml(before) if before is not None else {}
         after_value = load_yaml(after)
         if any(prior_value.get(name, defaults()) != after_value.get(name, defaults())
-               for name, defaults in PROTECTED_DOMAINS):
+               for name, defaults, _normalize in PROTECTED_DOMAINS):
             fail('$', 'Protected settings require a PR; local recovery cannot change them')
         current = _read(tree, CONFIG)
         if current not in (before, after):
@@ -788,6 +862,10 @@ def recover_operating(project_root, governance, expected_journal_sha256):
 
 
 def _path(path, epic_id=None):
+    if path.startswith('operating_calendar.') and path[19:] in SETTING_PATHS:
+        if epic_id is not None:
+            fail('$.operating_calendar', 'Calendar settings are project-wide')
+        return path
     from .budgeting import SETTINGS_KEYS
     if path.startswith('budgeting.') and path[10:] in SETTINGS_KEYS:
         if epic_id is not None:
@@ -796,13 +874,16 @@ def _path(path, epic_id=None):
     qualified = re.fullmatch(r"epic_overrides\.([^.]+)\.(.+)", path)
     if qualified:
         if epic_id is not None:
-            fail("$." + path, "Use either a fully qualified Epic path or --epic, never both")
+            fail("$.epic_overrides", "not allowed: Use either a fully qualified Epic path or --epic, never both")
         return _path(qualified[2], qualified[1])
     if re.fullmatch(r"[A-Z]+\.(worker|reviewer)(\.pinned)?", path):
         path = "streams." + path
     if path not in {"streams.count", "controller", "critic", "specialist", "simple_worker", "simple_worker.enabled",
                     "controller.pinned", "critic.pinned", "specialist.pinned", "simple_worker.pinned"} and not re.fullmatch(r"streams\.[A-Z]+\.(worker|reviewer)(\.pinned)?", path):
-        fail("$." + path, "Unsupported operating path; use --epic with a stream/role route for an explicit Epic scope")
+        fail("$", "unknown key: Unsupported operating path; use --epic with a stream/role route for an explicit Epic scope")
+    label = re.match(r"streams\.([A-Z]+)\.", path)
+    if label and label[1] not in STREAM_LABELS:
+        fail('$.streams', 'unknown key: unsupported stream field')
     if epic_id is not None:
         if not isinstance(epic_id, str) or len(epic_id) > 80 or not re.fullmatch(EPIC_ID, epic_id):
             fail("$.epic", "Supply the exact observed Epic ID (for example PROJ-123); scope is never inferred")
@@ -829,6 +910,17 @@ def _put(value, path, selected):
 
 
 def _selection(path, text):
+    if path.startswith('operating_calendar.'):
+        if path.endswith('.enabled'):
+            if text not in {'true', 'false'}:
+                fail('$.' + path, 'Expected true or false')
+            return text == 'true'
+        if path.endswith('.weekdays'):
+            try:
+                return loads(text)
+            except ValueError:
+                fail('$.' + path, 'Expected a JSON list of ISO weekdays')
+        return text
     if path.startswith('budgeting.'):
         if path.endswith('_enabled'):
             if text not in {'true', 'false'}:
@@ -971,8 +1063,8 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
-        if budget_changes:
-            fail('$.budgeting', 'Protected settings require a PR: open a PR changing only the requested OPERATING_CONFIG.yaml values; the owner merges, then fetch the default branch. The live file was not changed')
+        if any(p.startswith(('budgeting.', 'operating_calendar.')) for p in selected):
+            fail('$', 'Protected settings require a PR: open a PR changing only the requested OPERATING_CONFIG.yaml values; the owner merges, then fetch the default branch. The live file was not changed')
         # Complete all refusal checks before creating the lock/state directory.
         from .protected_settings import resolve_protected, require_mutation_policy
         effective, _report = resolve_protected(tree.root, governance, value)
@@ -991,8 +1083,7 @@ def _scope(paths, epic_id):
     for path in paths:
         cleaned = path[:-3] if path.endswith("/**") else path[:-2] if path.endswith("/*") else path.removesuffix("/")
         if any(mark in cleaned for mark in "*?[]{}"):
-            fail("$.epics." + epic_id + ".scope", "Epic " + epic_id + " scope value " + repr(path)
-                 + " has unsupported glob syntax; use a bounded path prefix or a trailing /* or /**")
+            fail("$.epics.<epic>.scope", "Epic scope has unsupported glob syntax; use a bounded path prefix or a trailing /* or /**")
         try:
             relative_parts(cleaned)
             result.append(cleaned)
@@ -1098,8 +1189,11 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
         inventory_epics = {}
         if inventory_raw is not None:
             from .streams import recommendation_groups
-            planned = recommendation_groups(inventory_raw, sha256(inventory_raw), created,
-                                            execution=governance["execution"], allow_synthetic=True)
+            try:
+                planned = recommendation_groups(inventory_raw, sha256(inventory_raw), created,
+                                                execution=governance["execution"], allow_synthetic=True)
+            except ValidationError:
+                fail('$.inventory', 'not allowed: Invalid recommendation inventory <key>')
             inventory_value = loads(inventory_raw.decode("utf-8"))
             if inventory_value["project"]["repository"] != governance.get("github", {}).get("repository"):
                 fail("$.inventory.project.repository", "Inventory repository differs from the governing project")
@@ -1223,7 +1317,8 @@ def _load_recommendation(tree, identifier, snapshot, governance):
         raise OperatingError(errors)
     if record["operating_hash"] != snapshot.operating_hash or record["governance_hash"] != snapshot.governance_hash:
         fail("$.recommendation", "Recommendation is stale: operating/governance changed; request a new recommendation")
-    for key, path in record["input_files"].items():
+    for key in ("epics", "inventory"):
+        path = record["input_files"][key]
         if path:
             with Tree(Path(path).parent) as input_tree:
                 raw = input_tree.read(Path(path).name, maximum=MAX_BYTES)
@@ -1280,6 +1375,7 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
                   'Enforcement: ' + ('ON' if budget['enforcement_enabled'] else 'OFF'),
                   f"Token limit per ticket: {format(budget['max_tokens_per_ticket'], ',') if budget['max_tokens_per_ticket'] is not None else 'legacy reviewed limit'}",
                   f"Token limit per project lifetime: {format(budget['max_tokens_per_project'], ',') if budget['max_tokens_per_project'] is not None else 'legacy reviewed limit'}"])
+    lines.append("Operating calendar (effective settings): " + json.dumps(effective_calendar(value), sort_keys=True))
     return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
 
 
@@ -1372,6 +1468,7 @@ def main(argv=None, default_root=None):
                   "governance_hash": snapshot.governance_hash, "source": snapshot.source, "streams": snapshot.count,
                   **operating_ceiling(governance),
                   "last_change_id": snapshot.last_change_id, "configuration": snapshot.config,
+                  "effective_operating_calendar": effective_calendar(snapshot.config),
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
         from .protected_settings import repository_rules_warning
         protected = snapshot.provenance.get('protected_settings', {})
@@ -1381,6 +1478,8 @@ def main(argv=None, default_root=None):
         result['table'] += '\nProtected settings: ' + str(protected.get('source', 'unobserved'))
         if protected.get('commit'):
             result['table'] += ' at ' + protected['commit']
+        for domain, source in protected.get('sources', {}).items():
+            result['table'] += '\n' + domain + ': ' + source
         for field in ('policy_observation', 'branch_observation', 'visibility'):
             if protected.get(field):
                 result['table'] += '\n' + protected[field]
@@ -1410,5 +1509,7 @@ def main(argv=None, default_root=None):
                       "execution_authority": False,
                       "next_action": "Correct the named input or reconcile the pinned operating transaction; governance changes require a reviewed PR"}
         output['file'] = args.file.name if args.command == 'validate' else CONFIG
+        for item in output.get('refusals', []):
+            item['file'] = output['file']
         print(json_text(output))
         return 2

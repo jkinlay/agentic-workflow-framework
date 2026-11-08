@@ -22,6 +22,11 @@ def _require(condition, reason):
         raise ValidationError(reason)
 
 
+def report_diagnostic(exc):
+    # A failed mapping lookup can carry an input-selected ticket/stream key.
+    return '<key>: required entry missing' if isinstance(exc, KeyError) else str(exc)
+
+
 def _shape(value, keys):
     _require(isinstance(value, dict) and set(value) == set(keys.split()),
              'Invalid closed report record: ' + keys)
@@ -88,7 +93,7 @@ def loads_report(data):
     def pairs(items):
         result = {}
         for key, value in items:
-            _require(key not in result, 'Duplicate mapping key: ' + key)
+            _require(key not in result, 'Duplicate mapping key: <key>')
             result[key] = value
         return result
 
@@ -106,7 +111,7 @@ def loads_report(data):
         validate_report_value(value)
         return value
     except (UnicodeError, ValueError, RecursionError) as exc:
-        raise ValidationError(f'Invalid report JSON: {exc}') from exc
+        raise ValidationError('Invalid report JSON: malformed or unsupported values') from None
 
 
 def canonical_report(value):
@@ -467,7 +472,7 @@ def _eta(value):
         _require(graph50 == graph80, 'Scenario graph mismatch')
         _require(p80 >= p50, 'Scenario quantile order')
     except (ValidationError, KeyError, TypeError) as exc:
-        return _unknown('INVALID_ETA_GRAPH: ' + str(exc))
+        return _unknown('INVALID_ETA_GRAPH: ' + report_diagnostic(exc))
     return dict(status='KNOWN', p50_minutes=p50, p80_minutes=p80, basis=deepcopy(value),
                 confidence={'quantiles': [0.5, 0.8], 'source': 'supplied_integer_scenarios'},
                 forecast=_forecast(anchor, p50, p80))

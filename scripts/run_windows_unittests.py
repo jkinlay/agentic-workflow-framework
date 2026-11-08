@@ -94,8 +94,6 @@ HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_awf238_owner_boundary.py': 8,
     '.agentic/tests/test_awf238_pre_f3.py': 2,
     '.agentic/tests/test_awf238_second_look.py': 6,
-    '.agentic/tests/test_awf244_boundary.py': 8,
-    '.agentic/tests/test_awf244_owner_admission.py': 1,
     '.agentic/tests/test_awf244_window_regressions.py': 8,
     '.agentic/tests/test_reporting_boundary.py': 2,
     '.agentic/tests/test_reporting_e10_regressions.py': 3,

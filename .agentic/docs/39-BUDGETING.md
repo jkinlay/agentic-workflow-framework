@@ -8,7 +8,7 @@ Missing fields preserve legacy budgeting/reviewed limits.
 ## Settings in chat and PRs
 
 In AWF Codex chat, read-only `workflow.py operating show` needs no approval.
-Present both switches/limits, source/commit and working differences; last PR/merger
+Present switches/limits, source/commit, differences; last PR/merger
 is optional and may be unobserved.
 
 Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
@@ -20,7 +20,8 @@ Branch from the fetched default, change requested values preserving text/comment
 and show before/after under existing publication authority. Restricted pushes
 prepare branch/body for owner publication. The owner merges; agents never merge.
 No owner terminal commands. Git/PR history audits protected changes;
-protected `operating set` refuses without writes. Unprotected flow stays unchanged.
+protected `operating set` refuses without writes. Calendar uses the same PR route,
+effective source and validation; see [calendar](operating-calendar.md).
 
 Effective protected settings come from the locally fetched default-branch commit.
 Only `refs/remotes/origin/HEAD` identifies it. Configuration is never an identity
@@ -32,8 +33,7 @@ mean update the checkout when behind, otherwise propose a PR.
 
 An absent file means no accepted policy: fresh OFF or legacy
 retained. With configured origin but no origin/HEAD, the default is unverified.
-Show, validate-config and installation succeed with that warning; displayed working
-values are provisional. Admission tries refresh first. If still unverified,
+Show/validation/installation retain the warning; working values are provisional. Admission tries refresh first. If still unverified,
 tracking refs or nondefault working values refuse budget work even if enforcement
 says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
 before planning/dispatch on that refusal; other commands remain available.
