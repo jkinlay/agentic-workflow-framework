@@ -114,6 +114,9 @@ class ProbeOutputTests(unittest.TestCase):
         value = {'snapshots': [{'stage': 'before_discovery', 'root_counts': {
             'installed_lib': 4, 'installed_tests': 2, 'installed_site_packages': 5,
             'stdlib': 30, 'entry_point': 1, 'originless': 8, 'outside_roots': 2},
+            'root_boundary_checks': [{'root': '.agentic/.venv/Lib/site-packages',
+                                      'resolved': '/fixture/vendor/site-packages',
+                                      'boundary': '/fixture/.agentic/.venv', 'status': 'REFUSED'}],
             'refused': [{'module': 'source_tool', 'file': '/fixture/source.py', 'reason': 'outside allowed roots'},
                         {'module': 'source_spec', 'file': None, 'spec_origin': '/fixture/spec.py',
                          'reason': 'spec origin outside allowed roots'}]}]}
@@ -130,7 +133,8 @@ class ProbeOutputTests(unittest.TestCase):
         text = out.getvalue()
         for expected in ('installed_lib', 'installed_tests', 'installed_site_packages', 'stdlib',
                          'entry_point', 'originless', 'outside_roots', 'source_tool', 'source_spec',
-                         '/fixture/source.py', '/fixture/spec.py'):
+                         '/fixture/source.py', '/fixture/spec.py', 'ORIGIN_ROOT_BOUNDARIES',
+                         '/fixture/vendor/site-packages', '/fixture/.agentic/.venv', 'REFUSED'):
             self.assertIn(expected, text)
 
 

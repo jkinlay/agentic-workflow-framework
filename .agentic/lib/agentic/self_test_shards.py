@@ -41,6 +41,20 @@ def load_fixture_prerequisites(root, selected_path):
             raise ValueError('fixture prerequisite origin mismatch: ' + name)
 
 
+def isolation_root_boundaries(root):
+    """Resolve installed roots against their own boundaries before discovery."""
+    root = Path(root).resolve()
+    library, tests, runtime = (root / '.agentic' / name for name in ('lib', 'tests', '.venv'))
+    version = f'python{sys.version_info.major}.{sys.version_info.minor}'
+    pairs = [(library, library), (tests, tests)]
+    pairs.extend((runtime / path, runtime.resolve()) for path in
+                 ('Lib/site-packages', f'lib/{version}/site-packages', f'lib64/{version}/site-packages'))
+    return [dict(root=path.relative_to(root).as_posix(), resolved=str(path.resolve()),
+                 boundary=str(boundary),
+                 status='PASS' if path.resolve().is_relative_to(boundary) else 'REFUSED')
+            for path, boundary in pairs]
+
+
 def isolation_inventory(root):
     """Classify both file and spec origins with one policy for guards/probes."""
     root = Path(root).resolve()
@@ -48,7 +62,9 @@ def isolation_inventory(root):
     tests = root / '.agentic/tests'
     runtime = root / '.agentic/.venv'
     entry_point = root / '.agentic/scripts/self_test.py'
-    helper_names = {p.stem for p in tests.rglob('*.py')}
+    boundary_checks = isolation_root_boundaries(root)
+    invalid_roots = {row['resolved'] for row in boundary_checks if row['status'] != 'PASS'}
+    helper_names = {p.stem for p in tests.rglob('*.py')} if not invalid_roots else set()
     version = f'python{sys.version_info.major}.{sys.version_info.minor}'
     sites = (runtime / 'Lib/site-packages', runtime / 'lib' / version / 'site-packages',
              runtime / 'lib64' / version / 'site-packages')
@@ -69,7 +85,8 @@ def isolation_inventory(root):
             return 'entry_point', str(entry_point)
         for label in ('installed_lib', 'installed_tests', 'installed_site_packages'):
             for resolved in resolved_roots[label]:
-                if resolved.is_relative_to(root) and path.is_relative_to(resolved):
+                if (str(resolved) not in invalid_roots and resolved.is_relative_to(root)
+                        and path.is_relative_to(resolved)):
                     return label, str(resolved)
         # A base interpreter's third-party packages are not its standard library.
         if any(part.casefold() in {'site-packages', 'dist-packages'} for part in path.parts):
@@ -137,6 +154,7 @@ def isolation_inventory(root):
             path_counts[matched_root] += 1
         loaded.append(record)
     return {'root_counts': root_counts, 'path_counts': path_counts,
+            'root_boundary_checks': boundary_checks,
             'allowed_roots': {key: [str(p) for p in paths] for key, paths in resolved_roots.items()},
             'loaded_modules': loaded, 'outside_roots': refused}
 
@@ -153,6 +171,10 @@ def assert_isolation(root):
     if path_env:
         raise ValueError('Python path environment is set: ' + ', '.join(path_env))
     root = Path(root).resolve()
+    for check in isolation_root_boundaries(root):
+        if check['status'] != 'PASS':
+            boundary = Path(check['boundary']).relative_to(root).as_posix()
+            raise ValueError('root boundary refused: ' + check['root'] + ' outside ' + boundary)
     library = root / '.agentic/lib'
     import agentic
     if not getattr(agentic, '__file__', None) or not Path(agentic.__file__).resolve().is_relative_to(library):

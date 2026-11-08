@@ -347,13 +347,22 @@ class OriginProbeTests(unittest.TestCase):
             selection = Path(raw) / 'selection.json'
             arguments = ['--project', str(project), '--output', str(output), '--selection-file', str(selection),
                          '--expected-selection-sha256', 'a' * 64]
-            with mock.patch.dict(os.environ, {'PYTHONPATH': 'source-fixture', 'PYTHONHOME': 'source-fixture'}), \
+            inherited = {'PYTHONPATH': 'source-fixture', 'PYTHONHOME': 'source-fixture',
+                         'PYTHONFUTURECONTROL': 'source-fixture', 'OPENAI_API_KEY': 'fixture',
+                         'PRIVATE_PROBE_VALUE': 'fixture', 'PROBE_SAFE_VALUE': 'preserved'}
+            with mock.patch.dict(os.environ, inherited), \
+                    mock.patch('agentic.child_process.configured_child_env_strip_extra',
+                               return_value=frozenset({'PRIVATE_PROBE_VALUE'})), \
                     mock.patch.object(probe.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
                 self.assertEqual(0, probe.main(arguments))
                 command = run.call_args.args[0]
                 self.assertIn(str(project.resolve() / '.agentic/.venv'), command[0])
                 self.assertEqual(['-B', '-I', '-c'], command[1:4])
                 self.assertFalse(any(k.upper().startswith('PYTHON') for k in run.call_args.kwargs['env']))
+                self.assertNotIn('OPENAI_API_KEY', run.call_args.kwargs['env'])
+                self.assertNotIn('PRIVATE_PROBE_VALUE', run.call_args.kwargs['env'])
+                self.assertEqual('preserved', run.call_args.kwargs['env']['PROBE_SAFE_VALUE'])
+                self.assertTrue(all(os.environ[key] == value for key, value in inherited.items()))
                 output.write_text('preserved evidence')
                 with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     probe.main(arguments)

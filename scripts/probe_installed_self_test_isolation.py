@@ -13,6 +13,10 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.agentic/lib'))
+from agentic.child_process import child_env
 
 
 CHILD = r'''
@@ -32,6 +36,7 @@ def audit(project):
     snapshots.append(dict(stage='before_discovery' if not snapshots else 'after_discovery',
                           root_counts=inventory['root_counts'],path_counts=inventory['path_counts'],
                           allowed_roots=inventory['allowed_roots'],
+                          root_boundary_checks=inventory['root_boundary_checks'],
                           refused=inventory['outside_roots'],loaded_modules=inventory['loaded_modules']))
     original(project)
     if len(snapshots)==2:
@@ -72,10 +77,12 @@ def main(argv=None):
     completed = subprocess.run([str(interpreter), '-B', '-I', '-c', CHILD, str(project), str(output),
                            str(self_report), '--shard', str(args.shard), '--selection-file',
                            str(args.selection_file.resolve()), '--expected-selection-sha256',
-                           args.expected_selection_sha256], cwd=project, env=env, check=False)
+                           args.expected_selection_sha256], cwd=project, env=child_env(env), check=False)
     if output.exists():
         report = json.loads(output.read_text(encoding='utf-8'))
         for snapshot in report['snapshots']:
+            print('ORIGIN_ROOT_BOUNDARIES ' + json.dumps({'stage': snapshot['stage'],
+                'checks': snapshot.get('root_boundary_checks', [])}, sort_keys=True))
             print('ORIGIN_ROOT_COUNTS ' + json.dumps({'stage': snapshot['stage'],
                 'counts': snapshot['root_counts'], 'path_counts': snapshot.get('path_counts', {}),
                 'allowed_roots': snapshot.get('allowed_roots', {})}, sort_keys=True))
