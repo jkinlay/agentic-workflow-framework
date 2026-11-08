@@ -1541,7 +1541,7 @@ class ContinuousControllerStore:
 		with self.connection() as db:
 			return self._snapshot(db)
 
-	def digest(self, now):
+	def digest(self, now, *, calendar=None):
 		current = timestamp(now)
 		with self.transaction() as db:
 			pending = db.execute('SELECT payload_json FROM controller_outbox WHERE acknowledged_at IS NULL ORDER BY rowid LIMIT 1').fetchone()
@@ -1561,14 +1561,16 @@ class ContinuousControllerStore:
 				owner = db.execute('SELECT ticket,exact_tuple FROM stream_status WHERE stream_id=?', (row['stream_id'],)).fetchone()
 				detached = owner is None or owner['ticket'] != row['ticket'] or owner['exact_tuple'] != row['exact_tuple']
 				unresolved_dispatches.append({'dispatch_id': row['dispatch_id'], 'stream': row['stream_id'], 'ticket': row['ticket'], 'exact_tuple': row['exact_tuple'], 'status': row['status'], 'detached': detached, 'updated_at': row['updated_at']})
+			from .review_batching import ReviewBatchStore
+			reviews = ReviewBatchStore.view_from_db(db, now, calendar or {})
 			all_complete = all((s['state'] == 'COMPLETE' for s in streams))
-			if all_complete and (not change_due):
+			if all_complete and (not change_due) and not (regular_due and reviews['owner_alerts']):
 				return None
 			if not regular_due and (not change_due):
 				return None
 			kind = 'REGULAR' if regular_due else 'CHANGE'
 			from .canonical import fingerprint
-			body = {'schema_version': 3, 'observed_at': now, 'kind': kind, 'cadence_seconds': cadence, 'all_complete': all_complete, 'streams': streams, 'unresolved_dispatches': unresolved_dispatches}
+			body = {'schema_version': 3, 'observed_at': now, 'kind': kind, 'cadence_seconds': cadence, 'all_complete': all_complete, 'streams': streams, 'unresolved_dispatches': unresolved_dispatches, 'review_batching': reviews}
 			delivery_id = fingerprint('controller-status-digest', {'revision': revision, **body})
 			body['delivery_id'] = delivery_id
 			db.execute('INSERT INTO controller_outbox VALUES(?,?,?,?,?,NULL)', (delivery_id, kind, revision, now, canonical(body).decode()))
@@ -3303,7 +3305,179 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (deepcopy(tickets), repository_binding, observation)
 
-def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None):
+def production_review_batching_cycle(store, *, calendar, repository_root, config, operating_snapshot,
+        binding, clock, load_calendar=None,
+        observe_owner_ready=None, observe_review_candidate=None,
+        deliver_review_batch=None, observe_review_delivery=None):
+	"""Routine presentation only, through trusted injected ports; never transport.
+
+	Discovery returns {binding, observed_at, candidates}; candidates are locators.
+	observe_review_candidate(candidate, now) independently collects the exact
+	ReviewBatchStore observation, including current lifecycle and final-gate bytes.
+	deliver_review_batch(payload) performs one conditional send with the immutable
+	batch ID as its idempotency key and returns verified terminal readback or None.
+	observe_review_delivery(payload) is receipt-only: unknown means None, never a
+	retry. NOT_DELIVERED must also fence any delayed send for that batch identity.
+	The host serializes this controller operation and bounds all adapter calls.
+	Safety/action alerts and hourly reports use their separate immediate ports.
+	"""
+	from .review_batching import ReviewBatchStore
+	from .operating_calendar import effective_calendar, next_review_presentation, utc_instant
+	from .protected_settings import effective_snapshot, require_budget_policy
+	from .budgeting import policy_repository_root
+	# Supplied snapshots and calendar values are data, never accepted policy.
+	repository_root = policy_repository_root(repository_root, operating_snapshot)
+	accepted = effective_snapshot(repository_root, config, operating_snapshot)
+	require_budget_policy(accepted)
+	calendar = effective_calendar(accepted.config)
+	batch_store = ReviewBatchStore(store)
+	result = {'enqueued': [], 'unqualified': 0, 'delivery': None, 'errors': [],
+		'state': 'UNCONFIGURED', 'merge_authorized': False, 'owner_alerts': []}
+
+	def finish():
+		result['status'] = batch_store.view(clock(), calendar)
+		result['owner_alerts'] = result['status']['owner_alerts']
+		for alert in result['owner_alerts']:
+			result['errors'].append({'operation': 'review_owner_attention', **deepcopy(alert)})
+		return result
+
+	def failed(operation, exc):
+		result['errors'].append({'operation': operation, 'state': 'PENDING',
+			'reason': str(exc) if isinstance(exc, ValidationError) else type(exc).__name__})
+
+	if observe_owner_ready is not None:
+		try:
+			_require(callable(observe_owner_ready) and callable(observe_review_candidate),
+				'Owner-ready discovery requires a fresh trusted candidate observer')
+			now = clock()
+			request = {'binding': deepcopy(binding), 'observed_at': now}
+			ready = observe_owner_ready(deepcopy(request))
+			_require(isinstance(ready, dict) and set(ready) == {'binding', 'observed_at', 'candidates'}
+				and ready['binding'] == binding and ready['observed_at'] == now
+				and isinstance(ready['candidates'], list), 'Owner-ready discovery is foreign, stale or malformed')
+			canonical(ready)
+			result['state'] = 'PENDING'
+			for candidate in ready['candidates']:
+				try:
+					_require(isinstance(candidate, dict) and str(candidate.get('repository_id')) == binding['repository_id'],
+						'Review candidate repository differs from the controller binding')
+					observed_at = clock()
+					observation = observe_review_candidate(deepcopy(candidate), observed_at)
+					intent = batch_store.enqueue_observed(candidate, observation, observed_at, calendar,
+						repository_id=binding['repository_id'])
+					if intent is not None:
+						result['enqueued'].append(intent)
+					else:
+						result['unqualified'] += 1
+				except Exception as exc:
+					failed('review_enqueue', exc)
+		except Exception as exc:
+			failed('review_discovery', exc)
+	# No delivery port means durable collection only, including during the lane E
+	# handoff. An absent port consumes no attempt; lane E owns reporting OFF.
+	if deliver_review_batch is None and observe_review_delivery is None:
+		return finish()
+	try:
+		_require(all(callable(port) for port in (observe_review_candidate,
+			deliver_review_batch, observe_review_delivery)),
+			'Review delivery requires candidate, delivery and receipt-only readback ports')
+		result['state'] = 'PENDING'
+
+		def reconcile(payload, receipt):
+			_require(isinstance(receipt, dict) and receipt.get('batch_id') == payload['batch_id']
+				and receipt.get('payload_sha256') == payload['payload_sha256'],
+				'Review delivery readback differs from the requested batch')
+			batch_store.reconcile(receipt, calendar)
+			result['delivery'] = deepcopy(receipt)
+
+		# Restart never resends unresolved identities. Only verified terminal
+		# readback may complete them or admit the store's one remaining retry.
+		for pending in batch_store.pending_batches():
+			if batch_store.release_unsent(pending['batch_id'], clock(), calendar,
+					reason='Restart recovered durable preparation with no send started'):
+				continue
+			try:
+				receipt = observe_review_delivery(deepcopy(pending))
+				if receipt is not None:
+					reconcile(pending, receipt)
+			except Exception as exc:
+				failed('review_readback', exc)
+		excluded = set()
+		while True:
+			now = clock()
+			batch = batch_store.claim(now, calendar,
+				lambda candidate: observe_review_candidate(candidate, now), exclude=excluded)
+			if batch is None:
+				break
+			now = clock()
+			checked = {}
+			def reobserve(candidate):
+				member = next(item for item in batch['members'] if item['candidate'] == candidate)
+				checked[member['intent_id']] = None
+				observation = observe_review_candidate(candidate, now)
+				checked[member['intent_id']] = deepcopy(observation)
+				return observation
+			try:
+				payload = batch_store.recheck(batch['batch_id'], now, calendar, reobserve)
+				# Recheck time after provider reads: cutoff/expiry can pass in flight.
+				send_at = clock()
+				window = next_review_presentation(send_at, calendar)
+				_require(utc_instant(window['presentation_at']) == utc_instant(send_at)
+					and all(utc_instant(item['expires_at']) > utc_instant(send_at) for item in checked.values()),
+					'Review presentation window closed or evidence expired before delivery')
+			except Exception as exc:
+				# Nothing has crossed the durable send boundary. Withdraw only
+				# freshly invalid members; retry survivors in a new immutable batch.
+				batch_store.release_unsent(batch['batch_id'], now, calendar, checked,
+					reason='Pre-send check refused: ' + type(exc).__name__)
+				failed('review_recheck', exc)
+				from .review_batching import _observation_valid
+				blocked = {identity for identity, value in checked.items()
+					if not _observation_valid(value, next(m['candidate'] for m in batch['members']
+						if m['intent_id'] == identity), utc_instant(now))}
+				excluded.update(blocked or (m['intent_id'] for m in batch['members']))
+				continue
+			transport_payload = deepcopy(payload)
+			cancel_uninvoked = batch_store.begin_delivery(batch['batch_id'], send_at)
+			# The fence commit can cross cutoff or evidence expiry. Only this live
+			# serialized path knows transport was never invoked; restart stays UNKNOWN.
+			try:
+				if load_calendar is not None:
+					# Test hook only: its return value can never supply policy.
+					load_calendar()
+				from .operating import read_operating
+				current_policy = read_operating(repository_root, config)
+				require_budget_policy(current_policy)
+				calendar = effective_calendar(current_policy.config)
+				send_at = clock()
+				window = next_review_presentation(send_at, calendar)
+				_require(utc_instant(window['presentation_at']) == utc_instant(send_at)
+					and all(utc_instant(item['expires_at']) > utc_instant(send_at) for item in checked.values()),
+					'Post-fence presentation window closed or evidence expired')
+				batch_store.check_delivery_window(batch['batch_id'], send_at, calendar)
+			except Exception as exc:
+				cancel_uninvoked(send_at, calendar)
+				excluded.update(m['intent_id'] for m in batch['members'])
+				failed('review_recheck', exc)
+				continue
+			# An unavoidable small gap remains from this last calendar/clock check to provider
+			# receipt (later policy merges, scheduling/transport latency); no atomic remote clock.
+			receipt = deliver_review_batch(transport_payload)
+			if receipt is not None:
+				reconcile(payload, receipt)
+			else:
+				result['state'] = 'UNKNOWN'
+			# One delivery per cycle; retries wait for a subsequent cycle.
+			break
+		if batch_store.pending_batches():
+			result['state'] = 'UNKNOWN'
+	except Exception as exc:
+		result['state'] = 'UNKNOWN'
+		failed('review_presentation', exc)
+	return finish()
+
+
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None, observe_owner_ready=None, observe_review_candidate=None, deliver_review_batch=None, observe_review_delivery=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')
 	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
@@ -3347,9 +3521,14 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(all(callable(callback) for callback in (observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events)), 'Production requires authenticated planning backlog and event callbacks')
 	validate_snapshot(planning_operating_snapshot, planning_config)
 	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
-	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots
-	state_roots = protected_state_roots(*store.worktree_roots, repository_root)
-	budget_settings = resolve_settings(planning_operating_snapshot.config)
+	from .operating_calendar import effective_calendar
+	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots, accepted_budget_snapshot
+	# Budget and calendar share the same accepted snapshot and root refusal.
+	policy_root = Path(repository_root).resolve(strict=True)
+	accepted_operating = accepted_budget_snapshot(policy_root, planning_config, planning_operating_snapshot)
+	calendar = effective_calendar(accepted_operating.config)
+	state_roots = protected_state_roots(*store.worktree_roots, policy_root)
+	budget_settings = resolve_settings(accepted_operating.config)
 	if configure_budgeting is None:
 		configure_budgeting = getattr(dispatch_ticket, 'configure_budgeting', None)
 	if callable(configure_budgeting):
@@ -3357,7 +3536,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			accounting_enabled=budget_settings['accounting_enabled'],
 			worktree_roots=state_roots,
 			previous_paths=(store.path.with_suffix('.routing.sqlite3'),)),
-			governance=planning_config, operating=planning_operating_snapshot, worktree_roots=state_roots,
+			governance=planning_config, operating=accepted_operating, repository_root=policy_root, worktree_roots=state_roots,
 			legacy_store=planning_state_store)
 	else:
 		_require(not budget_settings['accounting_enabled'] or 'legacy_behavior' in budget_settings,
@@ -3698,7 +3877,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			except Exception:
 				pass
 			errors.append({'operation': 'dispatch', 'dispatch_id': dispatch_id, 'state': 'UNKNOWN', 'reason': type(exc).__name__})
-	digest = store.digest(now)
+	digest = store.digest(now, calendar=calendar)
 	delivery = None
 	if digest is not None:
 		try:
@@ -3710,7 +3889,33 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		except Exception as exc:
 			errors.append({'operation': 'status_delivery', 'delivery_id': digest['delivery_id'], 'state': 'PENDING', 'reason': type(exc).__name__})
 	streams = store.snapshot()
-	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'errors': errors, 'execution_authority': False}
+	# Calendar waits and uncertain review sends never gate dispatch, independent
+	# review, amendments, or the separate immediate status/action channel above.
+	try:
+		review_batching = production_review_batching_cycle(store, calendar=calendar,
+			repository_root=policy_root, config=planning_config, operating_snapshot=accepted_operating,
+			binding=inventory_binding, clock=post_provider_time,
+			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
+			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery)
+		errors.extend(review_batching['errors'])
+	except Exception as exc:
+		review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
+		errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
+	# Newly stuck/exhausted reviews alert through the existing immediate status
+	# port, even with periodic reports OFF. They never block work or reporting.
+	if review_batching.get('owner_alerts'):
+		alert = store.digest(post_provider_time(), calendar=calendar)
+		if alert is not None:
+			try:
+				receipt = deliver_status(alert)
+				_require(isinstance(receipt, dict) and set(receipt) == {'delivery_id', 'status', 'observed_at'}
+					and receipt['delivery_id'] == alert['delivery_id'] and receipt['status'] == 'DELIVERED',
+					'Status delivery readback is missing or mismatched')
+				store.acknowledge_digest(alert['delivery_id'], receipt['observed_at'])
+				delivery = receipt
+			except Exception as exc:
+				errors.append({'operation': 'review_owner_alert', 'state': 'PENDING', 'reason': type(exc).__name__})
+	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'operating_calendar': calendar, 'review_batching': review_batching, 'errors': errors, 'execution_authority': False}
 
 def _observe_jira_write_policy(config, issue, observer, now):
 	"""Obtain fresh canonical scope evidence from the reviewed adapter."""

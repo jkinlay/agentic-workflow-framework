@@ -130,7 +130,7 @@ class ProductionPreA5Tests(unittest.TestCase):
         unusable.write_text('Fixture obstruction')
         path = unusable / 'ledger.sqlite'
         adapters['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov,
-            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         payload = _dispatch_payload('off-failure')
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
             adapters['dispatch_ticket'](payload)
@@ -146,7 +146,7 @@ class ProductionPreA5Tests(unittest.TestCase):
         runner.exit_code = 0
         restarted = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         restarted['dispatch_ticket'].configure_budgeting(path=None, governance=self.gov,
-            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+            operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         with self.assertRaisesRegex(ValidationError, 'resolve non-reasoning failure'):
             restarted['dispatch_ticket'](_dispatch_payload('retry-off'))
 
@@ -194,11 +194,13 @@ class ProductionPreA5Tests(unittest.TestCase):
         value = deepcopy(inputs['planning_operating_snapshot'].config)
         value['budgeting'] = dict(self.value['budgeting'], accounting_enabled=False)
         snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
-        inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
+        repository = self.root / 'controller-repository'
+        cycle_snapshot = accepted_fixture_snapshot(self, repository, value, self.gov)
+        inputs.update(planning_operating_snapshot=cycle_snapshot, operating_config_sha256=cycle_snapshot.operating_hash)
         config['codex']['roles']['writer']['reasoning_effort'] = 'high'
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
         path = self.root / 'host-state/project.sqlite'
-        adapters['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov, operating=snapshot)
+        adapters['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov, operating=snapshot, repository_root=self.root)
         runner.exit_code = 1
         payload = dict(_dispatch_payload('off-cycle-failure'), ticket='AWF-32')
         with self.assertRaisesRegex(ValidationError, 'non-zero exit'):
@@ -210,12 +212,12 @@ class ProductionPreA5Tests(unittest.TestCase):
                 time.sleep(0.02)
         runner.exit_code = 0
         adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
-        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(fixtures.ROOT),
+        head, tree = [fixtures.subprocess.check_output(['git', '-C', str(repository),
             'rev-parse', ref], text=True).strip() for ref in ('HEAD', 'HEAD^{tree}')]
         result = production_controller_cycle(state, controller_config=dict(dispatch_enabled=True,
             auto_dispatch=True, auto_request_critic=True, auto_resume_amendments=True), now=NOW,
             host_capacity=1, **{**planning_resource_inputs(1), **inputs}, inventory_binding=binding,
-            repository_root=fixtures.ROOT, repository_head_sha=head, repository_tree_sha=tree,
+            repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
             budget_ledger_path=path, publication_config=config,
             **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations',
                 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})

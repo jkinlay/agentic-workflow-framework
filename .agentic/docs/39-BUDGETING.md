@@ -3,67 +3,39 @@
 Tier 3, FULL. Accounting/enforcement default OFF; dormant limits:
 4,000,000 tokens/ticket, 1,000,000,000/project lifetime. Limits enable neither
 switch; enforcement requires accounting; accounting OFF disables enforcement.
+Missing fields preserve legacy budgeting/reviewed limits.
 
-## Upgrade and adoption
+## Settings in chat and PRs
 
-Upgrading 1.9.5 keeps an absent budgeting block absent: LEGACY_RETAINED,
-original engine and reviewed limits. It adds no accounting, enforcement or budget
-gate. Supported 1.9.5 operating records remain verified without confirmation.
-Unsupported 1.9.6 pre-release confirmation records refuse plainly; retain them and
-restore a supported baseline before upgrading.
+Read-only chat `workflow.py operating show` needs no approval. Present switches/limits/source/commit/differences; PR/merger optional/unobserved.
 
-When the owner asks in chat, the skill adds the complete dormant OFF block to
-OPERATING_CONFIG.yaml on an upgrade/settings PR branch, preserving text/comments.
-The upgrade adoption PR may carry it. The optional agent helper
-`operating set --adopt-budgeting --instruction WORDS` prepares this file change
-only; no --set choices, enabling or owner terminal commands. Git/PR history audits
-it. Owner merge and fetch make it effective. Non-OFF choices require a subsequent
-settings PR. Dormant adoption needs no ledger/import.
+Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
+`budgeting.max_tokens_per_ticket`, `budgeting.max_tokens_per_project`.
+Limits: integers 1..9007199254740991; switches: booleans. No Epic overrides.
+Run `operating validate --file PROPOSED`; invalid combinations refuse before PR preparation.
 
-Before enabling, stop legacy writers, snapshot/pin every state-store/routing/host
-ledger and explicitly call `agentic.upgrade.import_budget_history` into one
-protected shared ledger outside worktrees. Supply exact project ID, complete
-worktree roots and source-label mappings `{path, sha256}`. Independently capture
-`prepare_budget_import` before and `check_budget_import` afterwards. Verify
-charges/reservations/UNKNOWN values/deduplication; retain immutable sources and
-results externally. Conflicts require reconciliation; migration cannot approve
-its own lost history. See [migration](../../MIGRATION-v1.9.5-to-v1.9.6.md).
-
-## Settings through PRs
-
-In AWF Codex chat, read-only `workflow.py operating show` needs no approval.
-Present switches/limits, source/commit, working differences and APPLIED/MISSING/
-UNOBSERVED repository rules as warnings. Last PR/merger is optional information.
-
-Settings: accounting_enabled, enforcement_enabled, max_tokens_per_ticket and
-max_tokens_per_project under budgeting. Limits are integers 1..9223372036854775807;
-switches are booleans. No Epic overrides. Validate proposed bytes with
-`operating validate --file PROPOSED`; invalid combinations refuse before preparing
-a PR. Branch from the fetched default, edit requested values preserving comments,
-and show before/after under existing publication authority. Restricted pushes
-prepare branch/body for owner publication. The owner merges; agents never merge.
-Protected `operating set` otherwise refuses without writes. Unprotected flow stays.
+Branch from fetched default; change requested values preserving text/comments. Show before/after under existing publication authority. Restricted pushes prepare owner publication. Only owners merge.
+No owner terminal commands. Git/PR history audits protected changes;
+protected `operating set` refuses without writes. Calendar uses the same PR route,
+effective source and validation; see [calendar](operating-calendar.md).
 
 Effective protected settings come from the locally fetched default-branch commit.
-Only refs/remotes/origin/HEAD identifies it; configuration is never an identity
-input. Show reports disagreement with github.base_branch. Working edits and PR
-branches cannot change admission/recovery/controller/routing, including disabling
-enforcement. Older checkouts read the same policy. Merge then fetch applies a
-change; update a stale checkout before proposing another.
+Only `refs/remotes/origin/HEAD` identifies it. Configuration is never an identity
+input; `show` reports disagreement with configured `github.base_branch`.
+Working-tree edits and PR branches have no effect on budget admission,
+recovery, controller or routing, including disabling enforcement. Only merged
+and fetched changes take effect. Older checkouts read the same policy; differences
+mean update the checkout when behind, otherwise propose a PR.
 
-An absent default-branch file is accepted: fresh OFF or legacy; working values
-have no effect. Nondefault checks compare normalized values.
-With origin configured but origin/HEAD unavailable, show/validate/install warn;
-budget admission tries refresh and refuses unresolved identity except for fresh
-OFF/legacy installs with no tracking refs, no default ref and only default
-protected values. Non-repository fresh OFF/legacy continue offline.
-Malformed/unreadable policy refuses plainly. Git metadata must remain
-outside worker write authority. Repository rules and owner merge rights govern
-acceptance; direct default-branch push/full owner rights can bypass this control.
-Offer the shipped ruleset. Reader digests do not authenticate merges.
-The controller's own checkout is not a worker worktree. Deny worker Git metadata,
-update-ref and fetch-refspec writes; gitfile backlinks must match. `show` reports rules UNOBSERVED
-without a fresh observation; warnings never block.
+An absent default-branch file is accepted: fresh defaults or legacy retained. With configured origin but no origin/HEAD, the default is unverified.
+Show/validation/installation retain the warning; working values are provisional. Admission tries refresh first. If still unverified,
+tracking refs or nondefault working values refuse budget work even if enforcement
+says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
+before planning/dispatch on that refusal; other commands remain available.
+The next controller cycle or `git remote set-head origin --auto` establishes identity.
+With no origin configured there is no remote policy refresh. Present but empty,
+malformed, invalid or unavailable policy blobs refuse. Non-repositories run no Git/gh.
+OFF needs no ledger/telemetry/reservations. Preserve upgrade choices/history; no retrospective zero usage.
 
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
 ref, never evidence of policy refresh. New merges remain invisible until fetched.
@@ -78,13 +50,52 @@ unlocked locks older than ten minutes are replaced/reported. Locking prevents
 clock-jump takeover. Shared filtering preserves Git helpers/home/PATH/SSH-agent.
 `show` never fetches. The skill fetches after owner merge, then shows settings.
 
-## Accounting and recovery
+Merge authority rests with host rules and the owner. `show` reports rules UNOBSERVED
+as a nonblocking warning; live rules are observed by publication readiness and
+adoption preflight, which report APPLIED/MISSING/UNOBSERVED. Offer the shipped
+ruleset separately. `merge_gate.trusted_owner_ids` keeps its merge-gate use.
 
-OFF opens no ledger/telemetry/reservations. Usage ledgers and atomic enforcement
-remain unchanged: enroll supported producers, reserve before launch, settle
-observed usage, retain UNKNOWN/overruns and never refund when turning OFF.
-Independent agents cannot be attributed by guesswork. Import retains original
-charges and blocks enabled admission without complete proofs. Startup failures
-remain counted. Routing proposals alone never admit or launch work. Local
-operating journals still govern unprotected transactions; protected settings use
-Git/PR history, without a protected owner store or terminal confirmation.
+Keep Git metadata/native Git outside worker write authority. This stops
+`update-ref`, fetch-refspec steering, ref deletion and linked `.git` gitfile
+replacement. Linked gitfiles need matching common-directory backlinks, supplementing
+host isolation. Direct default-branch pushes/owner rights bypass merge governance;
+reader digests cannot authenticate merges.
+
+## Ledger and enrollment
+
+Only explicitly enrolled AWF sub-agents count; enrollment binds project/ticket/run/dispatch/session/role.
+Exclude controller/independent Codex agents, including ULTRA. Repository/model/ancestry/worker
+requests cannot enroll. Protect state outside worktrees; paths supplement isolation.
+
+`RoutingLedger.model_runs` is canonical; `BudgetLedger` adds enrollment. Atomic
+checks retain history across days/restarts/policies/worktrees. Bridge legacy
+`budget_charges` transactionally; verify sealed archives, deduplicate identities,
+refuse conflicts. Separate databases require migration; enforcement refuses until
+history is imported. Never evade history by changing databases.
+
+Routed reserve requires trusted registry/binding and matching run/ledger IDs;
+settlement retains model/effort/context/independence checks. Budget-only facade
+cannot settle routed runs or bypass checks. State-store uses that facade without
+duplicate reservations. Preserve legacy identities; never relaunch replays.
+
+## Modes and preservation
+
+OFF requires no budget database, telemetry, reservations/events, warnings or
+overrun quarantine. Retain security/permissions/ownership/review/merge/host-capacity
+and bounded recovery controls; security/context/review mismatches quarantine.
+Existing recovery limits and owner authorization to raise them bind in every mode.
+Historical budget overruns do not block OFF/accounting-only work.
+Ledger-free routing proposals never admit/launch; operational admission remains required.
+Accounting-only records usage without quota refusal/warnings/quarantine. Unknown
+estimates/actuals stay UNKNOWN/null, never zero; independent runs remain outside quotas.
+Enforcement atomically counts known usage/outstanding reservations per ticket/lifetime;
+unreliable unknown totals refuse. Runs/late settlements retain admission-time bindings/mode.
+OFF applies only to subsequent work, never deletes/refunds history, reservations,
+failures or unknowns; known overruns stay charged. Reconciliation closes
+incidents without refund. Count only attributable tools/retries; enroll retries.
+
+Use versioned preservation; installed CMC Quant Foundry 1.9.5 stays unchanged/enabled. Only owners authorize qualified preservation/budget disposition. Never edit integrity-managed bytes/pins/receipts or initialize OFF over upgrades. Live integration requires qualification; release owns manifests.
+
+## Upgrade and adoption
+
+Absent budgeting remains LEGACY_RETAINED. Owner-requested `operating set --adopt-budgeting` prepares dormant OFF controls by PR; owner merge/fetch applies. Enabling needs another settings PR/locked shared-ledger import proofs. Quiesce writers; independently verify `prepare_budget_import`/`check_budget_import`, retained sources, reservations, UNKNOWN usage and recovery history. See [migration](../../MIGRATION-v1.9.5-to-v1.9.6.md).

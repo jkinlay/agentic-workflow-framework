@@ -77,6 +77,18 @@ def production_controller_cycle(*args,**kwargs):
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
+	# Trusted fixture construction binds policy and checkout explicitly, never
+	# selecting a root from supplied snapshot provenance.
+	if Path(kwargs['repository_root']).resolve() == ROOT:
+		from settings_pr_fixtures import fixture_repository, fixture_reservations, publish_fixture_settings
+		fixture_root = Path(args[0].path).parent / 'operating-fixture'
+		if not (fixture_root / '.git').exists():
+			publish_fixture_settings(None, fixture_root, kwargs['planning_config'],
+				kwargs['planning_operating_snapshot'].config)
+		kwargs.update(fixture_repository(fixture_root))
+		if kwargs['observe_reservations'] is reservation_observation:
+			kwargs['observe_reservations'] = lambda request: fixture_reservations(fixture_root, request)
+
 	return real_production_controller_cycle(*args,**kwargs)
 
 def inventory_observation(now,tickets):
@@ -1318,5 +1330,40 @@ class JiraProgressTests(unittest.TestCase):
 		wrong_pin=subprocess.run([*common[:common.index('--adapter-sha256')+1],'0'*64,'--adapter-config',str(adapter_config_path),'cycle','--inventory-binding',str(binding_path),'--repository-root',str(ROOT),'--repository-head-sha',REPOSITORY['repository_head_sha'],'--repository-tree-sha',REPOSITORY['repository_tree_sha'],'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
 		self.assertNotEqual(wrong_pin.returncode,0)
 		self.assertIn('SHA-256 pin',wrong_pin.stderr)
+class ReviewBatchingCliTests(unittest.TestCase):
+	def test_cycle_forwards_injected_review_ports_without_requiring_a_transport(self):
+		import importlib.util
+		import io
+		from contextlib import redirect_stdout
+		from types import SimpleNamespace
+		spec=importlib.util.spec_from_file_location('awf244_controller_cli',ROOT/'.agentic/scripts/continuous_controller.py')
+		module=importlib.util.module_from_spec(spec)
+		spec.loader.exec_module(module)
+		with tempfile.TemporaryDirectory() as scratch:
+			root=Path(scratch)
+			binding_path=root/'binding.json'
+			binding_path.write_text(json.dumps(INVENTORY_BINDING),encoding='utf-8')
+			required={'observe_inventory','observe_reservations','dispatch_ticket','observe_dispatch','deliver_status','observe_publication','observe_host_resources','verify_host_observation','observe_planning_backlog','verify_planning_backlog','observe_planning_events','verify_planning_events','verify_planning_owner'}
+			ports=('observe_owner_ready','observe_review_candidate','deliver_review_batch','observe_review_delivery')
+			adapters={name:lambda *args:None for name in required|set(ports)}
+			command=['--state',str(root/'controller.db'),'--stream','A','--worktree-root',str(root/'worker'),
+				'--project-config',str(ROOT/'.agentic/PROJECT_CONFIG.yaml'),'--adapter-sha256','a'*64,
+				'cycle','--inventory-binding',str(binding_path),'--repository-root',str(ROOT),
+				'--repository-head-sha',REPOSITORY['repository_head_sha'],
+				'--repository-tree-sha',REPOSITORY['repository_tree_sha'],'--now',NOW]
+			for enabled in (True,False):
+				selected=adapters if enabled else {key:value for key,value in adapters.items() if key not in ports}
+				with self.subTest(enabled=enabled), patch.object(module,'_load_reviewed_adapters',return_value=selected), \
+					patch('agentic.protected_settings.refresh_default_policy', return_value={'status': 'UNOBSERVED'}), \
+					patch('agentic.operating.read_operating',return_value=SimpleNamespace(operating_hash='b'*64, provenance={})), \
+					patch.object(module,'production_controller_cycle',return_value={'execution_authority':False}) as cycle, \
+					redirect_stdout(io.StringIO()):
+					self.assertEqual(module.main(command),0)
+					for name in ports:
+						if enabled:
+							self.assertIs(cycle.call_args.kwargs[name],adapters[name])
+						else:
+							self.assertNotIn(name,cycle.call_args.kwargs)
+
 if __name__=='__main__':
 	unittest.main()

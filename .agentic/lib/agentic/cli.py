@@ -359,6 +359,9 @@ def main(argv=None, default_root=None):
                 config=load(args.config) if args.config else None,
                 github_observation=load(args.github_identity) if args.github_identity else None,
                 jira_connections=load(args.jira_connections) if args.jira_connections else None)
+            if any(item.get('operating_refused') for item in output['rows']):
+                emit_json(output)
+                return 2
         elif args.command == "digest":
             from .digest import check_prose, digest_sha256, render
             value = load(args.input)
@@ -419,6 +422,8 @@ def main(argv=None, default_root=None):
                     print(render_text(report_result["report"]) if "report" in report_result else report_result["reason"])
             if args.require_active and output['project_state'] != 'ACTIVE':
                 return 4
+            if output.get('operating', {}).get('status') in {'REJECTED', 'ACCESS_UNAVAILABLE'}:
+                return 2
             return 0 if output['project_state'] is not None else 2
         else:
             digest = verify_installed(root)

@@ -375,39 +375,40 @@ class HostDriver:
         Deployments share the canonical host-owned project budget ledger.
         This CLI reports usage but has no verified per-run token ceiling.
         """
-        driver = cls(config, runtime_root)
-        driver.load_project_budgeting()
-        return driver
-
-    def load_project_budgeting(self):
-        """Bind this host to installed budget policy before any CLI operation."""
         from ..budgeting import ControllerBudgeting, project_ledger_path, resolve_settings, protected_state_roots
         from ..canonical import load_yaml
         from ..operating import read_operating
-        with Tree(self.root) as tree:
-            legacy = tree.inspect('OPERATING_CONFIG.yaml') is None
-            if not legacy:
-                governance = load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
-        if legacy:
-            # Absence never initializes fresh OFF settings over an old host.
-            # Existing max_agent_runs/recovery/review controls still apply.
-            self.budgeting = None
-            self.budget_ticket_id = None
-            return self
-        snapshot = read_operating(self.root, governance)
+        from ..protected_settings import resolve_protected
+        driver = cls(config, runtime_root)
+        with Tree(driver.root) as tree:
+            missing = tree.inspect('OPERATING_CONFIG.yaml') is None
+            governance = (load_yaml(tree.read('.agentic/PROJECT_CONFIG.yaml', maximum=1024 * 1024))
+                          if tree.inspect('.agentic/PROJECT_CONFIG.yaml') is not None else {})
+        if missing:
+            # Only accepted absence can retain the legacy host. Local deletion
+            # cannot hide an accepted ON/OFF block or unverified policy refusal.
+            accepted, report = resolve_protected(driver.root, governance, {})
+            require(report['budget_admission'], report['budget_refusal'])
+            if 'budgeting' not in accepted:
+                driver.budgeting = None
+                driver.budget_ticket_id = None
+                return driver
+        # Missing/unreadable/invalid working bytes refuse here, including OFF;
+        # never invent unprotected operating choices merely to permit a launch.
+        snapshot = read_operating(driver.root, governance)
         pattern = re.escape(governance['github']['branch_pattern'])
         pattern = pattern.replace(r'\{ticket\}', r'(?P<ticket>[A-Z][A-Z0-9]*-[0-9]+)')
         pattern = pattern.replace(r'\{slug\}', r'[A-Za-z0-9_.-]+')
-        matched = re.fullmatch(pattern, self.c['head_branch'])
+        matched = re.fullmatch(pattern, config['head_branch'])
         ticket = matched.groupdict().get('ticket') if matched else None
-        state_roots = protected_state_roots(self.root, self.worker, self.critic)
-        path = project_ledger_path(governance['project']['id'], path=self.c.get('budget_ledger_path'),
+        state_roots = protected_state_roots(driver.root, driver.worker, driver.critic)
+        path = project_ledger_path(governance['project']['id'], path=config.get('budget_ledger_path'),
             accounting_enabled=resolve_settings(snapshot.config)['accounting_enabled'],
-            worktree_roots=state_roots, previous_paths=(self.state / 'routing.sqlite3',))
+            worktree_roots=state_roots, previous_paths=(driver.state / 'routing.sqlite3',))
         context = ControllerBudgeting(path,
-            governance, snapshot, self, worktree_roots=state_roots)
-        self.configure_budgeting(context, ticket_id=ticket)
-        return self
+            governance, snapshot, driver, repository_root=driver.root, worktree_roots=state_roots)
+        driver.configure_budgeting(context, ticket_id=ticket)
+        return driver
 
     def observe_enrollment(self, binding):
         from ..budget_enrollment import validate_binding

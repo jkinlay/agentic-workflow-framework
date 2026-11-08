@@ -49,6 +49,39 @@ class UpgradeSettingsPRTests(unittest.TestCase):
         self.assertIn('LEGACY_RETAINED', report['table'])
         self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
 
+    def test_owner_schema_refusals_do_not_echo_contents_or_parser_causes(self):
+        from agentic.contracts import Contracts
+        import traceback
+        directory = self.root / 'owner-schemas'
+        directory.mkdir()
+        marker = 'AWF238_REJECTED_OWNER_SCHEMA_CONTENT'
+        cases = {
+            'schema': op._json({'$id': 'urn:awf:1.2:owner', 'type': marker}),
+            'duplicate': ('{"' + marker + '":1,"' + marker + '":2}').encode(),
+        }
+        for kind, raw in cases.items():
+            with self.subTest(kind=kind):
+                (directory / 'owner.schema.json').write_bytes(raw)
+                try:
+                    Contracts(directory)
+                except ValidationError as error:
+                    self.assertIn('Invalid schema: .agentic/schemas/owner.schema.json', str(error))
+                    self.assertNotIn(marker, ''.join(traceback.format_exception(error)))
+                else:
+                    self.fail('Invalid owner schema was accepted')
+
+    def test_legacy_diagnostics_preserve_policy_refusal(self):
+        from dataclasses import replace
+        snapshot = op.read_operating(self.root, self.gov)
+        provenance = snapshot.provenance
+        provenance['protected_settings']['budget_admission'] = False
+        snapshot = replace(snapshot, _provenance_json=op._json(provenance))
+        with patch.object(op, 'read_operating', return_value=snapshot):
+            report = op.inspect_operating(self.root, self.gov)
+        self.assertEqual('LEGACY_RETAINED', report['budgeting']['disposition'])
+        self.assertIs(False, report['budget_admission'])
+        self.assertIs(False, report['protected_settings']['budget_admission'])
+
     def test_adoption_prepares_off_block_keeps_comments_and_waits_for_default(self):
         self.branch()
         import yaml
@@ -141,22 +174,27 @@ class UpgradeSettingsPRTests(unittest.TestCase):
             self.assertEqual(commit, report['commit'])
             self.assertTrue(report['budget_admission'])
             self.assertIn('accepted', report['policy_observation'])
+            self.assertIs(True, self.show()['budget_admission'])
 
     def test_nondefault_policy_checks_use_normalized_values(self):
         from agentic.protected_settings import resolve_protected, require_mutation_policy
         with tempfile.TemporaryDirectory() as raw:
-            for block in (None, {}, fresh_settings()):
+            for block in (None, fresh_settings()):
                 value = deepcopy(self.legacy)
                 if block is not None:
                     value['budgeting'] = block
-                # This policy-availability test does not relax the complete
-                # budgeting schema enforced by validate_operating afterwards.
+                # Compare only valid normalized defaults. An incomplete block
+                # is refused below rather than treated as accepted OFF policy.
                 effective, _ = resolve_protected(Path(raw), self.gov, value)
                 self.assertEqual(value, effective)
                 require_mutation_policy({'unverified': True, 'next_action': 'fetch'}, value)
-            with self.assertRaisesRegex(ValidationError, 'Nondefault'):
-                require_mutation_policy({'unverified': True, 'next_action': 'fetch'},
-                    {'budgeting': dict(fresh_settings(), accounting_enabled=True)})
+            for block in ({}, dict(fresh_settings(), accounting_enabled=True)):
+                with self.subTest(refused=block):
+                    value = dict(self.legacy, budgeting=block)
+                    with self.assertRaisesRegex(ValidationError, 'Nondefault'):
+                        resolve_protected(Path(raw), self.gov, value)
+                    with self.assertRaisesRegex(ValidationError, 'Nondefault'):
+                        require_mutation_policy({'unverified': True, 'next_action': 'fetch'}, value)
 
     def test_prerelease_confirmation_record_is_refused_plainly_and_retained(self):
         path = next((self.root / op.STATE / 'changes').glob('*.json'))

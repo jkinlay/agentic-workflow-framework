@@ -270,7 +270,7 @@ def main(argv=None, default_root=ROOT):
 		if args.replan_request is not None:
 			names.add('observe_replan_trigger')
 		calls = _require_adapters(adapters, names)
-		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence'):
+		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence', 'observe_owner_ready', 'observe_review_candidate', 'deliver_review_batch', 'observe_review_delivery'):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
 		from agentic.operating import read_operating
@@ -313,4 +313,9 @@ def main(argv=None, default_root=ROOT):
 	print(json.dumps(output, indent=2))
 	return 0
 if __name__ == '__main__':
-	raise SystemExit(main())
+	try:
+		raise SystemExit(main())
+	except ValidationError as exc:
+		print(json.dumps({'status': 'REJECTED', 'reason': str(exc),
+		                  'execution_authority': False}), file=sys.stderr)
+		raise SystemExit(2)

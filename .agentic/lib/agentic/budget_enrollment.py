@@ -139,6 +139,7 @@ class EnrollmentRegistry(ProtectedDatabase):
 
 
 
+
 OPERATIONAL_DDL = '''
 CREATE TABLE IF NOT EXISTS execution_identity(identity TEXT PRIMARY KEY, security_schema INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS execution_intents(run_id TEXT PRIMARY KEY, binding TEXT NOT NULL);

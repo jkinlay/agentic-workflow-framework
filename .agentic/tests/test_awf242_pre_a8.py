@@ -59,18 +59,19 @@ class ProductionPreA8Tests(unittest.TestCase):
                 self.gov = inputs['planning_config']
                 value = deepcopy(inputs['planning_operating_snapshot'].config)
                 value['budgeting']['accounting_enabled'] = False
-                snapshot = accepted_fixture_snapshot(self, self.root, value, self.gov)
+                repository = self.root / 'controller-repository'
+                snapshot = accepted_fixture_snapshot(self, repository, value, self.gov)
                 inputs.update(planning_operating_snapshot=snapshot, operating_config_sha256=snapshot.operating_hash)
                 config['codex']['roles']['writer']['reasoning_effort'] = 'high'
                 adapters = fixtures.ADAPTER['build_adapters'](dict(config, _runner=runner, _clock=FakeClock()))
                 ledger = self.root / (str(uuid.uuid4()) + '.sqlite')
                 ledger.write_bytes(content)
-                head, tree = [fixtures.subprocess.check_output(['git', '-C', str(fixtures.ROOT),
+                head, tree = [fixtures.subprocess.check_output(['git', '-C', str(repository),
                     'rev-parse', ref], text=True).strip() for ref in ('HEAD', 'HEAD^{tree}')]
                 result = production_controller_cycle(store, controller_config=dict(dispatch_enabled=True,
                     auto_dispatch=True, auto_request_critic=True, auto_resume_amendments=True), now=NOW,
                     host_capacity=1, **{**planning_resource_inputs(1), **inputs}, inventory_binding=binding,
-                    repository_root=fixtures.ROOT, repository_head_sha=head, repository_tree_sha=tree,
+                    repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
                     budget_ledger_path=ledger, publication_config=config,
                     **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations',
                         'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})

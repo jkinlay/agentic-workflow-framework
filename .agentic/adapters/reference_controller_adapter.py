@@ -685,11 +685,14 @@ def _build(config):
 
 	budgeting = None
 
-	def configure_budgeting(context=None, *, path=None, governance=None, operating=None, worktree_roots=(), legacy_store=None):
+	def configure_budgeting(context=None, *, path=None, governance=None, operating=None, repository_root=None, worktree_roots=(), legacy_store=None):
 		nonlocal budgeting
 		from agentic.budgeting import ControllerBudgeting
+		_require(context is not None or repository_root is not None,
+			'Budget construction requires the trusted controller repository root')
 		budgeting = context if context is not None else ControllerBudgeting(
-			path, governance, operating, runner, worktree_roots=(*worktree_roots, worktree_root),
+			path, governance, operating, runner, repository_root=repository_root,
+			worktree_roots=(*worktree_roots, worktree_root),
 			legacy_store=legacy_store, credential_envs=(token_env, email_env))
 		_require(isinstance(budgeting, ControllerBudgeting), 'Budget context must come from the trusted controller')
 		return budgeting

@@ -110,7 +110,8 @@ print('{}')
         if controller:
             # The real controller must bind its existing Store at configuration.
             options = {} if same else {'legacy_store': Store(legacy, gov['project']['id'])}
-            context = ControllerBudgeting(path if enabled else None, gov, snapshot, host, **options)
+            context = ControllerBudgeting(path if enabled else None, gov, snapshot, host,
+                repository_root=self.work / 'worker', **options)
             return context.admit(binding, selected)
         from agentic.budget_enrollment import EnrollmentRegistry
         registry = EnrollmentRegistry(self.work / 'enrollment.sqlite', host)

@@ -63,7 +63,18 @@ def planning_cycle(self, store, item, policy, *, observed_at=parked.NOW, **opera
 @wraps(_set_up)
 def set_up(self):
     _set_up(self)
+    from settings_pr_fixtures import publish_fixture_settings
+    from test_planning import config, operating_snapshot
+    governance = config(1)
+    governance['project']['id'] = parked.BINDING['project_id']
+    governance['github']['repository_id'] = parked.BINDING['repository_id']
+    policy_root = self.temporary / 'policy-repository'
+    # The production cycle reads protected policy from its explicit repository
+    # root. Never let Path('.') select the hosting checkout's origin/HEAD.
+    publish_fixture_settings(self, policy_root, governance,
+                             operating_snapshot(governance, 1).config)
     for fixture_patch in (
+        patch.dict(parked.REPOSITORY, repository_root=policy_root),
         patch.object(parked, "ticket", ticket),
         patch.object(parked.ControllerAutomationTests, "cycle", planning_cycle),
         patch.object(parked, "dispatch_receipt", dispatch_receipt),

@@ -67,7 +67,7 @@ class ProductionBoundaryTests(unittest.TestCase):
     def test_off_review_continues_past_legacy_total_run_quota(self):
         driver = FakeDriver()
         driver.budgeting = ControllerBudgeting(self.root / 'unused.sqlite', self.gov,
-            accepted_fixture_snapshot(self, self.root, self.value, self.gov), None)
+            accepted_fixture_snapshot(self, self.root, self.value, self.gov), None, repository_root=self.root)
         config = dict(key='12:7', repository='fixture/project', config_hash='f'*64,
                       max_amendment_cycles=3, max_ci_wait_ticks=2, max_agent_runs=1)
         store = LoopStore(self.root / 'loop')
@@ -89,7 +89,7 @@ class ProductionBoundaryTests(unittest.TestCase):
                     value.pop('budgeting')
                 driver = FakeDriver()
                 driver.budgeting = ControllerBudgeting(self.root / 'unused.sqlite', self.gov,
-                    accepted_fixture_snapshot(self, self.root, value, self.gov), None)
+                    accepted_fixture_snapshot(self, self.root, value, self.gov), None, repository_root=self.root)
                 config = dict(key='12:7', repository='fixture/project', config_hash='f'*64,
                     max_amendment_cycles=3, max_ci_wait_ticks=2, max_agent_runs=1)
                 store = LoopStore(self.root / str(legacy))
@@ -287,7 +287,7 @@ class ProductionBoundaryTests(unittest.TestCase):
         path = self.root / 'canonical.sqlite'
         def configure():
             return adapters['dispatch_ticket'].configure_budgeting(path=path, governance=self.gov,
-                operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov))
+                operating=accepted_fixture_snapshot(self, self.root, self.value, self.gov), repository_root=self.root)
         context = configure()
         for name, usage in (('known', True), ('unknown', False)):
             runner.usage = usage
