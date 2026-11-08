@@ -228,9 +228,12 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertEqual(1, len(harness_jobs))
         job_id, job = harness_jobs[0]
         self.assertEqual("installed-runtime-self-test", job_id)
-        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }})", job["name"])
+        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})", job["name"])
         self.assertEqual("windows-latest", job["runs-on"])
         self.assertEqual({"3.12.10", "3.13.3"}, set(job["strategy"]["matrix"]["python-version"]))
+        self.assertEqual(list(range(9)), job["strategy"]["matrix"]["shard"])
+        self.assertIs(False, job['strategy']['fail-fast'])
+        self.assertLessEqual(job['timeout-minutes'], 90)
         self.assertEqual("${{ matrix.python-version }}", str(next(
             step["with"]["python-version"]
             for step in job["steps"]
@@ -270,7 +273,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertEqual(1, len(steps_with(job, "scripts/bootstrap_project.py")))
         self.assertEqual(1, len(steps_with(job, ".agentic/scripts/self_test.py")))
         self.assertIn(
-            "& $installedPython -B $selfTest --checks-only --report $reportPath",
+            "& $installedPython -B -I $selfTest --checks-only --report $reportPath",
             steps_with(job, ".agentic/scripts/self_test.py")[0]["run"],
         )
 
@@ -280,6 +283,24 @@ class CiSuiteCoverageTests(unittest.TestCase):
         artifact_paths = uploads[0]["with"]["path"]
         self.assertIn("self-test.json", artifact_paths)
         self.assertIn("installer.log", artifact_paths)
+        self.assertIn('selection.json', artifact_paths)
+        self.assertIn('--shard ${{ matrix.shard }} --selection-file $selectionFile --expected-selection-sha256 $selectionDigest',
+                      steps_with(job, '.agentic/scripts/self_test.py')[0]['run'])
+        self.assertEqual(1, len(steps_with(job, 'scripts/plan_installed_self_test.py')))
+
+    def test_windows_installed_aggregate_always_reconciles_candidate_source(self):
+        job = workflow()['jobs']['windows_installed_runtime_suite']
+        self.assertEqual('Windows installed-runtime suite', job['name'])
+        self.assertEqual(['installed-runtime-self-test'], job['needs'])
+        self.assertEqual('always()', job['if'])
+        self.assertLessEqual(job['timeout-minutes'], 10)
+        checkout = next(s for s in job['steps'] if s.get('uses') == 'actions/checkout@v4')
+        self.assertEqual("${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+                         checkout['with']['ref'])
+        step, = steps_with(job, 'scripts/check_installed_self_test_shards.py')
+        self.assertEqual('always()', step['if'])
+        self.assertIn('--matrix-result', step['run'])
+        self.assertIn('--event-file', step['run'])
 
     def test_windows_self_test_report_is_fresh_and_fallback_never_overwrites(self):
         steps = workflow()["jobs"]["installed-runtime-self-test"]["steps"]
@@ -301,10 +322,10 @@ class CiSuiteCoverageTests(unittest.TestCase):
 
         before_self_test = "\n".join(step.get("run", "") for step in steps[:run_index])
         self.assertNotIn("self-test.json", before_self_test)
-        invocation = "& $installedPython -B $selfTest --checks-only --report $reportPath"
+        invocation = "& $installedPython -B -I $selfTest --checks-only --report $reportPath"
         invocation_offset = run_step["run"].index(invocation)
         failed_exit_offset = run_step["run"].index("if ($selfTestExit -ne 0)")
-        fallback_write_offset = run_step["run"].index("Set-Content -Encoding utf8 -LiteralPath $reportPath")
+        fallback_write_offset = run_step["run"].index("[System.IO.FileMode]::CreateNew")
         self.assertLess(invocation_offset, failed_exit_offset)
         self.assertLess(failed_exit_offset, fallback_write_offset)
         self.assertIn("if (-not (Test-Path -LiteralPath $reportPath))", run_step["run"])
@@ -313,7 +334,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertLess(fallback_index, upload_index)
         self.assertEqual("always()", fallback_step.get("if"))
         self.assertIn("if (-not (Test-Path -LiteralPath $reportPath))", fallback_step["run"])
-        self.assertIn("Set-Content -Encoding utf8 -LiteralPath $reportPath", fallback_step["run"])
+        self.assertIn("[System.IO.FileMode]::CreateNew", fallback_step["run"])
 
     def test_windows_installed_runtime_path_detection_is_robust_and_fail_closed(self):
         jobs = workflow()["jobs"]

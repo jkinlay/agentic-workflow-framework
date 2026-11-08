@@ -210,8 +210,8 @@ class WindowsFinalCandidateCiTests(unittest.TestCase):
         )
         windows = document["jobs"]["installed-runtime-self-test"]
         self.assertIn("github.event.pull_request.draft == false", windows["if"])
-        self.assertEqual({"fail-fast": False, "matrix": {"python-version": ["3.12.10", "3.13.3"]}}, windows["strategy"])
-        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }})", windows["name"])
+        self.assertEqual({"fail-fast": False, "matrix": {"python-version": ["3.12.10", "3.13.3"], "shard": list(range(9))}}, windows["strategy"])
+        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})", windows["name"])
         preserved = deepcopy(windows)
         preserved.pop("strategy")
         preserved["name"] = "Windows installed-runtime self-test"
@@ -219,10 +219,10 @@ class WindowsFinalCandidateCiTests(unittest.TestCase):
         self.assertEqual("${{ matrix.python-version }}", setup["with"]["python-version"])
         setup["with"]["python-version"] = "3.13.3"
         upload = next(step for step in preserved["steps"] if step.get("uses") == "actions/upload-artifact@v4")
-        self.assertEqual("windows-installed-runtime-self-test-${{ matrix.python-version }}-${{ github.run_attempt }}", upload["with"]["name"])
+        self.assertEqual("windows-installed-runtime-self-test-${{ matrix.python-version }}-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}", upload["with"]["name"])
         upload["with"]["name"] = "windows-installed-runtime-self-test-${{ github.run_attempt }}"
         self.assertEqual(
-            "83409085d8ed77668c9e266b832a61f39778eb6670e8a32e7a8fddab656b695e",
+            "e522214a468f3bb8229f9b6c2a08f8235bf6118e285e1b243a6e35ca9b9ef1d6",
             digest({key: value for key, value in preserved.items() if key != "if"}),
         )
 

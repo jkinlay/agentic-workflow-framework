@@ -238,7 +238,21 @@ def main(argv=None):
     parser.add_argument('--expected-reviews-sha256')
     parser.add_argument('--review-required-paths', type=Path)
     parser.add_argument('--expected-review-required-paths-sha256')
+    parser.add_argument('--shard', type=int, choices=range(9))
+    parser.add_argument('--selection-file', type=Path)
+    parser.add_argument('--expected-selection-sha256')
     args = parser.parse_args(argv)
+    sharded = args.shard is not None
+    selection_arguments = args.selection_file is not None or args.expected_selection_sha256 is not None
+    review_arguments = (args.expected_manifest_sha256, args.reviews, args.expected_reviews_sha256,
+                        args.review_required_paths, args.expected_review_required_paths_sha256)
+    if sharded or selection_arguments:
+        if SOURCE_REPOSITORY:
+            parser.error('Installed shards cannot run in the source repository')
+        if not sharded or not args.selection_file or not args.expected_selection_sha256:
+            parser.error('Use --shard, --selection-file and --expected-selection-sha256 together')
+        if args.release or any(value is not None for value in review_arguments):
+            parser.error('Installed shards cannot use release-qualification arguments')
     report_in_temp = False
     if args.report:
         try:
@@ -266,8 +280,18 @@ def main(argv=None):
         'created_at': datetime.now(timezone.utc).isoformat(), 'python': sys.version,
         'platform': platform.platform(), 'checks': {}, 'dependencies': {}, 'status': 'FAILED',
         'release_qualified': False, 'current_review': {'status': 'NOT_PROVIDED'}}
+    if sharded:
+        report.update(scope='installed-shard', suite_complete=False, shard=args.shard, shard_count=9,
+                      selection_sha256=args.expected_selection_sha256, isolation='FAILED',
+                      selected_modules=[], discovered_modules=[], completed_modules=[], component_phases={},
+                      tested_components=['installed_selected_tests'])
     try:
-        progress.begin_phase('discovery')
+        if sharded:
+            from agentic.self_test_shards import (assert_isolation, installed_inventory,
+                                                 validate_selection, InstalledLoader)
+            report['isolation'] = assert_isolation(ROOT)
+        if not sharded or args.shard == 0:
+            progress.begin_phase('discovery')
         from agentic import ValidationError
         from agentic.canonical import load, sha256
         from agentic.contracts import Contracts
@@ -297,114 +321,128 @@ def main(argv=None):
             if release_mode:
                 raise ValueError('Source release qualification does not apply to installed component checks')
             report['current_review'] = {'status': 'NOT_APPLICABLE', 'reason': 'Installed component check; source release review is established separately by archive acceptance'}
-        schema_dir = ROOT / '.agentic/schemas'
-        contracts = Contracts(schema_dir)
-        operating_schemas = {'operating-config', 'operating-change', 'operating-recommendation', 'operating-epics'}
-        from agentic.contracts import schema_inventory
-        generated_schema_names = schema_inventory(schema_dir)
-        if set(contracts.schemas) != generated_schema_names or not operating_schemas <= generated_schema_names:
-            raise ValueError('Generated schema catalog differs from the loaded schemas')
-        validate_workflow(load(ROOT / '.agentic/workflow.yaml'))
-        contracts.validate('project-config', load(ROOT / '.agentic/PROJECT_CONFIG.yaml'))
-        report['checks']['schema_catalog_and_workflow'] = 'PASS'
-        from jsonschema import Draft202012Validator
-        for name in ['critic','worker']:
-            Draft202012Validator.check_schema(load(ROOT / f'.agentic/review-loop/{name}-result.schema.json'))
-        host_default = load(ROOT / '.agentic/review-loop/host-config.example.json')
-        if host_default['automation_default'] is not True or host_default['qualification']['sandbox_verified'] is not False:
-            raise ValueError('Host loop must default to automation with explicit incomplete qualification')
-        report['checks']['host_loop_output_schemas'] = 2
-        report['checks']['default_automatic_policy_unqualified_until_enrolled'] = 'PASS'
-        from agentic.providers.github import validate_ruleset_template
-        validate_ruleset_template(load(ROOT / '.agentic/templates/awf-main-ruleset.json'))
-        report['checks']['repository_ruleset_template'] = 'PASS'
-        forms = list((ROOT / '.agentic/templates').glob('*.yaml')) + [
-            path for path in (ROOT / '.agentic/templates').glob('*.json')
-            # Not contract-catalog forms: the ruleset template and the heavy
-            # validation records, which agentic.heavy_validation validates in code.
-            if path.name not in {'awf-main-ruleset.json', 'heavy-validation-capacity.json',
-                                 'heavy-validation-plan.json', 'heavy-validation-review.json'}]
-        covered = set()
-        for path in forms:
-            value = load(path)
-            if value.get('status') != 'UNFILLED' or value.get('template_for') not in contracts.schemas:
-                raise ValueError(f'Unmarked or unknown draft form: {path.name}')
-            name = value['template_for']
-            if name in covered:
-                raise ValueError('Duplicate record form')
-            covered.add(name)
-            complete_form(value['record'], contracts.schemas[name], contracts.schemas)
-            try:
-                contracts.validate(name, value)
-            except ValidationError:
-                pass
+        if sharded:
+            plan = validate_selection(args.selection_file.read_bytes(), args.expected_selection_sha256,
+                                      installed_inventory(ROOT), report['source_manifest_sha256'])
+            loader = InstalledLoader(ROOT, plan, args.shard)
+            report['selected_modules'] = loader.selected
+        if not sharded or args.shard == 0:
+            schema_dir = ROOT / '.agentic/schemas'
+            contracts = Contracts(schema_dir)
+            operating_schemas = {'operating-config', 'operating-change', 'operating-recommendation', 'operating-epics'}
+            from agentic.contracts import schema_inventory
+            generated_schema_names = schema_inventory(schema_dir)
+            if set(contracts.schemas) != generated_schema_names or not operating_schemas <= generated_schema_names:
+                raise ValueError('Generated schema catalog differs from the loaded schemas')
+            validate_workflow(load(ROOT / '.agentic/workflow.yaml'))
+            contracts.validate('project-config', load(ROOT / '.agentic/PROJECT_CONFIG.yaml'))
+            report['checks']['schema_catalog_and_workflow'] = 'PASS'
+            from jsonschema import Draft202012Validator
+            for name in ['critic','worker']:
+                Draft202012Validator.check_schema(load(ROOT / f'.agentic/review-loop/{name}-result.schema.json'))
+            host_default = load(ROOT / '.agentic/review-loop/host-config.example.json')
+            if host_default['automation_default'] is not True or host_default['qualification']['sandbox_verified'] is not False:
+                raise ValueError('Host loop must default to automation with explicit incomplete qualification')
+            report['checks']['host_loop_output_schemas'] = 2
+            report['checks']['default_automatic_policy_unqualified_until_enrolled'] = 'PASS'
+            from agentic.providers.github import validate_ruleset_template
+            validate_ruleset_template(load(ROOT / '.agentic/templates/awf-main-ruleset.json'))
+            report['checks']['repository_ruleset_template'] = 'PASS'
+            forms = list((ROOT / '.agentic/templates').glob('*.yaml')) + [
+                path for path in (ROOT / '.agentic/templates').glob('*.json')
+                # Not contract-catalog forms: the ruleset template and the heavy
+                # validation records, which agentic.heavy_validation validates in code.
+                if path.name not in {'awf-main-ruleset.json', 'heavy-validation-capacity.json',
+                                     'heavy-validation-plan.json', 'heavy-validation-review.json'}]
+            covered = set()
+            for path in forms:
+                value = load(path)
+                if value.get('status') != 'UNFILLED' or value.get('template_for') not in contracts.schemas:
+                    raise ValueError(f'Unmarked or unknown draft form: {path.name}')
+                name = value['template_for']
+                if name in covered:
+                    raise ValueError('Duplicate record form')
+                covered.add(name)
+                complete_form(value['record'], contracts.schemas[name], contracts.schemas)
+                try:
+                    contracts.validate(name, value)
+                except ValidationError:
+                    pass
+                else:
+                    raise ValueError('Unfilled wrapper accepted as runtime evidence')
+            # Operating records are emitted by their commands, and ticket-plan is
+            # emitted by the planner; none are unfilled evidence-form wrappers.
+            if covered != unfilled_form_schema_names(contracts.schemas, operating_schemas):
+                raise ValueError('Incomplete form catalog')
+            report['checks']['complete_unfilled_forms'] = len(forms)
+            if sharded:
+                suite = loader.discover(str(ROOT / '.agentic/tests'), top_level_dir=str(ROOT / '.agentic/tests'))
             else:
-                raise ValueError('Unfilled wrapper accepted as runtime evidence')
-        # Operating records are emitted by their commands, and ticket-plan is
-        # emitted by the planner; none are unfilled evidence-form wrappers.
-        if covered != unfilled_form_schema_names(contracts.schemas, operating_schemas):
-            raise ValueError('Incomplete form catalog')
-        report['checks']['complete_unfilled_forms'] = len(forms)
-        suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
-        if SOURCE_REPOSITORY and (ROOT / 'global/awf/tests').is_dir():
-            suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
-            report['tested_components'].append('local_release_discovery')
-        if SOURCE_REPOSITORY and (ROOT / 'scripts/tests').is_dir():
-            suite.addTests(unittest.TestLoader().discover(str(ROOT / 'scripts/tests')))
-            report['tested_components'].append('local_catalog_publication')
-        progress.complete_phase('discovery')
+                suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
+            if SOURCE_REPOSITORY and (ROOT / 'global/awf/tests').is_dir():
+                suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
+                report['tested_components'].append('local_release_discovery')
+            if SOURCE_REPOSITORY and (ROOT / 'scripts/tests').is_dir():
+                suite.addTests(unittest.TestLoader().discover(str(ROOT / 'scripts/tests')))
+                report['tested_components'].append('local_catalog_publication')
+            progress.complete_phase('discovery')
 
-        progress.begin_phase('syntax')
-        roots = [ROOT / '.agentic']
-        if SOURCE_REPOSITORY:
-            roots.append(ROOT / 'scripts')
-            roots.append(ROOT / 'global')
-        code = sorted(p for root in roots for p in root.rglob('*.py'))
-        for path in code:
-            compile(path.read_bytes(), str(path), 'exec')
-        report['checks']['python_syntax_files'] = len(code)
-        from agentic.configuration import load_project_launch_surfaces
-        from agentic.launch_surfaces import validate_repository_launch_surfaces
-        project_scripts = load_project_launch_surfaces(ROOT)
-        report['checks']['launch_surfaces'] = validate_repository_launch_surfaces(
-            ROOT, project_scripts=project_scripts)
-        report['code_sha256'] = {p.relative_to(ROOT).as_posix(): sha256(p.read_bytes()) for p in code}
-        progress.complete_phase('syntax')
+            progress.begin_phase('syntax')
+            roots = [ROOT / '.agentic']
+            if SOURCE_REPOSITORY:
+                roots.append(ROOT / 'scripts')
+                roots.append(ROOT / 'global')
+            code = sorted(p for root in roots for p in root.rglob('*.py'))
+            for path in code:
+                compile(path.read_bytes(), str(path), 'exec')
+            report['checks']['python_syntax_files'] = len(code)
+            from agentic.configuration import load_project_launch_surfaces
+            from agentic.launch_surfaces import validate_repository_launch_surfaces
+            project_scripts = load_project_launch_surfaces(ROOT)
+            report['checks']['launch_surfaces'] = validate_repository_launch_surfaces(
+                ROOT, project_scripts=project_scripts)
+            report['code_sha256'] = {p.relative_to(ROOT).as_posix(): sha256(p.read_bytes()) for p in code}
+            progress.complete_phase('syntax')
 
-        progress.begin_phase('documentation')
-        markdown = list((ROOT / '.agentic').rglob('*.md')) + [ROOT / 'AGENTS.md', ROOT / '.github/PULL_REQUEST_TEMPLATE.md']
-        if SOURCE_REPOSITORY:
-            markdown += list(ROOT.glob('*.md')) + list((ROOT / 'global').rglob('*.md'))
-        links = 0
-        for path in set(markdown):
-            content = path.read_text(encoding='utf-8')
-            for target in re.findall(r'(?<!!)\[[^\]]+\]\(([^\s)]+)\)', content):
-                target = unquote(target.strip('<>').split('#', 1)[0])
-                if not target or re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', target):
-                    continue
-                relative = path.relative_to(ROOT).as_posix()
-                generated_portable_asset = (relative == 'global/awf-portable/SKILL.md'
-                    and target in {f'assets/agentic-workflow-template-v{VERSION}.zip', 'assets/release.json'})
-                if not (path.parent / target).exists() and not generated_portable_asset:
-                    raise ValueError(f'Broken document link: {path.relative_to(ROOT)} -> {target}')
-                links += 1
-        report['checks']['local_markdown_links'] = links
-        command_documents, command_problems = documentation_command_problems(ROOT)
-        if command_problems:
-            raise ValueError('Unsafe documented command form: ' + '; '.join(command_problems))
-        report['checks']['windows_command_document_lint'] = {'files': command_documents, 'problems': 0}
-        progress.complete_phase('documentation')
+            progress.begin_phase('documentation')
+            markdown = list((ROOT / '.agentic').rglob('*.md')) + [ROOT / 'AGENTS.md', ROOT / '.github/PULL_REQUEST_TEMPLATE.md']
+            if SOURCE_REPOSITORY:
+                markdown += list(ROOT.glob('*.md')) + list((ROOT / 'global').rglob('*.md'))
+            links = 0
+            for path in set(markdown):
+                content = path.read_text(encoding='utf-8')
+                for target in re.findall(r'(?<!!)\[[^\]]+\]\(([^\s)]+)\)', content):
+                    target = unquote(target.strip('<>').split('#', 1)[0])
+                    if not target or re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', target):
+                        continue
+                    relative = path.relative_to(ROOT).as_posix()
+                    generated_portable_asset = (relative == 'global/awf-portable/SKILL.md'
+                        and target in {f'assets/agentic-workflow-template-v{VERSION}.zip', 'assets/release.json'})
+                    if not (path.parent / target).exists() and not generated_portable_asset:
+                        raise ValueError(f'Broken document link: {path.relative_to(ROOT)} -> {target}')
+                    links += 1
+            report['checks']['local_markdown_links'] = links
+            command_documents, command_problems = documentation_command_problems(ROOT)
+            if command_problems:
+                raise ValueError('Unsafe documented command form: ' + '; '.join(command_problems))
+            report['checks']['windows_command_document_lint'] = {'files': command_documents, 'problems': 0}
+            progress.complete_phase('documentation')
 
-        progress.begin_phase('release_hygiene')
-        if SOURCE_REPOSITORY:
-            sys.path.insert(0, str(ROOT / 'scripts'))
-            from release_hygiene import check_release
-            report['checks']['source_release_hygiene'] = check_release(ROOT)
-            report['tested_components'].append('real_source_release_hygiene')
+            progress.begin_phase('release_hygiene')
+            if SOURCE_REPOSITORY:
+                sys.path.insert(0, str(ROOT / 'scripts'))
+                from release_hygiene import check_release
+                report['checks']['source_release_hygiene'] = check_release(ROOT)
+                report['tested_components'].append('real_source_release_hygiene')
+            else:
+                report['checks']['source_release_hygiene'] = 'NOT_APPLICABLE: installed runtime has no source generators'
+            progress.complete_phase('release_hygiene')
+
         else:
-            report['checks']['source_release_hygiene'] = 'NOT_APPLICABLE: installed runtime has no source generators'
-        progress.complete_phase('release_hygiene')
+            suite = loader.discover(str(ROOT / '.agentic/tests'), top_level_dir=str(ROOT / '.agentic/tests'))
 
+        if sharded:
+            report['isolation'] = assert_isolation(ROOT)
         progress.begin_phase('test_suite')
         result, test_log = execute_test_suite(suite, progress)
         report['tests'] = {'run': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
@@ -413,6 +451,14 @@ def main(argv=None):
         report['test_log'] = test_log
         report['status'] = 'PASS' if result.wasSuccessful() else 'FAILED'
         progress.complete_phase('test_suite')
+        if sharded:
+            loader.reconcile()
+            report['isolation'] = assert_isolation(ROOT)
+            if verify_installed(ROOT) != report['source_manifest_sha256']:
+                raise ValueError('Installed manifest changed during execution')
+            if any(not item['test'] or not item['reason'].strip() for item in report['tests']['skipped']):
+                raise ValueError('Skip missing a test or reason')
+            report['status'] = 'SHARD_PASS' if result.wasSuccessful() else 'FAILED'
         if report['current_review'].get('release_qualified') is True:
             final_review = review_source(ROOT, args.expected_manifest_sha256,
                 args.reviews, args.expected_reviews_sha256, args.review_required_paths,
@@ -435,6 +481,16 @@ def main(argv=None):
         report['release_qualified'] = False
         report['error'] = f'{type(exc).__name__}: {exc}'
         print(report['error'], file=sys.stderr)
+    if sharded:
+        if 'loader' in locals():
+            report.update(discovered_modules=loader.discovered, completed_modules=loader.completed,
+                          split_cases=loader.split_cases, split_all_cases=loader.split_all_cases,
+                          zero_test_modules=loader.zero_test_modules)
+        if report['status'] not in {'SHARD_PASS', 'FAILED'}:
+            report['status'] = 'FAILED'
+        report['component_phases'] = {name: 'PASS' for name in PHASES[:-1] if name in progress.timings}
+        if report['component_phases']:
+            report['tested_components'].append('installed_component_checks')
     report['review'] = report['current_review']['status']
     report['elapsed_seconds'] = round(time.monotonic() - started, 3)
     report['phase_timings_seconds'] = {name: progress.timings[name] for name in PHASES if name in progress.timings}
@@ -452,7 +508,7 @@ def main(argv=None):
     print(render_final_report(report), end='')
     if report['status'] == 'INTERRUPTED':
         return 130
-    return 0 if report['status'] == 'PASS' else 1
+    return 0 if report['status'] in {'PASS', 'SHARD_PASS'} else 1
 
 
 if __name__ == '__main__':

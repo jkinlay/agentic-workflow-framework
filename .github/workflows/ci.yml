@@ -147,7 +147,7 @@ jobs:
           esac
 
   installed-runtime-self-test:
-    name: Windows installed-runtime self-test (Python ${{ matrix.python-version }})
+    name: Windows installed-runtime self-test (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})
     needs: [windows_runtime_paths]
     if: >-
       always() && (github.event_name == 'push' ||
@@ -161,6 +161,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12.10", "3.13.3"]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Initialize installed-runtime evidence paths
         shell: pwsh
@@ -182,6 +183,11 @@ jobs:
       - name: Install hash-locked dependencies
         run: |
           python -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - name: Plan installed selections in a source-only process
+        shell: pwsh
+        run: |
+          python -B scripts/plan_installed_self_test.py --output "$env:AWF_ARTIFACT_DIR\selection.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the release template from this commit
         shell: pwsh
         run: |
@@ -241,22 +247,29 @@ jobs:
           $installedPython = "$env:AWF_INSTALLED_PROJECT\.agentic\.venv\Scripts\python.exe"
           $selfTest = "$env:AWF_INSTALLED_PROJECT\.agentic\scripts\self_test.py"
           $reportPath = "$env:AWF_ARTIFACT_DIR\self-test.json"
+          $selectionFile = "$env:AWF_ARTIFACT_DIR\selection.json"
+          $selectionDigest = (Get-Content -Raw -LiteralPath "$selectionFile.sha256").Trim()
           Push-Location $env:AWF_INSTALLED_PROJECT
           try {
-            & $installedPython -B $selfTest --checks-only --report $reportPath
+            & $installedPython -B -I $selfTest --checks-only --report $reportPath --shard ${{ matrix.shard }} --selection-file $selectionFile --expected-selection-sha256 $selectionDigest
             $selfTestExit = $LASTEXITCODE
           } finally {
             Pop-Location
           }
           if ($selfTestExit -ne 0) {
             if (-not (Test-Path -LiteralPath $reportPath)) {
-              @{ status = "FAILED"; reason = "Installed self-test exited $selfTestExit without producing a report." } |
-                ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $reportPath
+              $failureReport = @{ scope = "installed-shard"; status = "FAILED"; suite_complete = $false; shard = ${{ matrix.shard }}; shard_count = 9; selected_modules = @(); discovered_modules = @(); completed_modules = @(); selection_sha256 = $selectionDigest; tests = @{ skipped = @() }; reason = "Installed self-test exited $selfTestExit without producing a report." } | ConvertTo-Json
+              $stream = [System.IO.File]::Open($reportPath, [System.IO.FileMode]::CreateNew)
+              try {
+                $writer = [System.IO.StreamWriter]::new($stream)
+                $writer.Write($failureReport)
+                $writer.Dispose()
+              } finally { $stream.Dispose() }
             }
             exit $selfTestExit
           }
           $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
-          if ($report.status -ne "PASS") { throw "Installed self-test status is $($report.status)" }
+          if ($report.status -ne "SHARD_PASS") { throw "Installed self-test status is $($report.status)" }
           if ($report.tests.failures -ne 0 -or $report.tests.errors -ne 0) {
             throw "Installed self-test reported $($report.tests.failures) failures and $($report.tests.errors) errors"
           }
@@ -270,18 +283,61 @@ jobs:
         run: |
           $reportPath = "$env:AWF_ARTIFACT_DIR\self-test.json"
           if (-not (Test-Path -LiteralPath $reportPath)) {
-            @{ status = "NOT_RUN"; reason = "Installed self-test did not run because an earlier job step failed." } |
-              ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $reportPath
+            $selectionDigest = $null
+            $selectionFile = "$env:AWF_ARTIFACT_DIR\selection.json"
+            if (Test-Path -LiteralPath $selectionFile) {
+              $selectionDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $selectionFile).Hash.ToLowerInvariant()
+            }
+            $failureReport = @{ scope = "installed-shard"; status = "FAILED"; suite_complete = $false; shard = ${{ matrix.shard }}; shard_count = 9; selected_modules = @(); discovered_modules = @(); completed_modules = @(); selection_sha256 = $selectionDigest; tests = @{ skipped = @() }; reason = "Installed self-test did not run because an earlier job step failed." } | ConvertTo-Json
+            $stream = [System.IO.File]::Open($reportPath, [System.IO.FileMode]::CreateNew)
+            try {
+              $writer = [System.IO.StreamWriter]::new($stream)
+              $writer.Write($failureReport)
+              $writer.Dispose()
+            } finally { $stream.Dispose() }
           }
       - name: Upload installed-runtime evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installed-runtime-self-test-${{ matrix.python-version }}-${{ github.run_attempt }}
+          name: windows-installed-runtime-self-test-${{ matrix.python-version }}-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}\awf-installed-self-test-artifacts\self-test.json
             ${{ runner.temp }}\awf-installed-self-test-artifacts\installer.log
+            ${{ runner.temp }}\awf-installed-self-test-artifacts\selection.json
+            ${{ runner.temp }}\awf-installed-self-test-artifacts\selection.json.sha256
           if-no-files-found: warn
+
+  windows_installed_runtime_suite:
+    name: Windows installed-runtime suite
+    needs: [installed-runtime-self-test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+      - name: Install hash-locked dependencies
+        run: python -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - uses: actions/download-artifact@v4
+        if: needs.installed-runtime-self-test.result == 'success'
+        with:
+          pattern: windows-installed-runtime-self-test-*
+          path: installed-shard-artifacts
+      - name: Reconcile candidate installed membership and all Windows shards
+        if: always()
+        env:
+          MATRIX_RESULT: ${{ needs.installed-runtime-self-test.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: >-
+          python -B scripts/check_installed_self_test_shards.py
+          --artifacts installed-shard-artifacts --matrix-result "$MATRIX_RESULT"
+          --event-name "$EVENT_NAME" --event-file "$GITHUB_EVENT_PATH"
 
   windows_unittests:
     name: Windows unit tests (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})
