@@ -1,0 +1,1499 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A hands-on AWF guide for the Quant Team: Quant Foundry startup, specifications, Jira planning, model-selectable lanes, independent review and PR integration.">
+  <title>AWF 1.9.5: A Practical Guide for the Quant Team</title>
+  <style>
+    :root {
+      --ink: #f3f7fc;
+      --muted: #b9c9dd;
+      --muted-2: #91a7c2;
+      --navy-950: #061526;
+      --navy-900: #081d35;
+      --navy-800: #0d2d51;
+      --navy-700: #164778;
+      --line: rgba(187, 215, 242, 0.20);
+      --line-strong: rgba(187, 215, 242, 0.42);
+      --teal: #53d4d1;
+      --teal-soft: rgba(83, 212, 209, 0.13);
+      --blue: #87aaff;
+      --blue-soft: rgba(135, 170, 255, 0.14);
+      --amber: #f6c56e;
+      --amber-soft: rgba(246, 197, 110, 0.15);
+      --rose: #f591a0;
+      --rose-soft: rgba(245, 145, 160, 0.12);
+      --green: #81d8a7;
+      --green-soft: rgba(129, 216, 167, 0.13);
+      --shadow: 0 28px 80px rgba(0, 0, 0, 0.33);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      color: var(--ink);
+      background: #03101f;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    button, a { font: inherit; }
+    button { color: inherit; }
+
+    :focus-visible {
+      outline: 3px solid var(--amber);
+      outline-offset: 4px;
+    }
+
+    .skip-link {
+      position: fixed;
+      z-index: 50;
+      top: 12px;
+      left: 12px;
+      transform: translateY(-180%);
+      padding: 10px 14px;
+      color: var(--navy-950);
+      background: var(--amber);
+      border-radius: 8px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+
+    .skip-link:focus { transform: translateY(0); }
+
+    .deck-shell {
+      position: relative;
+      width: min(100vw, 177.7778vh);
+      height: min(100vh, 56.25vw);
+      min-height: 560px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 92% 8%, rgba(67, 143, 226, 0.19), transparent 29%),
+        radial-gradient(circle at 6% 96%, rgba(64, 197, 185, 0.12), transparent 32%),
+        linear-gradient(130deg, var(--navy-950) 0%, var(--navy-900) 50%, #0b2748 100%);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+
+    .deck-shell::before,
+    .deck-shell::after {
+      position: absolute;
+      z-index: -1;
+      content: "";
+      pointer-events: none;
+      border: 1px solid rgba(130, 180, 238, 0.12);
+      border-radius: 50%;
+    }
+
+    .deck-shell::before {
+      top: -24%;
+      right: -8%;
+      width: 46%;
+      height: 86%;
+      transform: rotate(-19deg);
+    }
+
+    .deck-shell::after {
+      bottom: -36%;
+      left: 2%;
+      width: 56%;
+      height: 64%;
+      transform: rotate(10deg);
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+    }
+
+    .slide.active {
+      display: block;
+      animation: enter 300ms ease-out both;
+    }
+
+    @keyframes enter {
+      from { opacity: 0; transform: translateY(7px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .slide-inner {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      padding: 5% 6.15% 4.35%;
+    }
+
+    .topline,
+    .footerline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex: 0 0 auto;
+    }
+
+    .topline { min-height: 24px; }
+
+    .footerline {
+      margin-top: 1.55%;
+      padding-top: 1.28%;
+      border-top: 1px solid var(--line);
+      color: var(--muted-2);
+      font-size: clamp(10px, 0.88vw, 14px);
+      line-height: 1.35;
+    }
+
+    .footerline strong { color: var(--muted); }
+
+    .eyebrow {
+      margin: 0;
+      color: var(--teal);
+      font-size: clamp(11px, 1.02vw, 16px);
+      font-weight: 800;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .slide-index {
+      color: var(--muted-2);
+      font-size: clamp(11px, 1vw, 16px);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 870px;
+      margin: 0;
+      color: #f8fbff;
+      font-size: clamp(45px, 5.35vw, 86px);
+      line-height: 1.03;
+      letter-spacing: -0.05em;
+    }
+
+    .slide-title {
+      max-width: 1030px;
+      margin: 2.05% 0 1.4%;
+      color: #f8fbff;
+      font-size: clamp(30px, 3.36vw, 55px);
+      line-height: 1.08;
+      letter-spacing: -0.039em;
+    }
+
+    .lead {
+      max-width: 790px;
+      margin: 2.1% 0 0;
+      color: var(--muted);
+      font-size: clamp(17px, 1.53vw, 25px);
+      line-height: 1.44;
+    }
+
+    .body-copy {
+      color: var(--muted);
+      font-size: clamp(14px, 1.25vw, 20px);
+      line-height: 1.48;
+    }
+
+    .small-copy {
+      color: var(--muted);
+      font-size: clamp(12px, 1.02vw, 16px);
+      line-height: 1.45;
+    }
+
+    .content {
+      display: flex;
+      flex: 1 1 auto;
+      min-height: 0;
+      align-items: center;
+    }
+
+    .source-chip,
+    .label-chip,
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .source-chip {
+      padding: 7px 10px;
+      color: var(--muted);
+      background: rgba(6, 21, 38, 0.26);
+      font-size: clamp(9px, 0.8vw, 12px);
+    }
+
+    .label-chip {
+      padding: 7px 10px;
+      color: var(--teal);
+      background: var(--teal-soft);
+      border-color: rgba(83, 212, 209, 0.32);
+      font-size: clamp(9px, 0.83vw, 13px);
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .status-chip {
+      padding: 6px 9px;
+      color: var(--muted);
+      font-size: clamp(9px, 0.82vw, 13px);
+      font-weight: 750;
+    }
+
+    .status-chip.amber { color: var(--amber); border-color: rgba(246, 197, 110, 0.46); background: var(--amber-soft); }
+    .status-chip.green { color: var(--green); border-color: rgba(129, 216, 167, 0.40); background: var(--green-soft); }
+    .status-chip.blue { color: var(--blue); border-color: rgba(135, 170, 255, 0.42); background: var(--blue-soft); }
+    .status-chip.rose { color: var(--rose); border-color: rgba(245, 145, 160, 0.42); background: var(--rose-soft); }
+
+    .cover-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 4.5%;
+      align-items: center;
+      width: 100%;
+    }
+
+    .release-kicker {
+      margin: 0 0 18px;
+      color: var(--teal);
+      font-size: clamp(13px, 1.2vw, 19px);
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .cover-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 28px;
+    }
+
+    .cover-art {
+      position: relative;
+      display: grid;
+      min-height: 360px;
+      place-items: center;
+    }
+
+    .orbit {
+      position: absolute;
+      width: 70%;
+      aspect-ratio: 1;
+      border: 1px solid rgba(135, 170, 255, 0.33);
+      border-radius: 50%;
+    }
+
+    .orbit.one { width: 78%; border-color: rgba(83, 212, 209, 0.26); transform: rotate(26deg) scaleY(.67); }
+    .orbit.two { width: 58%; border-color: rgba(246, 197, 110, 0.36); transform: rotate(-32deg) scaleX(.69); }
+
+    .core-mark {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 34%;
+      aspect-ratio: 1;
+      place-items: center;
+      border: 1px solid rgba(83, 212, 209, 0.7);
+      border-radius: 50%;
+      background: linear-gradient(145deg, rgba(13, 45, 81, .97), rgba(6, 21, 38, .96));
+      box-shadow: 0 0 0 16px rgba(83, 212, 209, 0.05), 0 0 70px rgba(83, 212, 209, .18);
+      color: var(--teal);
+      font-size: clamp(30px, 4vw, 66px);
+      font-weight: 850;
+      letter-spacing: -0.08em;
+    }
+
+    .orbit-label {
+      position: absolute;
+      z-index: 2;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(7, 27, 50, .88);
+      color: var(--muted);
+      font-size: clamp(10px, .98vw, 15px);
+      font-weight: 750;
+    }
+
+    .orbit-label.a { top: 10%; right: 0; }
+    .orbit-label.b { bottom: 17%; right: 2%; }
+    .orbit-label.c { bottom: 4%; left: 10%; }
+    .orbit-label.d { top: 22%; left: 0; }
+
+    .comparison {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4%;
+      width: 100%;
+    }
+
+    .comparison-side {
+      min-height: 316px;
+      padding: 26px 30px;
+      border-top: 2px solid var(--line-strong);
+      background: linear-gradient(140deg, rgba(12, 42, 76, .55), rgba(6, 21, 38, .12));
+    }
+
+    .comparison-side.problem { border-color: rgba(245, 145, 160, .68); }
+    .comparison-side.controlled { border-color: rgba(83, 212, 209, .74); }
+
+    .comparison-side h3 {
+      margin-bottom: 16px;
+      font-size: clamp(20px, 1.78vw, 28px);
+      letter-spacing: -0.025em;
+    }
+
+    .comparison-side p { margin-bottom: 10px; }
+
+    .plain-list {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .plain-list li {
+      display: grid;
+      grid-template-columns: 13px 1fr;
+      gap: 10px;
+      color: var(--muted);
+      font-size: clamp(13px, 1.18vw, 18px);
+      line-height: 1.35;
+    }
+
+    .plain-list li::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      margin-top: .48em;
+      border-radius: 50%;
+      background: var(--muted-2);
+    }
+
+    .controlled .plain-list li::before { background: var(--teal); }
+    .problem .plain-list li::before { background: var(--rose); }
+
+    .terminal-layout {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 4.1%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .terminal {
+      overflow: hidden;
+      border: 1px solid rgba(132, 168, 213, .34);
+      border-radius: 14px;
+      background: #04111e;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .20);
+    }
+
+    .terminal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(132, 168, 213, .20);
+      color: var(--muted-2);
+      font-size: clamp(9px, .82vw, 13px);
+      letter-spacing: .02em;
+    }
+
+    .terminal-dots { display: flex; gap: 6px; }
+    .terminal-dots i { width: 7px; height: 7px; border-radius: 50%; background: #6e809b; }
+    .terminal-dots i:nth-child(1) { background: var(--rose); }
+    .terminal-dots i:nth-child(2) { background: var(--amber); }
+    .terminal-dots i:nth-child(3) { background: var(--green); }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      color: #d9e7fa;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: clamp(11px, .98vw, 15px);
+      line-height: 1.53;
+    }
+
+    .terminal pre { padding: 19px 20px 21px; }
+    .prompt { color: var(--muted-2); }
+    .command { color: #e9f4ff; }
+    .output-key { color: var(--teal); }
+    .output-value { color: var(--green); }
+    .output-warn { color: var(--amber); }
+
+    .facts {
+      display: grid;
+      gap: 17px;
+      align-content: center;
+    }
+
+    .fact {
+      display: grid;
+      grid-template-columns: 49px 1fr;
+      gap: 16px;
+      align-items: start;
+      padding-bottom: 15px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .fact:last-child { border-bottom: 0; }
+
+    .fact-number {
+      color: var(--teal);
+      font-size: clamp(20px, 2.15vw, 34px);
+      font-weight: 850;
+      letter-spacing: -0.05em;
+    }
+
+    .fact h3 { margin: 0 0 4px; font-size: clamp(16px, 1.3vw, 20px); }
+    .fact p { margin: 0; }
+
+    .mini-note {
+      padding: 14px 16px;
+      border-left: 2px solid var(--amber);
+      color: var(--muted);
+      background: linear-gradient(90deg, var(--amber-soft), transparent);
+      font-size: clamp(11px, 1.03vw, 16px);
+      line-height: 1.4;
+    }
+
+    .setup-flow {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .flow-steps {
+      display: grid;
+      gap: 0;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .flow-step:first-child { border-top: 1px solid var(--line); }
+
+    .flow-number {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border: 1px solid rgba(83, 212, 209, .58);
+      border-radius: 50%;
+      color: var(--teal);
+      font-size: clamp(13px, 1.07vw, 16px);
+      font-weight: 850;
+    }
+
+    .flow-step strong { display: block; margin-bottom: 4px; font-size: clamp(14px, 1.25vw, 19px); }
+    .flow-step span { color: var(--muted); font-size: clamp(11px, 1vw, 15px); line-height: 1.35; }
+
+    .capture-frame {
+      display: grid;
+      min-height: 260px;
+      place-items: center;
+      padding: 24px;
+      border: 1px dashed rgba(135, 170, 255, .70);
+      background: linear-gradient(135deg, rgba(135, 170, 255, .08), transparent 54%);
+      text-align: center;
+    }
+
+    .capture-frame strong {
+      display: block;
+      margin-bottom: 9px;
+      color: var(--blue);
+      font-size: clamp(18px, 1.62vw, 25px);
+    }
+
+    .capture-frame p { max-width: 350px; margin: 0; color: var(--muted); }
+
+    .capture-frame code,
+    code {
+      color: #d9e7fa;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: .92em;
+    }
+
+    .showcase-steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      width: 100%;
+    }
+
+    .showcase-step {
+      display: grid;
+      min-height: 232px;
+      align-content: start;
+      gap: 13px;
+      padding: 22px 21px;
+      border-top: 2px solid var(--teal);
+      background: linear-gradient(145deg, rgba(83, 212, 209, .12), rgba(8, 29, 53, .24));
+    }
+
+    .showcase-step:nth-child(2) { border-color: var(--blue); background: linear-gradient(145deg, var(--blue-soft), rgba(8, 29, 53, .24)); }
+    .showcase-step:nth-child(3) { border-color: var(--amber); background: linear-gradient(145deg, var(--amber-soft), rgba(8, 29, 53, .24)); }
+    .showcase-step h3 { margin: 0; font-size: clamp(18px, 1.62vw, 25px); letter-spacing: -0.025em; }
+    .showcase-step p { margin: 0; color: var(--muted); font-size: clamp(12px, 1.08vw, 16px); line-height: 1.4; }
+    .showcase-step .step-label { color: var(--teal); font-size: clamp(10px, .92vw, 14px); font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .showcase-step:nth-child(2) .step-label { color: var(--blue); }
+    .showcase-step:nth-child(3) .step-label { color: var(--amber); }
+
+    .receipt-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0 22px;
+      width: 100%;
+      border-top: 1px solid var(--line);
+    }
+
+    .receipt-grid div {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: clamp(11px, 1.0vw, 15px);
+    }
+
+    .receipt-grid b { color: var(--ink); font-weight: 750; text-align: right; }
+
+    .action-map {
+      display: grid;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .action-map-row {
+      display: grid;
+      grid-template-columns: minmax(168px, .8fr) minmax(210px, 1fr) minmax(180px, .86fr);
+      gap: 18px;
+      align-items: center;
+      padding: 17px 18px;
+      border-left: 2px solid var(--teal);
+      background: rgba(8, 29, 53, .33);
+    }
+
+    .action-map-row.governed { border-left-color: var(--amber); }
+    .action-map-row .path { margin: 0; color: var(--teal); font-family: "SFMono-Regular", Consolas, monospace; font-size: clamp(11px, 1.02vw, 16px); }
+    .action-map-row.governed .path { color: var(--amber); }
+    .action-map-row strong { font-size: clamp(14px, 1.18vw, 18px); }
+    .action-map-row span { color: var(--muted); font-size: clamp(11px, 1.0vw, 15px); line-height: 1.35; }
+
+    .config-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4%;
+      width: 100%;
+      align-items: stretch;
+    }
+
+    .config-zone {
+      position: relative;
+      padding: 23px 26px 25px;
+      border-top: 2px solid var(--teal);
+      background: rgba(9, 33, 60, .42);
+    }
+
+    .config-zone.governance { border-color: var(--amber); }
+    .config-zone h3 { margin-bottom: 8px; font-size: clamp(20px, 1.85vw, 29px); letter-spacing: -0.03em; }
+    .config-zone .path { margin-bottom: 17px; color: var(--teal); font-family: "SFMono-Regular", Consolas, monospace; font-size: clamp(11px, 1.03vw, 16px); }
+    .config-zone.governance .path { color: var(--amber); }
+
+    .config-list {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .config-list li { color: var(--muted); font-size: clamp(12px, 1.08vw, 16px); line-height: 1.36; }
+    .config-list strong { color: var(--ink); }
+
+    .state-layout {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .state-rail {
+      display: grid;
+      gap: 10px;
+    }
+
+    .state {
+      display: grid;
+      grid-template-columns: 148px 1fr;
+      gap: 18px;
+      align-items: center;
+      padding: 15px 17px;
+      border-left: 2px solid var(--line-strong);
+      background: rgba(8, 29, 53, .32);
+    }
+
+    .state.active { border-color: var(--green); background: linear-gradient(90deg, var(--green-soft), transparent); }
+    .state.configured { border-color: var(--blue); background: linear-gradient(90deg, var(--blue-soft), transparent); }
+    .state.installed { border-color: var(--teal); background: linear-gradient(90deg, var(--teal-soft), transparent); }
+    .state.unverified { border-color: var(--rose); background: linear-gradient(90deg, var(--rose-soft), transparent); }
+    .state strong { font-size: clamp(14px, 1.3vw, 20px); letter-spacing: .055em; }
+    .state p { margin: 0; color: var(--muted); font-size: clamp(11px, 1.02vw, 15px); line-height: 1.34; }
+
+    .three-streams {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin: 16px 0 0;
+    }
+
+    .three-streams.four-streams { grid-template-columns: repeat(4, 1fr); }
+    .three-streams.four-streams .stream { min-height: 136px; padding: 14px; }
+    .three-streams.four-streams .stream h3 { margin-bottom: 10px; font-size: clamp(16px, 1.32vw, 21px); }
+
+    .stream {
+      min-height: 147px;
+      padding: 18px;
+      border-top: 2px solid var(--teal);
+      background: linear-gradient(150deg, rgba(83, 212, 209, .11), rgba(8, 29, 53, .18));
+    }
+
+    .stream h3 { margin-bottom: 13px; color: var(--teal); font-size: clamp(19px, 1.6vw, 25px); }
+    .stream p { margin: 5px 0; color: var(--muted); font-size: clamp(11px, .98vw, 15px); line-height: 1.3; }
+    .stream p strong { color: var(--ink); }
+    .stream.running { border-color: var(--green); background: linear-gradient(150deg, var(--green-soft), rgba(8, 29, 53, .18)); }
+    .stream.running h3 { color: var(--green); }
+
+    .artifact-board {
+      display: grid;
+      grid-template-columns: .85fr 1.15fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .ticket-card {
+      padding: 24px 26px;
+      border-left: 3px solid var(--teal);
+      background: linear-gradient(120deg, rgba(83, 212, 209, .16), rgba(8, 29, 53, .2));
+    }
+
+    .ticket-key { margin-bottom: 10px; color: var(--teal); font-size: clamp(12px, 1.1vw, 17px); font-weight: 850; letter-spacing: .08em; }
+    .ticket-card h3 { margin-bottom: 12px; font-size: clamp(21px, 1.93vw, 30px); letter-spacing: -0.032em; }
+    .ticket-card p { margin-bottom: 12px; }
+    .ticket-footer { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    .contract-lines {
+      display: grid;
+      gap: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .contract-line {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 18px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: clamp(11px, 1.02vw, 16px);
+      line-height: 1.35;
+    }
+
+    .contract-line strong { color: var(--ink); }
+
+    .route-layout {
+      display: grid;
+      grid-template-columns: 1.03fr .97fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .route-flow {
+      display: grid;
+      gap: 10px;
+    }
+
+    .route-row {
+      display: grid;
+      grid-template-columns: 44px 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .route-row:first-child { border-top: 1px solid var(--line); }
+    .route-row .mark { color: var(--teal); font-size: clamp(18px, 1.65vw, 25px); font-weight: 850; }
+    .route-row strong { font-size: clamp(13px, 1.17vw, 18px); }
+    .route-row span { color: var(--muted); font-size: clamp(10px, .94vw, 14px); }
+
+    .lifecycle {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 7px;
+      width: 100%;
+    }
+
+    .life-step {
+      position: relative;
+      display: grid;
+      min-height: 152px;
+      align-content: start;
+      gap: 9px;
+      padding: 16px 13px;
+      border-top: 2px solid var(--line-strong);
+      background: rgba(8, 29, 53, .34);
+    }
+
+    .life-step:nth-child(2), .life-step:nth-child(3) { border-color: var(--teal); }
+    .life-step:nth-child(4), .life-step:nth-child(5) { border-color: var(--blue); }
+    .life-step:nth-child(6) { border-color: var(--amber); }
+    .life-step:nth-child(7) { border-color: var(--green); }
+    .life-step:not(:last-child)::after {
+      position: absolute;
+      top: 33px;
+      right: -7px;
+      z-index: 2;
+      width: 12px;
+      height: 12px;
+      content: "";
+      border-top: 1px solid var(--line-strong);
+      border-right: 1px solid var(--line-strong);
+      transform: rotate(45deg);
+    }
+
+    .life-step .no { color: var(--muted-2); font-size: clamp(9px, .76vw, 12px); font-weight: 800; letter-spacing: .08em; }
+    .life-step strong { font-size: clamp(11px, 1.07vw, 16px); line-height: 1.18; }
+    .life-step span { color: var(--muted); font-size: clamp(9px, .85vw, 13px); line-height: 1.32; }
+
+    .gate-layout {
+      display: grid;
+      grid-template-columns: .96fr 1.04fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .candidate-sheet {
+      padding: 24px 27px;
+      border-top: 2px solid var(--amber);
+      background: linear-gradient(140deg, var(--amber-soft), rgba(8, 29, 53, .22));
+    }
+
+    .candidate-sheet h3 { margin-bottom: 14px; font-size: clamp(20px, 1.75vw, 27px); }
+    .candidate-fields { display: grid; gap: 8px; }
+    .candidate-fields div { display: flex; justify-content: space-between; gap: 18px; padding-bottom: 8px; border-bottom: 1px solid rgba(246, 197, 110, .18); color: var(--muted); font-size: clamp(11px, 1.0vw, 15px); }
+    .candidate-fields b { color: var(--ink); font-weight: 750; text-align: right; }
+
+    .gate-steps {
+      display: grid;
+      gap: 14px;
+    }
+
+    .gate-step {
+      display: grid;
+      grid-template-columns: 40px 1fr;
+      gap: 14px;
+      align-items: start;
+      padding-bottom: 13px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .gate-step:last-child { border-bottom: 0; }
+    .gate-step .number { color: var(--amber); font-size: clamp(19px, 1.75vw, 27px); font-weight: 850; }
+    .gate-step h3 { margin: 0 0 3px; font-size: clamp(14px, 1.2vw, 19px); }
+    .gate-step p { margin: 0; }
+
+    .jira-layout {
+      display: grid;
+      grid-template-columns: 1.13fr .87fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .jira-rail {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 9px;
+    }
+
+    .jira-step {
+      min-height: 178px;
+      padding: 18px 14px;
+      border-top: 2px solid var(--line-strong);
+      background: rgba(8, 29, 53, .32);
+    }
+
+    .jira-step:nth-child(2) { border-color: var(--amber); }
+    .jira-step:nth-child(3) { border-color: var(--teal); }
+    .jira-step:nth-child(4) { border-color: var(--green); }
+    .jira-step strong { display: block; margin-bottom: 11px; font-size: clamp(12px, 1.08vw, 17px); line-height: 1.2; }
+    .jira-step p { margin: 0; color: var(--muted); font-size: clamp(10px, .9vw, 14px); line-height: 1.34; }
+
+    .non-goal-list {
+      display: grid;
+      gap: 9px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .non-goal-list li {
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: clamp(12px, 1.05vw, 16px);
+      line-height: 1.36;
+      border-left: 2px solid var(--rose);
+    }
+
+    .pilot-layout {
+      display: grid;
+      grid-template-columns: 1.02fr .98fr;
+      gap: 4.2%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .pilot-numbers {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .pilot-number { padding: 10px 0 13px; border-top: 2px solid var(--teal); }
+    .pilot-number:nth-child(2) { border-color: var(--blue); }
+    .pilot-number:nth-child(3) { border-color: var(--amber); }
+    .pilot-number b { display: block; margin-bottom: 4px; color: #f8fbff; font-size: clamp(31px, 3.35vw, 53px); line-height: .95; letter-spacing: -0.055em; }
+    .pilot-number span { color: var(--muted); font-size: clamp(10px, .92vw, 14px); line-height: 1.3; }
+
+    .measure-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 24px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .measure-list li { color: var(--muted); font-size: clamp(11px, .99vw, 15px); }
+    .measure-list li::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 8px 2px 0; border-radius: 50%; background: var(--teal); }
+
+    .appendix-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4%;
+      width: 100%;
+      align-items: stretch;
+    }
+
+    .evidence-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: clamp(10px, .91vw, 14px);
+      line-height: 1.33;
+    }
+
+    .evidence-table th,
+    .evidence-table td { padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .evidence-table th { color: var(--muted-2); font-size: .9em; font-weight: 750; letter-spacing: .055em; text-transform: uppercase; }
+    .evidence-table td { color: var(--muted); }
+    .evidence-table td:first-child { color: var(--ink); font-weight: 800; white-space: nowrap; }
+
+    .reference-list {
+      display: grid;
+      gap: 0;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid var(--line);
+    }
+
+    .reference-list li {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: clamp(10px, .95vw, 14px);
+      line-height: 1.34;
+    }
+
+    .reference-list strong { display: block; margin-bottom: 3px; color: var(--ink); font-size: 1.02em; }
+
+    .controls {
+      position: absolute;
+      right: 22px;
+      bottom: 18px;
+      z-index: 20;
+      display: flex;
+      gap: 7px;
+    }
+
+    .control {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--muted);
+      background: rgba(5, 19, 35, .72);
+      cursor: pointer;
+    }
+
+    .control:hover { color: var(--ink); border-color: var(--line-strong); }
+
+    .overlay {
+      position: absolute;
+      z-index: 40;
+      inset: 0;
+      display: none;
+      padding: 7% 9%;
+      background: rgba(3, 16, 31, .95);
+      overflow: auto;
+    }
+
+    .overlay.open { display: block; }
+
+    .overlay h2 { margin-bottom: 22px; font-size: clamp(30px, 3vw, 47px); letter-spacing: -0.04em; }
+    .overlay-close { position: absolute; top: 30px; right: 36px; width: 38px; height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; }
+
+    .toc-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px 30px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc-list button {
+      width: 100%;
+      padding: 11px 0;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .toc-list button:hover { color: var(--teal); }
+    .toc-list b { display: inline-block; min-width: 37px; color: var(--teal); }
+
+    .notes-panel {
+      position: absolute;
+      z-index: 30;
+      top: 0;
+      right: 0;
+      width: min(450px, 48%);
+      height: 100%;
+      display: none;
+      padding: 6.5% 5% 5%; 
+      border-left: 1px solid var(--line);
+      background: rgba(5, 20, 36, .97);
+      overflow: auto;
+    }
+
+    .notes-panel.open { display: block; }
+    .notes-panel h2 { margin-bottom: 16px; font-size: clamp(24px, 2.4vw, 36px); }
+    .notes-panel p { color: var(--muted); font-size: clamp(13px, 1.08vw, 16px); line-height: 1.48; }
+    .notes-panel .note-source { color: var(--muted-2); font-size: clamp(10px, .9vw, 13px); }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-aspect-ratio: 1.3/1) {
+      body { overflow: auto; }
+      .deck-shell { min-height: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+
+    @media print {
+      html, body { width: 100%; height: auto; background: #03101f; overflow: visible; }
+      body { display: block; }
+      .deck-shell { width: 100%; height: auto; min-height: 0; box-shadow: none; overflow: visible; }
+      .slide { position: relative; display: block !important; width: 100%; height: 100vh; min-height: 0; break-after: page; page-break-after: always; }
+      .slide-inner { min-height: 100vh; }
+      .controls, .overlay, .notes-panel, .skip-link { display: none !important; }
+      .slide:last-of-type { break-after: auto; page-break-after: auto; }
+    }
+
+    /* Retain the established navy/teal template for the practical 1.9.5 update. */
+    .guide-links { display: grid; gap: 12px; margin-top: 20px; }
+    .guide-link { display: block; padding: 16px 18px; border-left: 2px solid var(--teal); background: rgba(8,29,53,.35); color: var(--ink); text-decoration: none; }
+    .guide-link:nth-child(2) { border-color: var(--blue); }
+    .guide-link strong { display: block; color: var(--teal); margin-bottom: 5px; font-size: clamp(16px,1.35vw,22px); }
+    .guide-link:nth-child(2) strong { color: var(--blue); }
+    .guide-link span { color: var(--muted); font-size: clamp(12px,1.05vw,17px); line-height: 1.4; }
+    .footerline a, .small-copy a, .reference-list a, .mini-note a, .note-source a { color: var(--blue); text-underline-offset: 3px; }
+    .showcase-step .plain-list { margin-bottom: 18px; }
+    .showcase-step .terminal { margin-bottom: 16px; }
+    .showcase-step .terminal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .terminal-layout > .terminal pre { white-space: pre-wrap; }
+    #slide-1 h1 { font-size: clamp(43px,4.8vw,77px); }
+    #slide-7 .terminal pre, #slide-11 .terminal pre { font-size: clamp(12px,1.06vw,17px); }
+    #slide-16 .guide-links { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#slide-content">Skip to presentation</a>
+
+  <main class="deck-shell" aria-label="AWF 1.9.5 practical guide for the Quant Team">
+    <div id="slide-status" class="sr-only" aria-live="polite"></div>
+
+<section class="slide active" id="slide-1" data-core="true" data-title="AWF 1.9.5: a practical guide" data-minutes="0.5" aria-roledescription="slide" aria-label="Slide 1 of 16: AWF 1.9.5: a practical guide">
+ <div class="slide-inner" id="slide-content" tabindex="-1">
+ <div class="topline"><p class="eyebrow">Quant team walkthrough</p><span class="slide-index">01 / 16</span></div>
+ 
+ <div class="content"><div class="cover-grid"><div><p class="release-kicker">Agentic Workflow Framework 1.9.5</p><h1>AI-assisted delivery, from idea to reviewed PR</h1><p class="lead">You set the objective. AWF helps write the specification, plan the work, coordinate writers and independent reviewers, and prepare an evidence-backed merge decision.</p><div class="cover-meta"><span class="status-chip green">Available in Quant Foundry</span><span class="status-chip blue">Hands-on operator prompts</span><span class="status-chip">29 October 2026</span></div></div><div class="cover-art" role="img" aria-label="AWF supports specification, planning, implementation and independent review."><div class="orbit one"></div><div class="orbit two"></div><div class="orbit"></div><div class="core-mark">AWF</div><div class="orbit-label a">Specify</div><div class="orbit-label b">Plan</div><div class="orbit-label c">Build</div><div class="orbit-label d">Review</div></div></div></div>
+ <div class="footerline"><span><strong>25-minute walkthrough</strong> plus 5 minutes for questions</span><span class="source-chip">Quant team · AWF User Guide</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>0.5 minutes.</strong> Keep this introductory and practical. The deployment context comes from Jonathan: AWF is installed in Quant Foundry and available to its projects. Do not infer the exact installed version or a live controller from that statement. This talk teaches current workflows through the integrated 1.9.5 baseline. The release register still records final publication as pending. This is a practical update, not a package-release announcement.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-2" data-core="true" data-title="What AWF gives you" data-minutes="1.5" aria-roledescription="slide" aria-label="Slide 2 of 16: What AWF gives you">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Why use it</p><span class="slide-index">02 / 16</span></div>
+ <h2 class="slide-title">What AWF gives you</h2>
+ <div class="content"><div class="comparison"><article class="comparison-side problem"><span class="label-chip">An unstructured coding chat</span><h3>You coordinate every handoff</h3><ul class="plain-list"><li>Requirements, changes and decisions accumulate in one conversation.</li><li>You repeatedly explain the scope and check what was tested.</li><li>A second opinion can become another untracked chat.</li><li>Several agents can edit the same files or duplicate work.</li></ul></article><article class="comparison-side controlled"><span class="label-chip">The same task under AWF</span><h3>A repeatable delivery workflow</h3><ul class="plain-list"><li>A reviewed specification becomes bounded tickets.</li><li>A controller assigns safe work to available lanes.</li><li>Writers implement. Independent critics challenge the candidate.</li><li>Tests and findings accompany a PR for your merge decision.</li></ul></article></div></div>
+ <div class="footerline"><span>Use AWF for research tooling and software delivery. Research conclusions still need scientific validation.</span><span class="source-chip">Source: User Guide · What AWF does</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1.5 minutes.</strong> Explain the roles in everyday language: owner sets scope and decisions, controller coordinates, writer implements, critic independently reviews. AWF is neither a new IDE nor a standalone coding model. There is no promised throughput multiplier.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-3" data-core="true" data-title="Starting inside Quant Foundry" data-minutes="1.5" aria-roledescription="slide" aria-label="Slide 3 of 16: Starting inside Quant Foundry">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 1 · your project session</p><span class="slide-index">03 / 16</span></div>
+ <h2 class="slide-title">Starting inside Quant Foundry</h2>
+ <div class="content"><div class="terminal-layout"><div class="terminal"><div class="terminal-head"><span>You type in your supported agent session</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Use AWF for this Quant Foundry project.
+Project folder: &lt;project subfolder&gt;
+Goal: build a market-data validation tool.
+
+Read the repository and project instructions.
+Confirm the visible AWF skill and installed version.
+Check project status and operating settings.
+Tell me what is ready and what needs my decision.
+Do not change shared repository governance.</pre></div>
+<div class="facts"><div class="fact"><span class="fact-number">1</span><div><h3>AWF is already available</h3><p class="small-copy">AWF is installed in Quant Foundry and automatically available to projects in that repository. You do not need a separate framework installation for every project.</p></div></div><div class="fact"><span class="fact-number">2</span><div><h3>Identify the project, not just the repo</h3><p class="small-copy">Open the correct checkout and name your project subfolder, objective and accepted specification. Root governance and local instructions both apply.</p></div></div><div class="fact"><span class="fact-number">3</span><div><h3>Check the session before work starts</h3><p class="small-copy">Ask AWF to inspect status, capabilities and unfinished operations. It should report a missing skill, permission or resource before delegating work.</p></div></div>
+<div class="mini-note">Working outside Quant Foundry? Use the installation and adoption steps in Appendix B, or the <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>.</div></div></div></div>
+ <div class="footerline"><span>Availability across the repository does not grant project-wide Jira scope or unattended execution.</span><span class="source-chip">Deployment context: team owner · User Guide</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1.5 minutes.</strong> Deployment statement supplied by Jonathan Kinlay, 29 October 2026. Availability in the repository does not prove a particular skill is visible in every host session. The start prompt asks for that check. Do not reinstall AWF into every nested project or assume inherited access to external data.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-4" data-core="true" data-title="Practical highlights through 1.9.5" data-minutes="1" aria-roledescription="slide" aria-label="Slide 4 of 16: Practical highlights through 1.9.5">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">What’s new for the team</p><span class="slide-index">04 / 16</span></div>
+ <h2 class="slide-title">Practical highlights through 1.9.5</h2>
+ <div class="content"><div class="config-layout"><article class="config-zone"><span class="label-chip">Before coding</span><h3>Better project preparation</h3><ul class="config-list"><li><strong>Specification and design review:</strong> turn an idea into measurable requirements, open decisions and an independently challenged design.</li><li><strong>Jira planning:</strong> map the accepted specification to bounded tickets, dependencies and a safe delivery order.</li><li><strong>Parallel lanes:</strong> the revised default policy configures 12 worker lanes A–L, with selectable approved model routes.</li></ul></article><article class="config-zone governance"><span class="label-chip">During delivery</span><h3>Less manual coordination</h3><ul class="config-list"><li><strong>Queueing and batching:</strong> order eligible PRs, validate integration and prepare separately reviewed batch candidates where supported.</li><li><strong>Bounded independent review:</strong> risk tiers set review caps, with first-PASS stopping and explicit owner decisions at the cap.</li><li><strong>Clearer evidence and recovery:</strong> record the writer, reviewer, candidate and uncertain external effects.</li></ul></article></div></div>
+ <div class="footerline"><span>These are the current practical workflows and capabilities, including changes since the 1.8.9 deck.</span><span class="source-chip">Source: User Guide · Key features</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1 minutes.</strong> Do not imply that every feature originated solely in 1.9.5. The specification and Jira prompts are current documented operator workflows. They use the agent host’s supported tools and are not automatic shell commands. Capability in source, accepted operating policy and a qualified live host are distinct. Keep this caveat short in the room.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-5" data-core="true" data-title="Writing and reviewing the specification" data-minutes="2" aria-roledescription="slide" aria-label="Slide 5 of 16: Writing and reviewing the specification">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 1 · define the work</p><span class="slide-index">05 / 16</span></div>
+ <h2 class="slide-title">Writing and reviewing the specification</h2>
+ <div class="content"><div class="showcase-steps"><article class="showcase-step"><p class="step-label">You type</p><h3>Describe the outcome</h3><div class="terminal"><div class="terminal-head"><span>Example operator prompt</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Help me write an AWF specification for a
+market-data validation tool in this project.
+
+Define timestamp, calendar and missing-data rules.
+Add stable requirement IDs and acceptance tests.
+State exclusions, assumptions and open decisions.
+Use an independent design critic, with at most
+two document-review rounds. Stop at first PASS.
+Save the spec and review record. Do not code yet.</pre></div></article>
+<article class="showcase-step"><p class="step-label">AWF returns</p><h3>A design you can challenge</h3><ul class="plain-list"><li>Requirements with measurable acceptance criteria.</li><li>Interfaces, data contracts and failure behaviour.</li><li>A test and research-validation plan.</li><li>Critic findings and a finding-to-change record.</li></ul><div class="mini-note">For quant work: data lineage, point-in-time availability, units, numerical tolerances and leakage controls.</div></article>
+<article class="showcase-step"><p class="step-label">You decide</p><h3>Accept the specification</h3><p>Resolve choices such as whether missing observations should fail validation or produce a warning. Accept the revision that will govern implementation.</p><div class="mini-note">Independent review must use a separate supported context. If unavailable, AWF must report that honestly.</div><p class="small-copy" style="margin-top:18px"><a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7542047628" target="_blank" rel="noopener noreferrer">Open the full specification prompt</a></p></article></div></div>
+ <div class="footerline"><span>Two document-review rounds are an example operator budget. They do not change AWF ticket review caps.</span><span class="source-chip">Source: User Guide · Specification prompt</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>2 minutes.</strong> Use a concrete quant task: validate an existing feed, not discover a profitable strategy. A requirement might say missing timestamps produce a named diagnostic and do not trigger imputation. The output should identify uncertainty rather than invent requirements or empirical results. Review and accept the specification before asking to create tickets.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-6" data-core="true" data-title="Jira planning from the accepted specification" data-minutes="2.5" aria-roledescription="slide" aria-label="Slide 6 of 16: Jira planning from the accepted specification">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 1 · create a delivery plan</p><span class="slide-index">06 / 16</span></div>
+ <h2 class="slide-title">Jira planning from the accepted specification</h2>
+ <div class="content"><div class="showcase-steps"><article class="showcase-step"><p class="step-label">You type</p><h3>Name the destination and authority</h3><div class="terminal"><div class="terminal-head"><span>Example operator prompt</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Plan a Jira backlog from the accepted spec.
+Repository/project folder: &lt;actual project&gt;
+Jira site/project: &lt;actual URL and key&gt;
+Specification/review: &lt;accepted revision&gt;
+
+Check duplicates and the live Jira fields.
+Propose Epics, tickets and dependency links.
+Include acceptance tests, risk and lane order.
+Independently review the plan.
+Prepare it for approval. Do not create issues yet.</pre></div></article>
+<article class="showcase-step"><p class="step-label">AWF returns</p><h3>A reviewable backlog</h3><ul class="plain-list"><li>Requirement coverage and explicit exclusions.</li><li>Outcome-based Epics and bounded tickets.</li><li>Dependencies, shared-file conflicts and critical path.</li><li>Risk tiers, review caps and estimate assumptions.</li></ul><div class="mini-note">Example order: data contract first, parser next, then independent validation and reporting work.</div></article>
+<article class="showcase-step"><p class="step-label">You authorize</p><h3>Create the agreed scope</h3><p>Authorize the concrete creation list in the named Jira project. AWF then creates in hierarchy/dependency order and reads back issues and links.</p><div class="mini-note">Retain the local-to-Jira mapping. Reconcile an uncertain response before retrying so the backlog is not duplicated.</div><p class="small-copy" style="margin-top:18px"><a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7544242296" target="_blank" rel="noopener noreferrer">Open the full Jira planning prompt</a></p></article></div></div>
+ <div class="footerline"><span>Creating a backlog and authorizing ticket lifecycle updates are separate decisions. Jira remains optional.</span><span class="source-chip">Source: User Guide · Jira backlog prompt</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>2.5 minutes.</strong> Give a short follow-on instruction: “I authorize creation of the reviewed plan in the named project. Do not start implementation.” When creation was already authorized for the concrete scope, the guide says not to ask again. Project/site identities, assignees, hierarchy and link directions must be observed. This planning workflow is distinct from the live controller’s Jira binding.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-7" data-core="true" data-title="Twelve lanes and selectable model routes" data-minutes="2" aria-roledescription="slide" aria-label="Slide 7 of 16: Twelve lanes and selectable model routes">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 1 · choose how work runs</p><span class="slide-index">07 / 16</span></div>
+ <h2 class="slide-title">Twelve lanes and selectable model routes</h2>
+ <div class="content"><div class="config-layout"><article class="config-zone"><span class="label-chip">Revised default policy</span><h3>12 worker lanes, A–L</h3><table class="evidence-table"><thead><tr><th>Role / condition</th><th>Proposed model route</th></tr></thead><tbody><tr><td>Ordinary workers</td><td>gpt-6.1-sol / high</td></tr><tr><td>Controller, critic, specialists</td><td>gpt-6.1-sol / high</td></tr><tr><td>Qualifying simple worker</td><td>gpt-6-luna / high</td></tr></tbody></table><p class="small-copy" style="margin-top:20px">Twelve concurrent workers need at least 14 observed model slots including the controller and shared critic. Concurrent specialists need additional slots.</p><div class="mini-note">Luna/high applies only to low-risk, low-complexity, low-uncertainty work with strong verification and no risk flags.</div></article><article class="config-zone governance"><span class="label-chip">You choose within governance</span><h3>Request the operating view first</h3><div class="terminal"><div class="terminal-head"><span>Example operator prompt</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Show the accepted AWF operating settings.
+Start with three lanes for this project.
+Keep Sol/high for ordinary work and critics.
+Show the approved model/effort options.
+Apply only supported choices within policy.
+Explain what prevents safe parallel starts.</pre></div><p class="small-copy" style="margin-top:18px">You can select approved models and effort, or use a smaller schedule. AWF checks dependencies, overlapping files and resource leases before starting work.</p><div class="mini-note">Changes apply to future dispatch. Running tasks keep their route and reservations.</div></article></div></div>
+ <div class="footerline"><span>Default policy: 12 lanes. Accepted ceilings and observed host capacity determine the number that can actually run. <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7542964342" target="_blank" rel="noopener noreferrer">Policy details</a></span><span class="source-chip">Source: revised operating policy</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>2 minutes.</strong> Policy basis is the owner-specified proposed defaults of 29 October. Confirm accepted installed policy and catalog before use. Ordinary streams are unpinned so eligible simple work can take the exception route. Tier 1 alone does not qualify. Explicit lane/parallel-ticket/broker ceilings must each allow 12 for a full schedule. Zero available capacity means no start. Never silently downgrade a critic to save capacity.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-8" data-core="true" data-title="Your first ticket" data-minutes="2" aria-roledescription="slide" aria-label="Slide 8 of 16: Your first ticket">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 2 · one bounded task</p><span class="slide-index">08 / 16</span></div>
+ <h2 class="slide-title">Your first ticket</h2>
+ <div class="content"><div class="artifact-board"><article class="ticket-card"><p class="ticket-key">WORKED EXAMPLE · ILLUSTRATIVE</p><h3>Validate missing timestamps</h3><p class="body-copy">A ticket under the accepted market-data specification. It changes only the validation module and its tests, with no changes to pricing or data ingestion.</p><div class="ticket-footer"><span class="status-chip blue">Clear scope</span><span class="status-chip">One writer</span><span class="status-chip">Independent critic</span></div><div class="terminal"><div class="terminal-head"><span>You type</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Work on &lt;actual ticket key&gt; under AWF.
+Use the accepted specification and ticket.
+Check scope, tier, cap and dependencies.
+Implement and test only the allowed changes.
+Keep the PR draft until authorized.
+Report the next owner action. Do not self-merge.</pre></div></article><div class="contract-lines"><div class="contract-line"><strong>Acceptance</strong><span>Detect missing timestamps and return the specified diagnostic. Test complete, missing and invalid timestamp cases.</span></div><div class="contract-line"><strong>Scope</strong><span>Validation module and tests only. Name allowed paths and exclusions before dispatch.</span></div><div class="contract-line"><strong>Validation</strong><span>Actual commands and results, including skips and numerical tolerances where relevant.</span></div><div class="contract-line"><strong>External data</strong><span>Use approved aliases. Admit access for the actual worker session before delegation.</span></div><div class="contract-line"><strong>Risk / review</strong><span>Accept the authenticated intake classification. Small changes can still carry high risk.</span></div></div></div></div>
+ <div class="footerline"><span>The example is a teaching aid, not an executed ticket or a reported test result.</span><span class="source-chip">Source: User Guide · Run your first ticket</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>2 minutes.</strong> Carry the missing-timestamp ticket through the next slides. It is explicitly illustrative so there is no fabricated live Jira/PR/test evidence. Ask for real evidence from the team’s chosen project during a live walkthrough. A parent’s successful data read does not establish a child’s access.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-9" data-core="true" data-title="Parallel work without overlapping writers" data-minutes="1.5" aria-roledescription="slide" aria-label="Slide 9 of 16: Parallel work without overlapping writers">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 2 · monitor the lanes</p><span class="slide-index">09 / 16</span></div>
+ <h2 class="slide-title">Parallel work without overlapping writers</h2>
+ <div class="content"><div class="route-layout"><div><p class="ticket-key">ILLUSTRATIVE PLAN · THREE ACTIVE LANES</p><div class="three-streams"><article class="stream running"><h3>Lane A</h3><p><strong>Timestamp validation</strong></p><p>Owns validation module</p><p>Uses accepted schema</p></article><article class="stream running"><h3>Lane B</h3><p><strong>Reporting output</strong></p><p>Separate output module</p><p>No shared-file edits</p></article><article class="stream"><h3>Lane C</h3><p><strong>Waiting</strong></p><p>Integration tests depend on A</p><p>Safe to defer</p></article></div><div class="mini-note">A–L are available labels in the 12-lane policy. This example deliberately uses a smaller schedule.</div></div><div class="ticket-card"><p class="ticket-key">You type</p><h3>Ask for the state and the next decision</h3><div class="terminal"><div class="terminal-head"><span>Example status request</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Show each active lane, ticket and model/effort.
+List blockers, review state and next actions.
+Prioritize the critical path.
+Use spare capacity only for independent work.
+Explain waiting tasks and shared-file conflicts.</pre></div><p class="small-copy" style="margin-top:18px">Treat observed status and forecasts separately. Optional file-based status reports need supplied records and may show UNKNOWN.</p></div></div></div>
+ <div class="footerline"><span>An idle lane can be the correct result when dependencies, reviewer capacity or resource limits bind.</span><span class="source-chip">Source: Running guide · planning and reporting</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1.5 minutes.</strong> An operator can ask the host for a current status narrative. Do not imply that the optional status-report file automatically queries Jira or recomputes live plans. The report takes supplied records and an existing controller store. It is not emitted automatically on activation.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-10" data-core="true" data-title="Draft PR and independent critic" data-minutes="2.5" aria-roledescription="slide" aria-label="Slide 10 of 16: Draft PR and independent critic">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 2 · inspect the candidate</p><span class="slide-index">10 / 16</span></div>
+ <h2 class="slide-title">Draft PR and independent critic</h2>
+ <div class="content"><div class="showcase-steps"><article class="showcase-step"><p class="step-label">Writer returns</p><h3>Changes, tests and a draft PR</h3><p>The timestamp-validation ticket produces a scoped diff, actual test results and a draft PR through the authorized publication route.</p><div class="terminal"><div class="terminal-head"><span>You ask</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Show the PR, exact head and changed files.
+Show test commands, results and any skips.
+Explain what the validation does not cover.</pre></div><div class="mini-note">The required PR/head-bound readiness authorization comes before clearing draft and eligible critic review.</div></article>
+<article class="showcase-step"><p class="step-label">Independent critic</p><h3>Findings on the exact candidate</h3><p>A separate reviewer checks the eligible PR/head against the specification, ticket and risk policy.</p><ul class="plain-list"><li>T1: cap 1 review round.</li><li>T2: cap 2 review rounds.</li><li>T3: cap 3, plus owner review.</li></ul><div class="mini-note">Stop at the first valid PASS. Open BLOCKER or MAJOR findings prevent progression.</div></article>
+<article class="showcase-step"><p class="step-label">You decide</p><h3>Amend, proceed or resolve the cap</h3><p>The writer addresses findings within scope. At the cap, use the supported owner-disposition process rather than adding another silent review round.</p><p>Fresh affected evidence is needed when the head, base, requirements or policy changes.</p><div class="mini-note">The final gate checks writer and critic provenance as well as the candidate’s validation.</div></article></div></div>
+ <div class="footerline"><span>Keep the review record with the candidate. A role label or a successful local test alone is insufficient.</span><span class="source-chip">Source: User Guide · Evidence and review</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>2.5 minutes.</strong> Use a concrete potential finding, labelled as a possible example: timezone conversion at a daylight-saving boundary may need an extra test. Do not present that as an actual critic finding. A constrained worker may use the supported publisher/tested-tree handoff rather than weakening Git permissions.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-11" data-core="true" data-title="PR queueing, batching and merge order" data-minutes="2" aria-roledescription="slide" aria-label="Slide 11 of 16: PR queueing, batching and merge order">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 2 · integrate several completed tasks</p><span class="slide-index">11 / 16</span></div>
+ <h2 class="slide-title">PR queueing, batching and merge order</h2>
+ <div class="content"><div class="config-layout"><article class="config-zone"><span class="label-chip">Everyday request</span><h3>Get a usable integration plan</h3><div class="terminal"><div class="terminal-head"><span>You type</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>List all PRs ready for owner review.
+Give the best merge order and dependencies.
+Show current head, CI and critic evidence.
+Identify conflicts and shared generated files.
+Use the accepted queue/train policy where
+a qualified adapter supports it.
+Do not merge or weaken any gate.</pre></div><p class="small-copy" style="margin-top:18px">Ask this whenever several lanes finish. Even without live batching, the ordered handoff tells you what to inspect and merge first.</p></article><article class="config-zone governance"><span class="label-chip">Two different mechanisms</span><h3>Queue versus merge train</h3><table class="evidence-table"><thead><tr><th>Mechanism</th><th>Your merge surface</th></tr></thead><tbody><tr><td>Integration queue</td><td>Source PRs remain the candidates. A disposable integration branch supplies validation.</td></tr><tr><td>Merge train</td><td>A new deterministic batch combines admitted PRs and gets its own reviews, CI, final gate and owner authorization.</td></tr></tbody></table><div class="mini-note">Source approval only admits a PR to a batch. It does not approve the batch. Head or target drift requires fresh evidence.</div><p class="small-copy" style="margin-top:16px">Live batching needs a reviewed batch-capable adapter. The shipped reference controller adapter lacks those callbacks.</p></article></div></div>
+ <div class="footerline"><span>AWF retains human merge control for source and batch candidates. <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543685220" target="_blank" rel="noopener noreferrer">Queue and merge-train reference</a></span><span class="source-chip">Source: Queue and merge train</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>2 minutes.</strong> The practical benefit is fewer ad-hoc coordination decisions when several lanes finish. Dependencies come first. Do not claim auto-merge or working batch publication just from an enabled setting. Non-generated conflicts are refused rather than resolved by an unreviewed steward. The source register says the reference adapter does not implement owner-publication or batch operations.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-12" data-core="true" data-title="Owner review, authorization and merge" data-minutes="2" aria-roledescription="slide" aria-label="Slide 12 of 16: Owner review, authorization and merge">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 2 · the handoff to you</p><span class="slide-index">12 / 16</span></div>
+ <h2 class="slide-title">Owner review, authorization and merge</h2>
+ <div class="content"><div class="showcase-steps"><article class="showcase-step"><p class="step-label">AWF returns</p><h3>A current handoff packet</h3><ul class="plain-list"><li>PR link, repository and exact head/base.</li><li>Scope and acceptance-criteria disposition.</li><li>Required CI and actual validation results.</li><li>Independent reviews and finding dispositions.</li><li>Provenance, final-gate result and open decisions.</li></ul></article>
+<article class="showcase-step"><p class="step-label">You inspect</p><h3>The exact candidate</h3><p>Confirm the change still solves the accepted problem. Check evidence freshness, remaining risks and the proposed merge order.</p><div class="terminal"><div class="terminal-head"><span>You ask</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>For this exact PR/head, show what passed,
+what remains unknown, and what requires
+my authorization. Has anything changed
+since the review or validation ran?</pre></div></article>
+<article class="showcase-step"><p class="step-label">Owner action</p><h3>Authorize and merge through the supported route</h3><p>Use the required candidate-bound authority. Review readiness alone does not permit a merge.</p><p>AWF then observes the result and binds closeout to the actual merge SHA.</p><div class="mini-note">An uncertain merge result needs authoritative reconciliation before any retry.</div></article></div></div>
+ <div class="footerline"><span>A green check is useful evidence. The owner still decides whether this candidate should enter the target branch.</span><span class="source-chip">Source: Ticket lifecycle · final gates</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>2 minutes.</strong> For the quant audience, say plainly: “you get a package you can inspect, and you retain the merge decision.” Do not teach an abbreviated permit syntax. The accepted project defines the exact authority format, executor and freshness requirements. The batch has its own exact candidate if a train is used.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-13" data-core="true" data-title="Jira updates and recorded closeout" data-minutes="1" aria-roledescription="slide" aria-label="Slide 13 of 16: Jira updates and recorded closeout">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 2 · finish the ticket</p><span class="slide-index">13 / 16</span></div>
+ <h2 class="slide-title">Jira updates and recorded closeout</h2>
+ <div class="content"><div class="showcase-steps"><article class="showcase-step"><p class="step-label">Before Jira writes</p><h3>Confirm the project binding</h3><p>AWF is deliberately unbound to Jira at repository adoption. Name the actual site/project, permitted Epics or filter, mappings and exclusive controller ownership.</p><div class="mini-note">Projects in the same repository do not automatically receive each other’s ticket scope.</div></article>
+<article class="showcase-step"><p class="step-label">After the accepted outcome</p><h3>Observe, update and read back</h3><p>A qualified authorized workflow can perform the configured lifecycle transitions. Done follows confirmed merge and verified closeout, not merely writer completion.</p><p>Record the exact PR/head, actual merge SHA and the observed Jira result.</p><div class="mini-note">If Jira is disabled or unbound, retain local workflow records and report that no Jira write occurred.</div></article>
+<article class="showcase-step"><p class="step-label">You check</p><h3>The result matches the evidence</h3><div class="terminal"><div class="terminal-head"><span>You type</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Confirm the merge SHA and closeout.
+Show the observed ticket status and links.
+Read back any authorized Jira update.
+Reconcile unknown outcomes before retrying.
+Do not change unrelated tickets or Epics.</pre></div><p class="small-copy" style="margin-top:18px">Backlog creation uses its own explicit scope and authorization, as shown earlier.</p></article></div></div>
+ <div class="footerline"><span>Keep planning-time issue creation separate from delivery-time lifecycle transitions.</span><span class="source-chip">Source: User Guide · Jira integration</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1 minutes.</strong> The old 1.8.9 slide said AWF never creates tickets and has one narrow post-merge Jira path. That is no longer adequate guidance for the current documented planning and lifecycle workflows. Distinguish the authorized Jira creation prompt from the bound live controller’s lifecycle operations. Unknown external results stop writes pending reconciliation.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-14" data-core="true" data-title="Operating choices and protected limits" data-minutes="1" aria-roledescription="slide" aria-label="Slide 14 of 16: Operating choices and protected limits">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 3 · stay in control</p><span class="slide-index">14 / 16</span></div>
+ <h2 class="slide-title">Operating choices and protected limits</h2>
+ <div class="content"><div class="action-map"><div class="action-map-row"><p class="path">OPERATING_CONFIG.yaml</p><strong>Your operating choices</strong><span>Lane count and approved routes within accepted limits. Future dispatch uses the new settings. Running work keeps its original hashes and reservations.</span></div><div class="action-map-row governed"><p class="path">.agentic/PROJECT_CONFIG.yaml</p><strong>Reviewed governance changes</strong><span>Ceilings, allowlists, review floors, budgets, merge policy and recovery controls stay protected. AWF refuses invalid changes atomically.</span></div></div><div class="config-layout" style="margin-top:22px"><article class="config-zone"><span class="label-chip">Revised proposed policy</span><h3>Five controller switches are true</h3><p class="small-copy">Dispatch, automatic worker dispatch, critic requests, amendment resumption and Jira lifecycle transitions. The installed project still needs accepted governance, qualified adapters, credentials and actual capacity.</p></article><article class="config-zone governance"><span class="label-chip">Owner boundary</span><h3>A setting alone starts no process</h3><p class="small-copy">AWF does not self-merge, invent a valid review, bypass missing data access or retry uncertain external effects. ACTIVE does not enable every live operation.</p></article></div></div>
+ <div class="footerline"><span>Direct authorized choices can apply within policy. Recommendations need acceptance. <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7542964342" target="_blank" rel="noopener noreferrer">Current operating policy</a></span><span class="source-chip">Source: revised operating policy</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1 minutes.</strong> Do not repeat the previous deck’s overly broad “AWF does not launch agents.” Supported hosts and qualified controllers can delegate workers. The correct boundary is that installation, an ACTIVE status or switch values alone do not start processes or grant authority. Proposed defaults must be checked against accepted installation and capability.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-15" data-core="true" data-title="Daily prompts and quantitative validation" data-minutes="1" aria-roledescription="slide" aria-label="Slide 15 of 16: Daily prompts and quantitative validation">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 3 · use it in real research work</p><span class="slide-index">15 / 16</span></div>
+ <h2 class="slide-title">Daily prompts and quantitative validation</h2>
+ <div class="content"><div class="terminal-layout"><div><div class="terminal"><div class="terminal-head"><span>At session start</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Resume this project under AWF.
+Inspect status, active children and open PRs.
+Reconcile unfinished or unknown operations.
+Show completed work, blockers and next decisions.</pre></div><div style="margin-top:18px"><div class="terminal"><div class="terminal-head"><span>Before stopping</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div><pre>Pause new dispatch for this project.
+Account for running workers and reservations.
+Save a handoff with exact tickets, PR heads,
+validation, findings and unresolved decisions.
+Do not assume existing workers have stopped.</pre></div></div></div><div class="facts"><div class="fact"><span class="fact-number">1</span><div><h3>Define research acceptance</h3><p class="small-copy">Record data source/snapshot, point-in-time availability, calendar, units, numerical tolerances and edge cases in the spec and ticket.</p></div></div><div class="fact"><span class="fact-number">2</span><div><h3>Separate coding from research evidence</h3><p class="small-copy">CI and critic approval do not prove a signal works. Require leakage controls, out-of-sample validation, baselines and realistic costs.</p></div></div><div class="fact"><span class="fact-number">3</span><div><h3>Use approved external resources</h3><p class="small-copy">Admit datasets, mapped drives and GPU/heavy-test resources for the actual task and child session. Retain real results and skip reasons.</p></div></div></div></div></div>
+ <div class="footerline"><span>Ask for observed results and the basis of forecasts. An unrun backtest remains unverified.</span><span class="source-chip">Source: User Guide · Quant work · Running guide</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1 minutes.</strong> This is why the framework is useful for quants without over-claiming research autonomy. A correct implementation can still be an invalid study if data timing, assumptions or selection are wrong. A receiving host must recheck handoff paths, credentials, children and state. Merely disabling dispatch does not terminate running children.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="slide-16" data-core="true" data-title="Your first AWF project and reference links" data-minutes="1" aria-roledescription="slide" aria-label="Slide 16 of 16: Your first AWF project and reference links">
+ <div class="slide-inner">
+ <div class="topline"><p class="eyebrow">Act 3 · the next action</p><span class="slide-index">16 / 16</span></div>
+ <h2 class="slide-title">Your first AWF project and reference links</h2>
+ <div class="content"><div class="pilot-layout"><div><div class="pilot-numbers"><div class="pilot-number"><b>1</b><span>Quant Foundry project</span></div><div class="pilot-number"><b>1</b><span>accepted specification</span></div><div class="pilot-number"><b>1</b><span>bounded first ticket</span></div></div><p class="body-copy">Start supervised in your existing project. Use the prompts in this presentation, then consult the full templates when you need detail.</p><div class="guide-links"><a class="guide-link" href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer"><strong>AWF User Guide ↗</strong><span>Everyday prompts, first-ticket workflow and troubleshooting.</span></a><a class="guide-link" href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer"><strong>AWF Technical Reference ↗</strong><span>Contracts, commands, planning, gates, model routing and recovery.</span></a></div></div><div class="flow-steps"><div class="flow-step"><span class="flow-number">01</span><div><strong>Open your Quant Foundry project</strong><span>AWF is already available. Ask it to read the instructions and inspect the installed state.</span></div></div><div class="flow-step"><span class="flow-number">02</span><div><strong>Prepare the work before coding</strong><span>Review the specification, authorize the Jira plan if required, and choose a safe lane schedule.</span></div></div><div class="flow-step"><span class="flow-number">03</span><div><strong>Inspect the first complete handoff</strong><span>Review the actual changes, validation and critic findings before authorizing the exact merge candidate.</span></div></div></div></div></div>
+ <div class="footerline"><span><a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7336396421" target="_blank" rel="noopener noreferrer">AWF home</a> · <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7542047628" target="_blank" rel="noopener noreferrer">Specification template</a> · <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7544242296" target="_blank" rel="noopener noreferrer">Jira planning template</a></span><span class="source-chip">Documentation · CMC Quant Trading</span></div>
+ </div>
+ <aside class="slide-notes" hidden><p><strong>1 minutes.</strong> Close with an action the team can take in its own project. Do not suggest a repository reinstall in Quant Foundry. The operator prompts are templates, not built-in AWF shell commands. Record user decisions and measure outcomes in any wider pilot rather than claiming an unmeasured productivity uplift.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Material checked 29 October 2026.</p></aside>
+ </section>
+
+<section class="slide" id="appendix-a" data-appendix="true" data-title="Appendix A: Adoption states and candidate evidence" aria-roledescription="slide" aria-label="Appendix A: Adoption states and candidate evidence"><div class="slide-inner"><div class="topline"><p class="eyebrow">Appendix A</p><span class="slide-index">Optional reference</span></div><h2 class="slide-title">Adoption states and candidate evidence</h2><div class="content"><div class="appendix-grid"><div><table class="evidence-table"><thead><tr><th>State</th><th>What it establishes</th><th>Further evidence needed</th></tr></thead><tbody><tr><td>INSTALLED</td><td>Valid framework installation.</td><td>Accepted project checks and policy.</td></tr><tr><td>CONFIGURED</td><td>Required installed configuration checks pass.</td><td>Release trust, observed adoption merge and current accepted project state.</td></tr><tr><td>ACTIVE</td><td>Release trust, adoption merge and accepted configuration are established.</td><td>Capability and authority for each live operation.</td></tr></tbody></table><div class="mini-note">Quant Foundry already supplies the repository installation. Check your session and project state before relying on a live capability.</div></div><div><h3 style="font-size:28px">Evidence stays with the candidate</h3><ul class="reference-list"><li><strong>Changed head, base or policy</strong>Refresh affected CI, reviews, final gates and authorization.</li><li><strong>Independent reviewer</strong>Record the supported reviewer context, identity and candidate, not just an approval label.</li><li><strong>Unknown external outcome</strong>Reconcile authoritative provider state before any retry.</li><li><strong>Durable handoff</strong>Retain requirements, route, run identity, validation, findings, merge SHA and closeout evidence.</li></ul></div></div></div><div class="footerline"><span>An adoption label does not activate every adapter, process or external write.</span><span class="source-chip">Source: User Guide · activation</span></div></div><aside class="slide-notes" hidden><p>Use this only if asked what ACTIVE proves. Keep deployment availability distinct from a specific installed version. Do not infer live automation from status.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">AWF User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Checked 29 October 2026.</p></aside></section>
+
+<section class="slide" id="appendix-b" data-appendix="true" data-title="Appendix B: Installation for repositories outside Quant Foundry" aria-roledescription="slide" aria-label="Appendix B: Installation for repositories outside Quant Foundry"><div class="slide-inner"><div class="topline"><p class="eyebrow">Appendix B</p><span class="slide-index">Optional reference</span></div><h2 class="slide-title">Installation for repositories outside Quant Foundry</h2><div class="content"><div class="showcase-steps"><article class="showcase-step"><p class="step-label">1 · Host skill</p><h3>Verify, preview, install</h3><div class="terminal"><div class="terminal-head"><span>Windows · from the verified distribution folder</span></div><pre>py -3 -B install_awf.py --dry-run
+py -3 -B install_awf.py</pre></div><p>Use an independently approved distribution and pins. Refresh host skill discovery, then confirm the actual path and release.</p><div class="mini-note">Skill visibility and project adoption are separate steps.</div></article>
+<article class="showcase-step"><p class="step-label">2 · Project adoption</p><h3>Inspect and preserve existing work</h3><div class="terminal"><div class="terminal-head"><span>Operator prompt</span></div><pre>Help me adopt AWF in this repository.
+Read the installation/adoption runbook.
+Use the verified distribution and wheelhouse.
+Inspect and preserve project-owned files.
+Leave Jira disabled and unbound.
+Prepare the adoption PR. Do not merge.</pre></div><p class="small-copy">A compatible verified wheelhouse supplies the managed runtime dependencies.</p></article>
+<article class="showcase-step"><p class="step-label">3 · Owner handoff</p><h3>Validate the installed project</h3><p>Run doctor, installed verification, configuration validation, the required self-test and the project’s own tests.</p><p>Review the adoption PR and operating settings. After owner merge, recheck accepted default-branch state.</p><div class="mini-note">These steps are unnecessary for each nested project in an already adopted repository.</div><p class="small-copy" style="margin-top:16px"><a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543423095" target="_blank" rel="noopener noreferrer">Full installation and adoption runbook</a></p></article></div></div><div class="footerline"><span>Use the exact package’s supported platforms, migration paths and current runbook.</span><span class="source-chip">Source: User Guide · installation runbook</span></div></div><aside class="slide-notes" hidden><p>Do not reuse the 1.8.9 distribution, old checksum capture or old upgrade example. The release register governs what is actually published. Managed-runtime commands should use the installed interpreter, not an arbitrary system Python. Missing CI or Jira can be a reported limitation without preventing local adoption preparation.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">AWF User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Checked 29 October 2026.</p></aside></section>
+
+<section class="slide" id="appendix-c" data-appendix="true" data-title="Appendix C: Live-operation conditions and release status" aria-roledescription="slide" aria-label="Appendix C: Live-operation conditions and release status"><div class="slide-inner"><div class="topline"><p class="eyebrow">Appendix C</p><span class="slide-index">Optional reference</span></div><h2 class="slide-title">Live-operation conditions and release status</h2><div class="content"><div class="appendix-grid"><div><h3 style="font-size:28px">Before enabling automation</h3><ul class="reference-list"><li><strong>Accepted policy and real capacity</strong>Confirm explicit worker ceilings and available slots. Twelve workers plus controller and shared critic need at least fourteen slots.</li><li><strong>Qualified host and adapters</strong>Confirm credentials, independent contexts, provider observations, repository rules and recovery paths.</li><li><strong>Jira binding</strong>Validate the actual site/project, permitted scope, transition mappings and exclusive controller owner.</li><li><strong>Batch capability</strong>The shipped reference controller adapter lacks owner-publication and batch callbacks. Effective settings alone cannot supply them.</li></ul></div><div><h3 style="font-size:28px">Scope of this 1.9.5 update</h3><ul class="reference-list"><li><strong>Publication checkpoint</strong>The release register records 1.9.5 as integrated source, with final publication and asset qualification pending.</li><li><strong>Quant Foundry availability</strong>Repository-wide AWF availability is the deployment context supplied by the team owner. This deck does not assert the exact installed version.</li><li><strong>Optional status reports</strong>Supplied-record snapshots may show UNKNOWN. The file-based report does not fetch live Jira or recompute a live lane plan.</li><li><strong>Full references</strong><a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7542964342" target="_blank" rel="noopener noreferrer">Operating policy</a> · <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543685220" target="_blank" rel="noopener noreferrer">Queue and merge train</a> · <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543226484" target="_blank" rel="noopener noreferrer">Release register</a></li></ul></div></div></div><div class="footerline"><span>These conditions support accurate decisions without filling the main walkthrough with release-engineering detail.</span><span class="source-chip">Source: release register · operating policy</span></div></div><aside class="slide-notes" hidden><p>The main deck is an operator tutorial. This appendix captures material availability and qualification boundaries so the instructor can answer questions accurately. The current policy documentation records proposed defaults and does not itself accept installed governance.</p><p class="note-source">Sources: <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7543357528" target="_blank" rel="noopener noreferrer">AWF User Guide</a>; <a href="https://cmcmarkets.atlassian.net/wiki/spaces/QT/pages/7541883785" target="_blank" rel="noopener noreferrer">Technical Reference</a>. Checked 29 October 2026.</p></aside></section>
+
+    <div class="controls" aria-label="Presentation controls">
+      <button class="control" id="toc-toggle" type="button" aria-label="Open slide overview" aria-expanded="false">≡</button>
+      <button class="control" id="notes-toggle" type="button" aria-label="Show speaker notes" aria-expanded="false">◫</button>
+      <button class="control" id="prev-slide" type="button" aria-label="Previous slide">‹</button>
+      <button class="control" id="next-slide" type="button" aria-label="Next slide">›</button>
+    </div>
+
+    <section class="overlay" id="toc-panel" aria-label="Slide overview" aria-hidden="true">
+      <button class="overlay-close" id="toc-close" type="button" aria-label="Close slide overview">×</button>
+      <h2>Slide overview</h2>
+      <ol class="toc-list" id="toc-list"></ol>
+    </section>
+
+    <section class="notes-panel" id="notes-panel" aria-label="Speaker notes" aria-hidden="true">
+      <button class="overlay-close" id="notes-close" type="button" aria-label="Close speaker notes">×</button>
+      <h2 id="notes-title">Speaker notes</h2>
+      <div id="notes-content"></div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const allSlides = Array.from(document.querySelectorAll('.slide'));
+      const coreSlides = allSlides.filter(slide => slide.dataset.core === 'true');
+      const appendixSlides = allSlides.filter(slide => slide.dataset.appendix === 'true');
+      const tocPanel = document.getElementById('toc-panel');
+      const tocToggle = document.getElementById('toc-toggle');
+      const tocClose = document.getElementById('toc-close');
+      const tocList = document.getElementById('toc-list');
+      const notesPanel = document.getElementById('notes-panel');
+      const notesToggle = document.getElementById('notes-toggle');
+      const notesClose = document.getElementById('notes-close');
+      const notesTitle = document.getElementById('notes-title');
+      const notesContent = document.getElementById('notes-content');
+      const status = document.getElementById('slide-status');
+      const prev = document.getElementById('prev-slide');
+      const next = document.getElementById('next-slide');
+      let current = 0;
+      let touchStartX = null;
+
+      function currentSlide() { return allSlides[current]; }
+
+      function updateNotes() {
+        const slide = currentSlide();
+        const notes = slide.querySelector('.slide-notes');
+        notesTitle.textContent = slide.dataset.title || 'Speaker notes';
+        notesContent.innerHTML = notes ? notes.innerHTML : '<p>No speaker notes.</p>';
+      }
+
+      function showSlide(index, focus) {
+        const nextIndex = Math.max(0, Math.min(allSlides.length - 1, index));
+        current = nextIndex;
+        allSlides.forEach((slide, i) => {
+          const active = i === current;
+          slide.classList.toggle('active', active);
+          slide.setAttribute('aria-hidden', String(!active));
+        });
+        updateNotes();
+        const slide = currentSlide();
+        const corePosition = coreSlides.indexOf(slide);
+        status.textContent = corePosition >= 0 ? `Slide ${corePosition + 1} of ${coreSlides.length}: ${slide.dataset.title}` : `${slide.dataset.title}`;
+        prev.disabled = current === 0 || (appendixSlides.includes(slide) && appendixSlides.indexOf(slide) === 0);
+        next.disabled = corePosition === coreSlides.length - 1 || (appendixSlides.includes(slide) && appendixSlides.indexOf(slide) === appendixSlides.length - 1);
+        if (focus) slide.querySelector('.slide-inner').focus({ preventScroll: true });
+      }
+
+      function closePanels() {
+        tocPanel.classList.remove('open');
+        tocPanel.setAttribute('aria-hidden', 'true');
+        tocToggle.setAttribute('aria-expanded', 'false');
+        notesPanel.classList.remove('open');
+        notesPanel.setAttribute('aria-hidden', 'true');
+        notesToggle.setAttribute('aria-expanded', 'false');
+      }
+
+      function isAppendix() { return appendixSlides.includes(currentSlide()); }
+
+      function nextSlide() {
+        if (isAppendix()) {
+          const appendixIndex = appendixSlides.indexOf(currentSlide());
+          if (appendixIndex < appendixSlides.length - 1) showSlide(allSlides.indexOf(appendixSlides[appendixIndex + 1]), true);
+          return;
+        }
+        const coreIndex = coreSlides.indexOf(currentSlide());
+        if (coreIndex < coreSlides.length - 1) showSlide(allSlides.indexOf(coreSlides[coreIndex + 1]), true);
+      }
+
+      function previousSlide() {
+        if (isAppendix()) {
+          const appendixIndex = appendixSlides.indexOf(currentSlide());
+          if (appendixIndex > 0) showSlide(allSlides.indexOf(appendixSlides[appendixIndex - 1]), true);
+          return;
+        }
+        const coreIndex = coreSlides.indexOf(currentSlide());
+        if (coreIndex > 0) showSlide(allSlides.indexOf(coreSlides[coreIndex - 1]), true);
+      }
+
+      allSlides.forEach((slide, index) => {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        const label = slide.dataset.appendix === 'true' ? String.fromCharCode(65 + appendixSlides.indexOf(slide)) : String(coreSlides.indexOf(slide) + 1).padStart(2, '0');
+        button.innerHTML = `<b>${label}</b>${slide.dataset.title}`;
+        button.addEventListener('click', () => { closePanels(); showSlide(index, true); });
+        li.appendChild(button);
+        tocList.appendChild(li);
+      });
+
+      tocToggle.addEventListener('click', () => {
+        const open = !tocPanel.classList.contains('open');
+        closePanels();
+        if (open) {
+          tocPanel.classList.add('open');
+          tocPanel.setAttribute('aria-hidden', 'false');
+          tocToggle.setAttribute('aria-expanded', 'true');
+          tocClose.focus();
+        }
+      });
+      tocClose.addEventListener('click', () => { closePanels(); tocToggle.focus(); });
+
+      notesToggle.addEventListener('click', () => {
+        const open = !notesPanel.classList.contains('open');
+        closePanels();
+        if (open) {
+          notesPanel.classList.add('open');
+          notesPanel.setAttribute('aria-hidden', 'false');
+          notesToggle.setAttribute('aria-expanded', 'true');
+          notesClose.focus();
+        }
+      });
+      notesClose.addEventListener('click', () => { closePanels(); notesToggle.focus(); });
+
+      prev.addEventListener('click', previousSlide);
+      next.addEventListener('click', nextSlide);
+
+      document.addEventListener('keydown', event => {
+        const target = event.target;
+        const controlFocused = target && (target.matches('button, a, input, textarea, select') || target.closest('button, a, input, textarea, select'));
+        if (event.key === 'Escape') { closePanels(); return; }
+        if (tocPanel.classList.contains('open') || notesPanel.classList.contains('open')) return;
+        if (event.key === 'ArrowRight' || event.key === 'PageDown') { event.preventDefault(); nextSlide(); }
+        if (event.key === 'ArrowLeft' || event.key === 'PageUp') { event.preventDefault(); previousSlide(); }
+        if (event.key === 'Home') { event.preventDefault(); showSlide(0, true); }
+        if (event.key === 'End') { event.preventDefault(); showSlide(allSlides.indexOf(coreSlides[coreSlides.length - 1]), true); }
+        if ((event.key === 'o' || event.key === 'O') && !controlFocused) tocToggle.click();
+        if ((event.key === 'n' || event.key === 'N') && !controlFocused) notesToggle.click();
+        if (event.key === ' ' && !controlFocused) { event.preventDefault(); nextSlide(); }
+      });
+
+      const shell = document.querySelector('.deck-shell');
+      shell.addEventListener('pointerdown', event => { touchStartX = event.clientX; });
+      shell.addEventListener('pointerup', event => {
+        if (touchStartX === null || event.target.closest('button, a')) { touchStartX = null; return; }
+        const delta = event.clientX - touchStartX;
+        touchStartX = null;
+        if (Math.abs(delta) < 46) return;
+        if (delta < 0) nextSlide(); else previousSlide();
+      });
+
+      showSlide(0, false);
+    }());
+  </script>
+</body>
+</html>
