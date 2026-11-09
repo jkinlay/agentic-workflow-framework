@@ -521,7 +521,11 @@ class AC36CleanupTests(unittest.TestCase):
         command = [sys.executable, "-B", "-c",
                    "import os; os.write(1,b'first'+bytes((13,10))+b'second'+bytes((13,))+b'third'+bytes((10,))); os.write(2,b'error'+bytes((13,10)))"]
         expected = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=180)
-        with patch.object(time, "sleep", side_effect=AssertionError("Passing run must not wait")):
+        # Guard our cleanup paths, leaving subprocess's POSIX exit polling alone.
+        with patch.object(_AC36WindowsJob, "terminate_and_wait",
+                          side_effect=AssertionError("Passing run must not clean up")), \
+                patch.object(os, "killpg", create=True,
+                             side_effect=AssertionError("Passing run must not clean up")):
             actual = _ac36_run_bootstrap(command, cwd=ROOT)
         self.assertEqual(vars(expected), vars(actual))
         self.assertEqual("first\nsecond\nthird\n", actual.stdout)
