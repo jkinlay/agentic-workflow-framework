@@ -84,7 +84,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/examples/status-report.json` | `f29307d27985e040a9d4dc017cba0789a35199d4dfcf424844c9e78c83149b8c` |
 | `.agentic/examples/stream-input.json` | `37097f3c73d5de9941dbd049fa29c7e9f659b7fb02b882b2978916f7d3c9cc33` |
 | `.agentic/examples/unconfigured-project.yaml` | `dedd7ed1f9ac116ca3b60b0e8529eb9a0299ed568e042aafb8db075c5e288815` |
-| `.agentic/examples/workflow-content-binding-project.yaml` | `20405e251c69cb7aaa7ffe088a6f0993bc0726416a9315bb2c10ee05e0031cdc` |
+| `.agentic/examples/workflow-content-binding-project.yaml` | `bba5670af69d60456cf8da76ad810dc47b1bad22fc19fd17fae5e6f50a29ef58` |
 | `.agentic/launch-surfaces.json` | `10a85af93c9b5e224b30e37232cc6e30e265e10e54dd46f74db739293ce86e8b` |
 | `.agentic/lib/agentic/__init__.py` | `88b32f93f1bb5d80292b4996f85a8bd2c4b6f56defc8673bef0306876395034e` |
 | `.agentic/lib/agentic/activation.py` | `ebb73dee3a03be049b46cb11787c77ace16965e938bb2fc371e07851ad00deb7` |
@@ -531,7 +531,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `8d550a32a0754956bef789a454ce284e9ad34e0e7a77fdbf6e90c3350e702f31` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `8c37e49b098ab19a3d9eca00ab1fa358159a3a12bbd1b2da36707bc45b2e0615` |
+| `.github/workflows/ci.yml` | `ce78cfdaace5189f9a37786ace6a41c0f8169b14ff8c763d5045b0fb4f2dfb49` |
 | `.github/workflows/manifest-check.yml` | `3384a4a4ccb9b96471fccc65d110294726fb7e9bd85802aeccd3efd8ce905776` |
 | `ADR-DESIGN-FIRST-TRIAL.md` | `6702007630ee25d4e8cc64b9913ee0b86e7eaf03ecf8dba0632e124bbe179e16` |
 | `ADR-LANE-MODEL-ROUTING.md` | `c713ee7cb72d5d504674bdd5cfaf7437a9cbb122f738ab49dbac3e70f79bff52` |
@@ -696,7 +696,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
 | `scripts/tests/test_awf88_resource_ceilings.py` | `593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae` |
-| `scripts/tests/test_ci_suite_coverage.py` | `58473048656f48a9dbf9a4587a0b6723ba02777a83f24ccdb48a8cde6b166a69` |
+| `scripts/tests/test_ci_suite_coverage.py` | `91f82921088b9225150a6a807331018cddce36222671c685485269df0900f42f` |
 | `scripts/tests/test_ci_windows_final_candidate.py` | `bd0f50e1ca432f8ba910db61c680d4b7259dd17dddb1e151379b836fea47203f` |
 | `scripts/tests/test_cli_failure_paths.py` | `aca4c871800945c4b912cdc36854a20d9bd65b0b086942c4050e5d8473413b47` |
 | `scripts/tests/test_fresh_bootstrap.py` | `b771b24f25dd5a2212d33296240d751e3d569479842a99af50f96f00e8a696a2` |

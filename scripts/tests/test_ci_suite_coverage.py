@@ -96,6 +96,29 @@ def steps_with(job, fragment):
 
 
 class CiSuiteCoverageTests(unittest.TestCase):
+    def test_linux_jobs_do_not_pin_patch_level_python_versions(self):
+        def python_versions(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "python-version":
+                        yield from child if isinstance(child, list) else [child]
+                    else:
+                        yield from python_versions(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from python_versions(child)
+
+        for job_id, job in workflow()["jobs"].items():
+            runners = job.get("runs-on", [])
+            if isinstance(runners, str):
+                runners = [runners]
+            if not any(str(runner).startswith("ubuntu") for runner in runners):
+                continue
+            for version in python_versions(job):
+                with self.subTest(job=job_id, version=version):
+                    self.assertNotRegex(str(version), r"\b\d+\.\d+\.\d+\b",
+                                        f"Linux job {job_id} pins patch-level Python")
+
     def test_linux_shards_and_installed_self_test_have_bounded_matching_matrices(self):
         jobs = workflow()["jobs"]
         versions = ["3.11", "3.12", "3.13"]
