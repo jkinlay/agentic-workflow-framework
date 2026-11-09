@@ -135,23 +135,56 @@ class CiSuiteCoverageTests(unittest.TestCase):
             setup = next(step for step in job["steps"]
                          if step.get("uses") == "actions/setup-python@v5")
             self.assertEqual("${{ matrix.python-version }}", setup["with"]["python-version"])
-            # Reuse the static job's checkout, identity, resolved interpreter and pip.
-            self.assertEqual(jobs["checks"]["steps"][:5], job["steps"][:5])
-            for step in job["steps"]:
-                self.assertNotIn("if", step)
-                self.assertNotIn("continue-on-error", step)
-        self.assertEqual(
-            {"python-version": versions, "shard": list(runner_shards())},
-            jobs["linux_unittests"]["strategy"]["matrix"],
-        )
-        installed = jobs["linux_installed_self_test"]
-        self.assertEqual({"python-version": versions}, installed["strategy"]["matrix"])
-        self.assertEqual(6, len(installed["steps"]))
-        self.assertEqual(
-            '"$PY" -B -m unittest discover -s scripts/tests -t scripts/tests '
-            '-p test_installed_self_test.py',
-            installed["steps"][-1]["run"].strip(),
-        )
+            checkout = next(step for step in job['steps'] if step.get('uses') == 'actions/checkout@v4')
+            self.assertEqual({'fetch-depth': 0}, checkout['with'])
+            start = 1 if job_id == 'linux_installed_self_test' else 0
+            self.assertEqual(jobs['checks']['steps'][:5], job['steps'][start:start + 5])
+            for step in job['steps']:
+                self.assertNotIn('continue-on-error', step)
+        for job_id in ('linux_unittests', 'linux_installed_self_test'):
+            self.assertEqual({'python-version': versions, 'shard': list(runner_shards())},
+                             jobs[job_id]['strategy']['matrix'])
+        installed = jobs['linux_installed_self_test']
+        self.assertEqual(27, len(versions) * len(installed['strategy']['matrix']['shard']))
+        init = installed['steps'][0]
+        self.assertIn('$RUNNER_TEMP', init['run'])
+        self.assertIn('GITHUB_ENV', init['run'])
+        self.assertIn('installer.log', init['run'])
+        self.assertNotIn('self-test.json', init['run'])
+        manifest, = steps_with(installed, 'scripts/build_release.py')
+        self.assertEqual('"$PY" -B scripts/build_release.py --check-manifest', manifest['run'].strip())
+        plan, = steps_with(installed, 'scripts/plan_installed_self_test.py')
+        self.assertEqual('"$PY" -B scripts/plan_installed_self_test.py --output "$AWF_ARTIFACT_DIR/selection.json"',
+                         plan['run'].strip())
+        harness, = steps_with(installed, '-m unittest')
+        self.assertEqual('matrix.shard == 0', harness['if'])
+        self.assertEqual('scripts/tests', harness['working-directory'])
+        self.assertEqual('"$PY" -B -m unittest test_installed_self_test.InstallSubprocessTimeoutTests '
+                         'test_installed_self_test.InstalledSelfTestTests.test_unborn_head_guard_rejects_existing_head',
+                         harness['run'].strip())
+        launch, = steps_with(installed, 'scripts/run_installed_self_test_shard.py')
+        self.assertNotIn('if', launch)
+        self.assertIn('--work-dir "$AWF_WORK_DIR" --artifacts "$AWF_ARTIFACT_DIR"', launch['run'])
+        self.assertIn('--shard "${{ matrix.shard }}" --selection-file "$AWF_ARTIFACT_DIR/selection.json"', launch['run'])
+        self.assertIn('--expected-selection-sha256 "$(cat "$AWF_ARTIFACT_DIR/selection.json.sha256")"', launch['run'])
+        fallback, = [step for step in installed['steps'] if step.get('name') == 'Preserve self-test evidence after an earlier failure']
+        self.assertEqual('always()', fallback['if'])
+        self.assertIn("open('x'", fallback['run'])
+        self.assertIn('FileExistsError', fallback['run'])
+        self.assertIn('FAILED', fallback['run'])
+        upload, = [step for step in installed['steps'] if step.get('uses') == 'actions/upload-artifact@v4']
+        self.assertEqual('always()', upload['if'])
+        self.assertEqual('linux-installed-runtime-self-test-${{ matrix.python-version }}-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}', upload['with']['name'])
+        for name in ('self-test.json', 'installer.log', 'selection.json', 'selection.json.sha256', 'capture'):
+            self.assertIn(name, upload['with']['path'])
+        for step in installed['steps']:
+            if step not in (harness, fallback, upload):
+                self.assertNotIn('if', step)
+        self.assertLess(installed['steps'].index(manifest), installed['steps'].index(plan))
+        self.assertLess(installed['steps'].index(plan), installed['steps'].index(harness))
+        self.assertLess(installed['steps'].index(harness), installed['steps'].index(launch))
+        self.assertLess(installed['steps'].index(launch), installed['steps'].index(fallback))
+        self.assertLess(installed['steps'].index(fallback), installed['steps'].index(upload))
         self.assertFalse(discovered_suites(jobs["checks"]))
         self.assertFalse(discovered_suites(jobs["linux_unittests"]))
 
@@ -246,7 +279,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
         harness_jobs = [
             (job_id, job)
             for job_id, job in jobs.items()
-            if steps_with(job, ".agentic/scripts/self_test.py")
+            if job.get("runs-on") == "windows-latest" and steps_with(job, ".agentic/scripts/self_test.py")
         ]
         self.assertEqual(1, len(harness_jobs))
         job_id, job = harness_jobs[0]
@@ -322,8 +355,33 @@ class CiSuiteCoverageTests(unittest.TestCase):
                          checkout['with']['ref'])
         step, = steps_with(job, 'scripts/check_installed_self_test_shards.py')
         self.assertEqual('always()', step['if'])
+        self.assertIn('--os windows', step['run'])
         self.assertIn('--matrix-result', step['run'])
         self.assertIn('--event-file', step['run'])
+
+    def test_linux_installed_aggregate_is_required_and_os_bound(self):
+        job = workflow()['jobs']['linux_installed_runtime_suite']
+        self.assertEqual('Linux installed-runtime suite', job['name'])
+        self.assertEqual(['linux_installed_self_test'], job['needs'])
+        self.assertEqual('always()', job['if'])
+        self.assertEqual('ubuntu-latest', job['runs-on'])
+        self.assertLessEqual(job['timeout-minutes'], 10)
+        self.assertNotIn('continue-on-error', job)
+        checkout = next(s for s in job['steps'] if s.get('uses') == 'actions/checkout@v4')
+        self.assertEqual({'fetch-depth': 0}, checkout['with'])
+        setup = next(s for s in job['steps'] if s.get('uses') == 'actions/setup-python@v5')
+        self.assertEqual('3.12', setup['with']['python-version'])
+        deps, = steps_with(job, '-m pip install')
+        self.assertIn('--require-hashes "--only-binary=:all:" -r requirements.txt', deps['run'])
+        download = next(s for s in job['steps'] if s.get('uses') == 'actions/download-artifact@v4')
+        self.assertEqual("needs.linux_installed_self_test.result == 'success'", download['if'])
+        self.assertEqual('linux-installed-runtime-self-test-*', download['with']['pattern'])
+        step, = steps_with(job, 'scripts/check_installed_self_test_shards.py')
+        self.assertEqual('always()', step['if'])
+        for argument in ('--os linux', '--artifacts linux-installed-shard-artifacts', '--matrix-result',
+                         '--event-name', '--event-file', '--run-id'):
+            self.assertIn(argument, step['run'])
+        self.assertEqual('${{ needs.linux_installed_self_test.result }}', step['env']['MATRIX_RESULT'])
 
     def test_windows_self_test_report_is_fresh_and_fallback_never_overwrites(self):
         steps = workflow()["jobs"]["installed-runtime-self-test"]["steps"]

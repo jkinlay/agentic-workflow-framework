@@ -32,10 +32,14 @@ def sample_plan():
                 split={upgrade: dict(shards=[1, 8], first_half=['test_first'])}, zero_test_modules=[])
 
 
-def sample_records(plan):
+def test_versions(os_name):
+    return ('3.11', '3.12', '3.13') if os_name == 'linux' else ('3.12.10', '3.13.3')
+
+
+def sample_records(plan, os_name="windows"):
     parts = {1: ['test_upgrade_matrix.Case.test_first'], 8: ['test_upgrade_matrix.Case.test_second']}
     records = []
-    for version in checker.VERSIONS:
+    for version in test_versions(os_name):
         for n in range(9):
             selected = plan['shards'][str(n)]
             records.append((version, dict(
@@ -114,16 +118,18 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(before, path.read_bytes())
 
 
-class AggregateTests(unittest.TestCase):
+class AggregateChecks:
+    os_name = "windows"
     def test_complete_matrix_passes(self):
         plan = sample_plan()
-        records, parts = sample_records(plan)
-        self.assertEqual('PASS', checker.reconcile(plan, records, parts)['status'])
+        records, parts = sample_records(plan, self.os_name)
+        self.assertEqual(27 if self.os_name == 'linux' else 18, len(records))
+        self.assertEqual('PASS', checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))['status'])
 
     def test_missing_shard_overlapping_split_and_failed_isolation_refuse(self):
         plan = sample_plan()
         for fault in ('missing shard', 'overlapping split', 'failed isolation report'):
-            records, parts = sample_records(plan)
+            records, parts = sample_records(plan, self.os_name)
             if fault == 'missing shard':
                 records.pop()
             elif fault == 'overlapping split':
@@ -131,7 +137,7 @@ class AggregateTests(unittest.TestCase):
             else:
                 records[3][1]['isolation'] = 'FAILED'
             with self.subTest(fault=fault), self.assertRaises(ValueError):
-                checker.reconcile(plan, records, parts)
+                checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))
 
     def test_report_cannot_define_union_or_hide_errors_skips_and_components(self):
         plan = sample_plan()
@@ -146,13 +152,13 @@ class AggregateTests(unittest.TestCase):
                 lambda rs: rs[0][1].update(selection_sha256='0' * 64),
                 lambda rs: rs[0][1].update(source_manifest_sha256='0' * 64),
                 lambda rs: rs[0][1].update(zero_test_modules={'unknown': 0})):
-            records, parts = sample_records(plan)
+            records, parts = sample_records(plan, self.os_name)
             mutate(records)
             with self.assertRaises(ValueError):
-                checker.reconcile(plan, records, parts)
-        records, parts = sample_records(plan)
+                checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))
+        records, parts = sample_records(plan, self.os_name)
         records[0][1]['tests']['skipped'] = [{'test': 'x', 'reason': 'declared platform restriction'}]
-        checker.reconcile(plan, records, parts)
+        checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))
 
     def test_explicit_draft_applicability_and_unexpected_skip(self):
         self.assertFalse(checker.windows_applicable(dict(event_name='pull_request', pull_request=dict(draft=True))))
@@ -164,8 +170,16 @@ class AggregateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             event = Path(raw) / 'event.json'
             event.write_text('{"pull_request":{"draft":false}}')
-            self.assertEqual(1, checker.main(['--event-name', 'pull_request', '--event-file', str(event),
+            self.assertEqual(1, checker.main(['--os', self.os_name, '--event-name', 'pull_request', '--event-file', str(event),
                 '--matrix-result', 'skipped', '--artifacts', raw]))
+
+
+class AggregateTests(AggregateChecks, unittest.TestCase):
+    os_name = 'windows'
+
+
+class LinuxAggregateTests(AggregateChecks, unittest.TestCase):
+    os_name = 'linux'
 
 
 class EntryTests(unittest.TestCase):

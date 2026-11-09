@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Independently reconcile Windows installed shards against candidate source."""
+"""Independently reconcile installed shards against candidate source."""
 from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -15,14 +16,37 @@ import unittest
 from plan_installed_self_test import ROOT, build_plan, encode
 from agentic.self_test_shards import COMPONENT_CHECKS, UPGRADE_MATRIX, SHARDS, _unique_object
 
-VERSIONS = ('3.12.10', '3.13.3')
+@dataclass(frozen=True)
+class OSPolicy:
+    name: str
+    versions: tuple[str, ...]
+    platform_prefix: str
+    artifact_prefix: str
+    scope: str
+    numeric_patch: bool
+
+    def interpreter_matches(self, version, value):
+        patch = r'\.[0-9]+' if self.numeric_patch else ''
+        return isinstance(value, str) and re.match(re.escape(version) + patch + r' ', value) is not None
 
 
-def select_artifacts(folders, run_id):
+def policy_for(os_name):
+    if os_name == 'windows':
+        return OSPolicy('windows', ('3.12.10', '3.13.3'), 'Windows-',
+                        'windows-installed-runtime-self-test-', 'windows-installed-suite', False)
+    if os_name == 'linux':
+        return OSPolicy('linux', ('3.11', '3.12', '3.13'), 'Linux-',
+                        'linux-installed-runtime-self-test-', 'linux-installed-suite', True)
+    raise ValueError('unsupported installed-runtime OS')
+
+
+def select_artifacts(folders, run_id, policy):
     """Select the highest attempt per version/shard within this workflow run."""
     if not isinstance(run_id, str) or not re.fullmatch('[1-9][0-9]*', run_id):
         raise ValueError('missing or invalid current run_id')
-    pattern = re.compile(r'windows-installed-runtime-self-test-(3[.]12[.]10|3[.]13[.]3)-shard-([0-8])-([1-9][0-9]*)-([1-9][0-9]*)')
+    versions = '|'.join(re.escape(v) for v in policy.versions)
+    pattern = re.compile(re.escape(policy.artifact_prefix) +
+                         f'({versions})-shard-([0-8])-([1-9][0-9]*)-([1-9][0-9]*)')
     seen, selected = set(), {}
     for folder in folders:
         match = pattern.fullmatch(folder.name)
@@ -78,7 +102,7 @@ def expected_split_cases(root, plan):
     return {n: sorted(case.id() for case in cases if (case._testMethodName in first) == (n == 1)) for n in (1, 8)}
 
 
-def reconcile(plan, records, partitions):
+def reconcile(plan, records, partitions, policy):
     """Expected membership and partitions come only from the candidate source."""
     digest = hashlib.sha256(encode(plan)).hexdigest()
     expected_all = sorted(partitions[1] + partitions[8])
@@ -87,12 +111,12 @@ def reconcile(plan, records, partitions):
     indexed = {}
     for version, report in records:
         shard = report.get('shard')
-        if version not in VERSIONS or type(shard) is not int or shard not in SHARDS or (version, shard) in indexed:
+        if version not in policy.versions or type(shard) is not int or shard not in SHARDS or (version, shard) in indexed:
             raise ValueError('unexpected or duplicate shard')
         indexed[version, shard] = report
-    if set(indexed) != {(v, n) for v in VERSIONS for n in SHARDS}:
+    if set(indexed) != {(v, n) for v in policy.versions for n in SHARDS}:
         raise ValueError('missing shard')
-    for version in VERSIONS:
+    for version in policy.versions:
         counts = Counter()
         for shard in SHARDS:
             r = indexed[version, shard]
@@ -131,7 +155,7 @@ def reconcile(plan, records, partitions):
                 raise ValueError('zero-test helper disposition mismatch')
         if counts != Counter({p: 2 if p == UPGRADE_MATRIX else 1 for p in plan['inventory']}):
             raise ValueError('ordinary module executed other than exactly once')
-    return {'scope': 'windows-installed-suite', 'status': 'PASS', 'suite_complete': True,
+    return {'scope': policy.scope, 'status': 'PASS', 'suite_complete': True,
             'selection_sha256': digest, 'source_manifest_sha256': plan['source_manifest_sha256']}
 
 
@@ -150,6 +174,7 @@ def windows_applicable(event):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--os', choices=('windows', 'linux'), required=True)
     parser.add_argument('--root', type=Path, default=ROOT)
     parser.add_argument('--artifacts', type=Path, required=True)
     parser.add_argument('--matrix-result', required=True)
@@ -157,41 +182,50 @@ def main(argv=None):
     parser.add_argument('--event-file', type=Path, required=True)
     parser.add_argument('--run-id', default=os.environ.get('GITHUB_RUN_ID'))
     args = parser.parse_args(argv)
+    policy = policy_for(args.os)
     try:
         event = json.loads(args.event_file.read_bytes(), object_pairs_hook=_unique_object)
         event['event_name'] = args.event_name
-        if not windows_applicable(event):
+        if policy.name == 'linux':
+            if args.event_name not in ('push', 'pull_request'):
+                raise ValueError('unexpected Linux event')
+            applicable = True
+        else:
+            applicable = windows_applicable(event)
+        if not applicable:
             if args.matrix_result != 'skipped':
                 raise ValueError('inapplicable draft matrix was not skipped')
             print(json.dumps({'status': 'NOT_APPLICABLE', 'reason': 'Windows-inapplicable draft event'}))
             return 0
         if args.matrix_result != 'success':
-            raise ValueError('Windows matrix failed or unexpectedly skipped')
+            raise ValueError(f'{policy.name.title()} matrix failed or unexpectedly skipped')
         root = args.root.resolve()
         plan = build_plan(root)
         partitions = expected_split_cases(root, plan)
         records = []
-        selected = select_artifacts(args.artifacts.iterdir(), args.run_id)
+        selected = select_artifacts(args.artifacts.iterdir(), args.run_id, policy)
         for (version, shard), (attempt, folder) in sorted(selected.items()):
             report = json.loads((folder / 'self-test.json').read_bytes(), object_pairs_hook=_unique_object)
+            if not isinstance(report, dict):
+                raise ValueError('artifact report is not an object')
             if report.get('shard') != shard or type(report['shard']) is not int:
                 raise ValueError('artifact shard differs from its report')
             # The matrix interpreter must actually match its artifact version.
-            if not str(report.get('python', '')).startswith(version + ' '):
+            if not policy.interpreter_matches(version, report.get('python')):
                 raise ValueError('interpreter version mismatch')
-            if not str(report.get('platform', '')).startswith('Windows-'):
-                raise ValueError('report is not from Windows')
+            if not str(report.get('platform', '')).startswith(policy.platform_prefix):
+                raise ValueError(f'report is not from {policy.name.title()}')
             selection = (folder / 'selection.json').read_bytes()
             if selection != encode(plan) or (folder / 'selection.json.sha256').read_text().strip() != hashlib.sha256(selection).hexdigest():
                 raise ValueError('artifact selection differs from candidate')
             records.append((version, report))
-        result = reconcile(plan, records, partitions)
+        result = reconcile(plan, records, partitions, policy)
         result.update(run_id=args.run_id, chosen_attempts={v: {
-            str(n): selected[v, n][0] for n in SHARDS} for v in VERSIONS})
+            str(n): selected[v, n][0] for n in SHARDS} for v in policy.versions})
         print(json.dumps(result, sort_keys=True))
         return 0
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f'Windows installed-runtime suite FAILED: {exc}', file=sys.stderr)
+        print(f'{policy.name.title()} installed-runtime suite FAILED: {exc}', file=sys.stderr)
         return 1
 
 
