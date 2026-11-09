@@ -24,12 +24,45 @@ class InstalledPlatformTests(unittest.TestCase):
         return fixtures.LoaderProcessTests.child(self, code)
 
     def test_installed_top_level_scripts_pass_with_file_and_spec_origins(self):
-        done = self.child('''import importlib,pathlib,sys
-root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root/'.agentic/lib'))
+        self.top_level_scripts_case()
+
+    def test_installed_scripts_import_with_unchanged_directory_mtime(self):
+        self.top_level_scripts_case(pin_mtime=True)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows 8.3 path aliases required')
+    def test_real_short_root_matches_long_root_isolation_and_discovery(self):
+        import ctypes
+        from ctypes import wintypes
+        get_short = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+        get_short.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+        get_short.restype = wintypes.DWORD
+        size = get_short(str(self.root), None, 0)
+        if not size:
+            self.skipTest('GetShortPathNameW unavailable: ' + str(ctypes.get_last_error()))
+        buffer = ctypes.create_unicode_buffer(size)
+        length = get_short(str(self.root), buffer, size)
+        if not length or length >= size:
+            self.skipTest('GetShortPathNameW could not return the alias')
+        short = buffer.value
+        if '~' not in short or short.casefold() == str(self.root).casefold():
+            self.skipTest('filesystem has no distinct 8.3 alias for the fixture root')
+        self.assertEqual(self.root, Path(short).resolve())
+        (self.tests / 'test_short_path.py').write_text(
+            'import unittest\nclass Case(unittest.TestCase):\n def test_case(self): pass\n')
+        self.top_level_scripts_case(pin_mtime=True, short_root=short)
+
+    def top_level_scripts_case(self, pin_mtime=False, short_root=None):
+        done = self.child('''import importlib,os,pathlib,sys
+root=pathlib.Path(''' + repr(short_root) + ''' or sys.argv[1]);sys.path.insert(0,str(root/'.agentic/lib'))
 scripts=root/'.agentic/scripts';sys.path.insert(0,str(scripts))
+stamp=scripts.stat().st_mtime_ns
 names=('benchmark_native','evaluate_native','prepare_routine_pilot','routine_decisions')
 for name in names:
  (scripts/(name+'.py')).write_text('VALUE=1\\n')
+ if ''' + repr(pin_mtime) + ''':
+  os.utime(scripts,ns=(stamp,stamp))
+  assert scripts.stat().st_mtime_ns==stamp
+ importlib.invalidate_caches()
  module=importlib.import_module(name)
  assert module.__file__==module.__spec__.origin
 from agentic.self_test_shards import assert_isolation,isolation_inventory
@@ -37,6 +70,16 @@ assert assert_isolation(root)=='PASS'
 inventory=isolation_inventory(root)
 assert inventory['root_counts']['installed_scripts']==4,inventory['root_counts']
 assert inventory['root_counts']['entry_point']==1,inventory['root_counts']
+assert inventory==isolation_inventory(pathlib.Path(sys.argv[1]).resolve())
+if ''' + repr(short_root is not None) + ''':
+ from agentic.self_test_shards import InstalledLoader
+ import unittest
+ p='.agentic/tests/test_short_path.py'
+ loader=InstalledLoader(root,dict(shards={'7':[p]},split={},zero_test_modules=[]),7)
+ suite=loader.discover(str(root.resolve()/'.agentic/tests'),top_level_dir=str(root.resolve()/'.agentic/tests'))
+ result=unittest.TextTestRunner().run(suite);loader.reconcile()
+ assert result.testsRun==1 and result.wasSuccessful() and not result.skipped
+ assert assert_isolation(root)=='PASS'
 ''')
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 

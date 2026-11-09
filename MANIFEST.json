@@ -702,7 +702,7 @@
     "scripts/tests/test_generate_examples_ticket_plan.py": "6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2",
     "scripts/tests/test_generate_workflow_blob_sha.py": "8b1bb85282a8ca5a7df1fa7c5c1b15a863ebdc5596746153ae23e47acab38cd6",
     "scripts/tests/test_installed_origin_ruling.py": "25c526e8aa336b44138bf71f72c6a8af0c974b4c02392d8c05b06db7829bc87c",
-    "scripts/tests/test_installed_platform_rulings.py": "d3a5627ea1f5a14ecabac639784a58e035d9d9f438a4176877fedb99ed68f762",
+    "scripts/tests/test_installed_platform_rulings.py": "7b93760b01f530629147626f8f1a15456d82f1ddca1361e5af7ea265d5f8cdbd",
     "scripts/tests/test_installed_root_boundaries.py": "d2d8dc96dd6822d89d5a0ddea8cc29449c37b324ea63f3a5e4a3a02ca7004ec5",
     "scripts/tests/test_installed_self_test.py": "083e749a159bb6798bf13b31fb08017f87bc0ec2824bd3f4e021f8fccec8219c",
     "scripts/tests/test_installed_self_test_shards.py": "afa8e703f8efcf35c87439c347c0330d3ed0bdd14d46dc0d4cf47736358957ed",
