@@ -7,7 +7,143 @@ import source_only
 from agentic.reporting.bounded import DeliveryBudget
 
 
+class _LogicalSlowCalls:
+    """Model independent joined call timelines; exclude CPU/storage scheduling.
+
+    Each child inherits its parent's elapsed time. A join merges the later
+    completion, so concurrent destination calls overlap rather than add up.
+    Budget code sees the original 30/45-second deadlines and exact call delays.
+    """
+    def __init__(self):
+        self.local = threading.local()
+
+    def now(self):
+        return getattr(self.local, 'elapsed', 0.0)
+
+    def sleep(self, seconds):
+        self.local.elapsed = self.now() + seconds
+
+    def __enter__(self):
+        from contextlib import ExitStack
+        clock = self
+        original = threading.Thread
+        class JoinedThread(original):
+            def start(self):
+                self.started_at = clock.now()
+                self.finished_at = self.started_at
+                return super().start()
+
+            def run(self):
+                clock.local.elapsed = self.started_at
+                try:
+                    return super().run()
+                finally:
+                    self.finished_at = clock.now()
+
+            def join(self, timeout=None):
+                value = super().join(timeout)
+                if not self.is_alive():
+                    clock.local.elapsed = max(clock.now(), self.finished_at)
+                return value
+        self.stack = ExitStack()
+        for name, value in [('agentic.reporting.bounded.monotonic', self.now),
+                            ('agentic.reporting.runtime.monotonic', self.now),
+                            ('time.sleep', self.sleep),
+                            ('threading.Thread', JoinedThread)]:
+            self.stack.enter_context(patch(name, value))
+        return self
+
+    def __exit__(self, *args):
+        return self.stack.__exit__(*args)
+
+
+def _logical_slow_calls(test):
+    from functools import wraps
+    @wraps(test)
+    def run(self):
+        with _LogicalSlowCalls():
+            return test(self)
+    return run
+
+
 class ReportingTimingTests(unittest.TestCase):
+    def test_budget_expiring_before_retention_releases_only_the_live_uninvoked_claim(self):
+        from copy import deepcopy
+        from agentic import ValidationError
+        from agentic.reporting.runtime import ReviewReportingPort
+        from agentic.review_batching import ReviewBatchStore
+        import test_reporting_e6_regressions as e6
+        case = e6.ControllerTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.helper.listed = [deepcopy(case.helper.current)]
+        with patch.object(ReviewReportingPort, '_retain_review_batch',
+                          side_effect=ValidationError('REPORT_DESTINATION_BUDGET')):
+            result = case.cycle('2026-11-11T16:00:00Z')
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['review_batching']['state'], 'DEFERRED')
+        self.assertEqual(result['review_batching']['owner_alerts'], [])
+        self.assertEqual(case.network.posts, [])
+        self.assertEqual(ReviewBatchStore(case.helper.store).pending_batches(), [])
+        case.restart()
+        self.assertEqual(case.cycle('2026-11-11T16:00:01Z')['errors'], [])
+        reviews = {r['report_id'] for r in case.status()['reports'] if r['kind'] == 'final-human-review'}
+        self.assertTrue(reviews)
+        self.assertTrue(all(d['status'] == 'DELIVERED' and len(d['attempts']) == 1
+                            for d in case.status()['deliveries'] if d['report_id'] in reviews))
+
+    @_logical_slow_calls
+    def test_eight_slow_teams_turns_progress_hourly_eod_and_review(self):
+        from copy import deepcopy
+        import json
+        import time
+        import test_reporting_e6_regressions as e6
+        case = e6.ControllerTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.helper.calendar = {'review_batching': {'cutoff_time': '18:00'}}
+        case.network.latency = 0
+        original_http = type(case.network).__call__
+        def http(network, method, url, headers, payload):
+            time.sleep(1.5 if 'slack.com' in url else 2.2)
+            return original_http(network, method, url, headers, payload)
+        original_observe = case.helper.observe_candidate
+        def observe(candidate, now):
+            time.sleep(2.5)
+            return dict(original_observe(candidate, now), candidate=deepcopy(candidate))
+        case.helper.observe_candidate = observe
+        turns, errors = [], []
+        with patch.object(type(case.network), '__call__', http):
+            for second in range(8):
+                case.restart()
+                case.helper.current['pull_request'] = 41 + second
+                case.helper.listed = [deepcopy(case.helper.current)]
+                result = case.cycle('2026-11-11T17:00:0%dZ' % second)
+                self.assertEqual(result['operating_calendar']['review_batching']['cutoff_time'], '18:00')
+                self.assertEqual(result['operating_calendar']['eod']['time'], '17:00')
+                errors.extend(result['errors'])
+                status = case.status()
+                kinds = {r['report_id']: r['kind'] for r in status['reports']}
+                turns.append({platform: {
+                    kind: [dict(status=d['status'], attempts=len(d['attempts']))
+                           for d in status['deliveries'] if d['platform'] == platform
+                           and kinds[d['report_id']] == kind]
+                    for kind in ('hourly', 'eod', 'final-human-review')}
+                    for platform in ('teams', 'slack')})
+        print('eight slow platform turns: ' + json.dumps(turns, sort_keys=True))
+        self.assertEqual(errors, [])
+        for platform in ('teams', 'slack'):
+            with self.subTest(platform=platform):
+                self.assertTrue(any(d['attempts'] for turn in turns[:2]
+                                    for d in turn[platform]['hourly']), turns)
+                for kind in ('hourly', 'eod', 'final-human-review'):
+                    self.assertTrue(any(d['status'] == 'DELIVERED'
+                                        for d in turns[-1][platform][kind]), turns)
+                self.assertTrue(all(d['status'] == 'DELIVERED' for kind in ('hourly', 'eod')
+                                    for d in turns[-1][platform][kind]), turns)
+                self.assertTrue(all(d['attempts'] <= 2 for turn in turns
+                                    for states in turn[platform].values() for d in states))
+
     def test_unsent_recheck_budget_defers_without_losing_the_intent(self):
         from copy import deepcopy
         from agentic import ValidationError
@@ -27,6 +163,7 @@ class ReportingTimingTests(unittest.TestCase):
             self.assertEqual([r[0] for r in db.execute('SELECT state FROM review_presentation_intent_v1')], ['PENDING'])
         self.assertFalse(any(r['kind'] == 'final-human-review' for r in case.status()['reports']))
 
+    @_logical_slow_calls
     def test_slow_sustained_reviews_preserve_recurring_hourly_progress(self):
         from copy import deepcopy
         import json
@@ -283,6 +420,31 @@ class ReportingTimingTests(unittest.TestCase):
 
 
 class ReportingResumeTimingTests(unittest.TestCase):
+    def test_unknown_resume_reconciles_before_new_work_even_after_cutoff(self):
+        from copy import deepcopy
+        from agentic.reporting.runtime import reporting_status
+        for provider in self.providers.values():
+            original = provider.reconcile
+            provider.reconcile = lambda intent, attempts, original=original: dict(
+                original(intent, attempts), observed_at=self.now)
+        self.port().deliver_review_batch(self.payload)
+        before = deepcopy(reporting_status(self.store, self.root, self.binding)['deliveries'])
+        self.assertEqual({d['status'] for d in before}, {'UNKNOWN', 'DELIVERED'})
+        posts = deepcopy(self.sent)
+        self.visible_platforms = {'slack', 'teams'}
+        self.observed.clear()
+        self.now = '2026-11-11T17:00:00Z'
+        budget = DeliveryBudget()
+        self.port(budget).resume({}, self.observe)
+        after = reporting_status(self.store, self.root, self.binding)['deliveries']
+        self.assertEqual({d['status'] for d in after}, {'DELIVERED'})
+        self.assertEqual({d['delivery_id']: d['attempts'] for d in before},
+                         {d['delivery_id']: d['attempts'] for d in after})
+        self.assertTrue(all(len(d['attempts']) == 1 for d in after))
+        self.assertEqual(self.sent, posts)
+        self.assertEqual(self.observed, [])
+        self.assertEqual(budget.reconciliations, {'teams': 1})
+
     def setUp(self):
         from test_reporting_wiring import ReportingRuntimeTests
         ReportingRuntimeTests.setUp(self)

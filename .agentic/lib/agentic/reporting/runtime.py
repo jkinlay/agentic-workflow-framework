@@ -298,7 +298,7 @@ def reporting_status(store, operating, binding, *, report_ids=None):
 
 
 def drain(store, operating, binding, providers, *, report_ids=None, allow_send=True, budget=None, before_send=None,
-          reserve_review=False, reserve_reconciliation=False, owner_action_turn=False, after_review=False):
+          reserve_review=False, reserve_reconciliation=False, owner_action_turn=False, after_review=False, periodic_turn=False):
     settings, destinations = _bindings(operating, binding)
     if settings['mode'] == 'off':
         return []
@@ -364,7 +364,7 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
         # One protected admission for each class, in priority order. Oldest
         # first within a class prevents sustained arrivals starving a backlog.
         selected = alerts[:1] + hourly[:1] + daily[:1]
-        if history and len(selected) == slots:
+        if history and len(selected) == slots and not periodic_turn:
             # Four classes share three reporting slots when review is queued.
             # Alerts retain their first admission; rotate the other classes.
             groups = [group for group in (hourly[:1], daily[:1], history) if group]
@@ -384,6 +384,19 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
         selected_ids.update(r[1] for r in selected)
         selected += [r for r in fresh if r[1] not in selected_ids][:slots - len(selected)]
         work = selected[:slots]
+        if periodic_turn:
+            # One periodic class overlaps review observations. Keep two of the
+            # four advances available for a review readback plus a new review,
+            # even after an alert. Reuse the durable class cursor across restarts.
+            groups = [group for group in (hourly[:1], daily[:1], history) if group]
+            with store.transaction() as db:
+                key = 'report-periodic-class-turn:' + platform
+                row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+                turn = int(row[0]) if row else 0
+                work = history if periodic_turn == 'history' and history else (groups[turn % len(groups)] if groups else [])
+                if groups and not (periodic_turn == 'history' and history):
+                    db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                               (key, str(turn + 1)))
         if owner_action_turn:
             # One protected alert admission precedes review. Additional alerts
             # cannot take the hourly/EoD slots simply because those classes
@@ -783,6 +796,12 @@ def reporting_cycle(store, *, operating, binding, now, providers=None, context=N
                 coverage=deepcopy(context.get('coverage', {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'})))
 
 
+class UninvokedReviewBudget(ValidationError):
+    """Live proof that budget expiry preceded the reporting transport handoff."""
+    def __init__(self):
+        super().__init__('REPORT_DESTINATION_BUDGET')
+
+
 class ReviewReportingPort:
     """Lane C's exact batch seam; only channel evidence acknowledges success.
 
@@ -796,6 +815,8 @@ class ReviewReportingPort:
         self.observe_candidate = observe_candidate
         self.delivery_budget = delivery_budget
         self.load_operating = load_operating
+        self.before_retention = None
+        self._recheck_write_lock = threading.Lock()
 
     def _readmit(self):
         if self.load_operating is not None:
@@ -848,8 +869,12 @@ class ReviewReportingPort:
                 require(all(_observation_valid(checked[fingerprint('review-candidate', m['candidate'])],
                     m['candidate'], timestamp(now)) for m in payload['members']), 'REPORT_REVIEW_CHECK_EXPIRED')
             elif observe_candidate is not None:
-                checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar,
-                    lambda candidate: checked[fingerprint('review-candidate', candidate)])
+                # Both destinations observe independently. Serialize only the
+                # short evidence CAS; competing equivalent rechecks must not
+                # invalidate each other's newly retained check rows.
+                with self._recheck_write_lock:
+                    checked_payload = ReviewBatchStore(self.store).recheck(payload['batch_id'], now, calendar,
+                        lambda candidate: checked[fingerprint('review-candidate', candidate)])
                 require(checked_payload == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
             calendar = effective_calendar(self._readmit())
             send_at = self.clock()
@@ -864,6 +889,8 @@ class ReviewReportingPort:
 
     def _retain_review_batch(self, payload, *, budget=None):
         """Retain the exact reporting handoff without provider side effects."""
+        if self.before_retention is not None:
+            self.before_retention()
         settings, destinations = _bindings(self.operating, self.binding)
         require(settings['mode'] != 'off', 'REPORTING_OFF')
         now = self.clock()
@@ -917,7 +944,16 @@ class ReviewReportingPort:
                     lambda candidate: self.observe_candidate(candidate, now))
                 require(checked == payload, 'REPORT_REVIEW_BATCH_MISMATCH')
                 pending.begin_delivery(payload['batch_id'], self.clock())
-        self._retain_review_batch(payload, budget=budget)
+        try:
+            self._retain_review_batch(payload, budget=budget)
+        except ValidationError as exc:
+            if str(exc) == 'REPORT_DESTINATION_BUDGET':
+                # Preparation has not invoked a provider or reserved an attempt.
+                # The controller alone still owns the live cancellation proof.
+                # Revoke the exhausted shared stage before any later drain.
+                budget.cancel()
+                raise UninvokedReviewBudget() from exc
+            raise
         # The controller already rechecked this claim. The mandatory port
         # recheck below runs after destination verification, immediately before
         # reservation/POST, rather than adding another identical remote read
@@ -1057,7 +1093,12 @@ class ReviewReportingPort:
                 continue
             pending.track_reporting(payload['batch_id'])
             pending.finish_reporting_failure(payload['batch_id'], self.clock())
-            if not any(s['status'] in {'PENDING', 'ABSENT', 'THROTTLED'} for s in states):
+            if not any(s['status'] in {'PENDING', 'ABSENT'} or
+                       (s['status'] == 'THROTTLED' and s.get('retry_action') != 'RECONCILE') for s in states):
+                # Historical priority must actually reconcile in-flight work,
+                # before periodic admission starts. Receipt-only readback is
+                # independent of presentation windows and never invokes gates.
+                self.observe_review_delivery(payload, budget=budget)
                 continue
             try:
                 self._check(payload, calendar, observe_candidate, budget=budget)
@@ -1068,8 +1109,22 @@ class ReviewReportingPort:
                 if str(exc) in {'REPORT_DESTINATION_BUDGET', 'REPORT_REVIEW_WINDOW_EXHAUSTED'}:
                     return
                 raise
+            refused = []
+            def before_send():
+                try:
+                    self._check(payload, calendar, observe_candidate, budget=budget)
+                except Exception as exc:
+                    refused.append(exc)
+                    raise
             drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id}, budget=budget,
-                  before_send=lambda: self._check(payload, calendar, observe_candidate, budget=budget))
+                  before_send=before_send)
+            if refused:
+                exc = refused[0]
+                if isinstance(exc, ValidationError):
+                    self._defer(report_id, str(exc), retry_at=getattr(exc, 'retry_at', None))
+                    if str(exc) in {'REPORT_DESTINATION_BUDGET', 'REPORT_REVIEW_WINDOW_EXHAUSTED'}:
+                        return
+                raise exc
             self.observe_review_delivery(payload, budget=budget)
             try:
                 budget.remaining()

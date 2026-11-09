@@ -47,12 +47,12 @@ delivered corrections seed restorations.
 
 Platforms share four advances, one historical reconciliation, 32 HTTP calls and
 a 30-second admission deadline. Alerts stay first; review reserves one advance.
-Durable NEW/RETRY turns alternate review-first and periodic-first scheduling
-across restarts. Periodic-first uses the ten-second slice and first reconciliation
-use; joins end five seconds before the shared deadline. Phases share counters/gates;
-cancellation preserves reserved review admission. Deferred classes rotate after
-alerts. Batches hold one candidate; restorations share one drain. Observations
-check before/after calls outside write transactions, capped at 15 seconds.
+NEW/RETRY preserve review admission. Retries overlap one periodic
+class with observations under the original deadline. Durable review/periodic
+readback priority and hourly/EoD selection rotate. Join before retention and
+on exit; counters/gates remain shared. Batches hold
+one candidate; restorations share one drain. Observations check before/after
+calls outside write transactions, capped at 15 seconds.
 
 HTTP's monotonic 15-second maximum spans DNS through body; expiry closes sockets.
 Direct TLS ignores proxies; redirects/retries are disabled. Delivery, cancellation
@@ -98,6 +98,7 @@ destinations' channel evidence; review/merge authority remains separate.
 A CLAIMED batch transfers to REPORTING after exact-payload outbox retention.
 REPORTING permits newer candidates. Crash recovery retains send-started identities/attempts
 when creating missing reports; provably unsent PREPARED claims release for fresh preparation.
+Live uninvoked retention failures release; restarts cannot infer proof.
 Terminal failures close batches FAILED and members EXHAUSTED; platform successes survive.
 Exhausted reviews generate one deduplicated owner-action alert. Failed alerts
 enter periodic diagnostics without recursion. Diagnostics list four identities/total; reporting-status retains all.

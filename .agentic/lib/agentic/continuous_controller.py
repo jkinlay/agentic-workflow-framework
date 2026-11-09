@@ -3382,9 +3382,15 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 					else:
 						result['unqualified'] += 1
 				except Exception as exc:
+					if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+						result.update(state='DEFERRED', reason=str(exc))
+						break
 					failed('review_enqueue', exc)
 		except Exception as exc:
-			failed('review_discovery', exc)
+			if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+				result.update(state='DEFERRED', reason=str(exc))
+			else:
+				failed('review_discovery', exc)
 	# No delivery port means durable collection only, including during the lane E
 	# handoff. An absent port consumes no attempt; lane E owns reporting OFF.
 	if deliver_review_batch is None and observe_review_delivery is None:
@@ -3484,7 +3490,15 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 				continue
 			# An unavoidable small gap remains from this last calendar/clock check to provider
 			# receipt (later policy merges, scheduling/transport latency); no atomic remote clock.
-			receipt = deliver_review_batch(transport_payload)
+			try:
+				receipt = deliver_review_batch(transport_payload)
+			except ValidationError as exc:
+				# Only the live reporting port can attest that its side-effect-free
+				# retention failed before invoking any transport. Restart cannot.
+				from .reporting.runtime import UninvokedReviewBudget
+				if isinstance(exc, UninvokedReviewBudget):
+					cancel_uninvoked(clock(), calendar)
+				raise
 			if receipt is not None:
 				reconcile(payload, receipt)
 			else:
@@ -4042,20 +4056,17 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 					JOIN controller_report_delivery d ON json_extract(d.intent_json,'$.report_id')=r.report_id
 					WHERE r.kind='final-human-review' AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED')
 					LIMIT 1""").fetchone())
-			# Alerts keep first admission. The durable NEW/RETRY turn also
-			# protects recurring periodic time: NEW runs review before periodic
-			# work; RETRY admits periodic work in the existing reporting slice.
-			# A tail drain alone cannot rotate once review exhausts the budget.
+			# Preserve alert-first admission and review's historical retry turn.
+			# Periodic work overlaps new-candidate observations below; serial
+			# periodic-first work can consume the review handoff's entire budget.
 			defer_periodic_reporting = review_waiting and port is not None
 			with store.connection() as db:
 				priority_ids = {r[0] for r in db.execute("SELECT report_id FROM controller_reports WHERE kind='owner-action'")}
 			reporting['deliveries'] = drain(store, operating_root, report_binding, reporting_providers or {},
-				report_ids=priority_ids if defer_periodic_reporting and not review_retry_first else None,
-				owner_action_turn=defer_periodic_reporting and not review_retry_first,
+				report_ids=priority_ids if defer_periodic_reporting else None,
+				owner_action_turn=defer_periodic_reporting,
 				budget=report_delivery_budget.reporting_slice() if review_waiting and review_retry_first else report_delivery_budget,
-				# The same one reconciliation belongs to periodic work on its
-				# protected turn; review gets first use on the alternate turn.
-				reserve_review=port is not None,
+				reserve_review=port is not None, reserve_reconciliation=review_retry_first and review_waiting,
 				before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy))
 		except Exception as exc:
 			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
@@ -4068,57 +4079,99 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 				port.resume(calendar, observe_review_candidate, batch_ids=resume_batch_ids)
 			except Exception as exc:
 				errors.append({'operation': 'reporting_review_resume', 'state': 'UNKNOWN', 'reason': type(exc).__name__})
-	if review_retry_first:
+	periodic_retry_first = False
+	if review_retry_first and defer_periodic_reporting:
+		# Alternate the sole historical readback between review and periodic
+		# work on retry turns. NEW retains review's original full opportunity.
+		with store.transaction() as db:
+			key = 'report-periodic-reconciliation-turn'
+			row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+			periodic_retry_first = row is not None and row[0] == 'PERIODIC'
+			db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+				(key, 'REVIEW' if periodic_retry_first else 'PERIODIC'))
+	if review_retry_first and not periodic_retry_first:
 		resume_reporting_reviews()
-	# Calendar waits and uncertain review sends never gate dispatch, independent
-	# review, amendments, or the separate immediate status/action channel above.
-	try:
-		if port is not None:
-			report_delivery_budget.remaining()
-		review_batching = production_review_batching_cycle(store, calendar=calendar,
-			repository_root=policy_root, config=planning_config, operating_snapshot=accepted_operating,
-			binding=inventory_binding, clock=post_provider_time,
-			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
-			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery,
-			candidate_limit=MAX_REVIEW_CANDIDATES if report_settings['mode'] != 'off' else None)
-		errors.extend(review_batching['errors'])
-	except Exception as exc:
-		if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
-			review_batching = {'state': 'DEFERRED', 'reason': str(exc), 'merge_authorized': False}
-		else:
-			review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
-			errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
-	# Newly stuck/exhausted reviews alert through the existing immediate status
-	# port, even with periodic reports OFF. They never block work or reporting.
-	if review_batching.get('owner_alerts'):
-		alert = store.digest(post_provider_time(), calendar=calendar)
-		if alert is not None:
+	periodic_worker, periodic_results, periodic_failures = None, [], []
+	def finish_periodic_observations():
+		nonlocal periodic_worker
+		if periodic_worker is not None:
+			# drain owns cancellation and the original bounded worker joins.
+			# Join before the retention snapshot; no callback holds a DB lock.
+			periodic_worker.join()
+			periodic_worker = None
+			reporting['deliveries'].extend(periodic_results)
+			if periodic_failures:
+				errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE',
+					'reason': type(periodic_failures[0]).__name__})
+	if defer_periodic_reporting and review_retry_first:
+		from threading import Thread
+		periodic_budget = report_delivery_budget
+		def periodic_observations():
 			try:
-				receipt = deliver_status(alert)
-				_require(isinstance(receipt, dict) and {'delivery_id', 'status', 'observed_at'} <= set(receipt)
-					and set(receipt) <= {'delivery_id', 'status', 'observed_at', 'evidence_kind', 'channel_delivery'}
-					and receipt['delivery_id'] == alert['delivery_id'] and receipt['status'] == 'DELIVERED',
-					'Status delivery readback is missing or mismatched')
-				if receipt.get('evidence_kind') == 'LOCAL_RECEIPT':
-					_require(receipt.get('channel_delivery') is False, 'Local receipt cannot assert channel delivery')
-				timestamp(receipt['observed_at'])
-				store.acknowledge_digest(alert['delivery_id'], receipt['observed_at'])
-				delivery = receipt
-			except Exception as exc:
-				errors.append({'operation': 'review_owner_alert', 'state': 'PENDING', 'reason': type(exc).__name__})
-	if not review_retry_first:
-		resume_reporting_reviews()
-	if defer_periodic_reporting:
+				periodic_results.extend(drain(store, operating_root, report_binding, reporting_providers or {},
+					budget=periodic_budget, after_review=True,
+					periodic_turn='history' if periodic_retry_first else 'fresh',
+					reserve_review=True, reserve_reconciliation=not periodic_retry_first,
+					before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy)))
+			except BaseException as exc:
+				periodic_failures.append(exc)
+		periodic_worker = Thread(target=periodic_observations, name='awf-report-periodic', daemon=False)
+		port.before_retention = finish_periodic_observations
+		periodic_worker.start()
+	try:
+		# Calendar waits and uncertain review sends never gate dispatch, independent
+		# review, amendments, or the separate immediate status/action channel above.
 		try:
-			# Reuse the original deadline, counts and reconciliation allowance.
-			# Already delivered alerts/reviews are ineligible; remaining classes
-			# retain their durable rotation when the shared allowance expires.
-			reporting['deliveries'].extend(drain(store, operating_root, report_binding, reporting_providers or {},
-				budget=report_delivery_budget, after_review=True,
-				before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy)))
+			if port is not None:
+				report_delivery_budget.remaining()
+			review_batching = production_review_batching_cycle(store, calendar=calendar,
+				repository_root=policy_root, config=planning_config, operating_snapshot=accepted_operating,
+				binding=inventory_binding, clock=post_provider_time,
+				observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
+				deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery,
+				candidate_limit=MAX_REVIEW_CANDIDATES if report_settings['mode'] != 'off' else None)
+			errors.extend(review_batching['errors'])
 		except Exception as exc:
-			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
-	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'operating_calendar': calendar, 'reporting': reporting, 'review_batching': review_batching, 'errors': errors, 'execution_authority': False}
+			if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+				review_batching = {'state': 'DEFERRED', 'reason': str(exc), 'merge_authorized': False}
+			else:
+				review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
+				errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
+		# Newly stuck/exhausted reviews alert through the existing immediate status
+		# port, even with periodic reports OFF. They never block work or reporting.
+		if review_batching.get('owner_alerts'):
+			alert = store.digest(post_provider_time(), calendar=calendar)
+			if alert is not None:
+				try:
+					receipt = deliver_status(alert)
+					_require(isinstance(receipt, dict) and {'delivery_id', 'status', 'observed_at'} <= set(receipt)
+						and set(receipt) <= {'delivery_id', 'status', 'observed_at', 'evidence_kind', 'channel_delivery'}
+						and receipt['delivery_id'] == alert['delivery_id'] and receipt['status'] == 'DELIVERED',
+						'Status delivery readback is missing or mismatched')
+					if receipt.get('evidence_kind') == 'LOCAL_RECEIPT':
+						_require(receipt.get('channel_delivery') is False, 'Local receipt cannot assert channel delivery')
+					timestamp(receipt['observed_at'])
+					store.acknowledge_digest(alert['delivery_id'], receipt['observed_at'])
+					delivery = receipt
+				except Exception as exc:
+					errors.append({'operation': 'review_owner_alert', 'state': 'PENDING', 'reason': type(exc).__name__})
+		if not review_retry_first or periodic_retry_first:
+			resume_reporting_reviews()
+		finish_periodic_observations()
+		if defer_periodic_reporting:
+			try:
+				# Reuse the original deadline, counts and reconciliation allowance.
+				# Already delivered alerts/reviews are ineligible; remaining classes
+				# retain their durable rotation when the shared allowance expires.
+				reporting['deliveries'].extend(drain(store, operating_root, report_binding, reporting_providers or {},
+					budget=report_delivery_budget, after_review=True,
+					before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy)))
+			except Exception as exc:
+				errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+		return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'operating_calendar': calendar, 'reporting': reporting, 'review_batching': review_batching, 'errors': errors, 'execution_authority': False}
+	finally:
+		finish_periodic_observations()
+
 
 def _observe_jira_write_policy(config, issue, observer, now):
 	"""Obtain fresh canonical scope evidence from the reviewed adapter."""
