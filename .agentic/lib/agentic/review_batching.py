@@ -13,7 +13,7 @@ from datetime import timedelta
 import re
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, loads
+from .canonical import canonical, fingerprint, loads, sha256
 from .operating_calendar import (next_review_presentation, utc_instant, utc_text,
                                  validate_calendar, _zone, _local_boundary)
 
@@ -135,6 +135,51 @@ class ReviewBatchStore:
         with self.controller.transaction() as db:
             for statement in _DDL:
                 db.execute(statement)
+            self._install_restoration_resolution(db)
+
+    @staticmethod
+    def _install_restoration_resolution(db):
+        from .reporting.delivery import DeliveryOutbox
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='review_restoration_charge_v1'").fetchone():
+            return
+        if 'resolved' not in {r[1] for r in db.execute('PRAGMA table_info(review_restoration_charge_v1)')}:
+            db.execute('ALTER TABLE review_restoration_charge_v1 ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0')
+            # Classify legacy history once during migration, outside admission.
+            for charge in db.execute('SELECT rowid,* FROM review_restoration_charge_v1').fetchall():
+                entries = db.execute('SELECT * FROM review_report_chain_v1 WHERE occurrence_id=?',
+                                     (charge['occurrence_id'],)).fetchall()
+                _require(entries, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+                states, observed = [], [charge['reserved_at']]
+                for entry in entries:
+                    chain = ReviewBatchStore._indexed_chain(db, (entry['batch_id'], entry['binding'], entry['destination']))
+                    report = next(r for r in chain if r['report_id'] == entry['report_id'])
+                    for delivery in report['delivery_ids']:
+                        state = DeliveryOutbox._load(db, delivery)[1]
+                        states.append(state['status'])
+                        observed.extend(h['observed_at'] for h in state['history'] if h.get('observed_at'))
+                if states and all(s in {'DELIVERED', 'FAILED', 'WITHDRAWN'} for s in states):
+                    db.execute('UPDATE review_restoration_charge_v1 SET resolved=1 WHERE occurrence_id=? AND opening=?',
+                               (charge['occurrence_id'], charge['opening']))
+                    latest = db.execute('SELECT rowid FROM review_restoration_charge_v1 WHERE batch_id=? '
+                                        'ORDER BY rowid DESC LIMIT 1', (charge['batch_id'],)).fetchone()
+                    if latest[0] != charge['rowid']:
+                        continue
+                    reason = 'Restoration ' + ('FAILED' if 'FAILED' in states else
+                                               'WITHDRAWN' if 'WITHDRAWN' in states else 'DELIVERED')
+                    for member in report['review_batch']['members']:
+                        detail = db.execute('SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?',
+                                            (member['intent_id'],)).fetchone()
+                        if detail and (detail['reason'] != reason or detail['retry_at'] is not None):
+                            # Retain the latest durable event time; migration
+                            # must not invent a provider observation instant.
+                            now = max(observed + [detail['changed_at']], key=utc_instant)
+                            ReviewBatchStore._detail(db, member['intent_id'], reason, now)
+                            db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
+                                       (member['intent_id'],))
+                            ReviewBatchStore._changed(db)
+        db.execute('CREATE INDEX IF NOT EXISTS review_restoration_unresolved_v1 '
+                   'ON review_restoration_charge_v1(batch_id) WHERE resolved=0')
+        db.execute('CREATE INDEX IF NOT EXISTS review_restoration_batch_v1 ON review_restoration_charge_v1(batch_id)')
 
     @staticmethod
     def _changed(db):
@@ -193,33 +238,154 @@ class ReviewBatchStore:
             'JOIN review_presentation_outbox_v1 o USING(batch_id)')]
 
     @staticmethod
-    def _review_chain(db, payload, binding, destination):
-        """Reconstruct one destination's immutable chain in retention order."""
+    def install_review_chain(db):
+        """One additive, transactional backfill; never rebuild a disputed index."""
+        marker = db.execute("SELECT value FROM controller_meta WHERE key='review-chain-index-v1'").fetchone()
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='review_report_chain_v1'").fetchone()
+        _require(bool(marker) == bool(exists), 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+        if marker:
+            _require(marker[0] == '1', 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+            ReviewBatchStore._check_chain_index(db)
+            ReviewBatchStore._install_restoration_resolution(db)
+            return
+        db.execute('''CREATE TABLE review_report_chain_v1(
+            batch_id TEXT NOT NULL, binding TEXT NOT NULL, destination TEXT NOT NULL,
+            sequence INTEGER NOT NULL, report_id TEXT NOT NULL, report_sha256 TEXT NOT NULL,
+            occurrence_id TEXT, PRIMARY KEY(batch_id,binding,destination,sequence),
+            UNIQUE(report_id,destination))''')
+        db.execute('CREATE INDEX review_chain_report_v1 ON review_report_chain_v1(report_id)')
+        db.execute('CREATE INDEX review_chain_occurrence_v1 ON review_report_chain_v1(occurrence_id)')
+        db.execute('CREATE TABLE review_chain_pending_v1(report_id TEXT PRIMARY KEY)')
+        # Direct insertion cannot silently bypass the retention transaction.
+        db.execute('''CREATE TRIGGER review_chain_pending_insert_v1 AFTER INSERT ON controller_reports
+            WHEN json_type(NEW.payload_json,'$.review_batch') IS NOT NULL OR
+                 json_type(NEW.payload_json,'$.review_correction') IS NOT NULL OR
+                 json_type(NEW.payload_json,'$.review_restoration') IS NOT NULL
+            BEGIN INSERT INTO review_chain_pending_v1 VALUES(NEW.report_id); END''')
+        for op in ('UPDATE', 'DELETE'):
+            db.execute('CREATE TRIGGER review_chain_no_' + op.lower() + '_v1 BEFORE ' + op +
+                       " ON review_report_chain_v1 BEGIN SELECT RAISE(ABORT,'Review chain is immutable'); END")
+        db.execute('''CREATE TRIGGER review_chain_no_replace_v1 BEFORE INSERT ON review_report_chain_v1
+            WHEN EXISTS(SELECT 1 FROM review_report_chain_v1 WHERE batch_id=NEW.batch_id AND
+                binding=NEW.binding AND destination=NEW.destination AND sequence=NEW.sequence)
+            OR EXISTS(SELECT 1 FROM review_report_chain_v1 WHERE report_id=NEW.report_id AND destination=NEW.destination)
+            BEGIN SELECT RAISE(ABORT,'Review chain already exists'); END''')
+        for row in db.execute('''SELECT payload_json FROM controller_reports WHERE
+            json_type(payload_json,'$.review_batch') IS NOT NULL OR
+            json_type(payload_json,'$.review_correction') IS NOT NULL OR
+            json_type(payload_json,'$.review_restoration') IS NOT NULL ORDER BY rowid''').fetchall():
+            ReviewBatchStore.append_review_report(db, loads(row[0]), row[0])
+        db.execute("INSERT INTO controller_meta VALUES('review-chain-index-v1','1')")
+        ReviewBatchStore._install_restoration_resolution(db)
+
+    @staticmethod
+    def _check_chain_index(db):
+        _require(db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN "
+                            "('review_report_chain_v1','review_chain_pending_v1')").fetchone()[0] == 2,
+                 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+        _require(not db.execute('SELECT 1 FROM review_chain_pending_v1 LIMIT 1').fetchone(),
+                 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+
+    @staticmethod
+    def _chain_key(payload, binding, destination):
+        return (payload['batch_id'], canonical(binding).decode(),
+                canonical({k: v for k, v in destination.items() if k != 'scope_revision'}).decode())
+
+    @staticmethod
+    def _indexed_chain(db, key):
         from .reporting.delivery import DeliveryOutbox, same_destination
-        original = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
-                              ('review-' + payload['batch_id'],)).fetchone()
-        _require(original is not None, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
-        original = loads(original[0])
-        _require(original.get('review_batch') == payload and original['binding'] == binding,
-                 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
-        _require(any(same_destination(DeliveryOutbox._load(db, identity)[0]['binding'], destination)
-                     for identity in original['delivery_ids']), 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
-        chain, identities = [original], {original['report_id']}
-        for row in db.execute('SELECT payload_json FROM controller_reports ORDER BY rowid'):
-            report = loads(row[0])
+        rows = db.execute('''SELECT c.*,r.payload_json FROM review_report_chain_v1 c
+            LEFT JOIN controller_reports r USING(report_id)
+            WHERE c.batch_id=? AND c.binding=? AND c.destination=? ORDER BY c.sequence''', key).fetchall()
+        seal = db.execute('SELECT value FROM controller_meta WHERE key=?',
+                          ('review-chain-tip:' + fingerprint('review-chain-key-v1', list(key)),)).fetchone()
+        _require(rows and seal and seal[0] == str(len(rows)), 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+        chain, generation = [], 0
+        binding, destination = loads(key[1]), loads(key[2])
+        for sequence, row in enumerate(rows):
+            raw = row['payload_json']
+            _require(row['sequence'] == sequence and raw is not None and sha256(raw.encode()) == row['report_sha256'],
+                     'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+            report = loads(raw)
             notice = report.get('review_restoration') or report.get('review_correction')
-            if (not notice or any(report['binding'][k] != binding[k] for k in ('project', 'repository'))
-                    or not same_destination(notice.get('binding', {}), destination)):
-                continue
-            if notice.get('prior_report') not in identities and report.get('review_batch') != payload:
-                continue
-            _require(notice.get('prior_report') == chain[-1]['report_id']
-                     and (not report.get('review_restoration') or
-                          report.get('review_batch') == payload and report['binding'] == binding),
-                     'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+            _require(report['report_id'] == row['report_id'] and
+                     all(report['binding'][k] == binding[k] for k in ('project', 'repository')),
+                     'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+            if sequence == 0:
+                _require(not notice and report['report_id'] == 'review-' + key[0] and
+                         report['binding'] == binding and report['review_batch']['batch_id'] == key[0] and
+                         any(same_destination(DeliveryOutbox._load(db, d)[0]['binding'], destination)
+                             for d in report['delivery_ids']), 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+            else:
+                _require(notice and notice.get('prior_report') == chain[-1]['report_id'] and
+                         same_destination(notice.get('binding', {}), destination) and
+                         (not report.get('review_restoration') or
+                          report.get('review_batch') == chain[0]['review_batch'] and
+                          report['binding'] == chain[0]['binding']), 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+            generation += bool(report.get('review_restoration'))
+            occurrence = (fingerprint('review-restoration-occurrence-v1',
+                [key[0], binding, generation]) if report.get('review_restoration') else None)
+            _require(row['occurrence_id'] == occurrence, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
             chain.append(report)
-            identities.add(report['report_id'])
         return chain
+
+    @staticmethod
+    def _review_chain(db, payload, binding, destination):
+        ReviewBatchStore._check_chain_index(db)
+        chain = ReviewBatchStore._indexed_chain(db, ReviewBatchStore._chain_key(payload, binding, destination))
+        _require(chain[0]['review_batch'] == payload, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        return chain
+
+    @staticmethod
+    def _notice_chain(db, report):
+        notice = report.get('review_restoration') or report.get('review_correction')
+        destination = canonical({k: v for k, v in notice.get('binding', {}).items() if k != 'scope_revision'}).decode()
+        parent = db.execute('SELECT batch_id,binding,destination FROM review_report_chain_v1 '
+                            'WHERE report_id=? AND destination=?', (notice.get('prior_report'), destination)).fetchone()
+        _require(parent is not None, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        key = tuple(parent)
+        chain = ReviewBatchStore._indexed_chain(db, key)
+        _require(notice.get('prior_report') == chain[-1]['report_id'] and
+                 all(report['binding'][k] == chain[0]['binding'][k] for k in ('project', 'repository')) and
+                 (not report.get('review_restoration') or report.get('review_batch') == chain[0]['review_batch']
+                  and report['binding'] == chain[0]['binding']), 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        return key, chain
+
+    @staticmethod
+    def append_review_report(db, report, raw):
+        """Append validated immutable bytes in the report's retention transaction."""
+        from .reporting.delivery import DeliveryOutbox
+        notice = report.get('review_restoration') or report.get('review_correction')
+        if notice:
+            key, chain = ReviewBatchStore._notice_chain(db, report)
+            generation = sum(bool(r.get('review_restoration')) for r in chain) + bool(report.get('review_restoration'))
+            occurrence = (fingerprint('review-restoration-occurrence-v1', [key[0], loads(key[1]), generation])
+                          if report.get('review_restoration') else None)
+            entries = [(key, len(chain), occurrence)]
+        elif report.get('review_batch'):
+            _require(report['report_id'] == 'review-' + report['review_batch']['batch_id'],
+                     'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+            entries = [(ReviewBatchStore._chain_key(report['review_batch'], report['binding'],
+                DeliveryOutbox._load(db, d)[0]['binding']), 0, None) for d in report['delivery_ids']]
+        else:
+            return
+        for key, sequence, occurrence in entries:
+            db.execute('INSERT INTO review_report_chain_v1 VALUES(?,?,?,?,?,?,?)',
+                       (*key, sequence, report['report_id'], sha256(raw.encode()), occurrence))
+            db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                       ('review-chain-tip:' + fingerprint('review-chain-key-v1', list(key)), str(sequence + 1)))
+            if occurrence and db.execute("SELECT 1 FROM sqlite_master WHERE name='review_restoration_charge_v1'").fetchone():
+                if 'resolved' in {r[1] for r in db.execute('PRAGMA table_info(review_restoration_charge_v1)')}:
+                    db.execute('UPDATE review_restoration_charge_v1 SET resolved=0 WHERE occurrence_id=?', (occurrence,))
+                    charge = db.execute('SELECT 1 FROM review_restoration_charge_v1 WHERE occurrence_id=?',
+                                        (occurrence,)).fetchone()
+                    if charge:
+                        now = db.execute('SELECT observed_at FROM controller_reports WHERE report_id=?',
+                                         (report['report_id'],)).fetchone()[0]
+                        for member in report['review_batch']['members']:
+                            ReviewBatchStore._detail(db, member['intent_id'],
+                                'Restoration reserved; unresolved until terminal readback', now)
+        db.execute('DELETE FROM review_chain_pending_v1 WHERE report_id=?', (report['report_id'],))
 
     @staticmethod
     def validate_review_notice(db, report):
@@ -227,32 +393,8 @@ class ReviewBatchStore:
         notice = report.get('review_restoration') or report.get('review_correction')
         if not notice:
             return
-        prior = notice.get('prior_report')
-        seen = set()
-        while prior not in seen:
-            seen.add(prior)
-            row = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (prior,)).fetchone()
-            _require(row is not None, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
-            ancestor = loads(row[0])
-            parent = ancestor.get('review_restoration') or ancestor.get('review_correction')
-            if not parent:
-                break
-            prior = parent.get('prior_report')
-        else:
-            raise ValidationError('REPORT_REVIEW_CHAIN_TIP_CHANGED')
-        payload = ancestor.get('review_batch')
-        _require(payload is not None and (not report.get('review_restoration') or report.get('review_batch') == payload),
-                 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
-        # Corrections withdraw an old scope on its original destination even
-        # when the diagnostic report belongs to a newer scope. Restoration
-        # cannot carry that old readiness into the new scope.
-        binding = ancestor['binding']
-        _require(all(report['binding'][k] == binding[k] for k in ('project', 'repository')),
-                 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
-        chain = ReviewBatchStore._review_chain(db, payload, binding, notice.get('binding', {}))
-        if report.get('review_restoration'):
-            _require(report['binding'] == binding, 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
-        _require(notice.get('prior_report') == chain[-1]['report_id'], 'REPORT_REVIEW_CHAIN_TIP_CHANGED')
+        ReviewBatchStore._check_chain_index(db)
+        ReviewBatchStore._notice_chain(db, report)
 
     @staticmethod
     def restoration_identity(db, report_id):
@@ -857,6 +999,7 @@ class ReviewBatchStore:
                      'Review delivery has no current send fence')
             payload = self._payload(row)
             if reporting:
+                self._check_chain_index(db)
                 retained = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?',
                                       ('review-' + batch_id,)).fetchone()
                 _require(retained is not None and loads(retained[0]).get('review_batch') == payload,
@@ -904,12 +1047,15 @@ class ReviewBatchStore:
                                    restoration_report_id=report_id, restoration_window=window, _db=db)
         occurrence = self.restoration_identity(db, report_id)
         window = _window(now, calendar)
-        if db.execute('SELECT 1 FROM review_restoration_charge_v1 WHERE occurrence_id=? AND opening=?',
-                      (occurrence, window['opening'])).fetchone():
-            return
+        reused = db.execute('SELECT 1 FROM review_restoration_charge_v1 WHERE occurrence_id=? AND opening=?',
+                            (occurrence, window['opening'])).fetchone()
         row = db.execute('SELECT * FROM review_presentation_outbox_v1 WHERE batch_id=?', (batch_id,)).fetchone()
-        db.execute('INSERT INTO review_restoration_charge_v1 VALUES(?,?,?,?)',
-                   (occurrence, window['opening'], batch_id, utc_text(now)))
+        if not reused:
+            db.execute('INSERT INTO review_restoration_charge_v1(occurrence_id,opening,batch_id,reserved_at) VALUES(?,?,?,?)',
+                       (occurrence, window['opening'], batch_id, utc_text(now)))
+        else:
+            db.execute('UPDATE review_restoration_charge_v1 SET resolved=0 WHERE occurrence_id=? AND opening=?',
+                       (occurrence, window['opening']))
         evidence = self._attempt_windows(db, calendar)
         for member in self._payload(row)['members']:
             intent = db.execute('SELECT * FROM review_presentation_intent_v1 WHERE intent_id=?', (member['intent_id'],)).fetchone()
@@ -925,27 +1071,43 @@ class ReviewBatchStore:
         """
         from .reporting.delivery import DeliveryOutbox
         with self.controller.transaction() as db:
-            charges = db.execute('SELECT * FROM review_restoration_charge_v1 WHERE rowid IN '
-                '(SELECT max(rowid) FROM review_restoration_charge_v1 GROUP BY batch_id)').fetchall()
+            self._check_chain_index(db)
+            charges = db.execute('SELECT rowid,* FROM review_restoration_charge_v1 WHERE resolved=0').fetchall()
             if not charges:
                 return
-            reports = [loads(r[0]) for r in db.execute('SELECT payload_json FROM controller_reports')]
             for charge in charges:
-                group = [r for r in reports if r.get('review_restoration') and
-                         r['review_batch']['batch_id'] == charge['batch_id'] and
-                         self.restoration_identity(db, r['report_id']) == charge['occurrence_id']]
+                entries = db.execute('SELECT * FROM review_report_chain_v1 WHERE occurrence_id=?',
+                                     (charge['occurrence_id'],)).fetchall()
+                _require(entries, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+                group = {}
+                for entry in entries:
+                    chain = self._indexed_chain(db, (entry['batch_id'], entry['binding'], entry['destination']))
+                    retained = next((r for r in chain if r['report_id'] == entry['report_id']), None)
+                    _require(retained is not None and entry['batch_id'] == charge['batch_id'],
+                             'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+                    group[retained['report_id']] = retained
+                group = list(group.values())
                 states = [DeliveryOutbox._load(db, d)[1]['status'] for r in group for d in r['delivery_ids']]
-                if not states or any(s not in {'DELIVERED', 'FAILED'} for s in states):
+                terminal = states and all(s in {'DELIVERED', 'FAILED', 'WITHDRAWN'} for s in states)
+                if terminal:
+                    db.execute('UPDATE review_restoration_charge_v1 SET resolved=1 WHERE occurrence_id=? AND opening=?',
+                               (charge['occurrence_id'], charge['opening']))
+                latest = db.execute('SELECT rowid FROM review_restoration_charge_v1 WHERE batch_id=? ORDER BY rowid DESC LIMIT 1',
+                                    (charge['batch_id'],)).fetchone()
+                if latest[0] != charge['rowid']:
                     continue
-                reason = 'Restoration ' + ('FAILED' if 'FAILED' in states else 'DELIVERED')
+                reason = ('Restoration ' + ('FAILED' if 'FAILED' in states else
+                          'WITHDRAWN' if 'WITHDRAWN' in states else 'DELIVERED') if terminal else
+                          'Restoration reserved; unresolved until terminal readback')
                 for member in group[0]['review_batch']['members']:
                     detail = db.execute('SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?',
                                         (member['intent_id'],)).fetchone()
-                    if detail and (detail['reason'] != reason or detail['retry_at'] is not None):
+                    if detail and (detail['reason'] != reason or terminal and detail['retry_at'] is not None):
                         self._detail(db, member['intent_id'], reason, now,
                                      attempts=detail['window_attempts'], retry_at=None)
-                        db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
-                                   (member['intent_id'],))
+                        if terminal:
+                            db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
+                                       (member['intent_id'],))
                         self._changed(db)
 
     def reconcile(self, receipt, calendar=None):

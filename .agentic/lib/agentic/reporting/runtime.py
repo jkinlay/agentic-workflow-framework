@@ -107,6 +107,8 @@ def _retain_prepared(db, prepared):
     else:
         db.execute('INSERT INTO controller_reports VALUES(?,?,?,?)',
                    (record['report_id'], record['kind'], prepared.created_at, raw))
+        from ..review_batching import ReviewBatchStore
+        ReviewBatchStore.append_review_report(db, record, raw)
     return record
 
 

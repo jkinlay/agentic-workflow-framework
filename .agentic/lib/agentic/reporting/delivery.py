@@ -102,6 +102,9 @@ def install_delivery_schema(db):
         BEFORE INSERT ON controller_report_delivery
         WHEN EXISTS(SELECT 1 FROM controller_report_delivery WHERE delivery_id=NEW.delivery_id) BEGIN
         SELECT RAISE(ABORT, 'Reporting intent already exists'); END''')
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='controller_meta'").fetchone():
+        from ..review_batching import ReviewBatchStore
+        ReviewBatchStore.install_review_chain(db)
 
 
 @dataclass(frozen=True)
