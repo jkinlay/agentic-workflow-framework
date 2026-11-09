@@ -81,7 +81,7 @@ for origin in ('relative_source',str(root/'absent.py'),'missing/relative_source.
 ''')
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 
-    def test_exact_main_entry_is_allowed_but_script_aliases_are_not(self):
+    def test_installed_scripts_are_allowed_but_main_must_be_exact_entry(self):
         done = self.child('''import pathlib,sys,types
 root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root/'.agentic/lib'))
 from agentic.self_test_shards import isolation_origins
@@ -92,7 +92,9 @@ alias=types.ModuleType('entry_alias');alias.__file__=str(entry);sys.modules['ent
 other=types.ModuleType('other_script');other.__file__=str(entry.parent/'workflow.py');sys.modules['other_script']=other
 bad={r['module']:r for r in isolation_origins(root)}
 assert '__main__' not in bad,bad.get('__main__')
-assert 'entry_alias' in bad and 'other_script' in bad,bad
+assert 'entry_alias' not in bad and 'other_script' not in bad,bad
+main.__file__=other.__file__
+assert '__main__' in {r['module'] for r in isolation_origins(root)},'wrong script __main__ was accepted'
 ''')
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 
@@ -112,7 +114,7 @@ class ProbeOutputTests(unittest.TestCase):
     def test_probe_prints_per_root_counts_and_every_outside_module(self):
         import probe_installed_self_test_isolation as probe
         value = {'snapshots': [{'stage': 'before_discovery', 'root_counts': {
-            'installed_lib': 4, 'installed_tests': 2, 'installed_site_packages': 5,
+            'installed_lib': 4, 'installed_tests': 2, 'installed_scripts': 4, 'installed_site_packages': 5,
             'stdlib': 30, 'entry_point': 1, 'originless': 8, 'outside_roots': 2},
             'root_boundary_checks': [{'root': '.agentic/.venv/Lib/site-packages',
                                       'resolved': '/fixture/vendor/site-packages',
@@ -131,7 +133,7 @@ class ProbeOutputTests(unittest.TestCase):
                 self.assertEqual(1, probe.main(['--project', str(root / 'project'), '--output', str(output),
                     '--selection-file', str(root / 'selection.json'), '--expected-selection-sha256', 'a' * 64]))
         text = out.getvalue()
-        for expected in ('installed_lib', 'installed_tests', 'installed_site_packages', 'stdlib',
+        for expected in ('installed_lib', 'installed_tests', 'installed_scripts', 'installed_site_packages', 'stdlib',
                          'entry_point', 'originless', 'outside_roots', 'source_tool', 'source_spec',
                          '/fixture/source.py', '/fixture/spec.py', 'ORIGIN_ROOT_BOUNDARIES',
                          '/fixture/vendor/site-packages', '/fixture/.agentic/.venv', 'REFUSED'):

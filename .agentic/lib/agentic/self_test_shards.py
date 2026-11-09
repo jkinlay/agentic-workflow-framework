@@ -24,10 +24,10 @@ COMPONENT_CHECKS = {
     'documentation': ('local_markdown_links', 'windows_command_document_lint'),
     'release_hygiene': ('source_release_hygiene',),
 }
-# These controls do not add or redirect import/search paths. Unknown PYTHON*
-# controls fail closed, including future interpreter path controls.
-NON_PATH_PYTHON_ENV = frozenset({'PYTHONDONTWRITEBYTECODE', 'PYTHONUNBUFFERED',
-                               'PYTHONHASHSEED', 'PYTHONIOENCODING', 'PYTHONUTF8'})
+# Host metadata is harmless. PYTHONSAFEPATH cannot disable safe-path mode:
+# any nonempty value enables it; empty leaves the default (or -I) unchanged.
+PATH_PYTHON_ENV = frozenset({'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP',
+                            'PYTHONUSERBASE', 'PYTHONEXECUTABLE', 'PYTHONPLATLIBDIR'})
 
 
 def load_fixture_prerequisites(root, selected_path):
@@ -46,7 +46,8 @@ def isolation_root_boundaries(root):
     root = Path(root).resolve()
     library, tests, runtime = (root / '.agentic' / name for name in ('lib', 'tests', '.venv'))
     version = f'python{sys.version_info.major}.{sys.version_info.minor}'
-    pairs = [(library, library), (tests, tests)]
+    scripts = root / '.agentic/scripts'
+    pairs = [(library, library), (tests, tests), (scripts, scripts)]
     pairs.extend((runtime / path, runtime.resolve()) for path in
                  ('Lib/site-packages', f'lib/{version}/site-packages', f'lib64/{version}/site-packages'))
     return [dict(root=path.relative_to(root).as_posix(), resolved=str(path.resolve()),
@@ -74,6 +75,7 @@ def isolation_inventory(root):
                          prefix / f'python{sys.version_info.major}{sys.version_info.minor}.zip',
                          prefix / 'lib' / f'python{sys.version_info.major}{sys.version_info.minor}.zip'))
     roots = {'installed_lib': (library,), 'installed_tests': (tests,),
+             'installed_scripts': (root / '.agentic/scripts',),
              'installed_site_packages': sites, 'stdlib': tuple(standard),
              'entry_point': (entry_point,)}
     resolved_roots = {label: tuple(p.resolve() for p in paths) for label, paths in roots.items()}
@@ -83,7 +85,7 @@ def isolation_inventory(root):
     def classify(path, name, file_path):
         if name == '__main__' and file_path == entry_point and path == entry_point:
             return 'entry_point', str(entry_point)
-        for label in ('installed_lib', 'installed_tests', 'installed_site_packages'):
+        for label in ('installed_lib', 'installed_tests', 'installed_scripts', 'installed_site_packages'):
             for resolved in resolved_roots[label]:
                 if (str(resolved) not in invalid_roots and resolved.is_relative_to(root)
                         and path.is_relative_to(resolved)):
@@ -167,7 +169,7 @@ def isolation_origins(root):
 def assert_isolation(root):
     """Refuse path environments and every foreign module; never repair modules."""
     path_env = sorted(name for name in os.environ
-                      if name.upper().startswith('PYTHON') and name.upper() not in NON_PATH_PYTHON_ENV)
+                      if (name.upper() if os.name == 'nt' else name) in PATH_PYTHON_ENV)
     if path_env:
         raise ValueError('Python path environment is set: ' + ', '.join(path_env))
     root = Path(root).resolve()

@@ -160,7 +160,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
 | `.agentic/lib/agentic/safeio.py` | `682866495c6584ec986ff2977d72d0feaff4a993c9cddda1c0e3fcacddeda820` |
-| `.agentic/lib/agentic/self_test_shards.py` | `d52a16a1b4c3e8d2600c1c160068a9dd48899b64d9ee803ecfb7978134735448` |
+| `.agentic/lib/agentic/self_test_shards.py` | `2f700a47b615111ee6ecc34bd1caeb8a6bcd1065dfc22a54b82a5ca0d3a9ec21` |
 | `.agentic/lib/agentic/status_report.py` | `e1125f60932ecfbcec14417c10b89049c480f97b8d5d70b3b1902db4f2a08b22` |
 | `.agentic/lib/agentic/status_report_store.py` | `026e8b71de1993b8c561efa92877d19ea95f7e795ae984c489a83c5e42785ca5` |
 | `.agentic/lib/agentic/store.py` | `3bc49f856a96c6a5b9acc32af8e9b54b2a86f34f1314c1b72689e7dec10bff0d` |
@@ -707,11 +707,12 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_generate_examples_status_report.py` | `00d899906ad02e35b5170bb28a9485de365e41b1d7c86df2f12f58288e956989` |
 | `scripts/tests/test_generate_examples_ticket_plan.py` | `6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2` |
 | `scripts/tests/test_generate_workflow_blob_sha.py` | `8b1bb85282a8ca5a7df1fa7c5c1b15a863ebdc5596746153ae23e47acab38cd6` |
-| `scripts/tests/test_installed_origin_ruling.py` | `5c26447347181831457f85475cc1097e8cb7043661a057890cab7df6cbfc1377` |
-| `scripts/tests/test_installed_root_boundaries.py` | `bf8ef196b706750110651b74e77f6130858ecc64a83bd3b31d07088d8fbcde3d` |
+| `scripts/tests/test_installed_origin_ruling.py` | `25c526e8aa336b44138bf71f72c6a8af0c974b4c02392d8c05b06db7829bc87c` |
+| `scripts/tests/test_installed_platform_rulings.py` | `d3a5627ea1f5a14ecabac639784a58e035d9d9f438a4176877fedb99ed68f762` |
+| `scripts/tests/test_installed_root_boundaries.py` | `d2d8dc96dd6822d89d5a0ddea8cc29449c37b324ea63f3a5e4a3a02ca7004ec5` |
 | `scripts/tests/test_installed_self_test.py` | `083e749a159bb6798bf13b31fb08017f87bc0ec2824bd3f4e021f8fccec8219c` |
 | `scripts/tests/test_installed_self_test_shards.py` | `afa8e703f8efcf35c87439c347c0330d3ed0bdd14d46dc0d4cf47736358957ed` |
-| `scripts/tests/test_installed_shard_review_regressions.py` | `b42db3ff3d5ca2700ad38b0b738dcd39396d7b7cafcc02584ffb0e33953812c5` |
+| `scripts/tests/test_installed_shard_review_regressions.py` | `9d11fb952ddeb3e39f649239c458a86da52e5728bf5cbdaf8d79612051d937d9` |
 | `scripts/tests/test_manifest_conflicts.py` | `22156e2b07c769f00a8144dca5a2d3a66932150717cd90cde3c7e7ef96519475` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |

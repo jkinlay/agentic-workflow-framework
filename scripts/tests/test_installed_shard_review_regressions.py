@@ -331,7 +331,10 @@ foreach ($name in $names) { Set-Item -LiteralPath "Env:$name" -Value 'fixture' }
 ''' + scrub + '''
 foreach ($name in $names) { if (Test-Path -LiteralPath "Env:$name") { throw "path environment survived: $name" } }
 '''
-        done = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', code],
+        powershell = shutil.which('pwsh') or shutil.which('powershell')
+        if powershell is None:
+            self.skipTest('neither pwsh nor powershell is available for the CI environment cleanup test')
+        done = subprocess.run([powershell, '-NoProfile', '-NonInteractive', '-Command', code],
                               capture_output=True, text=True, timeout=30)
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 

@@ -28,7 +28,8 @@ class RootBoundaryTests(unittest.TestCase):
                 (self.root / '.agentic/tests', self.root / '.agentic/tests'),
                 (runtime / 'Lib/site-packages', runtime),
                 (runtime / 'lib' / version / 'site-packages', runtime),
-                (runtime / 'lib64' / version / 'site-packages', runtime)]
+                (runtime / 'lib64' / version / 'site-packages', runtime),
+                (self.root / '.agentic/scripts', self.root / '.agentic/scripts')]
 
     def refuse(self, root, boundary):
         inventory = policy.isolation_inventory(self.root)
@@ -103,6 +104,9 @@ class RootBoundaryTests(unittest.TestCase):
     def test_real_tests_escape(self):
         self.real_escape(1)
 
+    def test_real_scripts_escape(self):
+        self.real_escape(5)
+
     def test_windows_symlink_privilege_refusal_skips(self):
         error = OSError('symlink privilege unavailable')
         error.winerror = 1314
@@ -121,7 +125,7 @@ root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root/'.agentic/lib'))
 from agentic.self_test_shards import assert_isolation,isolation_inventory
 assert assert_isolation(root)=='PASS'
 checks=isolation_inventory(root)['root_boundary_checks']
-assert len(checks)==5 and all(row['status']=='PASS' for row in checks),checks
+assert len(checks)==6 and all(row['status']=='PASS' for row in checks),checks
 ''')
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 
