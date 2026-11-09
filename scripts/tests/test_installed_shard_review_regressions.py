@@ -40,7 +40,9 @@ def entry_module():
     return entry
 
 
-class PhaseEvidenceTests(unittest.TestCase):
+class PhaseEvidenceChecks:
+    os_name = "windows"
+
     def progress(self, duplicate=False):
         progress = entry_module().SelfTestProgress(stream=io.StringIO())
         progress.component_checks = {k: 'observed successful check' for keys in PHASE_CHECKS.values() for k in keys}
@@ -63,18 +65,18 @@ class PhaseEvidenceTests(unittest.TestCase):
 
     def test_syntax_executed_twice_cannot_aggregate_as_once(self):
         plan = fixtures.sample_plan()
-        records, parts = fixtures.sample_records(plan)
+        records, parts = fixtures.sample_records(plan, self.os_name)
         progress = self.progress(duplicate=True)
         # The fallback is precisely the pre-review report projection.
         records[0][1]['component_phases'] = getattr(progress, 'component_phases',
                                                    dict.fromkeys(progress.timings, 'PASS'))
         with self.assertRaisesRegex(ValueError, 'component phases'):
-            checker.reconcile(plan, records, parts)
+            checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))
 
     def test_each_component_check_must_pass_and_phase_evidence_cannot_be_empty(self):
         plan = fixtures.sample_plan()
         for fault in ('failed check', 'missing check', 'boolean count', 'empty results', 'other shard'):
-            records, parts = fixtures.sample_records(plan)
+            records, parts = fixtures.sample_records(plan, self.os_name)
             syntax = records[0][1]['component_phases']['syntax']
             if fault == 'failed check':
                 syntax['results'][0]['checks']['python_syntax_files']['status'] = 'FAILED'
@@ -87,26 +89,28 @@ class PhaseEvidenceTests(unittest.TestCase):
             else:
                 records[2][1]['component_phases']['syntax'] = deepcopy(syntax)
             with self.subTest(fault=fault), self.assertRaisesRegex(ValueError, 'component phases'):
-                checker.reconcile(plan, records, parts)
+                checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))
 
 
-class PartitionEvidenceTests(unittest.TestCase):
+class PartitionEvidenceChecks:
+    os_name = "windows"
+
     def test_missing_half_changes_only_report_and_hits_report_membership_guard(self):
         plan = fixtures.sample_plan()
-        records, parts = fixtures.sample_records(plan)
+        records, parts = fixtures.sample_records(plan, self.os_name)
         expected = deepcopy(parts)
         records[1][1]['split_cases'][installed.UPGRADE_MATRIX].clear()
         self.assertEqual(expected, parts, 'report partitions alias the independently expected partitions')
         with self.assertRaisesRegex(ValueError, 'split overlap/omission or case membership mismatch'):
-            checker.reconcile(plan, records, parts)
+            checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))
 
     def test_aggregate_negative_cases_kill_targeted_guard_mutants(self):
         source = inspect.getsource(checker.reconcile)
         for fault, message in (('missing', 'missing shard'), ('split', 'split overlap/omission'),
                                ('isolation', 'failed shard, isolation or digest binding')):
             plan = fixtures.sample_plan()
-            records, parts = fixtures.sample_records(plan)
-            self.assertEqual('PASS', checker.reconcile(plan, records, parts)['status'])
+            records, parts = fixtures.sample_records(plan, self.os_name)
+            self.assertEqual('PASS', checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))['status'])
             if fault == 'missing':
                 records.pop()
             elif fault == 'split':
@@ -114,7 +118,7 @@ class PartitionEvidenceTests(unittest.TestCase):
             else:
                 records[3][1]['isolation'] = 'FAILED'
             with self.subTest(fault=fault), self.assertRaisesRegex(ValueError, message):
-                checker.reconcile(plan, records, parts)
+                checker.reconcile(plan, records, parts, checker.policy_for(self.os_name))
             tree = ast.parse(source)
             class RemoveGuard(ast.NodeTransformer):
                 def visit_If(self, node):
@@ -137,13 +141,15 @@ class PartitionEvidenceTests(unittest.TestCase):
             class RejectionOracle(unittest.TestCase):
                 def runTest(inner):
                     with inner.assertRaisesRegex(ValueError, message):
-                        mutant(plan, records, parts)
+                        mutant(plan, records, parts, checker.policy_for(self.os_name))
             result = unittest.TestResult()
             RejectionOracle().run(result)
             self.assertFalse(result.wasSuccessful(), f'{fault}: guard mutant escaped the rejection oracle')
 
 
-class RerunEvidenceTests(unittest.TestCase):
+class RerunEvidenceChecks:
+    os_name = "windows"
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='awf257-artifact-review-')
         self.addCleanup(temporary.cleanup)
@@ -153,15 +159,16 @@ class RerunEvidenceTests(unittest.TestCase):
         self.event = self.root / 'event.json'
         self.event.write_text('{}')
         self.plan = fixtures.sample_plan()
-        self.records, self.parts = fixtures.sample_records(self.plan)
+        self.records, self.parts = fixtures.sample_records(self.plan, self.os_name)
         for version, report in self.records:
             self.artifact(version, report, 1)
 
     def artifact(self, version, report, attempt, run_id='741'):
-        path = self.artifacts / f'windows-installed-runtime-self-test-{version}-shard-{report["shard"]}-{run_id}-{attempt}'
+        path = self.artifacts / f'{self.os_name}-installed-runtime-self-test-{version}-shard-{report["shard"]}-{run_id}-{attempt}'
         path.mkdir()
         report = deepcopy(report)
-        report.update(python=version + ' fixture interpreter', platform='Windows-fixture')
+        report.update(python=version + ('.8' if self.os_name == 'linux' else '') + ' fixture interpreter',
+                      platform=self.os_name.title() + '-fixture')
         (path / 'self-test.json').write_text(json.dumps(report))
         raw = fixtures.planner.encode(self.plan)
         (path / 'selection.json').write_bytes(raw)
@@ -174,7 +181,7 @@ class RerunEvidenceTests(unittest.TestCase):
                 mock.patch.object(checker, 'expected_split_cases', return_value=self.parts), \
                 mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '741'}), \
                 redirect_stdout(out), redirect_stderr(error):
-            status = checker.main(['--artifacts', str(self.artifacts), '--matrix-result', 'success',
+            status = checker.main(['--os', self.os_name, '--artifacts', str(self.artifacts), '--matrix-result', 'success',
                                    '--event-name', 'push', '--event-file', str(self.event)])
         return status, out.getvalue(), error.getvalue()
 
@@ -186,7 +193,7 @@ class RerunEvidenceTests(unittest.TestCase):
         result = json.loads(out)
         self.assertEqual('741', result['run_id'])
         self.assertEqual({v: {str(n): (2 if v == version and n == 4 else 1) for n in range(9)}
-                          for v in checker.VERSIONS}, result['chosen_attempts'])
+                          for v in fixtures.test_versions(self.os_name)}, result['chosen_attempts'])
 
     def test_failed_latest_attempt_cannot_fall_back_to_passing_attempt(self):
         version, report = self.records[4]
@@ -207,7 +214,7 @@ class RerunEvidenceTests(unittest.TestCase):
 
     def test_older_broken_artifact_is_ignored_when_a_newer_attempt_passes(self):
         version, report = self.records[4]
-        older = self.artifacts / f'windows-installed-runtime-self-test-{version}-shard-4-741-1'
+        older = self.artifacts / f'{self.os_name}-installed-runtime-self-test-{version}-shard-4-741-1'
         (older / 'self-test.json').unlink()
         self.artifact(version, report, 2)
         status, out, error = self.invoke()
@@ -217,11 +224,11 @@ class RerunEvidenceTests(unittest.TestCase):
     def test_duplicate_attempt_bad_names_and_report_shard_mismatch_refuse(self):
         folder = next(self.artifacts.iterdir())
         with self.assertRaisesRegex(ValueError, 'same attempt'):
-            checker.select_artifacts([folder, folder], '741')
+            checker.select_artifacts([folder, folder], '741', checker.policy_for(self.os_name))
         bad = self.artifacts / 'unexpected'
         bad.mkdir()
         with self.assertRaisesRegex(ValueError, 'unexpected artifact'):
-            checker.select_artifacts([bad], '741')
+            checker.select_artifacts([bad], '741', checker.policy_for(self.os_name))
         bad.rmdir()
         report = json.loads((folder / 'self-test.json').read_text())
         report['shard'] = 99
@@ -229,6 +236,108 @@ class RerunEvidenceTests(unittest.TestCase):
         status, out, error = self.invoke()
         self.assertEqual(1, status)
         self.assertIn('artifact shard differs', error)
+
+
+    def test_numeric_attempt_order_and_newest_malformed_have_no_fallback(self):
+        version, report = self.records[4]
+        self.artifact(version, report, 9)
+        newest = self.artifact(version, report, 10)
+        status, out, error = self.invoke()
+        self.assertEqual(0, status, error)
+        self.assertEqual(10, json.loads(out)['chosen_attempts'][version]['4'])
+        for malformed in ('{', '[]', 'null', '{"status":"SHARD_PASS","status":"FAILED"}'):
+            (newest / 'self-test.json').write_text(malformed)
+            status, out, error = self.invoke()
+            self.assertEqual(1, status)
+            self.assertFalse(out)
+
+    def test_report_identity_and_selection_bytes_cannot_cross_os_or_version(self):
+        version, report = self.records[4]
+        path = self.artifacts / f'{self.os_name}-installed-runtime-self-test-{version}-shard-4-741-1'
+        original = json.loads((path / 'self-test.json').read_text())
+        invalid_versions = (('3.120.8 fixture', '3.12 fixture', '3.12.x fixture',
+                             '3.12.8rc1 fixture', '3.14.8 fixture') if self.os_name == 'linux'
+                            else ('3.12.8 fixture', '3.12.100 fixture', '3.12.10rc1 fixture'))
+        mutations = [dict(python=v) for v in invalid_versions]
+        mutations += [dict(platform=('Windows-' if self.os_name == 'linux' else 'Linux-') + 'fixture'),
+                      dict(selection_sha256='0' * 64), dict(source_manifest_sha256='0' * 64),
+                      dict(shard=3), dict(shard=True)]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                (path / 'self-test.json').write_text(json.dumps(dict(original, **mutation)))
+                self.assertEqual(1, self.invoke()[0])
+        (path / 'self-test.json').write_text(json.dumps(original))
+        for name, value in (('selection.json', b'{}'), ('selection.json.sha256', b'0' * 64)):
+            before = (path / name).read_bytes()
+            (path / name).write_bytes(value)
+            self.assertEqual(1, self.invoke()[0])
+            (path / name).write_bytes(before)
+        self.assertEqual(0, self.invoke()[0])
+
+    def test_foreign_os_bad_version_and_shard_artifact_names_refuse(self):
+        other = 'linux' if self.os_name == 'windows' else 'windows'
+        for name in (f'{other}-installed-runtime-self-test-3.12-shard-0-741-1',
+                     f'{self.os_name}-installed-runtime-self-test-3.14-shard-0-741-1',
+                     f'{self.os_name}-installed-runtime-self-test-3.12-shard-9-741-1'):
+            folder = self.artifacts / name
+            folder.mkdir()
+            self.assertEqual(1, self.invoke()[0])
+            folder.rmdir()
+
+    def test_missing_duplicate_and_os_scope(self):
+        status, out, error = self.invoke()
+        self.assertEqual(0, status, error)
+        self.assertEqual(self.os_name + '-installed-suite', json.loads(out)['scope'])
+        records = deepcopy(self.records)
+        records.pop()
+        with self.assertRaisesRegex(ValueError, 'missing shard'):
+            checker.reconcile(self.plan, records, self.parts, checker.policy_for(self.os_name))
+        records = deepcopy(self.records)
+        records.append(deepcopy(records[0]))
+        with self.assertRaisesRegex(ValueError, 'duplicate shard'):
+            checker.reconcile(self.plan, records, self.parts, checker.policy_for(self.os_name))
+
+    def test_draft_applicability_and_failed_matrices(self):
+        self.event.write_text('{"pull_request":{"draft":true}}')
+        args = ['--os', self.os_name, '--artifacts', str(self.artifacts), '--event-name', 'pull_request',
+                '--event-file', str(self.event), '--run-id', '741']
+        with mock.patch.object(checker, 'build_plan', return_value=self.plan), \
+                mock.patch.object(checker, 'expected_split_cases', return_value=self.parts), \
+                redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+            if self.os_name == 'linux':
+                self.assertEqual(0, checker.main(args + ['--matrix-result', 'success']))
+                self.assertEqual('linux-installed-suite', json.loads(out.getvalue())['scope'])
+            else:
+                self.assertEqual(0, checker.main(args + ['--matrix-result', 'skipped']))
+                self.assertEqual('NOT_APPLICABLE', json.loads(out.getvalue())['status'])
+            for outcome in ('failure', 'cancelled', 'missing', 'skipped'):
+                if self.os_name == 'windows' and outcome == 'skipped':
+                    continue
+                self.assertEqual(1, checker.main(args + ['--matrix-result', outcome]))
+
+
+class WindowsPhaseEvidenceTests(PhaseEvidenceChecks, unittest.TestCase):
+    os_name = 'windows'
+
+
+class LinuxPhaseEvidenceTests(PhaseEvidenceChecks, unittest.TestCase):
+    os_name = 'linux'
+
+
+class WindowsPartitionEvidenceTests(PartitionEvidenceChecks, unittest.TestCase):
+    os_name = 'windows'
+
+
+class LinuxPartitionEvidenceTests(PartitionEvidenceChecks, unittest.TestCase):
+    os_name = 'linux'
+
+
+class WindowsRerunEvidenceTests(RerunEvidenceChecks, unittest.TestCase):
+    os_name = 'windows'
+
+
+class LinuxRerunEvidenceTests(RerunEvidenceChecks, unittest.TestCase):
+    os_name = 'linux'
 
 
 class IsolationReviewTests(unittest.TestCase):
