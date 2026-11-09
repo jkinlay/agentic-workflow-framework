@@ -378,9 +378,20 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
         return add_duplicate_warning(result, dest, project)
     finally:
         if stage.exists():
-            # Only the unique stage created by this invocation is removed.
-            safe_path(stage)
-            shutil.rmtree(stage)
+            # Verification cannot bind subsequent pathname recursive deletion.
+            # Retain the stage, and never hide the original installation error.
+            primary = sys.exc_info()[1]
+            try:
+                record = {"status": "CLEANUP_PENDING", "path": stage.name,
+                          "size_bytes": None,
+                          "reason": "Pathname recursive deletion refused",
+                          "owner_action": "Inspect retained stage under exclusive owner control; preserve needed bytes before manual recovery"}
+                stage.with_name(stage.name + '.cleanup-pending.json').write_text(
+                    json.dumps(record, indent=2) + '\n', encoding='utf-8')
+            except OSError as error:
+                if primary is None:
+                    raise
+                primary.add_note('Stage retained; cleanup diagnostic unavailable: ' + type(error).__name__)
         lock.unlink()
 
 

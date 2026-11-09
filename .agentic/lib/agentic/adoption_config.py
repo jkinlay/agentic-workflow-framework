@@ -500,11 +500,7 @@ def _remove_runtime_tree(path):
     path = Path(path)
     if not path.exists() and not path.is_symlink():
         return
-    metadata = os.lstat(path)
-    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISDIR(metadata.st_mode):
-        raise ValidationError("Refusing to clean a linked or non-directory runtime transaction path")
-    shutil.rmtree(path)
+    raise ValidationError('Runtime cleanup pending: pathname recursive deletion refused; runtime retained')
 
 
 def _transaction_sibling(runtime_root, kind):
@@ -525,6 +521,9 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
     """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
+    from .installer import Tree, _retained_directory_result, _record_cleanup_pending
+    with Tree(root) as tree:
+        _retained_directory_result(tree)
     runtime_root = root / ".agentic" / ".venv"
     if runtime_root.exists() or runtime_root.is_symlink():
         metadata = os.lstat(runtime_root)
@@ -559,7 +558,6 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         stage = Path(transaction.stage)
         backup = Path(transaction.backup)
         had_previous = transaction.had_previous
-    committed = False
     try:
         venv.EnvBuilder(with_pip=False, system_site_packages=False, clear=False).create(stage)
         stage_interpreter = _runtime_interpreter(stage)
@@ -578,37 +576,28 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         # Final-path validation is the standalone commit point. A coordinated
         # install hands the intact backup to the outer transaction, which must
         # prove managed/runtime commit before it may perform cleanup.
-        committed = True
-        if _builder_owns_backup_cleanup(transaction) and backup.exists():
-            _remove_runtime_tree(backup)
     except BaseException as original:
         if transaction is not None:
-            # The outer installer transaction restores runtime and managed files
-            # from its still-durable journal under the destination lock.
             raise
-        if not committed:
-            try:
-                # Filesystem state, rather than flags set after os.replace(),
-                # closes the asynchronous-exception windows on both renames.
-                if backup.exists() or backup.is_symlink():
-                    if runtime_root.exists() or runtime_root.is_symlink():
-                        _remove_runtime_tree(runtime_root)
-                    os.replace(backup, runtime_root)
-                elif (not had_previous and not stage.exists() and
-                      (runtime_root.exists() or runtime_root.is_symlink())):
-                    _remove_runtime_tree(runtime_root)
-            except BaseException as rollback_error:
-                raise ValidationError(
-                    "Canonical runtime replacement failed and automatic rollback could not complete; "
-                    "the uniquely named backup was retained for recovery: " + str(backup)) from rollback_error
+        # Retain every possible recovery endpoint. In particular, no finally
+        # block may retry deletion or replace the original build exception.
+        try:
+            retained = [path for path in (stage, backup, runtime_root)
+                        if path.exists() or path.is_symlink()]
+            if retained:
+                with Tree(root) as tree:
+                    _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')
+                original.add_note('Runtime cleanup pending; inspect retained-journal.json before owner recovery')
+        except BaseException as diagnostic_error:
+            original.add_note('Retained cleanup diagnostic could not be written: ' + type(diagnostic_error).__name__)
         raise
-    finally:
-        if transaction is None:
-            if stage.exists() or stage.is_symlink():
-                _remove_runtime_tree(stage)
-            if committed and (backup.exists() or backup.is_symlink()):
-                _remove_runtime_tree(backup)
+    cleanup = []
+    if transaction is None and (backup.exists() or backup.is_symlink()):
+        with Tree(root) as tree:
+            cleanup = _record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
     return {"interpreter": str(interpreter), "entry_point": str(entry_point),
+            "transaction_cleanup": "COMMITTED_CLEANUP_PENDING" if cleanup else "COMPLETE",
+            "transaction_cleanup_failures": cleanup,
             "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
             "requirements_lock_sha256": lock_sha256,
             "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
@@ -919,6 +908,8 @@ def post_install_checks(destination, installation):
     if host["next_action"]:
         next_action += "; host preflight WARN: " + host["next_action"]
     return {"status": status, "transaction_status": installation["status"], "installed": integrity,
+            **({'installation_recovery': output['installation_recovery']}
+               if output.get('installation_recovery') else {}),
             "post_install_checks": checks, "active": False, "configuration": configuration,
             "pre_install_configuration": inspection, "host_preflight": host,
             "adoption_pr_host_preflight_section": render_markdown(host), "next_action": next_action}

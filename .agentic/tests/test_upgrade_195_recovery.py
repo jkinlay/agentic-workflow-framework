@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 sys.path.insert(0, str(ROOT / '.agentic/tests'))
 from agentic.installer import (CONFIG, INSTALLED, PROVENANCE, JOURNAL, MARKER,
-                               RECOVERY_OBJECTS, RETAINED_JOURNAL, install, json_bytes)
+                               RECOVERY_OBJECTS, RETAINED_JOURNAL, DIRECTORY_ADOPTIONS, install, json_bytes)
 from agentic.safeio import Tree
 from agentic.child_process import child_env
 from source_only import skip_unless_source_repo
@@ -116,6 +116,9 @@ class CreatedDirectorySafetyTests(unittest.TestCase):
         expected = uuid.uuid5(uuid.UUID(journal['transaction_id']), target).hex
         self.assertEqual('.agentic/.awf-' + expected + '.tmp', paths[target])
         self.assertEqual({target, JOURNAL, MARKER, RETAINED_JOURNAL}, set(paths))
+        adopting = dict(journal, directory_adoptions=[{'path': '.agentic'}])
+        self.assertEqual({target, JOURNAL, MARKER, RETAINED_JOURNAL, DIRECTORY_ADOPTIONS},
+                         set(_transaction_temporary_paths(adopting)))
         other = dict(journal, transaction_id=str(uuid.uuid4()))
         self.assertNotEqual(paths, _transaction_temporary_paths(other))
         for invalid in ('unknown', {target: '.agentic/.awf-' + 'f' * 32 + '.tmp'}):

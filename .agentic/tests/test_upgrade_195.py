@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
@@ -15,6 +16,8 @@ import source_only
 sys.path.insert(0, str(ROOT / "scripts"))
 from upgrade_195_fixtures import PUBLISHED_COMMIT, PUBLISHED_PIN, materialize_published
 from agentic import VERSION, ValidationError
+from agentic import installer
+from retained_directory_expectations import assert_rollback_evidence
 from agentic.canonical import load
 from agentic.child_process import child_env
 from agentic.installer import install
@@ -134,9 +137,18 @@ class Published195UpgradeTests(unittest.TestCase):
         receipt = self.project / ".agentic/installed-manifest.json"
         config = self.project / ".agentic/PROJECT_CONFIG.yaml"
         identity_before = {p: p.read_bytes() for p in (receipt, config)}
-        with self.assertRaisesRegex(OSError, "Injected installation failure"):
+        rollback_operation = installer.rollback
+        restored = {}
+
+        def capture_rollback(tree, journal):
+            result = rollback_operation(tree, journal)
+            restored.update(json.loads(installer.json_bytes(journal)))
+            return result
+
+        with patch.object(installer, 'rollback', capture_rollback), self.assertRaisesRegex(OSError, "Injected installation failure"):
             install(ROOT, self.project, self.target_pin, mode="upgrade", configure=True,
                     discover=False, fail_after=4)
+        assert_rollback_evidence(self, self.project, restored)
         for p, raw in identity_before.items():
             self.assertEqual(p.read_bytes(), raw)
         for p in preserved:

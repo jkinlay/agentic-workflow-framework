@@ -22,6 +22,7 @@ MANIFEST = "MANIFEST.json"
 LOCK = ".agentic-install/lock"
 JOURNAL = ".agentic-install/journal.json"
 RETAINED_JOURNAL = ".agentic-install/retained-journal.json"
+DIRECTORY_ADOPTIONS = ".agentic-install/directory-adoptions.json"
 RECOVERY_OBJECTS = ".agentic-install/objects"
 MARKER = ".agentic/INSTALLING.json"
 INSTALLED = ".agentic/installed-manifest.json"
@@ -551,6 +552,8 @@ def _compact_journal(journal):
 def _temporary_targets(journal):
     """Every atomic-write destination, including recovery and coordination writes."""
     targets = {JOURNAL, MARKER, RETAINED_JOURNAL, *(item['path'] for item in journal['files'])}
+    if journal.get('directory_adoptions'):
+        targets.add(DIRECTORY_ADOPTIONS)
     targets.update(_recovery_object_path(item['old_sha256']) for item in journal['files']
                    if item['old_sha256'] is not None)
     targets.update(_recovery_object_path(row['sha256'])
@@ -719,8 +722,9 @@ def _prepare_transaction_directories(tree, journal):
 
 def _cleanup_transaction_directories(tree, journal):
     retained = []
+    unresolved = set((_retained_directory_result(tree) or {}).get('retained_directories', []))
     for row in reversed(journal.get("created_directories", [])):
-        if row["identity"] is None:
+        if row["identity"] is None or row['path'] in unresolved:
             # Retention belongs to a declared rollback transaction. An unbound
             # cleanup request cannot classify a pre-existing owner directory as
             # transaction residue. Normal callers validate the complete journal.
@@ -872,7 +876,7 @@ def _finalize_compact_rollback(tree, journal, *, marker_present):
         # durably before either active coordination artifact can disappear.
         record = {'format': 'awf-retained-journal-1', 'journal': journal,
                   'retained_directories': retained}
-        tree.write(RETAINED_JOURNAL, json_bytes(record))
+        _merge_retained_evidence(tree, record)
     if marker_present:
         tree.unlink(MARKER)
     tree.unlink(JOURNAL)
@@ -883,7 +887,51 @@ def _retained_directory_result(tree):
     raw = _exists_read(tree, RETAINED_JOURNAL)
     if raw is None:
         return None
-    record = loads(raw.decode('utf-8'))
+    return _retained_record_result(loads(raw.decode('utf-8')))
+
+
+def _retained_record_result(record):
+    if isinstance(record, dict) and record.get('format') == 'awf-retained-directories-2':
+        if set(record) != {'format', 'records', 'retained_directories'}:
+            raise ValidationError('Invalid merged retained-directory evidence')
+        records, retained = record['records'], record['retained_directories']
+        if (not isinstance(records, list) or not records or
+                any(not isinstance(item, dict) or item.get('format') not in {
+                    'awf-retained-journal-1', 'awf-retained-cleanup-1'} for item in records)):
+            raise ValidationError('Invalid retained evidence sources')
+        results = [_retained_record_result(item) for item in records]
+        allowed = {path for result in results for path in result['retained_directories']}
+        if (not isinstance(retained, list) or not retained or
+                any(not isinstance(path, str) or path not in allowed for path in retained) or
+                len(set(retained)) != len(retained)):
+            raise ValidationError('Invalid merged retained-directory inventory')
+        rows = {row['path']: row for result in results for row in result.get('cleanup_pending', [])
+                if row['path'] in retained}
+        result = dict(status='RETAINED_DIRECTORIES', retained_directories=retained)
+        if rows:
+            result['cleanup_pending'] = list(rows.values())
+        return result
+    if isinstance(record, dict) and record.get('format') == 'awf-retained-cleanup-1':
+        if set(record) != {'format', 'status', 'retained_directories', 'cleanup_pending'}:
+            raise ValidationError('Invalid retained cleanup record')
+        if record['status'] not in {'COMMITTED_CLEANUP_PENDING', 'RECOVERY_REFUSED'}:
+            raise ValidationError('Invalid retained cleanup status')
+        rows = record['cleanup_pending']
+        if not isinstance(rows, list) or not rows:
+            raise ValidationError('Invalid retained cleanup inventory')
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {'path', 'size_bytes', 'reason', 'owner_action'}:
+                raise ValidationError('Invalid retained cleanup entry')
+            relative_parts(row['path'])
+            if (row['size_bytes'] is not None and
+                    (type(row['size_bytes']) is not int or row['size_bytes'] < 0)):
+                raise ValidationError('Invalid retained cleanup size')
+            if row['reason'] != _CLEANUP_REASON or row['owner_action'] not in {
+                    _CLEANUP_OWNER_ACTION, _LEGACY_CLEANUP_OWNER_ACTION}:
+                raise ValidationError('Invalid retained cleanup remedy')
+        if record['retained_directories'] != [row['path'] for row in rows]:
+            raise ValidationError('Invalid retained cleanup paths')
+        return {key: record[key] for key in ('status', 'retained_directories', 'cleanup_pending')}
     if (not isinstance(record, dict) or set(record) != {
             'format', 'journal', 'retained_directories'} or
             record['format'] != 'awf-retained-journal-1'):
@@ -896,8 +944,8 @@ def _retained_directory_result(tree):
             len(set(retained)) != len(retained) or
             journal.get('phase') not in {'object_prepare', 'rollback_cleanup'}):
         raise ValidationError('Invalid retained-directory inventory')
-    # Diagnostic evidence grants no recovery/deletion authority. Only an owner
-    # may retire this record after resolving the reported directories.
+    # Diagnostics never grant deletion authority. Successful transactions may
+    # resolve only directories they actually reuse, without creation/deletion.
     return {'status': 'ROLLED_BACK', 'retained_directories': retained}
 
 
@@ -905,6 +953,155 @@ def retained_directory_status(destination):
     """Read unresolved restoration evidence without changing it."""
     with Tree(destination) as tree:
         return _retained_directory_result(tree)
+
+
+_CLEANUP_REASON = 'Pathname recursive deletion refused; object continuity cannot be guaranteed'
+_LEGACY_CLEANUP_OWNER_ACTION = ('Keep the project quiescent; inspect retained paths and journal, preserve '
+                         'needed bytes, then recover or remove residue under exclusive owner control '
+                         'and retire retained-journal.json only after resolving every entry')
+_CLEANUP_OWNER_ACTION = ('A later transaction may adopt directories it reuses; inspect unadopted '
+                         'paths and journal under exclusive owner control, preserve needed bytes '
+                         'and perform owner recovery for residue nobody adopts')
+
+
+def _retained_sources(record):
+    _retained_record_result(record)
+    return record['records'] if record['format'] == 'awf-retained-directories-2' else [record]
+
+
+def _merge_retained_evidence(tree, record):
+    """Preserve every prior source; no retention operation erases older residue."""
+    raw = _exists_read(tree, RETAINED_JOURNAL)
+    if raw is None:
+        _retained_record_result(record)
+        tree.write(RETAINED_JOURNAL, json_bytes(record))
+        return
+    previous = loads(raw.decode('utf-8'))
+    paths = list(dict.fromkeys(_retained_record_result(previous)['retained_directories'] +
+                              _retained_record_result(record)['retained_directories']))
+    sources = {sha256(json_bytes(item)): item
+               for item in _retained_sources(previous) + _retained_sources(record)}
+    if len(sources) == 1 and paths == next(iter(sources.values()))['retained_directories']:
+        merged = next(iter(sources.values()))
+    else:
+        merged = dict(format='awf-retained-directories-2', records=list(sources.values()),
+                      retained_directories=paths)
+    tree.write(RETAINED_JOURNAL, json_bytes(merged))
+
+
+def _plan_directory_adoptions(tree, parents):
+    raw = _exists_read(tree, RETAINED_JOURNAL)
+    if raw is None:
+        return []
+    record = loads(raw.decode('utf-8'))
+    retained = _retained_record_result(record)['retained_directories']
+    rows = []
+    for path in retained:
+        if path not in parents:
+            continue
+        try:
+            identity = _directory_identity(tree, path)
+        except FileNotFoundError:
+            continue  # Creating a new directory is not adopting an existing one.
+        source = next(item for item in _retained_sources(record)
+                      if path in item['retained_directories'])
+        rows.append(dict(path=path, identity=identity, evidence_sha256=sha256(json_bytes(source))))
+    return rows
+
+
+def _directory_adoption_audit(raw):
+    audit = (loads(raw.decode('utf-8')) if raw is not None else
+             dict(format='awf-directory-adoptions-1', transactions=[]))
+    if (not isinstance(audit, dict) or set(audit) != {'format', 'transactions'} or
+            audit['format'] != 'awf-directory-adoptions-1' or not isinstance(audit['transactions'], list)):
+        raise ValidationError('Invalid retained-directory adoption audit')
+    seen = set()
+    for event in audit['transactions']:
+        if not isinstance(event, dict) or set(event) != {'transaction_id', 'directories', 'resolution', 'evidence'}:
+            raise ValidationError('Invalid directory adoption event')
+        identity = event['transaction_id']
+        try:
+            canonical = str(uuid.UUID(identity))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValidationError('Invalid adoption transaction identity') from exc
+        allowed = _retained_record_result(event['evidence'])['retained_directories']
+        paths = event['directories']
+        if (identity != canonical or identity in seen or not isinstance(paths, list) or not paths or
+                any(not isinstance(path, str) or path not in allowed for path in paths) or
+                len(set(paths)) != len(paths) or event['resolution'] != 'adopted by transaction ' + identity):
+            raise ValidationError('Invalid directory adoption resolution')
+        seen.add(identity)
+    return audit
+
+
+def _adopt_transaction_directories(tree, journal):
+    """Resolve reuse at the verified commit endpoint; replay never duplicates it."""
+    raw = _exists_read(tree, RETAINED_JOURNAL)
+    if raw is None or not journal.get('directory_adoptions'):
+        return
+    record = loads(raw.decode('utf-8'))
+    retained = _retained_record_result(record)['retained_directories']
+    sources = _retained_sources(record)
+    adopted = []
+    for row in journal['directory_adoptions']:
+        if row['path'] not in retained or not any(
+                row['path'] in source['retained_directories'] and
+                sha256(json_bytes(source)) == row['evidence_sha256'] for source in sources):
+            continue
+        try:
+            if _directory_identity(tree, row['path']) == row['identity']:
+                adopted.append(row['path'])
+        except FileNotFoundError:
+            pass
+    if not adopted:
+        return
+    old_audit = _exists_read(tree, DIRECTORY_ADOPTIONS)
+    audit = _directory_adoption_audit(old_audit)
+    event = dict(transaction_id=journal['transaction_id'], directories=adopted,
+                 resolution='adopted by transaction ' + journal['transaction_id'], evidence=record)
+    previous = [item for item in audit['transactions'] if item.get('transaction_id') == journal['transaction_id']]
+    if previous and previous != [event]:
+        raise ValidationError('Retained-directory adoption replay differs')
+    if not previous:
+        audit['transactions'].append(event)
+        tree.write(DIRECTORY_ADOPTIONS, json_bytes(audit))
+    remaining = [path for path in retained if path not in adopted]
+    if remaining:
+        tree.write(RETAINED_JOURNAL, json_bytes(dict(format='awf-retained-directories-2',
+            records=sources, retained_directories=remaining)))
+    else:
+        tree.unlink(RETAINED_JOURNAL)  # Evidence file only; directories are never deleted.
+
+
+def _record_cleanup_pending(tree, paths, *, status):
+    """Diagnostic inventory only; size observations grant no deletion authority."""
+    rows = {}
+    for path in paths:
+        relative = Path(path).relative_to(tree.root).as_posix()
+        relative_parts(relative)
+        size = 0
+        try:
+            root_info = os.lstat(path)
+            if (not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode) or
+                    getattr(root_info, 'st_file_attributes', 0) & 0x400):
+                raise OSError('Size observation requires an ordinary directory')
+            def incomplete(error):
+                raise error
+            for directory, directories, files in os.walk(path, followlinks=False, onerror=incomplete):
+                for name in [*directories, *files]:
+                    info = os.lstat(Path(directory) / name)
+                    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                        raise OSError('Size observation cannot follow links')
+                    if stat.S_ISREG(info.st_mode):
+                        size += info.st_size
+        except OSError:
+            size = None
+        rows[relative] = dict(path=relative, size_bytes=size, reason=_CLEANUP_REASON,
+                              owner_action=_CLEANUP_OWNER_ACTION)
+    record = dict(format='awf-retained-cleanup-1', status=status,
+                  retained_directories=list(rows), cleanup_pending=list(rows.values()))
+    _merge_retained_evidence(tree, record)
+    return record['cleanup_pending']
 
 
 def _old_file_bytes(journal, item, objects):
@@ -1250,7 +1447,7 @@ def _runtime_cleanup_proof(path):
                 object_identity = identity(info)
                 # Venvs on 64-bit POSIX create ``lib64 -> lib``. Accept only a
                 # relative link whose lexical target stays inside the cleanup root;
-                # rmtree removes the link itself and never follows it.
+                # This is an inventory observation, never deletion authority.
                 target = os.readlink(entry.path)
                 if not _contained_cleanup_link(relative, target):
                     raise ValidationError("Authenticated runtime cleanup contains an unsafe member")
@@ -1279,12 +1476,7 @@ def _remove_runtime_transaction_path(path):
     path = Path(path)
     if not path.exists() and not path.is_symlink():
         return
-    metadata = os.lstat(path)
-    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    junction = getattr(path, "is_junction", lambda: False)()
-    if stat.S_ISLNK(metadata.st_mode) or reparse or junction or not stat.S_ISDIR(metadata.st_mode):
-        raise ValidationError("Refusing to clean an unsafe runtime transaction path")
-    shutil.rmtree(path)
+    raise ValidationError('Runtime cleanup pending: ' + _CLEANUP_REASON)
 
 
 def _runtime_journal(root, transaction_id):
@@ -1311,10 +1503,7 @@ def ensure_usable(root):
     with Tree(root) as tree:
         if tree.inspect(MARKER) is not None or tree.inspect(JOURNAL) is not None:
             raise ValidationError("Installation is incomplete; use bootstrap --recover before running tools")
-        retained = _retained_directory_result(tree)
-        if retained:
-            raise ValidationError('Unresolved restoration; owner must resolve retained directories/journal: ' +
-                                  ', '.join(retained['retained_directories']))
+        _retained_directory_result(tree)  # Validate diagnostics without blocking reuse/recovery.
 
 
 def _verify_installed(root, expected_version):
@@ -1396,7 +1585,7 @@ def _validated_runtime_journal(journal):
                             "managed_before", "managed_after"}:
             raise ValidationError("Invalid recovery journal")
     elif journal["format"] == "awf-install-journal-4":
-        keys = set(journal) - {'windows_metadata', 'posix_ownership', 'temporary_files'}
+        keys = set(journal) - {'windows_metadata', 'posix_ownership', 'temporary_files', 'directory_adoptions'}
         if keys not in ({"format", "transaction_id", "phase", "files", "runtime",
                             "managed_before_sha256", "managed_after_sha256"},
                            {"format", "transaction_id", "phase", "files", "runtime",
@@ -1466,6 +1655,26 @@ def _validate_transaction_journal(journal):
     if transaction_id != journal["transaction_id"]:
         raise ValidationError("Non-canonical recovery transaction identity")
     _validated_runtime_journal(journal)
+    adoptions = journal.get('directory_adoptions', [])
+    if not isinstance(adoptions, list) or len(adoptions) > 10000:
+        raise ValidationError('Invalid directory adoption inventory')
+    allowed_parents = {parent.as_posix() for item in journal['files'] for parent in Path(item['path']).parents
+                       if parent.as_posix() != '.'} | {RECOVERY_OBJECTS}
+    seen_adoptions = set()
+    for row in adoptions:
+        if not isinstance(row, dict) or set(row) != {'path', 'identity', 'evidence_sha256'}:
+            raise ValidationError('Invalid directory adoption entry')
+        relative_parts(row['path'])
+        scoped_parent = (row['path'] in allowed_parents | {'.agentic', '.github', '.agentic-install'} or
+                         _inventory_managed(row['path'] + '/retained-directory') or
+                         row['path'].startswith('.agentic-state/'))
+        if (not scoped_parent or row['path'] in seen_adoptions or
+                not isinstance(row['identity'], list) or len(row['identity']) != 2 or
+                any(not isinstance(part, str) or re.fullmatch('[0-9a-f]{32}', part) is None
+                    for part in row['identity']) or not isinstance(row['evidence_sha256'], str) or
+                re.fullmatch('[0-9a-f]{64}', row['evidence_sha256']) is None):
+            raise ValidationError('Unsafe directory adoption identity/path')
+        seen_adoptions.add(row['path'])
     directories = journal.get("created_directories", [])
     if not isinstance(directories, list) or len(directories) > 10000:
         raise ValidationError("Invalid created-directory inventory")
@@ -1480,6 +1689,8 @@ def _validate_transaction_journal(journal):
         if row["path"] not in allowed or row["path"].casefold() in seen_directories:
             raise ValidationError("Unsafe or duplicate created directory")
         seen_directories.add(row["path"].casefold())
+        if row['path'] in seen_adoptions:
+            raise ValidationError('Directory cannot be both created and adopted')
         identity = row["identity"]
         if identity is not None and (not isinstance(identity, list) or len(identity) != 2 or
                 any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{32}", value) is None
@@ -1604,6 +1815,7 @@ def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
             raise ValidationError("Runtime recovery cannot prove ownership of the staged runtime; journal retained")
         if _runtime_tree_sha256(stage) != proposed:
             raise ValidationError("Runtime recovery found an external edit in the staged runtime; journal retained")
+        _record_cleanup_pending(tree, [stage], status='RECOVERY_REFUSED')
         _remove_runtime_transaction_path(stage)
 
     if previous is None:
@@ -1612,6 +1824,7 @@ def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
         if canonical.exists() or canonical.is_symlink():
             if proposed is None or _runtime_tree_sha256(canonical) != proposed:
                 raise ValidationError("Fresh runtime recovery cannot prove the canonical runtime is transaction-owned; journal retained")
+            _record_cleanup_pending(tree, [canonical], status='RECOVERY_REFUSED')
             _remove_runtime_transaction_path(canonical)
         return
 
@@ -1621,6 +1834,7 @@ def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
         if canonical.exists() or canonical.is_symlink():
             if proposed is None or _runtime_tree_sha256(canonical) != proposed:
                 raise ValidationError("Runtime recovery found an external canonical-runtime edit; journal retained")
+            _record_cleanup_pending(tree, [canonical], status='RECOVERY_REFUSED')
             _remove_runtime_transaction_path(canonical)
         os.replace(backup, canonical)
     elif not (canonical.exists() or canonical.is_symlink()) or _runtime_tree_sha256(canonical) != previous:
@@ -1631,6 +1845,25 @@ def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
 
 def rollback(tree, journal):
     _validate_transaction_journal(journal)
+    # Refuse before any managed-file or temporary mutation. The stopgap cannot
+    # restore an endpoint that requires deleting an existing runtime/backup.
+    runtime = _validated_runtime_journal(journal)
+    blocked = []
+    if runtime is not None:
+        stage = tree.root / runtime['stage']
+        canonical = tree.root / runtime['path']
+        backup = tree.root / runtime['backup']
+        if (stage.exists() or stage.is_symlink()) and runtime['new_sha256'] is not None:
+            blocked.append(stage)
+        if ((canonical.exists() or canonical.is_symlink()) and
+                (runtime['previous_sha256'] is None or backup.exists() or backup.is_symlink())):
+            blocked.append(canonical)
+    legacy_backup = tree.root / '.agentic-backup' / journal['transaction_id']
+    if 'created_directories' not in journal and (legacy_backup.exists() or legacy_backup.is_symlink()):
+        blocked.append(legacy_backup)
+    if blocked:
+        _record_cleanup_pending(tree, blocked, status='RECOVERY_REFUSED')
+        raise ValidationError('Rollback refused before managed-file mutation; cleanup pending')
     if _compact_journal(journal) and journal["phase"] in {"object_prepare", "rollback_cleanup"}:
         return _finalize_compact_rollback(tree, journal, marker_present=True)
     # Resolve and authenticate every recovery object before any project or
@@ -1728,7 +1961,8 @@ def rollback(tree, journal):
             else:
                 tree.write(item['path'], old, windows_metadata=loads(recovery_objects[reference['sha256']].decode('utf-8')))
     if backup_root.exists() and "created_directories" not in journal:
-        shutil.rmtree(backup_root)
+        _record_cleanup_pending(tree, [backup_root], status='RECOVERY_REFUSED')
+        raise ValidationError('Legacy backup cleanup pending; backup retained')
     if mode_aware:
         _verify_journal_managed_state(tree, journal, "before", "after rollback")
     if _compact_journal(journal):
@@ -1840,9 +2074,12 @@ def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False,
         junction = getattr(stage, "is_junction", lambda: False)()
         if stat.S_ISLNK(info.st_mode) or reparse or junction or not stat.S_ISDIR(info.st_mode):
             raise ValidationError("Unproved partial runtime stage is unsafe; journal retained")
-    if require_cleanup and (backup.exists() or backup.is_symlink() or
-                            cleanup.exists() or cleanup.is_symlink()):
-        raise ValidationError("Prior runtime backup or authenticated cleanup path remains after transaction cleanup")
+    if require_cleanup:
+        remaining = [path.relative_to(tree.root).as_posix() for path in (backup, cleanup)
+                     if path.exists() or path.is_symlink()]
+        pending = {row['path'] for row in (_retained_directory_result(tree) or {}).get('cleanup_pending', [])}
+        if remaining and not (which == 'new' and set(remaining) <= pending):
+            raise ValidationError("Prior runtime backup or authenticated cleanup path remains after transaction cleanup")
     if stage_present:
         # This proves only the old endpoint, never ownership of the stage bytes.
         # Preserve the entire directory without traversing or deleting its contents.
@@ -1866,7 +2103,7 @@ def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False,
 
 
 def _cleanup_committed_runtime(tree, journal):
-    """Authenticate by atomic rename, then resume deletion under a durable phase."""
+    """Retain committed backups; pathname cleanup cannot guarantee continuity."""
     runtime = _validated_runtime_journal(journal)
     if journal["phase"] not in {"commit_cleanup", "commit_cleanup_authenticated"}:
         raise ValidationError("Runtime cleanup requires authenticated commit intent")
@@ -1876,52 +2113,34 @@ def _cleanup_committed_runtime(tree, journal):
             _write_bound_journal_update(
                 tree, journal, "commit_cleanup_authenticated")
         return []
-    cleanup = []
     backup = tree.root / runtime["backup"]
     cleanup_path = _runtime_cleanup_path(tree.root, runtime)
-    if journal["phase"] == "commit_cleanup":
-        if runtime["previous_sha256"] is None:
-            if (backup.exists() or backup.is_symlink() or
-                    cleanup_path.exists() or cleanup_path.is_symlink()):
-                raise ValidationError("Fresh runtime commit found an unexpected backup or cleanup path")
-        elif backup.exists() or backup.is_symlink():
-            if cleanup_path.exists() or cleanup_path.is_symlink():
-                raise ValidationError("Runtime backup and cleanup paths both exist; journal retained")
-            if _runtime_tree_sha256(backup) != runtime["previous_sha256"]:
-                raise ValidationError("Exact prior canonical runtime backup cannot be authenticated for cleanup")
-            os.replace(backup, cleanup_path)
-            if _runtime_tree_sha256(cleanup_path) != runtime["previous_sha256"]:
-                raise ValidationError("Prior runtime backup changed while being isolated for cleanup; journal retained")
-        elif cleanup_path.exists() or cleanup_path.is_symlink():
-            # A crash after the atomic rename but before the journal update is
-            # recoverable only while the complete cleanup tree still proves the
-            # exact prior-runtime digest.
-            if _runtime_tree_sha256(cleanup_path) != runtime["previous_sha256"]:
-                raise ValidationError("Pending runtime cleanup cannot be authenticated; journal retained")
-        else:
-            raise ValidationError("Exact prior canonical runtime backup is missing before cleanup")
-        if runtime["previous_sha256"] is not None and "cleanup_identity" in runtime:
-            proof = _runtime_cleanup_proof(cleanup_path)
-            runtime["cleanup_identity"] = proof["identity"]
-            runtime["cleanup_members"] = proof["members"]
-        journal["phase"] = "commit_cleanup_authenticated"
-        _write_bound_journal_update(
-            tree, journal, "commit_cleanup_authenticated")
-    if backup.exists() or backup.is_symlink():
-        raise ValidationError("Prior runtime backup remains after authenticated cleanup transition")
-    if runtime["previous_sha256"] is None:
-        if cleanup_path.exists() or cleanup_path.is_symlink():
-            raise ValidationError("Fresh runtime commit found an unauthenticated cleanup path")
-        return []
-    if "cleanup_identity" not in runtime or runtime["cleanup_identity"] is None or runtime["cleanup_members"] is None:
-        raise ValidationError("Authenticated cleanup has no persisted ownership proof")
-    _verify_runtime_cleanup_proof(cleanup_path, {
-        "identity": runtime["cleanup_identity"], "members": runtime["cleanup_members"]})
-    try:
-        _remove_runtime_transaction_path(cleanup_path)
-    except (OSError, ValidationError) as exc:
-        cleanup.append({"path": str(cleanup_path), "error": type(exc).__name__})
-    return cleanup
+    if runtime['previous_sha256'] is not None:
+        retained = [path for path in (backup, cleanup_path)
+                    if path.exists() or path.is_symlink()]
+        if not retained:
+            if journal['phase'] == 'commit_cleanup_authenticated':
+                if (runtime.get('cleanup_identity') is None or
+                        runtime.get('cleanup_members') is None):
+                    raise ValidationError('Authenticated cleanup has no persisted ownership proof')
+                # A pre-stopgap process may already have finished deletion.
+                # The helper is a no-op for absence and refuses any new object.
+                try:
+                    _remove_runtime_transaction_path(cleanup_path)
+                except (OSError, ValidationError) as exc:
+                    if cleanup_path.exists() or cleanup_path.is_symlink():
+                        return _record_cleanup_pending(tree, [cleanup_path], status='COMMITTED_CLEANUP_PENDING')
+                    return [{'path': cleanup_path.relative_to(tree.root).as_posix(),
+                             'error': type(exc).__name__}]
+                return []
+            raise ValidationError('Exact prior canonical runtime backup is missing before cleanup')
+        return _record_cleanup_pending(tree, retained, status='COMMITTED_CLEANUP_PENDING')
+    if backup.exists() or backup.is_symlink() or cleanup_path.exists() or cleanup_path.is_symlink():
+        raise ValidationError("Fresh runtime commit found an unexpected backup or cleanup path")
+    if journal['phase'] == 'commit_cleanup':
+        journal['phase'] = 'commit_cleanup_authenticated'
+        _write_bound_journal_update(tree, journal, 'commit_cleanup_authenticated')
+    return []
 
 
 def _verify_committed_payload(tree, journal, context):
@@ -1944,6 +2163,7 @@ def _finalize_committed(tree, journal):
     # A durable commit can no longer roll back, so its recovery objects may be
     # removed before retiring the bound journal and marker.
     _cleanup_recovery_objects(tree, journal)
+    _adopt_transaction_directories(tree, journal)
     tree.unlink(MARKER)
     tree.unlink(JOURNAL)
 
@@ -1971,6 +2191,8 @@ def _finalize_journal_only(tree, journal, *, retained_directories=None):
         status = "COMMITTED"
     _cleanup_transaction_temporaries(tree, journal)
     _cleanup_recovery_objects(tree, journal)
+    if status == 'COMMITTED':
+        _adopt_transaction_directories(tree, journal)
     tree.unlink(JOURNAL)
     return status
 
@@ -2019,12 +2241,15 @@ def complete_runtime_transaction(destination, transaction_id, builder):
 
         _verify_committed_payload(tree, journal, "before authenticated runtime backup cleanup")
         cleanup = _cleanup_committed_runtime(tree, journal)
-        if not cleanup:
+        if not cleanup or all('reason' in row for row in cleanup):
             _finalize_committed(tree, journal)
+        retained_result = _retained_directory_result(tree)
     if isinstance(result, dict):
         result = dict(result)
         result["transaction_cleanup"] = "COMPLETE" if not cleanup else "COMMITTED_CLEANUP_PENDING"
         result["transaction_cleanup_failures"] = cleanup
+        if retained_result:
+            result['installation_recovery'] = retained_result
     return result
 
 
@@ -2072,10 +2297,14 @@ def recover(destination):
                 "commit_cleanup", "commit_cleanup_authenticated"}:
             _verify_committed_payload(tree, journal, "before resumed runtime backup cleanup")
             cleanup = _cleanup_committed_runtime(tree, journal)
-            if cleanup:
+            if cleanup and not all('reason' in row for row in cleanup):
                 return {"status": "COMMITTED_CLEANUP_PENDING", "transaction_cleanup_failures": cleanup}
             _finalize_committed(tree, journal)
-            return {"status": "COMMITTED"}
+            result = {'status': 'COMMITTED'}
+            if cleanup:
+                result.update(transaction_cleanup='COMMITTED_CLEANUP_PENDING',
+                              transaction_cleanup_failures=cleanup)
+            return result
         retained = rollback(tree, journal)
         result = {"status": "ROLLED_BACK"}
         if retained:
@@ -2218,8 +2447,10 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     "gitignore": ignore_report, "codeowners": owner_report,
                     "operating": operating_report, **rules_report()}
     with Tree(destination, create=not dry_run) as dst, ExitStack() as planning_context:
-        if dst.inspect(RETAINED_JOURNAL) is not None:
-            raise ValidationError('Unresolved directories require owner action on retained installation journal')
+        retained_before = _exists_read(dst, RETAINED_JOURNAL)
+        _retained_directory_result(dst)
+        adoption_audit_before = _exists_read(dst, DIRECTORY_ADOPTIONS)
+        _directory_adoption_audit(adoption_audit_before)
         if dst.inspect(JOURNAL) is not None or dst.inspect(MARKER) is not None:
             raise ValidationError("An interrupted installation requires --recover")
         existing_config = _exists_read(dst, CONFIG)
@@ -2472,7 +2703,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         with install_lock(dst):
             # Re-read while locked: another cooperating installer or editor may
             # have changed a leaf between preflight and lock acquisition.
-            if any(dst.inspect(path) is not None for path in (JOURNAL, MARKER, RETAINED_JOURNAL)):
+            if (any(dst.inspect(path) is not None for path in (JOURNAL, MARKER)) or
+                    _exists_read(dst, RETAINED_JOURNAL) != retained_before or
+                    _exists_read(dst, DIRECTORY_ADOPTIONS) != adoption_audit_before):
                 raise ValidationError("Another installation changed destination state")
             for path, old in owner_inputs.items():
                 if _exists_read(dst, path) != old:
@@ -2543,13 +2776,16 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             # while no destination payload changes before every object validates.
             # The marker/lock coordination roots retain their existing lifecycle;
             # track payload/object/archive parents before any payload mkdir.
-            parents = {parent.as_posix() for path in [*planned, *backup_plan,
+            parents = {parent.as_posix() for path in [*planned, *deletions, *backup_plan,
                        _recovery_object_path("0" * 64)] for parent in Path(path).parents
                        if parent.as_posix() != "."}
             journal["created_directories"] = [
                 {"path": path, "identity": None}
                 for path in sorted(parents, key=lambda value: (value.count("/"), value))
                 if path != ".agentic" and not (destination / path).exists()]
+            adoptions = _plan_directory_adoptions(dst, parents)
+            if adoptions:
+                journal['directory_adoptions'] = adoptions
             _publish_initial_intent(dst, journal)
             _prepare_transaction_directories(dst, journal)
             _write_recovery_objects(dst, recovery_objects)
@@ -2590,7 +2826,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     journal["phase"] = "commit_cleanup"
                     _write_bound_journal_update(dst, journal, "commit_cleanup")
                     _finalize_committed(dst, journal)
-            except Exception:
+            except Exception as exc:
+                if journal['phase'] in {'commit_cleanup', 'commit_cleanup_authenticated'}:
+                    raise ValidationError('Committed installation finalization is incomplete; recover the retained transaction') from exc
                 rollback(dst, journal)
                 raise
         result = {"status": "INSTALLED" if mode == "install" else "UPGRADED", "template_version": VERSION,
@@ -2604,4 +2842,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 "codeowners": owner_report, "upgrade": upgrade_report, **adoption_rules}
         if defer_runtime:
             result["_runtime_transaction_id"] = transaction_id
+        retained_result = _retained_directory_result(dst)
+        if retained_result:
+            result['installation_recovery'] = retained_result
         return result

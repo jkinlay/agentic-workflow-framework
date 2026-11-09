@@ -21,6 +21,8 @@ sys.path.insert(0, str(ROOT / ".agentic/tests"))
 from agentic.canonical import sha256  # noqa: E402
 from agentic.installer import JOURNAL, MARKER, install, recover, rollback, verify_installed  # noqa: E402
 import agentic.safeio as safeio  # noqa: E402
+from agentic import installer
+from retained_directory_expectations import assert_rollback_evidence
 from agentic.safeio import Tree  # noqa: E402
 from source_only import skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import file_tree, materialize, verify_materialized  # noqa: E402
@@ -266,7 +268,17 @@ class UpgradeJournalCrashTests(unittest.TestCase):
                         configure=True, discover=False)
 
         self.assertTrue(state["captured"], "requested journal crash point was not reached")
-        self.assertEqual(recover(crashed)["status"], "ROLLED_BACK")
+        rollback_operation = installer.rollback
+        restored = {}
+
+        def capture_rollback(tree, journal):
+            result = rollback_operation(tree, journal)
+            restored.update(json.loads(installer.json_bytes(journal)))
+            return result
+
+        with patch.object(installer, 'rollback', capture_rollback):
+            self.assertEqual(recover(crashed)["status"], "ROLLED_BACK")
+        assert_rollback_evidence(self, crashed, restored)
         self.assertEqual(self.application_tree(crashed), before)
 
         result = install(self.source, crashed, self.pin, mode="upgrade",

@@ -198,6 +198,7 @@ class DirectoryContinuityTests(unittest.TestCase):
             for phase in ('object_prepare', 'active', 'rollback_cleanup'):
                 with self.subTest(platform=platform, phase=phase):
                     tree = Mock()
+                    tree.inspect.return_value = None  # No retained-evidence file in this fixture.
                     journal = dict(format='awf-install-journal-4', phase=phase, created_directories=[
                         dict(path=path, identity=None) for path in paths])
                     diagnostics = io.StringIO()
@@ -217,6 +218,7 @@ class DirectoryContinuityTests(unittest.TestCase):
         for platform in ('posix', 'nt'):
             with self.subTest(platform=platform):
                 tree = Mock()
+                tree.inspect.return_value = None  # No retained-evidence file in this fixture.
                 journal = dict(format='awf-install-journal-4', phase='object_prepare',
                     created_directories=[dict(path=path, identity=None) for path in paths])
                 def present(_tree, path):
@@ -255,6 +257,7 @@ class DirectoryContinuityTests(unittest.TestCase):
 
     def test_posix_mkdir_never_publishes_deletion_authority(self):
         tree = Mock()
+        tree.inspect.return_value = None  # No retained-evidence file in this fixture.
         tree.parent.return_value = (Path('project'), 123, 'objects')
         operating = Mock(name='posix_operations')
         operating.name = 'posix'
@@ -353,6 +356,7 @@ class DirectoryContinuityTests(unittest.TestCase):
         digest = installer.sha256(raw)
         marker = installer._journal_marker(journal['transaction_id'], digest, digest, 'directory_prepare')
         tree = Mock()
+        tree.inspect.return_value = None  # No retained-evidence file in this fixture.
         with patch.object(installer, '_directory_identity', return_value=['1' * 32, '2' * 32]):
             recovered = installer._recover_pending_journal_update(tree, journal, raw, marker)
             with contextlib.redirect_stderr(io.StringIO()):
@@ -489,6 +493,7 @@ class DirectoryContinuityTests(unittest.TestCase):
             managed_after_sha256=None, created_directories=[dict(path=path, identity=None)])
         raw = installer.json_bytes(journal)
         tree = Mock()
+        tree.inspect.return_value = None  # No retained-evidence file in this fixture.
         tree.parent.return_value = (Path('project'), 123, 'objects')
         operating = Mock(name='posix_operations')
         operating.name = 'posix'
@@ -525,6 +530,7 @@ class DirectoryContinuityTests(unittest.TestCase):
         marker = installer._journal_marker(journal['transaction_id'], installer.sha256(raw),
             installer.sha256(installer.json_bytes(proposed)), 'directory_prepare')
         tree = Mock()
+        tree.inspect.return_value = None  # No retained-evidence file in this fixture.
         tree.parent.return_value = (Path('project'), 123, 'objects')
         disposition = Mock()
         kernel = Mock()
@@ -575,6 +581,7 @@ class ForwardModeTests(unittest.TestCase):
         operating.fchmod = Mock(side_effect=apply_error or chmod)
         operating.replace.side_effect = lambda *a, **kw: events.append(('replace', kw))
         tree = Mock()
+        tree.inspect.return_value = None  # No retained-evidence file in this fixture.
         tree.inspect.side_effect = read_error if read_error else None
         tree.inspect.return_value = SimpleNamespace(st_mode=stat.S_IFREG | mode,
                                                     st_uid=101, st_gid=202) if exists else None

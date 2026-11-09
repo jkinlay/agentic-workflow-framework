@@ -16,6 +16,8 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic import VERSION, ValidationError  # noqa: E402
+from agentic import installer
+from retained_directory_expectations import assert_rollback_evidence, evidence_inventory
 from agentic.canonical import sha256  # noqa: E402
 from agentic.canonical import load_yaml  # noqa: E402
 from agentic.installer import (CONFIG, INSTALLED, KNOWN_VERSIONS, PROVENANCE,  # noqa: E402
@@ -614,11 +616,20 @@ class UpgradeMatrixTests(unittest.TestCase):
         before = {path: digest for path, digest in file_tree(destination).items()
                   if path != ".agentic-install/lock"}
         plan = self.upgrade(destination, dry_run=True)
-        with self.assertRaisesRegex(OSError, "Injected installation failure"):
+        rollback = installer.rollback
+        observed = {}
+
+        def capture(tree, journal):
+            result = rollback(tree, journal)
+            observed.update(json.loads(installer.json_bytes(journal)))
+            return result
+
+        with patch.object(installer, 'rollback', capture), self.assertRaisesRegex(OSError, "Injected installation failure"):
             self.upgrade(destination, fail_after=len(plan["managed_files"]) + 1)
+        record = assert_rollback_evidence(self, destination, observed)
         after = {path: digest for path, digest in file_tree(destination).items()
                  if path != ".agentic-install/lock"}
-        self.assertEqual(after, before)
+        self.assertEqual(after, {**before, **evidence_inventory(record)})
 
     def test_shipped_table_matches_every_real_fixture(self):
         table = load_known_versions((ROOT / KNOWN_VERSIONS).read_bytes())

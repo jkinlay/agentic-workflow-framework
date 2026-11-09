@@ -1,17 +1,16 @@
 # Release 1.9.6 qualification and preservation
 
-AWF-238: Tier 3, FULL. No release/rollout/adapter authority.
+AWF-238: Tier 3, FULL. No rollout/adapter authority.
 
 ## Baseline and scope
 
-Published
 `v1.9.5` commit: `8ad399943c8f5e4f17db72f3e321b9365ee27782`; manifest SHA-256:
 `1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7`.
-Published assets/tags/pins/receipts stay immutable; Git proves no hosted provenance.
+Assets/tags/pins/receipts remain immutable; Git cannot authenticate publication.
 
 ## Disposable preservation
 
- Adopter copies require accepted baselines, exclusive ownership, quiescence and authorization. Record repository/ID/default-branch/releases/permissions,
+Adopter copies require accepted baselines/exclusive ownership/quiescence/authorization. Record repository/ID/default-branch/releases/permissions,
 owner files/settings/instructions/CODEOWNERS, routes/pins/opt-outs/Jira scope/budgets,
 ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay OFF.
 
@@ -19,14 +18,13 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay
 
 - `snapshot --project DISPOSABLE --output BEFORE`: hash bytes/sizes/modes,
   ownership/access control, named streams and directories/root. Exclude root `.git`/runtime contents and do not walk unrelated product trees.
-  Root files remain evidence; managed/state links refuse with path/remedy.
+  Root files remain evidence; managed/state links refuse.
   Nested archive Git/runtime/cache names remain evidence. Refuse incomplete identity
-  and unreadable enumeration. Take BEFORE before apply; comparison proves preservation since BEFORE.
+  and unreadable enumeration. Take BEFORE before apply.
 - `plan --source RELEASE --project DISPOSABLE --expected-manifest-sha256 PIN
   --github-repo OWNER/REPO --repository-id ID --default-branch BRANCH
   --output PLAN`: require identical inventories and matching identity.
-- Keep an untouched baseline matching BEFORE. After bootstrap, snapshot
-  again. `compare --project DISPOSABLE --before BEFORE --after AFTER --source RELEASE
+- Keep untouched baseline BEFORE. After bootstrap, resnapshot. `compare --project DISPOSABLE --before BEFORE --after AFTER --source RELEASE
   --expected-manifest-sha256 PIN --baseline-project BASELINE --output COMPARISON`
   runs real preservation checks and generates `approved_delta` from verified release
   identity; owners inspect `remaining_changes`. Optional `--allowed-delta` only
@@ -38,26 +36,22 @@ ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay
   seed instructions, populated legacy ledger and published-API accounting history;
   snapshot/derive policy/upgrade with `--on-conflict backup`/compare after installed
   checks. Verify downloads against each lock; require complete wheels.
-  Failures retain inventories/comparison and NOT_QUALIFIED/failed-stage. Success requires
+  Failures retain inventories/comparison with NOT_QUALIFIED/failed-stage. Require
   QUALIFIED_DISPOSABLE_UPGRADE, two CONFIGURED stages, canonical exits zero,
   integrity true, ACCEPTED configuration, bound source/policy/receipt hashes and
   preservation. All `checks` must execute/PASS: `source_managed_membership`,
   `historical_state_continuity`, `named_streams`.
-  Missing legacy-ledger migration/SQL continuity refuses qualification.
+  Missing migration/SQL continuity refuses qualification.
 
-External reports contain digests, never owner contents/SIDs. Unverified permissions/streams fail; POSIX records stream absence. Comparison has `evidence_scope:
-PRESERVATION_COMPARISON_ONLY`; it proves neither installed integrity nor
-qualification. Plans stay NOT_QUALIFIED.
+Reports contain digests, never owner contents/SIDs. Unverified permissions/streams fail; POSIX records stream absence. `PRESERVATION_COMPARISON_ONLY` proves no installed integrity/qualification.
 
 ### Derived migration policy
 
-`prepare_upgrade` verifies target manifest/pin and authenticates baseline membership
-against its manifest through known-version recognition. `compare_upgrade` records
-rules/hashes/`approved_changes`, exact `changes`, baseline/manifest bindings.
+`prepare_upgrade` authenticates target manifest/pin and known-version baseline membership. `compare_upgrade` binds rules/hashes/`approved_changes`, exact `changes` and baseline/manifest.
 
 - Require exact managed target hashes/sizes. Removals require authenticated old
-  membership/target absence. Baseline files outside old managed membership are owner
-  content: newly managed collisions refuse, even for identical target bytes or
+  membership/target absence. Outside-baseline-membership files are owner
+  content: collisions refuse, even for identical bytes or
   removal before installation. **AGENTS.md is managed**; other owner paths stay identical.
 - PROJECT_CONFIG changes only `template.expected_workflow_version`; preserve all
   other values/types/permissions.
@@ -78,11 +72,11 @@ rules/hashes/`approved_changes`, exact `changes`, baseline/manifest bindings.
   objects/journal/marker/lock remain; permit only the empty named object-store directory.
 - Backups must exactly match this upgrade's replaced/deleted originals and expected
   metadata under one fresh transaction UUID; no prefix waiver.
-- New directories serve exact outputs. Preserve existing permissions/streams; new
+- Directories serve exact outputs. Preserve existing permissions/streams; new
   paths match installer modes/inheritance through disposable probes leaving baseline
   inventories identical. Managed removals cannot discard streams.
 
-External deltas cannot bypass preservation policy. Reproduce losses/collisions. Budget disposition
+External deltas cannot bypass preservation. Disposition
 keeps absent controls LEGACY_RETAINED without new gates. Owner-requested adoption
 adds only dormant OFF controls on the upgrade/settings PR branch, preserving
 text/comments; owner merge and fetch apply it. Non-OFF values require a later
@@ -93,21 +87,27 @@ state-store/per-host history into one shared ledger. Independently capture
 charges/UNKNOWN values and deduplication proofs. Test published API-generated
 history, lost-row injection, interruption/replay and concurrency. Installed
 qualification requires this import/check/replay. Follow
-the root guide `MIGRATION-v1.9.5-to-v1.9.6.md` for owner adoption, and Jira identity.
+`MIGRATION-v1.9.5-to-v1.9.6.md` for adoption/Jira identity.
 
 ## Recovery and final gates
 
-Interrupt staging/writes/receipts/provenance/runtime swaps/cleanup; recover in fresh
-invocations. Missing/tampered objects refuse. Remove only authenticated installer
-empty directories; retain replacements, external contents and unproved runtimes.
-POSIX cleanup without authenticated identity retains directories/journal and reports
-unresolved restoration. Preserve archives without recursion. Failed/unknown stages
-prove no CONFIGURED/ACTIVE.
+Interrupt staging/writes/receipts/provenance/swaps/cleanup; recover freshly.
+Missing/tampered objects refuse; empty-directory protections remain.
+Refuse pathname recursive deletion. Retain `.venv.backup-*`/`.venv.cleanup-*`,
+staged/canonical runtimes requiring removal and `.agentic-backup/<transaction>`;
+all consume full runtime/backup space.
+Rollback requiring removal refuses before managed mutation. Forward commits
+retire coordination, reporting COMMITTED_CLEANUP_PENDING backups.
+`.agentic-install/retained-journal.json` exists exactly while unresolved directories
+remain; records preserve paths/sizes (null means unknown)/reasons/remedies.
+Evidence never blocks later install/upgrade/recovery/bootstrap. Successful transactions adopt only managed directories reused without creation/deletion,
+recording "adopted by transaction <id>" in `directory-adoptions.json` before
+resolving evidence. Unmanaged/replaced directories stay reported; unresolved status never claims clean installation. Only unadopted residue needs exclusive owner inspection/recovery; preserve needed bytes. No retained directory is deleted.
+Standalone failures retain stages/original errors without cleanup retry; portable
+stages use sibling cleanup-pending.json. Archives stay nonrecursive.
 
-Freeze candidate/artifact/review/trust/publication bindings; rebind changes. Retain
-one reservation/host, exactly-once allocation and approved limits. Record
-focused/source/archive/installed cohorts, Windows Python 3.12, commands/platform/
-interpreter/timings/counts/skips/failures/receipt hashes.
+Freeze candidate/artifact/review/trust/publication bindings; rebind changes. Retain one reservation/host, exactly-once allocation/approved limits. Record
+commands/platform/interpreter/timings/counts/skips/failures/receipt hashes.
 
 ```text
 ABS_CANONICAL_RUNTIME -B -I ABS_INSTALLED_SCRIPT --root ABS_PROJECT verify-installation
@@ -115,9 +115,8 @@ ABS_CANONICAL_RUNTIME -B -I ABS_INSTALLED_SCRIPT --root ABS_PROJECT validate-con
 ```
 
 Require exits zero/integrity true/ACCEPTED configuration/bound hashes. CONFIGURED
-proves consistency; status proves no historical execution. Require independent/
+proves consistency, never historical execution. Require independent/
 specialist review, hosted checks/trust/publication scan/review barrier/owner acceptance.
-Rollout requires target authorization/disposable proof. ACTIVE additionally needs
+Rollout requires target authorization/disposable proof. ACTIVE needs
 independent trust and observed receipt-changing adoption merge with accepted raw
 default-branch bytes; enables no adapters.
-Each criterion needs evidence or NOT MET.

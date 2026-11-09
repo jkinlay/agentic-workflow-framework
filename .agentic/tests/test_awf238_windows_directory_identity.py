@@ -58,6 +58,7 @@ class WindowsDirectoryIdentityTests(unittest.TestCase):
         platform = SimpleNamespace(name='nt', lstat=Mock(return_value=info))
         kernel = Mock()
         tree = Mock()
+        tree.inspect.return_value = None  # This fixture has no retained-evidence file.
         tree.parent.return_value = (Path('.'), 123, 'owned')
         with patch.object(installer, 'os', platform), \
                 patch.object(installer, '_windows_directory_identity', return_value=FULL), \
@@ -116,6 +117,14 @@ class WindowsDirectoryIdentityTests(unittest.TestCase):
             installer._validate_pending_new_journal(tree, self.journal(FULL), 'directory_prepare')
             with self.assertRaisesRegex(ValidationError, 'Created directory changed'):
                 installer._cleanup_transaction_directories(tree, self.journal(TRUNCATED))
+
+    def test_retained_directory_is_never_deleted_even_with_creation_proof(self):
+        with self.windows() as (tree, _, _), \
+                patch.object(installer, '_retained_directory_result',
+                             return_value={'retained_directories': ['owned']}), \
+                patch.object(safeio, '_win_set_file_information', create=True) as delete:
+            self.assertEqual(['owned'], installer._cleanup_transaction_directories(tree, self.journal(FULL)))
+            delete.assert_not_called()
 
     def test_directory_lookup_has_no_stat_identity_builder(self):
         # Guard the ownership entry point itself, including accidental fallbacks.
