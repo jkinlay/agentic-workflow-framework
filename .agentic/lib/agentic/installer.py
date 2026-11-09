@@ -558,6 +558,10 @@ def _temporary_targets(journal):
                    if item['old_sha256'] is not None)
     targets.update(_recovery_object_path(row['sha256'])
                    for row in journal.get('windows_metadata', {}).values())
+    if journal.get('temporary_files') == 'sibling-uuid5-v2':
+        # Immutable evidence publications are sequential and share one exact
+        # sibling temporary, committed before any evidence object is created.
+        targets.add(EVIDENCE_OBJECTS + '/object.json')
     return targets
 
 
@@ -570,7 +574,9 @@ def _transaction_temporary_paths(journal):
     # Older journals deliberately acquire no authority over unrecorded names.
     if 'temporary_files' not in journal:
         return {}
-    if not _compact_journal(journal) or journal['temporary_files'] != 'sibling-uuid5-v1':
+    if (not _compact_journal(journal) or not isinstance(journal['temporary_files'], str) or
+            journal['temporary_files'] not in {
+            'sibling-uuid5-v1', 'sibling-uuid5-v2'}):
         raise ValidationError('Invalid installation temporary-file inventory')
     namespace = uuid.UUID(journal['transaction_id'])
     return {target: (Path(target).parent / f'.awf-{uuid.uuid5(namespace, target).hex}.tmp').as_posix()
@@ -588,6 +594,7 @@ def _bind_transaction_temporaries(tree, journal, *, initial=False):
             tree.read(path)
     tree.write_temporary_names = {target: Path(path).name for target, path in paths.items()}
     tree._installer_temporary_paths = frozenset(paths.values())
+    tree._installer_evidence_temporary = paths.get(EVIDENCE_OBJECTS + '/object.json')
 
 
 def _cleanup_transaction_temporaries(tree, journal):
@@ -898,7 +905,16 @@ def _evidence_put(tree, value):
     if previous is not None and previous != raw:
         raise ValidationError('Retained evidence object differs from its digest')
     if previous is None:
-        tree.write(path, raw)
+        temporary = getattr(tree, '_installer_evidence_temporary', None)
+        if temporary is not None:
+            tree.write_temporary_names[path] = Path(temporary).name
+            tree.write(path, raw)
+        else:
+            # Standalone diagnostics and legacy transactions cannot acquire
+            # authority over a new sibling name. Publish only the exclusive
+            # content-addressed leaf; an incomplete object fails its digest and
+            # leaves the original source/journal available for owner inspection.
+            tree.write_exclusive(path, raw)
     return digest
 
 
@@ -913,10 +929,17 @@ def _evidence_get(tree, digest):
 
 def _evidence_list_put(tree, items):
     head = None
-    for offset in range(0, len(items), 128):
-        page = dict(format='awf-evidence-page-1', previous=head, items=items[offset:offset + 128])
-        if len(json_bytes(page)) > _EVIDENCE_INLINE_MAXIMUM:
-            raise ValidationError('Retained evidence page exceeds its bound')
+    offset = 0
+    while offset < len(items):
+        page = dict(format='awf-evidence-page-1', previous=head, items=[])
+        while offset < len(items) and len(page['items']) < 128:
+            page['items'].append(items[offset])
+            if len(json_bytes(page)) > _EVIDENCE_INLINE_MAXIMUM:
+                page['items'].pop()
+                break
+            offset += 1
+        if not page['items']:
+            raise ValidationError('Retained evidence item exceeds its page bound')
         head = _evidence_put(tree, page)
     return head
 
@@ -2905,7 +2928,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
             # Commit each exact sibling name before it can be created. Reusing
             # the same bound names also covers interrupted recovery writes.
-            journal['temporary_files'] = 'sibling-uuid5-v1'
+            journal['temporary_files'] = 'sibling-uuid5-v2'
             # Bind the complete object inventory before creating it. An abrupt
             # stop during side-store creation therefore leaves recoverable intent,
             # while no destination payload changes before every object validates.

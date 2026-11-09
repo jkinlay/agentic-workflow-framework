@@ -1159,6 +1159,23 @@ class Tree:
             except FileNotFoundError:
                 pass
 
+    def write_exclusive(self, relative, data):
+        """Create one confined immutable leaf without a replacement temporary.
+
+        A failed write retains that exact leaf for inspection; it never truncates
+        a previous object or creates an unbound random sibling.
+        """
+        parent, handle, name = self.parent(relative, create=True)
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        fd = (os.open(parent / name, flags, 0o600) if os.name == 'nt'
+              else os.open(name, flags, 0o600, dir_fd=handle))
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != 'nt':
+            os.fsync(handle)
+
     def unlink(self, relative):
         try:
             parent, handle, name = self.parent(relative)

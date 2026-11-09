@@ -116,6 +116,122 @@ class RetainedAdoptionTests(unittest.TestCase):
                 self.assertFalse((self.root / installer.JOURNAL).exists())
                 self.assertFalse((self.root / installer.MARKER).exists())
 
+    def test_long_path_evidence_pages_preserve_every_valid_entry(self):
+        class MemoryTree:
+            def __init__(self): self.files = {}
+            def inspect(self, path): return path in self.files or None
+            def read(self, path, **kwargs): return self.files[path]
+            def write(self, path, raw): self.files[path] = raw
+            write_exclusive = write
+        # Relative components obey the schema; no filesystem long-path support
+        # is needed to preserve this parser-valid historical source evidence.
+        paths = ['.agentic/' + '/'.join(['x' * 120] * 75) + '/' + str(n) for n in range(128)]
+        journal = dict(format='awf-install-journal-4', transaction_id=str(uuid.uuid4()),
+            phase='rollback_cleanup', runtime=None, managed_before_sha256=sha256(b'[]'),
+            managed_after_sha256=None, created_directories=[dict(path=p, identity=None) for p in paths],
+            files=[dict(path=p + '/old', old_sha256=None, old_size=None, old_mode=None,
+                        new_sha256='a' * 64, new_mode=0o600) for p in paths])
+        record = dict(format='awf-retained-journal-1', journal=journal, retained_directories=paths)
+        installer._retained_record_result(installer.loads(installer.json_bytes(record).decode()))
+        tree = MemoryTree()
+        packed = installer._pack_retained_record(tree, record)
+        restored = installer._unpack_retained_record(tree, packed)
+        self.assertEqual([record], installer._retained_sources(restored))
+        self.assertEqual(paths, restored['retained_directories'])
+        for raw in tree.files.values():
+            value = installer.loads(raw.decode())
+            if value.get('format') == 'awf-evidence-page-1':
+                self.assertLessEqual(len(raw), installer._EVIDENCE_INLINE_MAXIMUM)
+                self.assertLessEqual(len(value['items']), 128)
+
+    def test_evidence_replace_crash_has_only_bound_recoverable_temporaries(self):
+        import base64
+        import subprocess
+        record = self.retain(['.agentic/adopted-clone'])
+        record['journal']['files'] = [dict(path='.agentic/adopted-clone/' + str(n),
+            old_sha256=None, old_size=None, old_mode=None, new_sha256='a' * 64,
+            new_mode=0o600) for n in range(10000)]
+        (self.root / installer.RETAINED_JOURNAL).write_bytes(installer.json_bytes(record))
+        content = {p: base64.b64encode(raw).decode() for p, raw in self.content.items()}
+        code = r'''
+import base64,json,os,sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,str(Path.cwd()/'.agentic/lib'))
+from agentic import installer,safeio
+root=Path(sys.argv[1]); source=Path(sys.argv[2]); pin=sys.argv[3]
+content={p:base64.b64decode(raw) for p,raw in json.loads(sys.argv[4]).items()}
+replace=os.replace
+write=safeio.Tree.write
+evidence_write=False
+def publish(tree,relative,data,*args,**kwargs):
+    global evidence_write
+    previous=evidence_write
+    evidence_write=relative.startswith(installer.EVIDENCE_OBJECTS+'/')
+    try:
+        return write(tree,relative,data,*args,**kwargs)
+    finally:
+        evidence_write=previous
+def interrupt(src,dst,*args,**kwargs):
+    # POSIX replace uses a basename plus dir_fd; Windows uses an absolute path.
+    if evidence_write:
+        os._exit(73)
+    return replace(src,dst,*args,**kwargs)
+with patch.object(installer,'verify_release',return_value=(pin,content)), patch.object(os,'replace',interrupt), patch.object(safeio.Tree,'write',publish):
+    if os.name=='nt':
+        metadata=safeio._windows_metadata(root/installer.CONFIG)
+        with patch.object(safeio,'_windows_metadata',return_value=metadata), patch.object(safeio,'_apply_windows_metadata'):
+            installer.install(source,root,pin,conflict='backup')
+    else:
+        installer.install(source,root,pin,conflict='backup')
+'''
+        child = subprocess.run([sys.executable, '-B', '-c', code, str(self.root), str(self.source),
+                                self.pin, json.dumps(content)], capture_output=True, text=True)
+        self.assertEqual(73, child.returncode, child.stderr)
+        journal = json.loads((self.root / installer.JOURNAL).read_bytes())
+        residue = {p.relative_to(self.root).as_posix() for p in self.root.rglob('*.tmp')}
+        self.assertEqual(1, len(residue))
+        self.assertLessEqual(residue, set(installer._transaction_temporary_paths(journal).values()))
+        lookalike = self.root / installer.EVIDENCE_OBJECTS / ('.awf-' + 'f' * 32 + '.tmp')
+        self.assertNotIn(lookalike.relative_to(self.root).as_posix(), residue)
+        lookalike.write_bytes(b'owner look-alike; preserve exactly')
+        self.assertEqual('COMMITTED', installer.recover(self.root)['status'])
+        self.assertEqual([lookalike], list(self.root.rglob('*.tmp')))
+        self.assertEqual(b'owner look-alike; preserve exactly', lookalike.read_bytes())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+        with Tree(self.root) as tree:
+            audit = installer._directory_adoption_audit(tree.read(installer.DIRECTORY_ADOPTIONS), tree=tree)
+        self.assertEqual([record], installer._retained_sources(audit['transactions'][0]['evidence']))
+
+    def test_evidence_temporary_collision_refuses_before_payload(self):
+        identity = uuid.uuid4()
+        target = installer.EVIDENCE_OBJECTS + '/object.json'
+        relative = installer.EVIDENCE_OBJECTS + '/.awf-' + uuid.uuid5(identity, target).hex + '.tmp'
+        path = self.root / relative
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'preexisting owner bytes')
+        before = self.helper.snapshot_project(self.root)
+        with patch.object(installer.uuid, 'uuid4', return_value=identity), \
+                self.assertRaisesRegex(ValidationError, 'temporary path already exists'):
+            self.install()
+        self.assertEqual(before, self.helper.snapshot_project(self.root))
+        self.assertEqual(b'preexisting owner bytes', path.read_bytes())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+
+    def test_standalone_evidence_publication_never_truncates_existing_leaf(self):
+        value = dict(format='synthetic-evidence', retained=['owner bytes'])
+        raw = installer.json_bytes(value)
+        relative = installer.EVIDENCE_OBJECTS + '/' + sha256(raw) + '.json'
+        with Tree(self.root) as tree:
+            self.assertEqual(sha256(raw), installer._evidence_put(tree, value))
+            self.assertEqual(raw, tree.read(relative))
+            with self.assertRaises(FileExistsError):
+                tree.write_exclusive(relative, b'destructive replacement')
+            self.assertEqual(raw, tree.read(relative))
+        self.assertFalse(any(self.root.rglob('*.tmp')))
+
     def test_success_adopts_only_reused_managed_directories(self):
         original = self.retain(['.agentic/adopted-clone', '.agentic/old-only'])
         before = (self.root / installer.RETAINED_JOURNAL).read_bytes()

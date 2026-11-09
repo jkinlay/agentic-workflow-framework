@@ -106,6 +106,114 @@ class AuthenticBaselineTests(unittest.TestCase):
         self.assertFalse(rejected['preserved'])
         self.assertIn(installer.DIRECTORY_ADOPTIONS, rejected['remaining_changes'])
 
+    def test_retained_journal_cannot_rebind_or_omit_baseline_evidence(self):
+        from copy import deepcopy
+        from agentic import installer
+        import uuid
+        project = self.base / 'retention-journal-authentication'
+        install_baseline(self.source, project)
+        runtime = project / installer.RUNTIME
+        runtime.mkdir()
+        (runtime / 'previous-runtime').write_bytes(b'current runtime')
+        previous_id = str(uuid.uuid4())
+        previous_backup = project / ('.agentic/.venv.backup-' + previous_id)
+        previous_backup.mkdir()
+        (previous_backup / 'previous-runtime').write_bytes(b'prior backup owner bytes')
+        before = inventory(project)
+        policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+        installed = install(self.candidate, project, self.pin, mode='upgrade', configure=True,
+                            discover=False, conflict='backup', defer_runtime=True)
+
+        def build(transaction):
+            transaction.stage.mkdir()
+            (transaction.stage / 'new-runtime').write_bytes(b'new runtime')
+            transaction.record_staged_runtime()
+            os.replace(transaction.runtime_root, transaction.backup)
+            os.replace(transaction.stage, transaction.runtime_root)
+            return {}
+
+        installer.complete_runtime_transaction(project, installed['_runtime_transaction_id'], build)
+        clean = inventory(project)
+        accepted = qualify_upgrade.compare_upgrade(before, clean, policy, project)
+        self.assertTrue(accepted['preserved'], accepted['violations'])
+        record = json.loads((project / installer.RETAINED_JOURNAL).read_bytes())
+        self.assertGreaterEqual(len(record['journal']['created_directories']), 25)
+        for mutation in ('existing-backup', 'missing-file', 'metadata-reference', 'missing-directories'):
+            with self.subTest(mutation=mutation):
+                copy = self.base / ('journal-' + mutation)
+                shutil.copytree(project, copy)
+                changed = deepcopy(record)
+                journal = changed['journal']
+                if mutation == 'existing-backup':
+                    identity = journal['transaction_id']
+                    changed = json.loads(json.dumps(changed).replace(identity, previous_id))
+                    old = copy / record['journal']['runtime']['backup']
+                    prior = copy / ('.agentic/.venv.backup-' + previous_id)
+                    (prior / 'previous-runtime').write_bytes((old / 'previous-runtime').read_bytes())
+                    self.assertTrue(old.resolve().is_relative_to(copy.resolve()))
+                    shutil.rmtree(old)
+                    file_backups = copy / '.agentic-backup' / identity
+                    if file_backups.exists():
+                        self.assertTrue(file_backups.resolve().is_relative_to(copy.resolve()))
+                        self.assertTrue(file_backups.with_name(previous_id).resolve().is_relative_to(copy.resolve()))
+                        file_backups.rename(file_backups.with_name(previous_id))
+                    self.assertNotEqual(b'prior backup owner bytes', (prior / 'previous-runtime').read_bytes())
+                elif mutation == 'missing-file':
+                    row = next(row for row in journal['files'] if row['old_sha256'] is None
+                               and row['path'].startswith('.agentic/lib/agentic/'))
+                    journal['files'].remove(row)
+                elif mutation == 'metadata-reference':
+                    references = journal.setdefault('windows_metadata', {})
+                    path = next(iter(references), next(row['path'] for row in journal['files']
+                                                     if row['old_sha256'] is not None))
+                    references[path] = dict(sha256='f' * 64, size=123)
+                else:
+                    del journal['created_directories'][:25]
+                installer._retained_record_result(changed)
+                (copy / installer.RETAINED_JOURNAL).write_bytes(installer.json_bytes(changed))
+                rejected = qualify_upgrade.compare_upgrade(before, inventory(copy), policy, copy)
+                self.assertFalse(rejected['preserved'], mutation)
+                self.assertIn(installer.RETAINED_JOURNAL, rejected['remaining_changes'])
+        self.assertEqual(clean, inventory(project))
+
+    def test_adoption_audit_cannot_rebind_the_upgrade_transaction(self):
+        from agentic import installer
+        from agentic.safeio import Tree
+        import uuid
+        project = self.base / 'adoption-transaction-binding'
+        install_baseline(self.source, project)
+        path = '.agentic/lib/agentic'
+        journal = dict(format='awf-install-journal-4', transaction_id=str(uuid.uuid4()),
+            phase='rollback_cleanup', runtime=None, managed_before_sha256=hashlib.sha256(b'[]').hexdigest(),
+            managed_after_sha256=None, created_directories=[dict(path=path, identity=None)],
+            files=[dict(path=path + '/synthetic-previous.bin', old_sha256=None, old_size=None,
+                old_mode=None, new_sha256='a' * 64, new_mode=0o600)])
+        original = dict(format='awf-retained-journal-1', journal=journal, retained_directories=[path])
+        with Tree(project) as tree:
+            tree.write(installer.RETAINED_JOURNAL, installer.json_bytes(original))
+        previous_id = str(uuid.uuid4())
+        backup = project / '.agentic-backup' / previous_id / 'owner'
+        backup.parent.mkdir(parents=True)
+        backup.write_bytes(b'prior owner backup')
+        before = inventory(project)
+        policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+        install(self.candidate, project, self.pin, mode='upgrade', configure=True,
+                discover=False, conflict='backup')
+        clean = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+        self.assertTrue(clean['preserved'], clean['violations'])
+        audit_path = project / installer.DIRECTORY_ADOPTIONS
+        audit = json.loads(audit_path.read_bytes())
+        for identity in (previous_id, str(uuid.uuid4())):
+            with self.subTest(transaction_id=identity):
+                event = audit['transactions'][0]
+                event['transaction_id'] = identity
+                event['resolution'] = 'adopted by transaction ' + identity
+                audit_path.write_bytes(installer.json_bytes(audit))
+                rejected = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                self.assertFalse(rejected['preserved'])
+                self.assertIn(installer.DIRECTORY_ADOPTIONS, rejected['remaining_changes'])
+        self.assertEqual(b'prior owner backup', backup.read_bytes())
+
     def test_manifest_and_published_tag_identity(self):
         self.assertEqual('1.9.5', verify_published(self.source)['template_version'])
         with self.assertRaisesRegex(ValueError, 'published commit'):

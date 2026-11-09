@@ -541,7 +541,17 @@ def prepare_upgrade(source, project, pin, before):
         evidence_before = {path: tree.read(path) for path in before['files']
                            if path.startswith(installation.EVIDENCE_OBJECTS + '/') or path in {
                                installation.RETAINED_JOURNAL, installation.DIRECTORY_ADOPTIONS}}
+        metadata_before = {}
+        ownership_before = {}
+        for path in backup_sources:
+            if os.name == 'nt':
+                raw = installation.json_bytes(tree.windows_metadata(path))
+                metadata_before[path] = dict(sha256=installation.sha256(raw), size=len(raw))
+            else:
+                info = tree.inspect(path)
+                ownership_before[path] = [info.st_uid, info.st_gid]
     return {'retention_before': retention_before, 'audit_before': audit_before,
+            'metadata_before': metadata_before, 'ownership_before': ownership_before,
             'evidence_before': evidence_before, 'runtime_before': before.get('runtime'),
             'manifest_sha256': verified_pin, 'manifest_raw': manifest_raw.decode('utf-8'),
             'baseline_sha256': hashlib.sha256(_json_identity(before).encode('utf-8')).hexdigest(),
@@ -555,6 +565,74 @@ def prepare_upgrade(source, project, pin, before):
             'archive_actions': archive_actions, 'state_migrations': migrations,
             'backup_sources': backup_sources, 'backup_creation': backup_creation,
             'exercised_state_paths': exercised}
+
+
+def _fresh_retention_namespace(before, policy, identity):
+    """No prior transaction or owner namespace may be rebound as new evidence."""
+    namespaces = ['.agentic-backup/' + identity, *(
+        '.agentic/.venv.' + kind + '-' + identity for kind in ('staging', 'backup', 'cleanup'))]
+    old_entries = {**before['files'], **before['directories']}
+    if any(path.rstrip('/') == prefix or path.startswith(prefix + '/')
+           for prefix in namespaces for path in old_entries):
+        raise ValueError('Retained transaction namespace was not fresh')
+    prior = policy.get('retention_before')
+    old_ids = {source.get('journal', {}).get('transaction_id')
+               for source in (installation._retained_sources(prior) if prior else [])}
+    old_ids.update(event['transaction_id'] for event in policy['audit_before']['transactions'])
+    if identity in old_ids:
+        raise ValueError('Retained transaction identity was already used')
+
+
+def _authenticate_retained_journal(before, after, policy, project, journal):
+    """Derive complete membership from baseline policy, never emitted rows."""
+    identity = journal['transaction_id']
+    _fresh_retention_namespace(before, policy, identity)
+    prior = policy.get('retention_before')
+    if journal['format'] != 'awf-install-journal-4' or journal.get('temporary_files') != 'sibling-uuid5-v2':
+        raise ValueError('Retention requires a complete compact transaction')
+    if any(path in before['files'] for path in installation._transaction_temporary_paths(journal).values()):
+        raise ValueError('Transaction temporary namespace was not fresh')
+    outputs = set(policy['files']) | {CONFIG, INSTALLED, PROVENANCE}
+    paths = {path for path in outputs if before['files'].get(path, {}).get('sha256') !=
+             after['files'].get(path, {}).get('sha256')} | set(policy['removed'])
+    prefix = '.agentic-backup/' + identity + '/'
+    backups = {prefix + path for path in policy['backup_sources']}
+    # Stage A requires the exact originals, including both prior receipts.
+    paths |= backups
+    if {row['path'] for row in journal['files']} != paths:
+        raise ValueError('Retained transaction file membership differs from baseline policy')
+    originals = paths & before['files'].keys()
+    if journal.get('windows_metadata', {}) != {path: policy['metadata_before'][path]
+            for path in originals if path in policy['metadata_before']}:
+        raise ValueError('Retained transaction Windows metadata membership or references differ')
+    if journal.get('posix_ownership', {}) != {path: policy['ownership_before'][path]
+            for path in originals if path in policy['ownership_before']}:
+        raise ValueError('Retained transaction POSIX ownership membership differs')
+    parents = {parent.as_posix() for path in outputs | set(policy['removed']) | backups | {
+        installation._recovery_object_path('0' * 64)} for parent in Path(path).parents
+        if parent.as_posix() != '.'}
+    directories = sorted((path for path in parents if path not in {'.agentic', '.agentic-install'}
+                          and path + '/' not in before['directories']),
+                         key=lambda path: (path.count('/'), path))
+    if [row['path'] for row in journal.get('created_directories', [])] != directories:
+        raise ValueError('Retained transaction created-directory membership differs')
+    with Tree(project) as tree:
+        expected = [dict(path=path, identity=installation._directory_identity(tree, path)
+                         if os.name == 'nt' else None) for path in directories]
+    if journal['created_directories'] != expected:
+        raise ValueError('Retained transaction directory identities differ')
+    prior_paths = (prior or {}).get('retained_directories', [])
+    eligible = {path for path in prior_paths if path in parents and path + '/' in before['directories']}
+    adoptions = journal.get('directory_adoptions', [])
+    if {row['path'] for row in adoptions} != eligible:
+        raise ValueError('Retained transaction adoption membership differs')
+    with Tree(project) as tree:
+        for row in adoptions:
+            source = next(source for source in installation._retained_sources(prior)
+                          if row['path'] in source['retained_directories'])
+            if (row['identity'] != installation._directory_identity(tree, row['path']) or
+                    row['evidence_sha256'] != installation.sha256(installation.json_bytes(source))):
+                raise ValueError('Retained transaction adoption identity or source differs')
 
 
 def _retention_outputs(before, after, policy, project):
@@ -586,6 +664,7 @@ def _retention_outputs(before, after, policy, project):
             raise ValueError('New retention lacks committed transaction evidence')
         installation._retained_record_result(source)
         journal = source['journal']
+        _authenticate_retained_journal(before, after, policy, project, journal)
         transaction_id = journal['transaction_id']
         runtime = journal['runtime']
         baseline = policy.get('runtime_before')
@@ -627,12 +706,18 @@ def _retention_outputs(before, after, policy, project):
         def inspect(self, path): return path in self.files or None
         def read(self, path, **kwargs): return self.files[path]
         def write(self, path, raw): self.files[path] = raw; self.written[path] = raw
+        write_exclusive = write
     collected = CollectedEvidence()
     for source in added:
         installation._merge_retained_evidence(collected, source)
     merged = installation._read_retained_record(collected)
     if events:
         event = events[0]
+        _fresh_retention_namespace(before, policy, event['transaction_id'])
+        backup_ids = {path.split('/')[1] for path in after['files'].keys() - before['files'].keys()
+                      if path.startswith('.agentic-backup/')}
+        if backup_ids != {event['transaction_id']}:
+            raise ValueError('Adoption identity differs from the exact upgrade backup namespace')
         if transaction_id is not None and event['transaction_id'] != transaction_id:
             raise ValueError('Adoption/cleanup transaction identities differ')
         eligible = set((prior or {}).get('retained_directories', [])) & {

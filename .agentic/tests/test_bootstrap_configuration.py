@@ -34,6 +34,28 @@ from agentic.contracts import Contracts
 from agentic.policy import inspect_config
 
 
+def retained_stage_paths(destination, captured):
+    """Compare and relativize fixture paths through one canonical spelling."""
+    destination = destination.resolve(strict=True)
+    stage = captured.resolve(strict=True)
+    stages = [path.resolve(strict=True) for path in (destination / '.agentic').glob('.venv.staging-*')]
+    return stage, stages, stage.relative_to(destination).as_posix()
+
+
+class RetainedStageAliasTests(unittest.TestCase):
+    def test_expanded_stage_and_short_destination_have_one_relative_inventory(self):
+        short = Path('C:/synthetic/TEMPOR~1/project')
+        expanded = Path('C:/synthetic/temporary-root/project')
+        stage = expanded / '.agentic/.venv.staging-synthetic'
+        aliases = {short: expanded, expanded: expanded, stage: stage}
+        with patch.object(Path, 'resolve', autospec=True, side_effect=lambda path, **kw: aliases[path]), \
+                patch.object(Path, 'glob', return_value=iter([stage])):
+            actual, stages, relative = retained_stage_paths(short, stage)
+        self.assertEqual([actual], stages)
+        self.assertEqual(stage, actual)
+        self.assertEqual('.agentic/.venv.staging-synthetic', relative)
+
+
 # Verbatim LF-terminated operating.gitignore from published v1.9.4,
 # commit 5f8fb12b3f98034f6d97eccfc4952184f33d1021 (supplied tag source).
 # Keep this historical literal independent of the current release template.
@@ -1276,14 +1298,13 @@ class ConfiguredInstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "injected staged") as raised:
                 adoption.ensure_installed_runtime(self.dest, wheelhouse)
         self.assertFalse((self.dest / ".agentic/.venv").exists())
-        self.assertEqual([captured['path']], list((self.dest / '.agentic').glob('.venv.staging-*')))
+        stage, stages, relative = retained_stage_paths(self.dest, captured['path'])
+        self.assertEqual([stage], stages)
         self.assertEqual(captured['digest'], installer._runtime_tree_sha256(captured['path']))
         evidence = installer.retained_directory_status(self.dest)
         self.assertEqual('RECOVERY_REFUSED', evidence['status'])
-        self.assertEqual([captured['path'].relative_to(self.dest).as_posix()], evidence['retained_directories'])
+        self.assertEqual([relative], evidence['retained_directories'])
         self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
-        stage = captured['path']
-        relative = stage.relative_to(self.dest).as_posix()
         self.assertEqual(captured['links'], {p.relative_to(stage).as_posix(): os.readlink(p)
                                            for p in stage.rglob('*') if p.is_symlink()})
         size = None if captured['links'] else sum((stage / path).stat().st_size for path in captured['files'])
