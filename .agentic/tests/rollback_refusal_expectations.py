@@ -81,7 +81,9 @@ def assert_retained(test, root, before, paths, *, journal=None, coordination_cha
     record = cleanup_record(before, paths)
     test.assertEqual(installer.json_bytes(record), (root / installer.RETAINED_JOURNAL).read_bytes())
     after = inventory(root)
-    test.assertEqual(b'0', (root / installer.LOCK).read_bytes())
+    # Match install_lock's platform branch, including POSIX's empty lock.
+    expected_lock = b'0' if installer.os.name == 'nt' else b''
+    test.assertEqual(expected_lock, (root / installer.LOCK).read_bytes())
     ignored = {installer.RETAINED_JOURNAL}
     if coordination_changed:
         ignored.update((installer.JOURNAL, installer.MARKER))
