@@ -20,6 +20,8 @@ import agentic.installer as installer  # noqa: E402
 import test_awf134_installer_journal as journal_tests  # noqa: E402
 
 
+from rollback_refusal_expectations import REFUSAL, inventory as refusal_inventory, assert_retained, forbid_managed_mutation
+
 CapturedIntent = journal_tests.CapturedIntent
 
 
@@ -517,7 +519,7 @@ except (ValidationError, OSError, ValueError) as exc:
         self.assertEqual(b"external stage edit\n", runtime_file.read_bytes())
         self.assertFalse((destination / "_to_delete").exists())
 
-    def test_awf134_crash_after_runtime_stage_precommit_recovers_by_explicit_kind(self):
+    def test_awf134_crash_after_runtime_stage_precommit_reconstructs_explicit_kind_before_refusal(self):
         destination, before, _before_mode, _before_runtime = (
             self.interrupt_after_managed_after_publish())
         original_write = installer.Tree.write
@@ -541,8 +543,26 @@ except (ValidationError, OSError, ValueError) as exc:
 
         marker = json.loads((destination / installer.MARKER).read_text(encoding="utf-8"))
         self.assertEqual("runtime_stage", marker["pending_update_kind"])
-        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
-        self.assertEqual(before, self.snapshot_project(destination))
+        retained_before = refusal_inventory(destination)
+        with forbid_managed_mutation(destination), self.assertRaises(ValidationError) as raised:
+            installer.recover(destination)
+        self.assertEqual(REFUSAL, str(raised.exception))
+        expected_journal = json.loads((destination / installer.JOURNAL).read_bytes())
+        self.assertEqual(journal, expected_journal)
+        self.assertEqual('active', expected_journal['phase'])
+        self.assertEqual(journal['runtime']['new_sha256'], expected_journal['runtime']['new_sha256'])
+        assert_retained(self, destination, retained_before, [journal['runtime']['stage']],
+                        journal=expected_journal, coordination_changed=True)
+        self.assertEqual(b'new runtime\n', (transaction.stage / 'runtime.bin').read_bytes())
+        self.assertEqual(_before_runtime, installer._runtime_tree_sha256(destination / installer.RUNTIME))
+        self.assertFalse(transaction.backup.exists())
+        # Original bytes remain available in their authenticated recovery objects.
+        with installer.Tree(destination) as tree:
+            objects = installer._load_recovery_objects(tree, expected_journal)
+        for row in expected_journal['files']:
+            old = installer._old_file_bytes(expected_journal, row, objects)
+            if old is not None:
+                self.assertEqual(before[row['path']], old)
 
     def test_awf134_crash_after_commit_precommit_before_journal_replace_rolls_back(self):
         destination, before, kind = self.interrupt_update("commit_cleanup", "marker")

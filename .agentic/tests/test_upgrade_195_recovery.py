@@ -32,6 +32,11 @@ from upgrade_195_fixtures import PUBLISHED_PIN, materialize_published, materiali
 from agentic.preservation_metadata import inventory
 
 
+from rollback_refusal_expectations import (REFUSAL, inventory as refusal_inventory,
+                                           cleanup_record, assert_retained)
+from agentic import installer
+
+
 def repeated_recovery(result):
     return result if result.get('retained_directories') else {'status': 'NO_PENDING_INSTALL'}
 
@@ -488,7 +493,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                 if damage == 'external_directory_content':
                     self.assertEqual(b'owner bytes', (project / row['path'] / 'owner-note').read_bytes())
 
-    def test_real_venv_staging_swap_and_commit_recover_after_process_exit(self):
+    def test_real_venv_staging_swap_and_commit_preserve_endpoints_after_process_exit(self):
         # These are real stdlib venvs, deliberately without locked dependencies.
         # Only the separate qualification runner can establish CONFIGURED.
         with tempfile.TemporaryDirectory() as temporary:
@@ -531,32 +536,100 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
                         result['_runtime_transaction_id'], boundary], capture_output=True,
                         text=True, env=child_env(), timeout=120)
                     self.assertEqual(73, stopped.returncode, stopped.stdout + stopped.stderr)
+                    before = refusal_inventory(project)
+                    journal = json.loads((project / JOURNAL).read_bytes())
+                    runtime = journal['runtime']
+                    if boundary in ('staged', 'backup_swap', 'runtime_swap'):
+                        blocked = [runtime['path'] if boundary == 'runtime_swap' else runtime['stage']]
+                        self.assertEqual(REFUSAL, self.recover_refused(project, forbid_mutation=True)['diagnostic'])
+                        expected = assert_retained(self, project, before, blocked, journal=journal)
+                        # A repeated fresh process must refuse identically, with
+                        # neither runtime nor the exact evidence changing.
+                        retained_before = refusal_inventory(project)
+                        self.assertEqual(REFUSAL, self.recover_refused(project, forbid_mutation=True)['diagnostic'])
+                        self.assertEqual(retained_before, refusal_inventory(project))
+                        old_path = runtime['path'] if boundary == 'staged' else runtime['backup']
+                        self.assertEqual(runtime['previous_sha256'],
+                                         installer._runtime_tree_sha256(project / old_path))
+                        new_path = runtime['path'] if boundary == 'runtime_swap' else runtime['stage']
+                        self.assertEqual(runtime['new_sha256'],
+                                         installer._runtime_tree_sha256(project / new_path))
+                        self.assertEqual(expected, installer.retained_directory_status(project))
+                        # Managed bytes are still the upgraded endpoint, including
+                        # the receipt and provenance, while rollback is refused.
+                        receipt = json.loads((project / INSTALLED).read_bytes())
+                        provenance = json.loads((project / PROVENANCE).read_bytes())
+                        self.assertEqual(self.pin, receipt['source_manifest_sha256'])
+                        self.assertEqual(self.pin, provenance['installation']['source_manifest_sha256'])
+                        for path, digest in receipt['immutable_files'].items():
+                            self.assertEqual(digest, hashlib.sha256((project / path).read_bytes()).hexdigest())
+                        from agentic import ValidationError
+                        with self.assertRaises(ValidationError) as incomplete:
+                            installer.verify_installed(project)
+                        self.assertEqual('Installation is incomplete; use bootstrap --recover before running tools',
+                                         str(incomplete.exception))
+                        continue
                     observed = self.recover_fresh(project)
                     self.assertNotIn(observed['recovery']['status'], ('CONFIGURED', 'ACTIVE'))
-                    self.assertEqual('COMMITTED' if boundary == 'commit_cleanup' else 'ROLLED_BACK',
-                                     observed['recovery']['status'])
+                    if boundary == 'commit_cleanup':
+                        record = cleanup_record(before, [runtime['backup']],
+                                                status='COMMITTED_CLEANUP_PENDING', journal=journal)
+                        retained = {key: value for key, value in record.items()
+                                    if key not in {'format', 'journal'}}
+                        # Successful recovery includes the current unresolved
+                        # inventory via recover -> _with_retained_inventory.
+                        expected = dict(status='COMMITTED',
+                            transaction_cleanup='COMMITTED_CLEANUP_PENDING',
+                            transaction_cleanup_failures=record['cleanup_pending'],
+                            retained_directories=record['retained_directories'],
+                            installation_recovery=retained)
+                        self.assertEqual(expected, observed['recovery'])
+                        self.assertEqual(json_bytes(record), (project / RETAINED_JOURNAL).read_bytes())
+                        self.assertEqual(retained, self.recover_fresh(project)['recovery'])
+                        for relative in (runtime['path'], runtime['backup']):
+                            self.assertEqual({p: v for p, v in before.items()
+                                              if p == relative or p.startswith(relative + '/')},
+                                             {p: v for p, v in refusal_inventory(project).items()
+                                              if p == relative or p.startswith(relative + '/')})
+                        self.assertEqual(runtime['previous_sha256'],
+                                         installer._runtime_tree_sha256(project / runtime['backup']))
+                        self.assertFalse((project / JOURNAL).exists())
+                        self.assertFalse((project / MARKER).exists())
+                        from agentic.providers.github_status import project_status, render_status
+                        from unittest.mock import Mock
+                        status = project_status(project, gh=Mock())
+                        self.assertEqual(retained, status['installation_recovery'])
+                        self.assertIn('Cleanup pending: ' + runtime['backup'], render_status(status))
+                    else:
+                        self.assertEqual('ROLLED_BACK', observed['recovery']['status'])
+                        self.assertEqual(repeated_recovery(observed['recovery']),
+                                         self.recover_fresh(project)['recovery'])
                     self.assertEqual(self.pin if boundary == 'commit_cleanup' else
                                      hashlib.sha256((self.source / 'MANIFEST.json').read_bytes()).hexdigest(),
                                      observed['integrity'])
-                    self.assertEqual(repeated_recovery(observed['recovery']),
-                                     self.recover_fresh(project)['recovery'])
                     if boundary == 'partial_stage':
                         self.assertTrue(list((project / '_to_delete').iterdir()))
 
-    def recover_refused(self, project):
+    def recover_refused(self, project, *, forbid_mutation=False):
         code = """
 import json, sys
 sys.path.insert(0, sys.argv[1])
 from agentic.installer import recover
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent / 'tests'))
+from rollback_refusal_expectations import forbid_managed_mutation
+from contextlib import nullcontext
 try:
-    result = recover(sys.argv[2])
+    with (forbid_managed_mutation(sys.argv[2]) if sys.argv[3] == 'guard' else nullcontext()):
+        result = recover(sys.argv[2])
 except Exception as error:
     print(json.dumps({'status': 'REFUSED', 'diagnostic': str(error)}))
     sys.exit(19)
 print(json.dumps(result))
 """
         result = subprocess.run([sys.executable, '-B', '-c', code,
-                                 str(ROOT / '.agentic/lib'), str(project)],
+                                 str(ROOT / '.agentic/lib'), str(project),
+                                 'guard' if forbid_mutation else 'plain'],
                                 capture_output=True, text=True, env=child_env(), timeout=120)
         self.assertEqual(19, result.returncode, result.stdout + result.stderr)
         observation = json.loads(result.stdout)

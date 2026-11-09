@@ -19,8 +19,8 @@ CLI recovery dispatch: `7fcaeece:scripts/bootstrap_project.py:181`.
 | Observed recovery condition | Supported behavior |
 |---|---|
 | No pending intent | Returns `NO_PENDING_INSTALL`. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1578`. |
-| Authenticated unfinished transaction | Restores old managed/runtime state when ownership and bytes can be proved; returns `ROLLED_BACK`. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1606`. |
-| Durable commit in cleanup | Verifies committed payload, resumes cleanup, and returns `COMMITTED` or `COMMITTED_CLEANUP_PENDING`. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1598`. |
+| Authenticated unfinished transaction | Restores provable old state only when no runtime removal is needed; returns `ROLLED_BACK`. Otherwise refuses before managed mutation, preserving the active journal, marker and runtimes. Follow the [owner recovery procedure](../../MIGRATION-v1.9.5-to-v1.9.6.md). Source: [.agentic/lib/agentic/installer.py](../../.agentic/lib/agentic/installer.py), `rollback`. |
+| Durable commit in cleanup | Verifies payload and returns `status: COMMITTED`. Retained backups add `transaction_cleanup: COMMITTED_CLEANUP_PENDING`, `transaction_cleanup_failures`, `retained_directories` and `installation_recovery`; this is successful recovery with unresolved diagnostics. Source: [.agentic/lib/agentic/installer.py](../../.agentic/lib/agentic/installer.py), `recover` and `_with_retained_inventory`. |
 | Marker without journal | Refuses recovery. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1582`. |
 | Journal without marker | Only a provable completed endpoint can be finalized; it cannot freely rewrite project/runtime bytes. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1584`. |
 | Missing/tampered recovery objects or external edits | Refuses and retains recovery evidence. Sources: `7fcaeece:.agentic/lib/agentic/installer.py:1238`; `7fcaeece:.agentic/lib/agentic/installer.py:1244`. |

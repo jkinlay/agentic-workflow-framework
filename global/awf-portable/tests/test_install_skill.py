@@ -234,17 +234,43 @@ class InstallerTests(unittest.TestCase):
     def test_replacement_failure_restores_previous_skill(self):
         self.old_skill()
         before = installer.inventory(self.dest)
+        directory_identity = self.dest.stat().st_ino
+        captured = {}
         real_replace = os.replace
         def fail_stage(source, target):
             if Path(source).name.startswith(".awf-stage-"):
+                stage = Path(source)
+                captured.update(stage=stage, inventory=installer.inventory(stage),
+                                identity=stage.stat().st_ino)
                 raise OSError("simulated replacement failure")
             return real_replace(source, target)
         with patch.object(installer.os, "replace", side_effect=fail_stage):
-            with self.assertRaisesRegex(OSError, "simulated"):
+            with self.assertRaises(OSError) as raised:
                 self.run_install()
         self.assertEqual(installer.inventory(self.dest), before)
+        self.assertEqual(directory_identity, self.dest.stat().st_ino)
         self.assertFalse((self.dest.parent / ".awf-install.lock").exists())
-        self.assertEqual(list(self.dest.parent.glob(".awf-stage-*")), [])
+        self.assertEqual('simulated replacement failure', str(raised.exception))
+        stage = captured['stage']
+        self.assertEqual([stage], [p for p in self.dest.parent.glob('.awf-stage-*') if p.is_dir()])
+        self.assertEqual(captured['identity'], stage.stat().st_ino)
+        self.assertEqual(captured['inventory'], installer.inventory(stage))
+        receipt = installer.read_json(stage / installer.RECEIPT)
+        self.assertEqual(before, installer.inventory(self.dest))
+        self.assertFalse(Path(receipt['previous_backup']).exists())
+        self.assertTrue(self.backups.is_dir())
+        self.assertEqual([], list(self.backups.iterdir()))
+        record = dict(status='CLEANUP_PENDING', path=stage.name, size_bytes=None,
+                      reason='Pathname recursive deletion refused',
+                      owner_action='Inspect retained stage under exclusive owner control; preserve needed bytes before manual recovery')
+        sidecar = stage.with_name(stage.name + '.cleanup-pending.json')
+        self.assertEqual((json.dumps(record, indent=2) + '\n').encode(), sidecar.read_bytes())
+        self.assertEqual({self.dest.name, stage.name, sidecar.name},
+                         {p.name for p in self.dest.parent.iterdir()})
+        # The destination was absent: rename-back needs no deletion. Portable
+        # installation has a sibling sidecar, not an outer installer journal.
+        self.assertFalse((self.dest / '.agentic/INSTALLING.json').exists())
+        self.assertFalse((self.dest / '.agentic-install/journal.json').exists())
 
     def test_backup_failure_leaves_old_skill_intact(self):
         self.old_skill()

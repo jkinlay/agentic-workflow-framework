@@ -32,6 +32,8 @@ from agentic.installer import (CONFIG, INSTALLED, GITIGNORE, GITIGNORE_TEMPLATE,
                                merge_operating_ignores, operating_ignore_plan, verify_installed)
 from agentic.contracts import Contracts
 from agentic.policy import inspect_config
+from rollback_refusal_expectations import (REFUSAL, inventory as refusal_inventory, assert_retained,
+                                           forbid_managed_mutation)
 
 
 def retained_stage_paths(destination, captured):
@@ -1239,47 +1241,81 @@ class ConfiguredInstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "exact version identity"):
             adoption.ensure_installed_runtime(self.dest, wheelhouse)
 
-    def test_runtime_failure_after_swap_restores_previous_good_runtime_and_cleans_transactions(self):
+    def test_runtime_failure_after_swap_retains_failed_and_previous_runtimes(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
         adoption.ensure_installed_runtime(self.dest, wheelhouse)
         marker = self.dest / ".agentic/.venv/previous-good-runtime"
         marker.write_bytes(b"preserve me\n")
+        previous_runtime = installer._runtime_tree_sha256(marker.parent)
         validate = adoption._validate_runtime
+        captured = {}
         calls = 0
         def fail_final(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
+                captured['before'] = refusal_inventory(self.dest)
                 raise ValidationError("injected final runtime validation failure")
             return validate(*args, **kwargs)
         with patch.object(adoption, "_validate_runtime", side_effect=fail_final):
-            with self.assertRaisesRegex(ValidationError, "injected final"):
+            with self.assertRaises(ValidationError) as raised:
                 adoption.ensure_installed_runtime(self.dest, wheelhouse)
-        self.assertEqual(marker.read_bytes(), b"preserve me\n")
-        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
-        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+        self.assertEqual('injected final runtime validation failure', str(raised.exception))
+        self.assertEqual(['Runtime cleanup pending; inspect retained-journal.json before owner recovery'],
+                         raised.exception.__notes__)
+        backups = list((self.dest / '.agentic').glob('.venv.backup-*'))
+        self.assertEqual(1, len(backups))
+        backup = backups[0]
+        relative = backup.resolve().relative_to(self.dest.resolve()).as_posix()
+        assert_retained(self, self.dest, captured['before'], [relative, installer.RUNTIME])
+        self.assertEqual(b'preserve me\n', (backup / marker.name).read_bytes())
+        self.assertEqual(previous_runtime, installer._runtime_tree_sha256(backup))
+        self.assertFalse(marker.exists())
+        self.assertEqual([], list((self.dest / '.agentic').glob('.venv.staging-*')))
+        self.assertEqual([], list((self.dest / '.agentic').glob('.venv.cleanup-*')))
+        # A standalone build has no outer managed-file transaction. Its exact
+        # contract preserves the original exception and records diagnostics.
+        self.assertFalse((self.dest / installer.JOURNAL).exists())
+        self.assertFalse((self.dest / installer.MARKER).exists())
 
-    def test_runtime_keyboard_interrupt_after_swap_restores_previous_good_runtime(self):
+    def test_runtime_keyboard_interrupt_after_swap_retains_failed_and_previous_runtimes(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
         adoption.ensure_installed_runtime(self.dest, wheelhouse)
         marker = self.dest / ".agentic/.venv/previous-good-runtime"
         marker.write_bytes(b"preserve on interrupt\n")
+        previous_runtime = installer._runtime_tree_sha256(marker.parent)
         validate = adoption._validate_runtime
+        captured = {}
         calls = 0
         def interrupt_final(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
+                captured['before'] = refusal_inventory(self.dest)
                 raise KeyboardInterrupt()
             return validate(*args, **kwargs)
         with patch.object(adoption, "_validate_runtime", side_effect=interrupt_final):
-            with self.assertRaises(KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt) as raised:
                 adoption.ensure_installed_runtime(self.dest, wheelhouse)
-        self.assertEqual(marker.read_bytes(), b"preserve on interrupt\n")
-        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
-        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+        self.assertEqual("", str(raised.exception))
+        self.assertEqual(['Runtime cleanup pending; inspect retained-journal.json before owner recovery'],
+                         raised.exception.__notes__)
+        backups = list((self.dest / '.agentic').glob('.venv.backup-*'))
+        self.assertEqual(1, len(backups))
+        backup = backups[0]
+        relative = backup.resolve().relative_to(self.dest.resolve()).as_posix()
+        assert_retained(self, self.dest, captured['before'], [relative, installer.RUNTIME])
+        self.assertEqual(b'preserve on interrupt\n', (backup / marker.name).read_bytes())
+        self.assertEqual(previous_runtime, installer._runtime_tree_sha256(backup))
+        self.assertFalse(marker.exists())
+        self.assertEqual([], list((self.dest / '.agentic').glob('.venv.staging-*')))
+        self.assertEqual([], list((self.dest / '.agentic').glob('.venv.cleanup-*')))
+        # A standalone build has no outer managed-file transaction. Its exact
+        # contract preserves the original exception and records diagnostics.
+        self.assertFalse((self.dest / installer.JOURNAL).exists())
+        self.assertFalse((self.dest / installer.MARKER).exists())
 
     def test_runtime_stage_failure_leaves_no_partial_runtime_or_transaction_residue(self):
         wheelhouse = self.prepare_runtime_source()
@@ -1623,23 +1659,33 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         os.replace(transaction.stage, transaction.runtime_root)
         raise ValidationError("injected canonical runtime failure")
 
-    def test_fresh_install_runtime_failure_removes_new_receipt_managed_files_and_runtime(self):
+    def test_fresh_install_runtime_failure_refuses_before_managed_mutation_and_retains_runtime(self):
         transaction_id = str(uuid.uuid4())
         managed = ".agentic/installed-manifest.json"
         new = b"new receipt\n"
         (self.root / managed).write_bytes(new)
         self.journal(transaction_id=transaction_id, managed=managed, old=None, new=new,
                      previous_runtime=None)
-        with self.assertRaisesRegex(ValidationError, "injected canonical runtime failure"):
-            installer.complete_runtime_transaction(
-                self.root, transaction_id, self.failing_runtime)
-        self.assertFalse((self.root / managed).exists())
-        self.assertFalse((self.root / ".agentic/.venv").exists())
-        self.assertFalse((self.root / installer.JOURNAL).exists())
-        self.assertFalse((self.root / installer.MARKER).exists())
-        self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
+        captured = {}
+        def fail(transaction):
+            try:
+                self.failing_runtime(transaction)
+            finally:
+                captured.update(before=refusal_inventory(self.root),
+                    journal=json.loads((self.root / installer.JOURNAL).read_bytes()))
+        with forbid_managed_mutation(self.root), self.assertRaises(ValidationError) as raised:
+            installer.complete_runtime_transaction(self.root, transaction_id, fail)
+        self.assertEqual(REFUSAL, str(raised.exception.__cause__))
+        self.assertEqual(
+            'Bootstrap runtime failed and exact managed/runtime rollback cannot be proved; '
+            f'transaction {transaction_id} and backup .agentic/.venv.backup-{transaction_id} were retained',
+            str(raised.exception))
+        assert_retained(self, self.root, captured['before'], [installer.RUNTIME], journal=captured['journal'])
+        self.assertEqual(new, (self.root / managed).read_bytes())
+        self.assertEqual(b'new canonical runtime\n', (self.root / installer.RUNTIME / 'runtime.txt').read_bytes())
+        self.assertEqual([], list((self.root / '.agentic').glob('.venv.*-*')))
 
-    def test_upgrade_runtime_failure_restores_exact_receipt_managed_and_runtime_bytes(self):
+    def test_upgrade_runtime_failure_refuses_and_retains_exact_receipt_managed_and_runtime_bytes(self):
         transaction_id = str(uuid.uuid4())
         managed = ".agentic/installed-manifest.json"
         old, new = b"old receipt\n", b"upgraded receipt\n"
@@ -1650,15 +1696,28 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         previous_runtime = installer._runtime_tree_sha256(runtime)
         self.journal(transaction_id=transaction_id, managed=managed, old=old, new=new,
                      previous_runtime=previous_runtime)
-        with self.assertRaisesRegex(ValidationError, "injected canonical runtime failure"):
-            installer.complete_runtime_transaction(
-                self.root, transaction_id, self.failing_runtime)
-        self.assertEqual(old, (self.root / managed).read_bytes())
-        self.assertEqual(b"exact previous runtime\n", (runtime / "runtime.txt").read_bytes())
-        self.assertEqual(previous_runtime, installer._runtime_tree_sha256(runtime))
-        self.assertFalse((self.root / installer.JOURNAL).exists())
-        self.assertFalse((self.root / installer.MARKER).exists())
-        self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
+        captured = {}
+        def fail(transaction):
+            try:
+                self.failing_runtime(transaction)
+            finally:
+                captured.update(before=refusal_inventory(self.root),
+                    journal=json.loads((self.root / installer.JOURNAL).read_bytes()))
+        with forbid_managed_mutation(self.root), self.assertRaises(ValidationError) as raised:
+            installer.complete_runtime_transaction(self.root, transaction_id, fail)
+        self.assertEqual(REFUSAL, str(raised.exception.__cause__))
+        self.assertEqual(
+            'Bootstrap runtime failed and exact managed/runtime rollback cannot be proved; '
+            f'transaction {transaction_id} and backup .agentic/.venv.backup-{transaction_id} were retained',
+            str(raised.exception))
+        assert_retained(self, self.root, captured['before'], [installer.RUNTIME], journal=captured['journal'])
+        self.assertEqual(new, (self.root / managed).read_bytes())
+        backup = self.root / f'.agentic/.venv.backup-{transaction_id}'
+        self.assertEqual(b'exact previous runtime\n', (backup / 'runtime.txt').read_bytes())
+        self.assertEqual(previous_runtime, installer._runtime_tree_sha256(backup))
+        self.assertEqual(b'new canonical runtime\n', (runtime / 'runtime.txt').read_bytes())
+        self.assertEqual([backup], list((self.root / '.agentic').glob('.venv.*-*')))
+        self.assertEqual(old, base64.b64decode(captured['journal']['files'][0]['old']))
 
     def test_upgrade_success_proves_old_backup_before_durable_intent_cleanup(self):
         transaction_id = str(uuid.uuid4())
@@ -1860,11 +1919,24 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         (self.root / installer.MARKER).write_bytes(installer.json_bytes(
             installer._journal_marker(transaction_id, sha256(old_raw), sha256(candidate_raw))))
 
-        self.assertEqual("ROLLED_BACK", installer.recover(self.root)["status"])
-        self.assertFalse(stage.exists())
-        self.assertFalse((self.root / managed).exists())
-        self.assertFalse((self.root / installer.JOURNAL).exists())
-        self.assertFalse((self.root / installer.MARKER).exists())
+        before = refusal_inventory(self.root)
+        with forbid_managed_mutation(self.root), self.assertRaises(ValidationError) as raised:
+            installer.recover(self.root)
+        self.assertEqual(REFUSAL, str(raised.exception))
+        # Recovery must reconstruct and authenticate the proposed digest before
+        # refusing removal. The original non-rollback proof remains exact.
+        with installer.Tree(self.root) as tree:
+            reconstructed, raw, marker = installer._read_bound_journal(tree)
+        self.assertEqual(candidate, reconstructed)
+        self.assertEqual(candidate_raw, raw)
+        self.assertEqual(installer._journal_marker(transaction_id, sha256(candidate_raw)), marker)
+        assert_retained(self, self.root, before, [journal['runtime']['stage']],
+                        journal=candidate, coordination_changed=True)
+        self.assertEqual(candidate['runtime']['new_sha256'], installer._runtime_tree_sha256(stage))
+        self.assertEqual(b'staged canonical runtime\n', (stage / 'runtime.txt').read_bytes())
+        self.assertEqual(b'new receipt\n', (self.root / managed).read_bytes())
+        self.assertFalse((self.root / installer.RUNTIME).exists())
+        self.assertFalse((self.root / journal['runtime']['backup']).exists())
 
     def test_pending_marker_stage_tamper_fails_closed_without_deleting_stage(self):
         transaction_id = str(uuid.uuid4())
