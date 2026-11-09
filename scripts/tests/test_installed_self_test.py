@@ -30,6 +30,8 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env  # noqa: E402
 from agentic.installer import install  # noqa: E402
 from agentic.runtime_commands import installed_paths  # noqa: E402
+sys.path.insert(0, str(ROOT / 'scripts'))
+from installed_self_test_fixture import prepare_project, assert_unborn_head  # noqa: E402
 
 
 MIN_INSTALL_TIMEOUT_SECONDS = 180
@@ -572,43 +574,16 @@ class InstalledSelfTestTests(unittest.TestCase):
             self.assertIn(relative, installed, 'Broken installed document link: ' + target)
 
     def assert_unborn_head(self, project):
-        head = run_with_timeout(
-            ["git", "-C", str(project), "rev-parse", "--verify", "HEAD"],
-            capture_output=True, text=True, check=False, env=child_env(dict(os.environ)),
-            timeout=INSTALL_TIMEOUT_SECONDS)
-        self.assertNotEqual(0, head.returncode, "fixture unexpectedly has a commit")
+        assert_unborn_head(project, run=run_with_timeout, env=child_env(dict(os.environ)))
 
     def test_manifest_only_install_self_test_has_no_failures_or_errors(self):
         suite_timeout = installed_self_test_timeout_seconds(os.environ)
-        pin = hashlib.sha256((ROOT / "MANIFEST.json").read_bytes()).hexdigest()
         with tempfile.TemporaryDirectory(prefix="awf-installed-self-test-") as raw:
             project = Path(raw) / "project"
-            project.mkdir()
-            install(ROOT, project, pin, mode="install", discover=False)
-            self.assertFalse((project / "scripts").exists())
-            self.assertFalse((project / "MANIFEST.json").exists())
-            # An adopter may own a root MANIFEST.json; it must not make the
-            # installed project look like the AWF source repository.
-            (project / "MANIFEST.json").write_text('{"adopter": "owned"}\n', encoding="utf-8")
-            # AWF-39: a fresh installed project may not yet have owner root
-            # attributes. Its diagnostics tests must be host-independent.
-            self.assertFalse((project / ".gitattributes").exists())
-            # Managed runtime: .agentic/.venv with the hash-locked dependencies.
-            _, interpreter, _ = installed_paths(project)
-            base = getattr(sys, "_base_executable", None) or sys.executable
-            env = child_env(dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
-            # POSIX venvs symlink python by default, which the heavy-validation
-            # controller refuses as an alias; Windows venvs always copy.
-            copies = [] if os.name == "nt" else ["--copies"]
-            run_with_timeout(
-                [base, "-m", "venv", *copies, str(project / ".agentic/.venv")], check=True,
-                capture_output=True, env=env, timeout=600)
-            run_with_timeout(
-                [str(interpreter), "-m", "pip", "install", "--disable-pip-version-check",
-                 "--require-hashes", "--only-binary=:all:", "-r",
-                 str(project / ".agentic/requirements.lock")], check=True,
-                capture_output=True, env=env, timeout=1200)
-            git(project, "init", "-q", "-b", "main")
+            interpreter = prepare_project(
+                ROOT, project, run=run_with_timeout,
+                env=child_env(dict(os.environ, PYTHONDONTWRITEBYTECODE="1")),
+                installer=install, paths=installed_paths)
             report_path = Path(raw) / "self-test.json"
             # Keep this immediately before self-test: the installed-runtime
             # acceptance case is specifically an initialized, unborn repository.
