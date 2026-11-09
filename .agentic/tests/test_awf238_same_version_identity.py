@@ -17,9 +17,8 @@ from agentic.canonical import load_yaml
 from agentic.installer import CONFIG, INSTALLED, PROVENANCE, install, verify_installed
 from agentic.safeio import Tree
 from agentic.store import Store
-from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo
-if AWF_SOURCE_REPOSITORY:
-    from qualify_upgrade import inventory, _permissions, _named_streams
+from source_only import skip_unless_source_repo
+from agentic.preservation_metadata import inventory, _permissions, _named_streams
 from upgrade_195_fixtures import materialize_candidate
 
 

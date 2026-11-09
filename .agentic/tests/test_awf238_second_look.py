@@ -15,9 +15,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / '.agentic/lib'), str(ROOT / '.agentic/tests'), str(ROOT / 'scripts')]
 from agentic import ValidationError
 from agentic.installer import install
-from source_only import skip_unless_source_repo
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo
 from upgrade_195_fixtures import materialize_published, materialize_candidate, install_baseline, seed_legacy_accounting
-import qualify_upgrade as qualification
+# The qualification oracle/CLI is source tooling; installed runtime tests still run.
+if AWF_SOURCE_REPOSITORY:
+    import qualify_upgrade as qualification
 
 
 @skip_unless_source_repo('requires authentic published Git objects', '.git')

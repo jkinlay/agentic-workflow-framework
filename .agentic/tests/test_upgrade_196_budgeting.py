@@ -15,10 +15,12 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 sys.path.insert(0, str(ROOT / '.agentic/tests'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 from agentic import ValidationError, upgrade
-from source_only import skip_unless_source_repo
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo
 from upgrade_195_fixtures import (materialize_published, generate_budget_history,
     materialize_candidate, install_baseline)
-import qualify_upgrade
+# The qualification oracle/CLI is source tooling; installed runtime tests still run.
+if AWF_SOURCE_REPOSITORY:
+    import qualify_upgrade
 
 PROJECT = '11111111-1111-4111-8111-111111111111'
 

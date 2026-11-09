@@ -158,7 +158,7 @@ class PreservationReportTests(unittest.TestCase):
 
     def test_unreadable_named_streams_cannot_be_waived(self):
         before = inventory(self.root)
-        with patch('qualify_upgrade._named_streams', return_value={
+        with patch('agentic.preservation_metadata._named_streams', return_value={
                 'verified': False, 'method': 'windows-find-streams'}):
             after = inventory(self.root)
         delta = compare(before, after, {})['changes']
@@ -234,7 +234,7 @@ class PreservationReportTests(unittest.TestCase):
 
     def test_unavailable_permission_capture_blocks_even_an_exact_delta(self):
         before = inventory(self.root)
-        with patch('qualify_upgrade._permissions', return_value={
+        with patch('agentic.preservation_metadata._permissions', return_value={
                 'verified': False, 'method': 'windows-owner-group-dacl-sddl',
                 'diagnostic': 'permission capture unavailable'}):
             after = inventory(self.root)
@@ -372,7 +372,7 @@ class PreservationReportTests(unittest.TestCase):
         self.assertEqual('ledger_migration_coverage', result['failed_stage'])
 
     def test_qualification_cannot_pass_unverified_permissions(self):
-        with patch('qualify_upgrade._permissions', return_value={
+        with patch('agentic.preservation_metadata._permissions', return_value={
                 'verified': False, 'method': 'windows-owner-group-dacl-sddl'}):
             result = self.qualification_with_unit_children(lambda project: None)
         self.assertEqual('NOT_QUALIFIED', result['status'])

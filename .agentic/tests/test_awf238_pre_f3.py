@@ -26,7 +26,7 @@ from test_operating import governance
 from test_awf242_controller_wiring import ObservedBudgetHost
 from settings_pr_fixtures import accepted_fixture_snapshot
 from test_model_routing import capabilities
-from qualify_upgrade import _permissions, _named_streams
+from agentic.preservation_metadata import inventory, _permissions, _named_streams
 
 
 @unittest.skipUnless(os.name == 'nt', 'Windows inherited security regression')
@@ -185,7 +185,6 @@ print('{}')
     @unittest.skipUnless(os.name == 'nt', 'Windows metadata regression')
     def test_unpreservable_metadata_refuses_before_target_writes(self):
         from agentic.safeio import WINDOWS_METADATA_MAX_BYTES
-        from qualify_upgrade import inventory
         project = self.work / 'project'
         shutil.copytree(self.baseline, project)
         # Remove only the disposable installer's released coordination lock so

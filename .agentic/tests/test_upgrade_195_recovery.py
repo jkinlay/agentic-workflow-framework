@@ -29,8 +29,7 @@ from agentic.safeio import Tree
 from agentic.child_process import child_env
 from source_only import skip_unless_source_repo
 from upgrade_195_fixtures import PUBLISHED_PIN, materialize_published, materialize_candidate, install_baseline
-sys.path.insert(0, str(ROOT / 'scripts'))
-from qualify_upgrade import inventory
+from agentic.preservation_metadata import inventory
 
 
 # Terminate the actual installer, bypassing finally/rollback, at deterministic

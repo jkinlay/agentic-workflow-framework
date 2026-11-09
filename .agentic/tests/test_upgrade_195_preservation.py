@@ -9,12 +9,14 @@ import shutil
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 sys.path.insert(0, str(ROOT / '.agentic/tests'))
-from source_only import skip_unless_source_repo
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo
 from upgrade_195_fixtures import (materialize_published, verify_published, install_baseline,
                                   materialize_candidate, customize_preservation_project)
 sys.path.insert(0, str(ROOT / 'scripts'))
-from qualify_upgrade import inventory, plan
-import qualify_upgrade
+# The qualification oracle/CLI is source tooling; installed runtime tests still run.
+if AWF_SOURCE_REPOSITORY:
+    from qualify_upgrade import inventory, plan
+    import qualify_upgrade
 import os
 from agentic import ValidationError
 from agentic.installer import install
