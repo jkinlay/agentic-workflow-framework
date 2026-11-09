@@ -280,6 +280,26 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual('ACTIVE', result['project_state'], result)
         self.assertEqual(before, snapshot())
 
+    def test_retained_committed_cleanup_preserves_active_local_work_admission(self):
+        from agentic import installer
+        from agentic.activation import require_capabilities
+        from agentic.safeio import Tree
+        backup = self.root / '.agentic/.venv.backup-synthetic-retention'
+        backup.mkdir()
+        self.addCleanup(shutil.rmtree, backup)
+        evidence = self.root / installer.RETAINED_JOURNAL
+        self.addCleanup(evidence.unlink, missing_ok=True)
+        with Tree(self.root) as tree:
+            installer._record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
+        before = evidence.read_bytes()
+        result = self.observe()
+        self.assertEqual('ACTIVE', result['project_state'], result)
+        self.assertTrue(result['integrity_valid'])
+        require_capabilities(result['capabilities'], ['local_work'])
+        self.assertEqual([backup.relative_to(self.root).as_posix()],
+                         result['installation_recovery']['retained_directories'])
+        self.assertEqual(before, evidence.read_bytes())
+
     def test_accepted_default_checkout_and_merged_receipt_are_active(self):
         result = self.observe()
         from agentic.contracts import Contracts

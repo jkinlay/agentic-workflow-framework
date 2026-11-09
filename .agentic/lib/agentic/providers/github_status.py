@@ -469,8 +469,6 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
         retained = retained_directory_status(root)
         if retained:
             result['installation_recovery'] = retained
-            raise ValidationError('Retained directories may be adopted by later transactions; inspect or recover unadopted paths: ' +
-                                  ', '.join(retained['retained_directories']))
         receipt, files = installed_bytes(root)
         result.update(project_state='INSTALLED', integrity_valid=True, line=f'AWF {VERSION}: INSTALLED')
         add('INSTALLATION_INTEGRITY', 'installation', 'PASS',

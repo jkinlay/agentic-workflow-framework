@@ -8,6 +8,7 @@ import unittest
 # The source-tree check below requires this inventory to stay complete.
 SOURCE_SCRIPT_MODULES = frozenset('''
 ac42_e2e bootstrap_project build_release build_skill_distribution
+check_installed_self_test_shards plan_installed_self_test probe_installed_self_test_isolation
 generate_contracts generate_examples generate_interaction generate_prompts
 generate_review_loop generate_rules_activation installed_self_test_capture
 manifest_merge_driver publish_catalog publish_release qualify_upgrade

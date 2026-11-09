@@ -36,6 +36,76 @@ class AuthenticBaselineTests(unittest.TestCase):
         cls.candidate = materialize_candidate(ROOT, cls.base / 'candidate')
         cls.pin = hashlib.sha256((cls.candidate / 'MANIFEST.json').read_bytes()).hexdigest()
 
+    def test_retained_runtime_upgrade_has_exact_preservation_policy(self):
+        from agentic import installer
+        project = self.base / 'retained-runtime-upgrade'
+        install_baseline(self.source, project)
+        runtime = project / installer.RUNTIME
+        runtime.mkdir()
+        (runtime / 'previous-runtime').write_bytes(b'previous runtime bytes')
+        before = inventory(project)
+        policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+        installed = install(self.candidate, project, self.pin, mode='upgrade', configure=True,
+                            discover=False, conflict='backup', defer_runtime=True)
+        def build(transaction):
+            transaction.stage.mkdir()
+            (transaction.stage / 'new-runtime').write_bytes(b'new runtime bytes')
+            transaction.record_staged_runtime()
+            os.replace(transaction.runtime_root, transaction.backup)
+            os.replace(transaction.stage, transaction.runtime_root)
+            return {}
+        completed = installer.complete_runtime_transaction(project, installed['_runtime_transaction_id'], build)
+        self.assertEqual('COMMITTED_CLEANUP_PENDING', completed['transaction_cleanup'])
+        after = inventory(project)
+        result = qualify_upgrade.compare_upgrade(before, after, policy, project)
+        self.assertTrue(result['preserved'], result['violations'])
+        self.assertEqual(set(result['changes']), set(result['approved_changes']))
+        retained = completed['installation_recovery']['retained_directories'][0]
+        self.assertEqual(b'previous runtime bytes', (project / retained / 'previous-runtime').read_bytes())
+        for relative in (retained + '/previous-runtime', retained + '/unexpected'):
+            with self.subTest(tamper=relative):
+                copy = self.base / ('runtime-tamper-' + Path(relative).name)
+                shutil.copytree(project, copy)
+                (copy / relative).write_bytes(b'tampered owner evidence')
+                rejected = qualify_upgrade.compare_upgrade(before, inventory(copy), policy, copy)
+                self.assertFalse(rejected['preserved'])
+                self.assertIn(relative, rejected['remaining_changes'])
+
+    def test_adoption_evidence_is_an_exact_preservation_output(self):
+        from agentic import installer
+        from agentic.safeio import Tree
+        import uuid
+        project = self.base / 'adoption-evidence-upgrade'
+        install_baseline(self.source, project)
+        # Synthetic interrupted-directory diagnostics added only to this
+        # disposable baseline; they assert no published/adopter provenance.
+        path = '.agentic/lib/agentic'
+        journal = dict(format='awf-install-journal-4', transaction_id=str(uuid.uuid4()),
+            phase='rollback_cleanup', runtime=None, managed_before_sha256=hashlib.sha256(b'[]').hexdigest(),
+            managed_after_sha256=None, created_directories=[dict(path=path, identity=None)],
+            files=[dict(path=path + '/synthetic-previous.bin', old_sha256=None, old_size=None,
+                old_mode=None, new_sha256='a' * 64, new_mode=0o600)])
+        original = dict(format='awf-retained-journal-1', journal=journal, retained_directories=[path])
+        with Tree(project) as tree:
+            tree.write(installer.RETAINED_JOURNAL, installer.json_bytes(original))
+        before = inventory(project)
+        policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+        install(self.candidate, project, self.pin, mode='upgrade', configure=True,
+                discover=False, conflict='backup')
+        result = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+        self.assertTrue(result['preserved'], result['violations'])
+        self.assertEqual(set(result['changes']), set(result['approved_changes']))
+        self.assertFalse((project / installer.RETAINED_JOURNAL).exists())
+        audit_path = project / installer.DIRECTORY_ADOPTIONS
+        audit = json.loads(audit_path.read_bytes())
+        self.assertEqual(original, audit['transactions'][0]['evidence'])
+        self.assertEqual([path], audit['transactions'][0]['directories'])
+        audit['transactions'][0]['evidence']['journal']['files'][0]['new_sha256'] = 'b' * 64
+        audit_path.write_bytes(installer.json_bytes(audit))
+        rejected = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+        self.assertFalse(rejected['preserved'])
+        self.assertIn(installer.DIRECTORY_ADOPTIONS, rejected['remaining_changes'])
+
     def test_manifest_and_published_tag_identity(self):
         self.assertEqual('1.9.5', verify_published(self.source)['template_version'])
         with self.assertRaisesRegex(ValueError, 'published commit'):

@@ -1,15 +1,14 @@
 # Upgrade from 1.9.5 to 1.9.6
 
-Use the separately verified release/pin. Stop dispatch/settlement; establish exclusive ownership. Rehearse only on disposable copies; retain an untouched authentic baseline and external reports.
+Verify release/pin. Stop dispatch/settlement; establish exclusive ownership. Rehearse on disposable copies; retain untouched authentic baseline/external reports.
 
-Earlier projects: follow the [adoption guide](.agentic/docs/20-NEW-PROJECT-SETUP.md).
+See [adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md).
 
-Before committing or checking out managed bytes, merge `.agentic/templates/installed.gitattributes`
-into root `.gitattributes`, preserving product rules. This prevents
-`core.autocrlf=true` LF-to-CRLF corruption. Inspect nested/info overrides; never
+Before committing/checking out managed bytes, merge `.agentic/templates/installed.gitattributes`
+into root `.gitattributes`, preserving product rules. This prevents `core.autocrlf=true` corruption. Inspect nested/info overrides; never
 renormalize unrelated files. Repeat verification after fresh checkout.
 
-`PYTHON` is the absolute interpreter in a separate bootstrap virtual environment, created with a supported Python using `python -m venv BOOTSTRAP`. Install the verified release dependencies there with `PYTHON -m pip install --require-hashes --no-index --find-links WHEELS -r RELEASE/.agentic/requirements.lock`. WHEELS must satisfy the release lock. Replace uppercase arguments; use absolute paths.
+`PYTHON` is the absolute interpreter in a separate bootstrap virtual environment, created with a supported Python using `python -m venv BOOTSTRAP`. Install the verified release dependencies there with `PYTHON -m pip install --require-hashes --no-index --find-links WHEELS -r RELEASE/.agentic/requirements.lock`. WHEELS must satisfy the release lock. Use absolute paths for uppercase arguments.
 
 Snapshot **before apply**; preserve that quiescent copy as untouched BASELINE:
 
@@ -39,7 +38,7 @@ RUNTIME -B -I WORKFLOW --root DISPOSABLE status
 
 CONFIGURED requires actual zero exits, integrity true, ACCEPTED configuration and matching digests. ACTIVE additionally needs independent release trust and observed human-reviewed adoption acceptance; it enables no adapter/controller. See [qualification](.agentic/docs/38-RELEASE-196-QUALIFICATION.md).
 
-Interrupted installation: retain marker/journal/recovery objects. Run the verified release's bootstrap script with `--dest DISPOSABLE --recover` in a fresh process; repeat for a stable endpoint. Investigate unknown/tampered recovery; never reinstall over it. Repeat canonical checks; rollback proves no CONFIGURED/ACTIVE state.
+Retain marker/journal/recovery objects. Run verified bootstrap with `--dest DISPOSABLE --recover` freshly. Automatic deletion remains deferred to [AWF-258](.agentic/docs/38-RELEASE-196-QUALIFICATION.md#awf-258-successor). Rollback requiring runtime/backup removal refuses before managed mutation; retries cannot clear it. Remain quiescent under exclusive ownership. The owner inspects journal/retained paths/original/new bytes, preserves needed data externally and recovers manually before retrying. Never edit evidence or reinstall over unknown/tampered state. Successful commits report COMMITTED_CLEANUP_PENDING backups: inspect exact inventory. Repeat canonical checks; rollback proves no CONFIGURED/ACTIVE state.
 
 Recovery recognises only exact sibling temporary names derived from the journal's
 transaction identity, naming scheme and recorded targets. Unrecorded look-alikes
@@ -48,7 +47,7 @@ no cleanup authority. Never glob-delete `.awf-*.tmp` or edit recovery records.
 
 Budgeting stays LEGACY_RETAINED when absent, with original engine/limits; explicit settings remain. The upgrade report/state disposition records the prior hash and EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED, never completeness or adoption.
 
-For adoption, ask in AWF Codex chat. The skill branches from the fetched default
+Request adoption in AWF chat. The skill branches from fetched default
 and adds budgeting to OPERATING_CONFIG.yaml, preserving text/comments: accounting false,
 enforcement false, 4,000,000 tokens/ticket and 1,000,000,000/project lifetime.
 Include it in the upgrade PR when requested. The optional helper
@@ -56,13 +55,11 @@ Include it in the upgrade PR when requested. The optional helper
 only prepares this file change on that branch; it needs no explicit --set choices
 and cannot enable anything. Restricted publication prepares branch/body for the
 owner. The owner reviews and merges the PR on GitHub; fetch makes it effective.
-No terminal command is required of the owner. Working edits and unmerged branches
-change no effective settings. Ask for non-OFF settings in a subsequent settings PR.
+Unmerged edits change no effective settings. Ask for non-OFF settings in a subsequent settings PR.
 Git/PR history replaces confirmation transactions.
 
 Before enabling, stop every legacy writer. Inventory state-store/routing/per-host
-databases, checkpoint WALs and retain immutable snapshots/SHA-256 pins. The trusted
-host explicitly calls installed `agentic.upgrade.import_budget_history` with one
+databases, checkpoint WALs and retain immutable snapshots/SHA-256 pins. The trusted host calls installed `agentic.upgrade.import_budget_history` with one
 protected canonical ledger outside worktrees, exact project ID, complete worktree
 roots and source-label mappings `{path, sha256}`. Both hosts select that ledger.
 Capture `prepare_budget_import` before and `check_budget_import` afterwards using
@@ -76,4 +73,4 @@ Unsupported 1.9.6 pre-release records carrying confirmation fields refuse with a
 plain reason; preserve them and restore a supported 1.9.5 baseline before upgrade.
 See [budgeting](.agentic/docs/39-BUDGETING.md).
 
-Release acceptance and rollout remain outstanding; this guide authorizes neither.
+Rollout remains unauthorized.

@@ -583,12 +583,26 @@ except (ValidationError, OSError, ValueError) as exc:
 
         with patch.object(installer.Tree, "write", new=interrupt_write), \
                 self.assertRaises(CapturedIntent):
-            installer.complete_runtime_transaction(
-                destination, transaction_id, build_runtime)
+            with installer.Tree(destination) as tree:
+                journal, _raw, _marker = installer._read_bound_journal(tree)
+                transaction = installer._RuntimeInstallTransaction(tree, journal)
+                build_runtime(transaction)
+                journal['phase'] = 'commit_cleanup'
+                installer._write_bound_journal_update(tree, journal, 'commit_cleanup')
+                cleanup = installer._runtime_cleanup_path(destination, journal['runtime'])
+                os.replace(transaction.backup, cleanup)
+                proof = installer._runtime_cleanup_proof(cleanup)
+                journal['runtime'].update(cleanup_identity=proof['identity'], cleanup_members=proof['members'])
+                journal['phase'] = 'commit_cleanup_authenticated'
+                installer._write_bound_journal_update(tree, journal, 'commit_cleanup_authenticated')
 
         marker = json.loads((destination / installer.MARKER).read_text(encoding="utf-8"))
         self.assertEqual("commit_cleanup_authenticated", marker["pending_update_kind"])
-        self.assertEqual({"status": "COMMITTED"}, installer.recover(destination))
+        result = installer.recover(destination)
+        self.assertEqual('COMMITTED', result['status'])
+        self.assertEqual('COMMITTED_CLEANUP_PENDING', result['transaction_cleanup'])
+        self.assertEqual([cleanup.relative_to(destination).as_posix()], result['retained_directories'])
+        self.assertEqual(journal['runtime']['previous_sha256'], installer._runtime_tree_sha256(cleanup))
         self.assertEqual(b"new runtime\n",
                          (destination / installer.RUNTIME / "runtime.bin").read_bytes())
 

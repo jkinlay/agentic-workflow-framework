@@ -1262,12 +1262,19 @@ class ConfiguredInstallerTests(unittest.TestCase):
     def test_runtime_stage_failure_leaves_no_partial_runtime_or_transaction_residue(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
-        with patch.object(adoption, "_validate_runtime",
-                          side_effect=ValidationError("injected staged runtime validation failure")):
+        captured = {}
+        def fail(interpreter, root, stage, *args):
+            captured.update(path=stage, digest=installer._runtime_tree_sha256(stage))
+            raise ValidationError('injected staged runtime validation failure')
+        with patch.object(adoption, '_validate_runtime', side_effect=fail):
             with self.assertRaisesRegex(ValidationError, "injected staged"):
                 adoption.ensure_installed_runtime(self.dest, wheelhouse)
         self.assertFalse((self.dest / ".agentic/.venv").exists())
-        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
+        self.assertEqual([captured['path']], list((self.dest / '.agentic').glob('.venv.staging-*')))
+        self.assertEqual(captured['digest'], installer._runtime_tree_sha256(captured['path']))
+        evidence = installer.retained_directory_status(self.dest)
+        self.assertEqual('RECOVERY_REFUSED', evidence['status'])
+        self.assertEqual([captured['path'].relative_to(self.dest).as_posix()], evidence['retained_directories'])
         self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
 
     def test_runtime_success_atomically_replaces_previous_runtime_and_cleans_transactions(self):
@@ -1276,11 +1283,18 @@ class ConfiguredInstallerTests(unittest.TestCase):
         adoption.ensure_installed_runtime(self.dest, wheelhouse)
         marker = self.dest / ".agentic/.venv/replace-me"
         marker.write_bytes(b"old\n")
+        before = installer._runtime_tree_sha256(marker.parent)
         runtime = adoption.ensure_installed_runtime(self.dest, wheelhouse)
         self.assertFalse(marker.exists())
         self.assertTrue(Path(runtime["interpreter"]).is_file())
         self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
-        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+        backups = list((self.dest / '.agentic').glob('.venv.backup-*'))
+        self.assertEqual(1, len(backups))
+        self.assertEqual(before, installer._runtime_tree_sha256(backups[0]))
+        self.assertEqual(b'old\n', (backups[0] / 'replace-me').read_bytes())
+        self.assertEqual('COMMITTED_CLEANUP_PENDING', runtime['transaction_cleanup'])
+        self.assertEqual([backups[0].relative_to(self.dest).as_posix()],
+                         installer.retained_directory_status(self.dest)['retained_directories'])
 
     def test_runtime_cleanup_failure_after_commit_keeps_new_good_runtime_and_retries_cleanup(self):
         wheelhouse = self.prepare_runtime_source()
@@ -1288,21 +1302,30 @@ class ConfiguredInstallerTests(unittest.TestCase):
         adoption.ensure_installed_runtime(self.dest, wheelhouse)
         marker = self.dest / ".agentic/.venv/old-runtime-marker"
         marker.write_bytes(b"old\n")
-        remove = adoption._remove_runtime_tree
+        before = installer._runtime_tree_sha256(marker.parent)
+        record = installer._record_cleanup_pending
         failed = False
-        def fail_first_backup_cleanup(path):
+        def fail_first_backup_cleanup(tree, paths, **kwargs):
             nonlocal failed
-            if ".venv.backup-" in Path(path).name and not failed:
+            if any(".venv.backup-" in Path(path).name for path in paths) and not failed:
                 failed = True
                 raise ValidationError("injected backup cleanup failure")
-            return remove(path)
-        with patch.object(adoption, "_remove_runtime_tree", side_effect=fail_first_backup_cleanup):
+            return record(tree, paths, **kwargs)
+        with patch.object(installer, "_record_cleanup_pending", side_effect=fail_first_backup_cleanup):
             with self.assertRaisesRegex(ValidationError, "injected backup cleanup"):
                 adoption.ensure_installed_runtime(self.dest, wheelhouse)
         self.assertFalse(marker.exists())
         self.assertTrue((self.dest / ".agentic/.venv/pyvenv.cfg").is_file())
         self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
-        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+        backups = list((self.dest / '.agentic').glob('.venv.backup-*'))
+        self.assertEqual(1, len(backups))
+        self.assertEqual(before, installer._runtime_tree_sha256(backups[0]))
+        self.assertEqual(b'old\n', (backups[0] / 'old-runtime-marker').read_bytes())
+        # Publication failure leaves the good canonical runtime and exact backup.
+        with installer.Tree(self.dest) as tree:
+            rows = installer._record_cleanup_pending(tree, backups, status='COMMITTED_CLEANUP_PENDING')
+        self.assertEqual([backups[0].relative_to(self.dest).as_posix()], [r['path'] for r in rows])
+        self.assertEqual(before, installer._runtime_tree_sha256(backups[0]))
 
     def test_real_installed_commands_report_unconfigured_residue(self):
         wheelhouse = self.prepare_runtime_source()
@@ -1616,10 +1639,14 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         self.assertEqual(previous_runtime, observed["backup_during_builder"])
         self.assertEqual(b"upgraded receipt\n", (self.root / managed).read_bytes())
         self.assertEqual(b"new canonical runtime\n", (runtime / "runtime.txt").read_bytes())
-        self.assertEqual("COMPLETE", result["transaction_cleanup"])
+        self.assertEqual("COMMITTED_CLEANUP_PENDING", result["transaction_cleanup"])
         self.assertFalse((self.root / installer.JOURNAL).exists())
         self.assertFalse((self.root / installer.MARKER).exists())
-        self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
+        backup = self.root / f'.agentic/.venv.backup-{transaction_id}'
+        self.assertEqual([backup], list((self.root / '.agentic').glob('.venv.*-*')))
+        self.assertEqual(previous_runtime, installer._runtime_tree_sha256(backup))
+        self.assertEqual([backup.relative_to(self.root).as_posix()],
+                         result['installation_recovery']['retained_directories'])
 
     def test_final_outer_commit_proof_detects_backup_edit_between_prior_proofs(self):
         transaction_id = str(uuid.uuid4())
@@ -1845,15 +1872,59 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
             raise OSError("injected partial cleanup")
 
         with installer.Tree(self.root) as tree, patch.object(
-                installer, "_remove_runtime_transaction_path", side_effect=partial_remove):
+                installer, "_remove_runtime_transaction_path", side_effect=partial_remove) as remove:
             failures = installer._cleanup_committed_runtime(tree, journal)
-        self.assertEqual("commit_cleanup_authenticated", journal["phase"])
+            remove.assert_not_called()
+        self.assertEqual("commit_cleanup", journal["phase"])
         self.assertEqual(1, len(failures))
-        self.assertFalse(backup.exists())
-        self.assertTrue(cleanup.exists())
-
-        self.assertEqual("COMMITTED", installer.recover(self.root)["status"])
+        self.assertTrue(backup.exists())
+        self.assertEqual(previous, installer._runtime_tree_sha256(backup))
+        self.assertEqual(backup_bytes, (backup / "runtime.txt").read_bytes())
         self.assertFalse(cleanup.exists())
+
+        result = installer.recover(self.root)
+        self.assertEqual('COMMITTED', result['status'])
+        self.assertEqual('COMMITTED_CLEANUP_PENDING', result['transaction_cleanup'])
+        self.assertEqual([backup.relative_to(self.root).as_posix()], result['retained_directories'])
+        self.assertEqual(previous, installer._runtime_tree_sha256(backup))
+        self.assertFalse(cleanup.exists())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+
+    def test_pre_stopgap_partial_cleanup_retains_exact_surviving_inventory(self):
+        transaction_id = str(uuid.uuid4())
+        managed = '.agentic/installed-manifest.json'
+        new = b'upgraded receipt\n'
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / installer.RUNTIME
+        runtime.mkdir()
+        (runtime / 'runtime.txt').write_bytes(b'new canonical runtime\n')
+        cleanup = self.root / f'.agentic/.venv.cleanup-{transaction_id}'
+        cleanup.mkdir()
+        (cleanup / 'old.txt').write_bytes(b'exact old member\n')
+        previous = installer._runtime_tree_sha256(cleanup)
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+            old=b'old receipt\n', new=new, previous_runtime=previous)
+        proof = installer._runtime_cleanup_proof(cleanup)
+        journal['runtime'].update(new_sha256=installer._runtime_tree_sha256(runtime),
+            cleanup_identity=proof['identity'], cleanup_members=proof['members'])
+        journal['phase'] = 'commit_cleanup_authenticated'
+        raw = installer.json_bytes(journal)
+        (self.root / installer.JOURNAL).write_bytes(raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(raw))))
+        (cleanup / 'old.txt').unlink()  # Model deletion by a pre-stopgap process.
+        result = installer.recover(self.root)
+        self.assertEqual('COMMITTED', result['status'])
+        self.assertEqual('COMMITTED_CLEANUP_PENDING', result['transaction_cleanup'])
+        self.assertEqual([cleanup.relative_to(self.root).as_posix()], result['retained_directories'])
+        self.assertEqual(0, result['installation_recovery']['cleanup_pending'][0]['size_bytes'])
+        self.assertEqual([], list(cleanup.iterdir()))
+        self.assertEqual(new, (self.root / managed).read_bytes())
+        self.assertEqual(b'new canonical runtime\n', (runtime / 'runtime.txt').read_bytes())
+        with installer.Tree(self.root) as tree:
+            source = installer._read_retained_record(tree)
+        self.assertEqual(journal, source['journal'])
         self.assertFalse((self.root / installer.JOURNAL).exists())
         self.assertFalse((self.root / installer.MARKER).exists())
 
@@ -1880,8 +1951,12 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         cleanup = installer._runtime_cleanup_path(self.root, journal["runtime"])
         os.replace(backup, cleanup)
 
-        self.assertEqual("COMMITTED", installer.recover(self.root)["status"])
-        self.assertFalse(cleanup.exists())
+        result = installer.recover(self.root)
+        self.assertEqual('COMMITTED', result['status'])
+        self.assertEqual('COMMITTED_CLEANUP_PENDING', result['transaction_cleanup'])
+        self.assertEqual([cleanup.relative_to(self.root).as_posix()], result['retained_directories'])
+        self.assertEqual(previous, installer._runtime_tree_sha256(cleanup))
+        self.assertTrue(cleanup.exists())
         self.assertFalse((self.root / installer.JOURNAL).exists())
         self.assertFalse((self.root / installer.MARKER).exists())
 
@@ -1907,23 +1982,25 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         (self.root / installer.MARKER).write_bytes(installer.json_bytes(
             installer._journal_marker(transaction_id, sha256(raw))))
         cleanup = installer._runtime_cleanup_path(self.root, journal["runtime"])
-        replace = os.replace
+        record = installer._record_cleanup_pending
 
-        def tamper_then_rename(source, destination):
-            backup_file.write_bytes(b"changed between proof and rename\n")
-            replace(source, destination)
+        def tamper_then_record(*args, **kwargs):
+            result = record(*args, **kwargs)
+            backup_file.write_bytes(b"changed between proof and retention\n")
+            return result
 
         with installer.Tree(self.root) as tree, patch.object(
-                installer.os, "replace", side_effect=tamper_then_rename):
-            with self.assertRaisesRegex(ValidationError, "changed while being isolated"):
+                installer, "_record_cleanup_pending", side_effect=tamper_then_record):
+            with self.assertRaisesRegex(ValidationError, "changed while being retained"):
                 installer._cleanup_committed_runtime(tree, journal)
-        self.assertFalse(backup.exists())
-        self.assertTrue(cleanup.exists())
+        self.assertTrue(backup.exists())
+        self.assertEqual(b"changed between proof and retention\n", backup_file.read_bytes())
+        self.assertFalse(cleanup.exists())
         self.assertEqual("commit_cleanup", installer.loads(
             (self.root / installer.JOURNAL).read_text(encoding="utf-8"))["phase"])
         with self.assertRaisesRegex(ValidationError, "cannot be authenticated"):
             installer.recover(self.root)
-        self.assertTrue(cleanup.exists())
+        self.assertFalse(cleanup.exists())
         self.assertTrue((self.root / installer.JOURNAL).exists())
         self.assertTrue((self.root / installer.MARKER).exists())
 
@@ -1954,8 +2031,12 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         cleanup = installer._runtime_cleanup_path(self.root, journal["runtime"])
         os.replace(backup, cleanup)
 
-        self.assertEqual("COMMITTED", installer.recover(self.root)["status"])
-        self.assertFalse(cleanup.exists())
+        result = installer.recover(self.root)
+        self.assertEqual('COMMITTED', result['status'])
+        self.assertEqual('COMMITTED_CLEANUP_PENDING', result['transaction_cleanup'])
+        self.assertEqual([cleanup.relative_to(self.root).as_posix()], result['retained_directories'])
+        self.assertEqual(previous, installer._runtime_tree_sha256(cleanup))
+        self.assertTrue(cleanup.exists())
         self.assertFalse((self.root / installer.JOURNAL).exists())
         self.assertFalse((self.root / installer.MARKER).exists())
 

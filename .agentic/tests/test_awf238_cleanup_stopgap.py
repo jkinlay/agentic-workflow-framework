@@ -57,6 +57,7 @@ class CleanupStopgapTests(unittest.TestCase):
             backup = root / journal['runtime']['backup']
             backup.mkdir(parents=True)
             (backup / 'prior-runtime').write_bytes(b'owner backup')
+            journal['runtime']['previous_sha256'] = installer._runtime_tree_sha256(backup)
             with Tree(root) as tree, patch.object(shutil, 'rmtree') as remove:
                 rows = installer._cleanup_committed_runtime(tree, journal)
                 self.assertEqual(12, rows[0]['size_bytes'])
@@ -125,6 +126,7 @@ class CleanupStopgapTests(unittest.TestCase):
             stage = root / journal['runtime']['stage']
             stage.mkdir(parents=True)
             (stage / 'new-runtime').write_bytes(b'new runtime')
+            journal['runtime']['new_sha256'] = installer._runtime_tree_sha256(stage)
             managed = root / '.agentic/PROJECT_CONFIG.yaml'
             managed.write_bytes(b'unchanged pending bytes')
             with Tree(root) as tree, patch.object(installer, '_load_recovery_objects') as load, \

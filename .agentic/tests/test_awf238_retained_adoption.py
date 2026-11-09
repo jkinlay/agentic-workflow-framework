@@ -9,7 +9,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / '.agentic/lib'), str(ROOT / '.agentic/tests')]
-from agentic import installer
+from agentic import installer, ValidationError
 from agentic.canonical import sha256
 from agentic.safeio import Tree
 from agentic import safeio
@@ -51,6 +51,70 @@ class RetainedAdoptionTests(unittest.TestCase):
     def install(self, **kwargs):
         with patch.object(installer, 'verify_release', return_value=(self.pin, self.content)):
             return installer.install(self.source, self.root, self.pin, conflict='backup', **kwargs)
+
+    def test_history_storage_stays_bounded_without_losing_sources(self):
+        from copy import deepcopy
+        sources = []
+        for index in range(3):
+            record = self.retain(['.agentic/retained-' + str(index)]) if index == 0 else deepcopy(sources[0])
+            path = '.agentic/retained-' + str(index)
+            record['retained_directories'] = [path]
+            record['journal']['transaction_id'] = str(uuid.uuid4())
+            record['journal']['created_directories'] = [dict(path=path, identity=None)]
+            record['journal']['files'] = [dict(path=path + '/' + str(n), old_sha256=None,
+                old_size=None, old_mode=None, new_sha256='a' * 64, new_mode=0o600) for n in range(10000)]
+            sources.append(record)
+        (self.root / installer.RETAINED_JOURNAL).unlink()
+        with Tree(self.root) as tree:
+            for record in sources:
+                installer._merge_retained_evidence(tree, record)
+                self.assertLessEqual(len(tree.read(installer.RETAINED_JOURNAL)), 1024 * 1024)
+            result = installer.retained_directory_status(self.root)
+            self.assertEqual([r['retained_directories'][0] for r in sources], result['retained_directories'])
+            stored = installer._read_retained_record(tree)
+            self.assertEqual(sources, installer._retained_sources(stored))
+            # Adoption of large evidence must also retain bounded audit documents.
+            for record in sources:
+                path = record['retained_directories'][0]
+                (self.root / path).mkdir(exist_ok=True)
+                installer._adopt_transaction_directories(tree, dict(transaction_id=str(uuid.uuid4()),
+                    directory_adoptions=[dict(path=path, identity=installer._directory_identity(tree, path),
+                        evidence_sha256=sha256(installer.json_bytes(record)))]))
+                self.assertLessEqual(len(tree.read(installer.DIRECTORY_ADOPTIONS)), 1024 * 1024)
+            audit = installer._directory_adoption_audit(tree.read(installer.DIRECTORY_ADOPTIONS), tree=tree)
+            self.assertEqual(3, len(audit['transactions']))
+            self.assertEqual(sources, installer._retained_sources(audit['transactions'][0]['evidence']))
+            self.assertIsNone(installer.retained_directory_status(self.root))
+            for record in sources:
+                self.assertTrue((self.root / record['retained_directories'][0]).is_dir())
+            head = installer._evidence_list_put(tree, list(range(300)))
+            self.assertEqual(list(range(300)), installer._evidence_list_get(tree, head))
+            first_source = installer.EVIDENCE_OBJECTS + '/' + sha256(installer.json_bytes(sources[0])) + '.json'
+            for path in tree.file_list(subtree=installer.EVIDENCE_OBJECTS):
+                raw = tree.read(path)
+                self.assertLessEqual(len(raw), 8 * 1024 * 1024)
+                installer.loads(raw.decode('utf-8'))
+            tree.write(first_source, b'{}')
+            with self.assertRaisesRegex(ValidationError, 'digest mismatch'):
+                installer._directory_adoption_audit(tree.read(installer.DIRECTORY_ADOPTIONS), tree=tree)
+
+    def test_successful_recovery_includes_earlier_unresolved_inventory(self):
+        self.retain(['.agentic/old-only'])
+        native = Tree.unlink
+        for journal_only in (False, True):
+            with self.subTest(journal_only=journal_only):
+                def interrupt(tree, path):
+                    if path == (installer.JOURNAL if journal_only else installer.MARKER):
+                        raise CapturedIntent
+                    return native(tree, path)
+                with patch.object(Tree, 'unlink', interrupt), self.assertRaises(CapturedIntent):
+                    self.install()
+                result = installer.recover(self.root)
+                self.assertEqual('COMMITTED', result['status'])
+                self.assertEqual(['.agentic/old-only'], result['retained_directories'])
+                self.assertEqual(installer.retained_directory_status(self.root), result['installation_recovery'])
+                self.assertFalse((self.root / installer.JOURNAL).exists())
+                self.assertFalse((self.root / installer.MARKER).exists())
 
     def test_success_adopts_only_reused_managed_directories(self):
         original = self.retain(['.agentic/adopted-clone', '.agentic/old-only'])

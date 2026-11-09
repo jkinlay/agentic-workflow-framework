@@ -26,6 +26,7 @@ from agentic.canonical import load_yaml, loads
 from agentic.installer import (install, CONFIG, INSTALLED, PROVENANCE, CODEOWNERS,
                                managed, verify_release)
 from agentic.safeio import Tree, run_bounded
+from agentic import installer as installation
 from agentic.child_process import child_env, isolated_git_env
 from agentic.preservation_metadata import (FORMAT, EXCLUDED, inventory,
                                            _permissions, _named_streams)
@@ -490,7 +491,9 @@ def prepare_upgrade(source, project, pin, before):
                            if parent.as_posix() != '.')
     creation = {}
     cache = {}
-    for path in sorted(outputs | directories):
+    retention_templates = {installation.RETAINED_JOURNAL, installation.DIRECTORY_ADOPTIONS,
+                           installation.EVIDENCE_OBJECTS + '/', installation.EVIDENCE_OBJECTS + '/object.json'}
+    for path in sorted(outputs | directories | retention_templates):
         old = before['directories' if path.endswith('/') else 'files'].get(path)
         if old is not None:
             continue
@@ -531,7 +534,16 @@ def prepare_upgrade(source, project, pin, before):
         backup_creation[path] = cache[key]
     if inventory(project, evidence_kind=before['evidence_kind']) != before:
         raise ValueError('Backup permission probes changed the baseline; preserve it and restore the untouched BEFORE copy')
-    return {'manifest_sha256': verified_pin, 'manifest_raw': manifest_raw.decode('utf-8'),
+    with Tree(project) as tree:
+        retention_before = installation._read_retained_record(tree)
+        audit_before = installation._directory_adoption_audit(
+            installation._exists_read(tree, installation.DIRECTORY_ADOPTIONS), tree=tree)
+        evidence_before = {path: tree.read(path) for path in before['files']
+                           if path.startswith(installation.EVIDENCE_OBJECTS + '/') or path in {
+                               installation.RETAINED_JOURNAL, installation.DIRECTORY_ADOPTIONS}}
+    return {'retention_before': retention_before, 'audit_before': audit_before,
+            'evidence_before': evidence_before, 'runtime_before': before.get('runtime'),
+            'manifest_sha256': verified_pin, 'manifest_raw': manifest_raw.decode('utf-8'),
             'baseline_sha256': hashlib.sha256(_json_identity(before).encode('utf-8')).hexdigest(),
             'target_version': target, 'source_version': identity['version'],
             'files': files, 'immutable': immutable, 'directories': directories,
@@ -543,6 +555,126 @@ def prepare_upgrade(source, project, pin, before):
             'archive_actions': archive_actions, 'state_migrations': migrations,
             'backup_sources': backup_sources, 'backup_creation': backup_creation,
             'exercised_state_paths': exercised}
+
+
+def _retention_outputs(before, after, policy, project):
+    """Reconstruct exact transaction outputs from the untouched baseline."""
+    with Tree(project) as tree:
+        current = installation._read_retained_record(tree)
+        audit = installation._directory_adoption_audit(
+            installation._exists_read(tree, installation.DIRECTORY_ADOPTIONS), tree=tree)
+    prior = policy.get('retention_before')
+    prior_sources = installation._retained_sources(prior) if prior else []
+    sources = installation._retained_sources(current) if current else []
+    # An adoption may resolve every directory. Its event retains the sources.
+    prior_events = policy.get('audit_before', dict(transactions=[]))['transactions']
+    if audit['transactions'][:len(prior_events)] != prior_events:
+        raise ValueError('Prior directory adoption history changed')
+    events = audit['transactions'][len(prior_events):]
+    if len(events) > 1:
+        raise ValueError('Unexpected directory adoption transactions')
+    if events:
+        sources = installation._retained_sources(events[0]['evidence'])
+    old_hashes = {installation.sha256(installation.json_bytes(item)) for item in prior_sources}
+    added = [item for item in sources if installation.sha256(installation.json_bytes(item)) not in old_hashes]
+    if len(added) > 1:
+        raise ValueError('Unexpected retained source transactions')
+    outputs = {}
+    transaction_id = None
+    for source in added:
+        if source['format'] != 'awf-retained-cleanup-2':
+            raise ValueError('New retention lacks committed transaction evidence')
+        installation._retained_record_result(source)
+        journal = source['journal']
+        transaction_id = journal['transaction_id']
+        runtime = journal['runtime']
+        baseline = policy.get('runtime_before')
+        if (not baseline or journal['phase'] != 'commit_cleanup' or
+                runtime['previous_sha256'] != baseline['sha256'] or
+                runtime['new_sha256'] != (after.get('runtime') or {}).get('sha256') or
+                source['retained_directories'] != [runtime['backup']]):
+            raise ValueError('Runtime retention differs from the exact baseline transaction')
+        for row in journal['files']:
+            old, new = before['files'].get(row['path']), after['files'].get(row['path'])
+            old_digest = (row['old_sha256'] if installation._compact_journal(journal) else
+                          installation.sha256(installation.base64.b64decode(row['old'])) if row['old'] else None)
+            if (old_digest != (old or {}).get('sha256') or row['new_sha256'] != (new or {}).get('sha256') or
+                    row['old_mode'] != (old or {}).get('mode') or row['new_mode'] != (new or {}).get('mode') or
+                    (installation._compact_journal(journal) and row['old_size'] != (old or {}).get('size'))):
+                raise ValueError('Retained transaction file evidence differs from snapshots')
+        if installation._compact_journal(journal):
+            for snapshot, field in ((before, 'managed_before_sha256'), (after, 'managed_after_sha256')):
+                rows = [dict(path=path, mode=value['mode'], sha256=value['sha256'])
+                        for path, value in snapshot['files'].items() if installation._inventory_managed(path)]
+                rows.sort(key=lambda row: row['path'].casefold())
+                if installation._managed_inventory_sha256(rows) != journal[field]:
+                    raise ValueError('Retained transaction managed membership differs from snapshot')
+        prefix = runtime['backup']
+        expected = {prefix + name if name == '/' else prefix + '/' + name: entry
+                    for name, entry in baseline['entries'].items()}
+        observed = {path: value for path, value in {**after['files'], **after['directories']}.items()
+                    if path == prefix + '/' or path.startswith(prefix + '/')}
+        if observed != expected:
+            raise ValueError('Retained runtime bytes, membership or metadata differ from baseline')
+        size = sum(entry.get('size', 0) for entry in baseline['entries'].values())
+        if source['cleanup_pending'] != [dict(path=prefix, size_bytes=size,
+                reason=installation._CLEANUP_REASON, owner_action=installation._CLEANUP_OWNER_ACTION)]:
+            raise ValueError('Retained runtime diagnostic inventory differs')
+        outputs.update(expected)
+
+    class CollectedEvidence:
+        def __init__(self): self.files = dict(policy.get('evidence_before', {})); self.written = {}
+        def inspect(self, path): return path in self.files or None
+        def read(self, path, **kwargs): return self.files[path]
+        def write(self, path, raw): self.files[path] = raw; self.written[path] = raw
+    collected = CollectedEvidence()
+    for source in added:
+        installation._merge_retained_evidence(collected, source)
+    merged = installation._read_retained_record(collected)
+    if events:
+        event = events[0]
+        if transaction_id is not None and event['transaction_id'] != transaction_id:
+            raise ValueError('Adoption/cleanup transaction identities differ')
+        eligible = set((prior or {}).get('retained_directories', [])) & {
+            path.rstrip('/') for path in policy['directories']}
+        if set(event['directories']) != eligible or event['evidence'] != merged:
+            raise ValueError('Adoption does not exactly resolve the reused baseline directories')
+        expected_audit = dict(format='awf-directory-adoptions-1', transactions=[*prior_events, event])
+        installation._write_directory_adoption_audit(collected, expected_audit)
+        remaining = [path for path in merged['retained_directories'] if path not in eligible]
+        merged = (dict(format='awf-retained-directories-2', records=installation._retained_sources(merged),
+                       retained_directories=remaining) if remaining else None)
+        if merged:
+            collected.write(installation.RETAINED_JOURNAL,
+                            installation.json_bytes(installation._pack_retained_record(collected, merged)))
+        else:
+            collected.files.pop(installation.RETAINED_JOURNAL, None)
+            collected.written[installation.RETAINED_JOURNAL] = None
+    if current != merged:
+        raise ValueError('Unresolved retention inventory or source history changed')
+    for path, raw in collected.written.items():
+        if raw is None:
+            if path in after['files']:
+                raise ValueError('Resolved evidence file remains')
+            outputs[path] = None
+            continue
+        entry = after['files'].get(path)
+        if not entry or entry['sha256'] != hashlib.sha256(raw).hexdigest() or entry['size'] != len(raw):
+            raise ValueError('Retained evidence bytes differ: ' + path)
+        template = (installation.EVIDENCE_OBJECTS + '/object.json'
+                    if path.startswith(installation.EVIDENCE_OBJECTS + '/') else path)
+        expected = ({key: before['files'][path][key] for key in ('mode', 'permissions', 'named_streams')}
+                    if path in before['files'] else policy['creation'].get(template))
+        if not expected or any(entry.get(key) != value for key, value in expected.items()):
+            raise ValueError('Retained evidence metadata differs: ' + path)
+        outputs[path] = entry
+    evidence_directory = installation.EVIDENCE_OBJECTS + '/'
+    if any(path.startswith(evidence_directory) for path in collected.written):
+        expected = policy['creation'].get(evidence_directory)
+        if after['directories'].get(evidence_directory) != expected:
+            raise ValueError('Evidence directory metadata differs')
+        outputs[evidence_directory] = expected
+    return outputs
 
 
 def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
@@ -705,6 +837,13 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
                     if (expected and all(entry.get(k) == v for k, v in expected.items()) and
                             (original is None or all(entry.get(k) == original[k] for k in ('sha256', 'size')))):
                         approve(path, {'rule': 'exact-upgrade-backup', 'source': path[len(prefix):] if original else None})
+    try:
+        retained_outputs = _retention_outputs(before, after, policy, project)
+        for path, entry in retained_outputs.items():
+            if new_entries.get(path) == entry:
+                approve(path, {'rule': 'exact-transaction-retention', 'bytes_membership_metadata_exact': True})
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        failures.append('retained transaction preservation refused: ' + str(exc))
     # A valid replacement receipt cannot establish retention of the original.
     # Stage A keeps both identity documents in this target's exact upgrade
     # backup, independently of the untouched external rehearsal baseline.

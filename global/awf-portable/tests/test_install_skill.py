@@ -57,6 +57,27 @@ class InstallerTests(unittest.TestCase):
         (self.dest / "update-channel.json").write_text('{"channel":"owner/releases.json"}', encoding="utf-8")
         (self.dest / "old-only.txt").write_text("keep in backup", encoding="utf-8")
 
+    def test_cleanup_sidecar_never_truncates_existing_hardlink(self):
+        original = OSError('synthetic staging failure')
+        owner = self.root / 'owner-evidence'
+        owner.write_bytes(b'owner original bytes')
+        observed = {}
+        def fail(source, stage):
+            stage.mkdir()
+            (stage / 'partial').write_bytes(b'partial stage')
+            sidecar = stage.with_name(stage.name + '.cleanup-pending.json')
+            os.link(owner, sidecar)
+            observed.update(stage=stage, sidecar=sidecar)
+            raise original
+        with patch.object(installer.shutil, 'copytree', side_effect=fail):
+            with self.assertRaisesRegex(OSError, 'synthetic staging failure') as raised:
+                self.run_install()
+        self.assertIs(original, raised.exception)
+        self.assertEqual(b'owner original bytes', owner.read_bytes())
+        self.assertEqual(b'owner original bytes', observed['sidecar'].read_bytes())
+        self.assertEqual(b'partial stage', (observed['stage'] / 'partial').read_bytes())
+        self.assertTrue(any('diagnostic unavailable' in note for note in original.__notes__))
+
     def test_upgrade_preserves_settings_and_complete_recoverable_backup(self):
         self.old_skill()
         before = installer.inventory(self.dest)

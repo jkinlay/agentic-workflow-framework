@@ -212,4 +212,38 @@ def _inventory(project, *, evidence_kind):
     return {'format': FORMAT, 'evidence_kind': evidence_kind,
             'identity': identity, 'files': files, 'directories': directories,
             'excluded_paths': sorted(EXCLUDED),
+            'runtime': runtime_inventory(project / '.agentic/.venv'),
             'execution_authority': False}
+
+
+def runtime_inventory(path):
+    """Exact bytes and metadata of a quiescent runtime, for backup comparison."""
+    from .installer import _contained_cleanup_link, _runtime_tree_sha256
+    from .safeio import Tree
+    path = Path(path)
+    if not path.exists() and not path.is_symlink():
+        return None
+    before = _runtime_tree_sha256(path)
+    entries = {}
+    def capture(node, relative):
+        info = node.lstat()
+        if getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('Runtime preservation refuses reparse points')
+        state = dict(mode=stat.S_IMODE(info.st_mode), permissions=_permissions(node),
+                     named_streams=_named_streams(node))
+        if stat.S_ISDIR(info.st_mode):
+            entries[relative + '/'] = state
+            for child in sorted(node.iterdir()):
+                capture(child, child.name if not relative else relative + '/' + child.name)
+        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            with Tree(node.parent) as tree:
+                raw = tree.read(node.name)
+            entries[relative] = dict(state, sha256=hashlib.sha256(raw).hexdigest(), size=len(raw))
+        elif stat.S_ISLNK(info.st_mode) and _contained_cleanup_link(relative, os.readlink(node)):
+            entries[relative] = dict(state, link=os.readlink(node))
+        else:
+            raise ValueError('Runtime preservation requires contained independent regular content')
+    capture(path, '')
+    if before != _runtime_tree_sha256(path):
+        raise ValueError('Runtime changed during preservation snapshot')
+    return dict(sha256=before, entries=entries)
