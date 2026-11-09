@@ -93,7 +93,7 @@ def _prepare_report(report_id, kind, body, binding, destinations, now, *, extra=
 _retain = _prepare_report
 
 
-def _retain_prepared(db, prepared):
+def _retain_prepared(db, prepared, calendar=None):
     record = loads(prepared.encoded.decode())
     prior = db.execute('SELECT payload_json FROM controller_reports WHERE report_id=?', (record['report_id'],)).fetchone()
     if not prior and (record.get('review_restoration') or record.get('review_correction')):
@@ -108,7 +108,7 @@ def _retain_prepared(db, prepared):
         db.execute('INSERT INTO controller_reports VALUES(?,?,?,?)',
                    (record['report_id'], record['kind'], prepared.created_at, raw))
         from ..review_batching import ReviewBatchStore
-        ReviewBatchStore.append_review_report(db, record, raw)
+        ReviewBatchStore.append_review_report(db, record, raw, calendar)
     return record
 
 
@@ -176,13 +176,14 @@ class PreparedProjection:
     cursor: bytes
     reports: tuple
     withdrawals: tuple
+    calendar: bytes
 
 
 def _commit_projection(store, binding, prepared):
     with store.transaction() as db:
         require(canonical(_projection_inputs(db, binding)) == prepared.expected, 'REPORT_PROJECTION_STATE_CHANGED')
         for report in prepared.reports:
-            _retain_prepared(db, report)
+            _retain_prepared(db, report, loads(prepared.calendar.decode()))
         for delivery_id, raw in prepared.withdrawals:
             DeliveryOutbox._save(db, delivery_id, loads(raw.decode()))
         key = 'reporting:' + fingerprint('reporting-scope', binding)
@@ -733,7 +734,8 @@ def _prepare_projection(snapshot, operating, binding, now, providers, context, c
                                      senders=(providers or {}).values()))
     state['cursor'] = end
     withdrawals = tuple((i, canonical(v[1])) for i, v in delivery_values.items() if canonical(v[1]) != originals[i])
-    return PreparedProjection(canonical(snapshot), canonical(state), tuple(prepared_reports), withdrawals), generated
+    return PreparedProjection(canonical(snapshot), canonical(state), tuple(prepared_reports), withdrawals,
+                              canonical(effective_calendar(operating))), generated
 
 
 def reporting_cycle(store, *, operating, binding, now, providers=None, context=None, delivery_budget=None,

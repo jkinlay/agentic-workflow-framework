@@ -29,10 +29,24 @@ class ChainIndexTests(unittest.TestCase):
             callback()
         return count
 
+    def checked_sweep(self, pending):
+        counts = [0, 0]
+        def counted(method, position):
+            def call(*args):
+                rows = method(*args)
+                counts[position] += len(rows)
+                return rows
+            return call
+        with patch.object(ReviewBatchStore, '_occurrence_reports', counted(ReviewBatchStore._occurrence_reports, 0)), \
+                patch.object(ReviewBatchStore, '_occurrence_delivery_rows', counted(ReviewBatchStore._occurrence_delivery_rows, 1)):
+            parses = self.parses(lambda: pending.finish_restoration_readback(self.now))
+        return parses, counts
+
     def archive(self, hours=3000, completed=64):
         # Synthetic immutable history: unrelated hourly reports and distinct,
         # fully delivered review chains, each with its own original charge.
         with self.store.transaction() as db:
+            from agentic.reporting.delivery import delivery_intent, DeliveryOutbox
             self.remove_index(db)
             reports = [loads(r[0]) for r in db.execute('SELECT payload_json FROM controller_reports')]
             original = next(r for r in reports if not r.get('review_correction') and not r.get('review_restoration'))
@@ -46,6 +60,16 @@ class ChainIndexTests(unittest.TestCase):
                 for prior in reports:
                     report = deepcopy(prior)
                     report['report_id'] = ids[prior['report_id']]
+                    # Each archive report has its own durable outbox identities;
+                    # aliasing the live report's rows is not valid history.
+                    report['delivery_ids'] = []
+                    for delivery in prior['delivery_ids']:
+                        intent, state = DeliveryOutbox._load(db, delivery)
+                        cloned = delivery_intent(report['report_id'], intent['binding'], intent['payload'],
+                                                 thread_id=intent.get('thread_id'))
+                        db.execute('INSERT INTO controller_report_delivery VALUES(?,?,?)',
+                            (cloned['delivery_id'], canonical(cloned).decode(), canonical(state).decode()))
+                        report['delivery_ids'].append(cloned['delivery_id'])
                     if report.get('review_batch'):
                         report['review_batch']['batch_id'] = batch
                     notice = report.get('review_correction') or report.get('review_restoration')
@@ -128,13 +152,17 @@ class ChainIndexTests(unittest.TestCase):
         reconcile = provider.reconcile
         provider.reconcile = lambda intent, attempts: dict(reconcile(intent, attempts), status='UNKNOWN')
         self.port().resume(self.root['operating_calendar'], self.observation)
-        small = self.parses(lambda: pending.finish_restoration_readback(self.now))
+        small, small_checks = self.checked_sweep(pending)
         with self.store.transaction() as db:
             db.executemany('INSERT INTO controller_reports VALUES(?,?,?,?)',
                 [(f'extra-{i}', 'hourly', self.now, canonical(dict(report_id=f'extra-{i}', kind='hourly')).decode())
                  for i in range(3000)])
-        large = self.parses(lambda: pending.finish_restoration_readback(self.now))
+        large, large_checks = self.checked_sweep(pending)
         print('UNRESOLVED_SWEEP_PARSE_COUNTS small=%d large=%d' % (small, large), flush=True)
+        print('OCCURRENCE_CROSSCHECK_ROWS small=%r large=%r (reports,outbox)' %
+              (small_checks, large_checks), flush=True)
+        self.assertEqual(small_checks, [1, 1])
+        self.assertEqual(large_checks, small_checks)
         self.assertEqual(small, large)
         self.assertGreater(small, 0)
         self.assertLessEqual(large, 4)
@@ -205,6 +233,26 @@ class ChainIndexTests(unittest.TestCase):
         self.assertEqual(self.parses(lambda: pending.finish_restoration_readback(self.now)), 0)
 
     def test_staggered_destination_unknown_has_unresolved_public_detail(self):
+        self.staggered_retention()
+        retained_detail = ReviewBatchStore(self.store).view(self.now, self.root['operating_calendar'])['intents'][0]
+        self.assertIn('unresolved', retained_detail['reason'])
+        provider = self.providers['teams']
+        reconcile = provider.reconcile
+        provider.reconcile = lambda intent, attempts: dict(reconcile(intent, attempts), status='UNKNOWN')
+        for _ in range(2):
+            self.port().resume(self.root['operating_calendar'], self.observation)
+        status = runtime.reporting_status(self.store, self.root, self.binding)
+        restorations = {r['report_id'] for r in status['reports'] if r.get('review_restoration')}
+        states = [d['status'] for d in status['deliveries'] if d['report_id'] in restorations]
+        detail = ReviewBatchStore(self.store).view(self.now, self.root['operating_calendar'])['intents'][0]
+        print('STAGGERED_PUBLIC_DETAIL states=%r reason=%r retry_at=%r' %
+              (states, detail['reason'], detail['retry_at']), flush=True)
+        self.assertIn('DELIVERED', states)
+        self.assertIn('UNKNOWN', states)
+        self.assertIn('unresolved', detail['reason'])
+        self.assertIsNotNone(detail['retry_at'])
+
+    def staggered_retention(self):
         self.seed(partial=True)
         for _ in range(2):
             self.port().resume(self.root['operating_calendar'], self.observation)
@@ -232,23 +280,90 @@ class ChainIndexTests(unittest.TestCase):
         self.readiness = 'READY_FOR_OWNER_AUTHORIZATION'
         self.now = '2026-11-09T10:05:00Z'
         teams_notice()
-        retained_detail = ReviewBatchStore(self.store).view(self.now, self.root['operating_calendar'])['intents'][0]
-        self.assertIn('unresolved', retained_detail['reason'])
+
+    def test_partial_occurrence_index_refuses_resolution_and_status(self):
+        self.staggered_retention()
+        with self.store.transaction() as db:
+            db.execute('DROP TRIGGER review_chain_no_delete_v1')
+            db.execute('DELETE FROM review_report_chain_v1 WHERE occurrence_id IS NOT NULL AND report_id<>?',
+                       (self.restoration['report_id'],))
+        pending = ReviewBatchStore(self.store)
+        with self.assertRaisesRegex(ValidationError, '^REPORT_REVIEW_CHAIN_INDEX_MISMATCH$'):
+            pending.finish_restoration_readback(self.now)
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT resolved FROM review_restoration_charge_v1').fetchone()[0], 0)
+        with self.assertRaisesRegex(ValidationError, '^REPORT_REVIEW_CHAIN_INDEX_MISMATCH$'):
+            pending.view(self.now, self.root['operating_calendar'])
+
+    def test_dangling_index_row_refuses_reopening(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        self.seed()
+        with self.store.transaction() as db:
+            db.execute('DROP TRIGGER controller_reports_no_delete')
+            db.execute('DELETE FROM controller_reports WHERE report_id=?', (self.restoration['report_id'],))
+        with self.assertRaisesRegex(ValidationError, '^REPORT_REVIEW_CHAIN_INDEX_MISMATCH$'):
+            ContinuousControllerStore(self.path, ['A'])
+
+    def test_missing_outbox_member_refuses_resolution(self):
+        self.seed()
+        self.port().resume(self.root['operating_calendar'], self.observation)
+        with self.store.transaction() as db:
+            db.execute('UPDATE review_restoration_charge_v1 SET resolved=0')
+            db.execute('DROP TRIGGER controller_report_delivery_no_delete')
+            db.execute('DELETE FROM controller_report_delivery WHERE delivery_id=?', (self.restoration['delivery_ids'][0],))
+        with self.assertRaisesRegex(ValidationError, '^REPORT_REVIEW_CHAIN_INDEX_MISMATCH$'):
+            ReviewBatchStore(self.store).finish_restoration_readback(self.now)
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT resolved FROM review_restoration_charge_v1').fetchone()[0], 0)
+
+    def test_extra_outbox_member_refuses_resolution(self):
+        from agentic.reporting.delivery import DeliveryOutbox, delivery_intent
+        self.seed()
+        self.port().resume(self.root['operating_calendar'], self.observation)
+        with self.store.transaction() as db:
+            db.execute('UPDATE review_restoration_charge_v1 SET resolved=0')
+            intent, state = DeliveryOutbox._load(db, self.restoration['delivery_ids'][0])
+            destination = dict(intent['binding'], platform='teams', destination='synthetic-extra')
+            extra = delivery_intent(intent['report_id'], destination, intent['payload'])
+            db.execute('INSERT INTO controller_report_delivery VALUES(?,?,?)',
+                       (extra['delivery_id'], canonical(extra).decode(), canonical(state).decode()))
+        with self.assertRaisesRegex(ValidationError, '^REPORT_REVIEW_CHAIN_INDEX_MISMATCH$'):
+            ReviewBatchStore(self.store).finish_restoration_readback(self.now)
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT resolved FROM review_restoration_charge_v1').fetchone()[0], 0)
+
+    def test_reused_charge_has_retry_at_retention_before_reservation(self):
+        self.staggered_retention()
+        with self.store.connection() as db:
+            detail = db.execute('SELECT * FROM review_presentation_detail_v1').fetchone()
+        self.assertIn('unresolved', detail['reason'])
+        self.assertEqual(detail['retry_at'], '2026-11-10T07:00:00Z')
+
+    def test_newer_completed_generation_cannot_hide_older_unknown(self):
+        self.staggered_retention()
         provider = self.providers['teams']
         reconcile = provider.reconcile
         provider.reconcile = lambda intent, attempts: dict(reconcile(intent, attempts), status='UNKNOWN')
         for _ in range(2):
             self.port().resume(self.root['operating_calendar'], self.observation)
+        self.now = '2026-11-10T07:00:00Z'
+        self.retain(self.next_notice(self.restoration['report_id']))
+        for _ in range(4):
+            self.port().resume(self.root['operating_calendar'], self.observation)
         status = runtime.reporting_status(self.store, self.root, self.binding)
-        restorations = {r['report_id'] for r in status['reports'] if r.get('review_restoration')}
-        states = [d['status'] for d in status['deliveries'] if d['report_id'] in restorations]
+        newer = next(d for d in status['deliveries'] if d['report_id'] == 'second-restoration')
+        self.assertEqual(newer['status'], 'DELIVERED')
+        older = [d for d in status['deliveries'] if d['platform'] == 'teams' and d['status'] == 'UNKNOWN']
+        self.assertTrue(older)
         detail = ReviewBatchStore(self.store).view(self.now, self.root['operating_calendar'])['intents'][0]
-        print('STAGGERED_PUBLIC_DETAIL states=%r reason=%r retry_at=%r' %
-              (states, detail['reason'], detail['retry_at']), flush=True)
-        self.assertIn('DELIVERED', states)
-        self.assertIn('UNKNOWN', states)
         self.assertIn('unresolved', detail['reason'])
-        self.assertIsNotNone(detail['retry_at'])
+        self.assertEqual(detail['retry_at'], '2026-11-11T07:00:00Z')
+        provider.reconcile = reconcile
+        for _ in range(4):
+            self.port().resume(self.root['operating_calendar'], self.observation)
+        detail = ReviewBatchStore(self.store).view(self.now, self.root['operating_calendar'])['intents'][0]
+        self.assertEqual(detail['reason'], 'Restoration DELIVERED')
+        self.assertIsNone(detail['retry_at'])
 
 
 if __name__ == '__main__':

@@ -145,14 +145,11 @@ class ReviewBatchStore:
         if 'resolved' not in {r[1] for r in db.execute('PRAGMA table_info(review_restoration_charge_v1)')}:
             db.execute('ALTER TABLE review_restoration_charge_v1 ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0')
             # Classify legacy history once during migration, outside admission.
+            details = []
             for charge in db.execute('SELECT rowid,* FROM review_restoration_charge_v1').fetchall():
-                entries = db.execute('SELECT * FROM review_report_chain_v1 WHERE occurrence_id=?',
-                                     (charge['occurrence_id'],)).fetchall()
-                _require(entries, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+                group = ReviewBatchStore._restoration_group(db, charge)
                 states, observed = [], [charge['reserved_at']]
-                for entry in entries:
-                    chain = ReviewBatchStore._indexed_chain(db, (entry['batch_id'], entry['binding'], entry['destination']))
-                    report = next(r for r in chain if r['report_id'] == entry['report_id'])
+                for report in group:
                     for delivery in report['delivery_ids']:
                         state = DeliveryOutbox._load(db, delivery)[1]
                         states.append(state['status'])
@@ -160,23 +157,12 @@ class ReviewBatchStore:
                 if states and all(s in {'DELIVERED', 'FAILED', 'WITHDRAWN'} for s in states):
                     db.execute('UPDATE review_restoration_charge_v1 SET resolved=1 WHERE occurrence_id=? AND opening=?',
                                (charge['occurrence_id'], charge['opening']))
-                    latest = db.execute('SELECT rowid FROM review_restoration_charge_v1 WHERE batch_id=? '
-                                        'ORDER BY rowid DESC LIMIT 1', (charge['batch_id'],)).fetchone()
-                    if latest[0] != charge['rowid']:
-                        continue
-                    reason = 'Restoration ' + ('FAILED' if 'FAILED' in states else
-                                               'WITHDRAWN' if 'WITHDRAWN' in states else 'DELIVERED')
-                    for member in report['review_batch']['members']:
-                        detail = db.execute('SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?',
-                                            (member['intent_id'],)).fetchone()
-                        if detail and (detail['reason'] != reason or detail['retry_at'] is not None):
-                            # Retain the latest durable event time; migration
-                            # must not invent a provider observation instant.
-                            now = max(observed + [detail['changed_at']], key=utc_instant)
-                            ReviewBatchStore._detail(db, member['intent_id'], reason, now)
-                            db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
-                                       (member['intent_id'],))
-                            ReviewBatchStore._changed(db)
+                # Retain durable event times, never invent a provider instant.
+                observed.extend(r[0] for m in group[0]['review_batch']['members'] for r in db.execute(
+                    'SELECT changed_at FROM review_presentation_detail_v1 WHERE intent_id=?', (m['intent_id'],)))
+                details.append((charge, group, states, max(observed, key=utc_instant)))
+            for charge, group, states, now in details:
+                ReviewBatchStore._restoration_detail(db, charge, group, states, now)
         db.execute('CREATE INDEX IF NOT EXISTS review_restoration_unresolved_v1 '
                    'ON review_restoration_charge_v1(batch_id) WHERE resolved=0')
         db.execute('CREATE INDEX IF NOT EXISTS review_restoration_batch_v1 ON review_restoration_charge_v1(batch_id)')
@@ -240,12 +226,24 @@ class ReviewBatchStore:
     @staticmethod
     def install_review_chain(db):
         """One additive, transactional backfill; never rebuild a disputed index."""
+        # Independent report ancestry and outbox membership, never an archive
+        # scan in an admission/readback decision.
+        db.execute('''CREATE INDEX IF NOT EXISTS review_report_parent_v1 ON controller_reports(
+            coalesce(json_extract(payload_json,'$.review_restoration.prior_report'),
+                     json_extract(payload_json,'$.review_correction.prior_report')))''')
+        db.execute('''CREATE INDEX IF NOT EXISTS review_delivery_report_v1 ON controller_report_delivery(
+            json_extract(intent_json,'$.report_id'))''')
         marker = db.execute("SELECT value FROM controller_meta WHERE key='review-chain-index-v1'").fetchone()
         exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='review_report_chain_v1'").fetchone()
         _require(bool(marker) == bool(exists), 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
         if marker:
             _require(marker[0] == '1', 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
             ReviewBatchStore._check_chain_index(db)
+            # Reopening is the integrity boundary for *every* retained row,
+            # including resolved occurrences that no longer enter the sweep.
+            _require(not db.execute('''SELECT 1 FROM review_report_chain_v1 c
+                LEFT JOIN controller_reports r USING(report_id) WHERE r.report_id IS NULL LIMIT 1''').fetchone(),
+                     'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
             ReviewBatchStore._install_restoration_resolution(db)
             return
         db.execute('''CREATE TABLE review_report_chain_v1(
@@ -352,7 +350,7 @@ class ReviewBatchStore:
         return key, chain
 
     @staticmethod
-    def append_review_report(db, report, raw):
+    def append_review_report(db, report, raw, calendar=None):
         """Append validated immutable bytes in the report's retention transaction."""
         from .reporting.delivery import DeliveryOutbox
         notice = report.get('review_restoration') or report.get('review_correction')
@@ -384,7 +382,9 @@ class ReviewBatchStore:
                                          (report['report_id'],)).fetchone()[0]
                         for member in report['review_batch']['members']:
                             ReviewBatchStore._detail(db, member['intent_id'],
-                                'Restoration reserved; unresolved until terminal readback', now)
+                                'Restoration reserved; unresolved until terminal readback', now,
+                                retry_at=(_window(now, calendar)['next_opening'] if calendar is not None else
+                                          report['review_batch']['presentation_window']['next_opening']))
         db.execute('DELETE FROM review_chain_pending_v1 WHERE report_id=?', (report['report_id'],))
 
     @staticmethod
@@ -428,6 +428,10 @@ class ReviewBatchStore:
         result = {'intents': [], 'unresolved_batches': [], 'owner_alerts': []}
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_intent_v1'").fetchone():
             return result
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='review_report_chain_v1'").fetchone():
+            ReviewBatchStore._check_chain_index(db)
+            for charge in db.execute('SELECT * FROM review_restoration_charge_v1 WHERE resolved=0').fetchall():
+                ReviewBatchStore._restoration_group(db, charge)
         has_detail = db.execute("SELECT 1 FROM sqlite_master WHERE name='review_presentation_detail_v1'").fetchone()
         evidence = ReviewBatchStore._attempt_windows(db, calendar)
         terminal = ReviewBatchStore._reporting_failure_intents(db)
@@ -1063,52 +1067,104 @@ class ReviewBatchStore:
                          attempts=self._window_count(intent, window['opening'], evidence), retry_at=window['next_opening'])
         self._changed(db)
 
-    def finish_restoration_readback(self, now):
-        """Close detail for the latest charged occurrence after terminal readback.
+    @staticmethod
+    def _occurrence_reports(db, batch_id, generation):
+        """Independent raw ancestry, stopping at the charged generation.
 
-        Inspect all its destinations, including those delivered on earlier turns.
-        Original batch/intent identities and attempt counts remain unchanged.
+        The parent expression index and report primary key bound this walk to
+        this occurrence's ancestors/destinations. Later generations and other
+        batches never enter it; no chain-index membership drives the walk.
         """
+        return db.execute('''WITH RECURSIVE ancestry(report_id,generation) AS (
+            SELECT ?,0 UNION ALL
+            SELECT r.report_id,a.generation+(json_type(r.payload_json,'$.review_restoration') IS NOT NULL)
+            FROM ancestry a JOIN controller_reports r ON
+                coalesce(json_extract(r.payload_json,'$.review_restoration.prior_report'),
+                         json_extract(r.payload_json,'$.review_correction.prior_report'))=a.report_id
+            WHERE a.generation<?)
+            SELECT r.report_id,json_extract(r.payload_json,'$.delivery_ids') AS delivery_ids
+            FROM ancestry a JOIN controller_reports r USING(report_id)
+            WHERE a.generation=? AND json_type(r.payload_json,'$.review_restoration') IS NOT NULL''',
+            ('review-' + batch_id, generation, generation)).fetchall()
+
+    @staticmethod
+    def _occurrence_delivery_rows(db, report_id):
+        return db.execute('''SELECT delivery_id,intent_json FROM controller_report_delivery
+            WHERE json_extract(intent_json,'$.report_id')=?''', (report_id,)).fetchall()
+
+    @staticmethod
+    def _restoration_group(db, charge):
+        """Refuse missing/extra members against retained reports AND outbox."""
+        entries = db.execute('SELECT * FROM review_report_chain_v1 WHERE occurrence_id=?',
+                             (charge['occurrence_id'],)).fetchall()
+        _require(entries, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+        group, generations, indexed = {}, set(), set()
+        for entry in entries:
+            chain = ReviewBatchStore._indexed_chain(db, (entry['batch_id'], entry['binding'], entry['destination']))
+            retained = next((r for r in chain if r['report_id'] == entry['report_id']), None)
+            _require(retained is not None and entry['batch_id'] == charge['batch_id'],
+                     'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+            generations.add(sum(bool(r.get('review_restoration')) for r in chain[:entry['sequence'] + 1]))
+            group[retained['report_id']] = retained
+            indexed.add((retained['report_id'], entry['destination']))
+        _require(len(generations) == 1, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+        expected = set()
+        for report in ReviewBatchStore._occurrence_reports(db, charge['batch_id'], generations.pop()):
+            rows = ReviewBatchStore._occurrence_delivery_rows(db, report['report_id'])
+            ids = loads(report['delivery_ids'])
+            _require(rows and len(ids) == len(set(ids)) and set(ids) == {r['delivery_id'] for r in rows},
+                     'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+            for row in rows:
+                intent = loads(row['intent_json'])
+                destination = canonical({k: v for k, v in intent['binding'].items() if k != 'scope_revision'}).decode()
+                expected.add((report['report_id'], destination))
+        _require(expected == indexed, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
+        return list(group.values())
+
+    @staticmethod
+    def _restoration_detail(db, charge, group, states, now):
+        # One shared detail must account for ALL unresolved occurrences, even
+        # when a later generation has completed. Preserve its current retry.
+        unresolved = db.execute('SELECT 1 FROM review_restoration_charge_v1 WHERE batch_id=? AND resolved=0 LIMIT 1',
+                                (charge['batch_id'],)).fetchone()
+        latest = db.execute('SELECT rowid,* FROM review_restoration_charge_v1 WHERE batch_id=? ORDER BY rowid DESC LIMIT 1',
+                            (charge['batch_id'],)).fetchone()
+        if not unresolved and latest[0] != charge['rowid']:
+            from .reporting.delivery import DeliveryOutbox
+            group = ReviewBatchStore._restoration_group(db, latest)
+            states = [DeliveryOutbox._load(db, d)[1]['status'] for r in group for d in r['delivery_ids']]
+        reason = ('Restoration reserved; unresolved until terminal readback' if unresolved else
+                  'Restoration ' + ('FAILED' if 'FAILED' in states else
+                                   'WITHDRAWN' if 'WITHDRAWN' in states else 'DELIVERED'))
+        for member in group[0]['review_batch']['members']:
+            detail = db.execute('SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?',
+                                (member['intent_id'],)).fetchone()
+            if detail and (detail['reason'] != reason or not unresolved and detail['retry_at'] is not None):
+                ReviewBatchStore._detail(db, member['intent_id'], reason, now, attempts=detail['window_attempts'])
+                if not unresolved:
+                    db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
+                               (member['intent_id'],))
+                ReviewBatchStore._changed(db)
+
+    def finish_restoration_readback(self, now):
+        """Resolve only independently complete occurrences; aggregate detail."""
         from .reporting.delivery import DeliveryOutbox
         with self.controller.transaction() as db:
             self._check_chain_index(db)
             charges = db.execute('SELECT rowid,* FROM review_restoration_charge_v1 WHERE resolved=0').fetchall()
             if not charges:
                 return
+            completed = []
             for charge in charges:
-                entries = db.execute('SELECT * FROM review_report_chain_v1 WHERE occurrence_id=?',
-                                     (charge['occurrence_id'],)).fetchall()
-                _require(entries, 'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
-                group = {}
-                for entry in entries:
-                    chain = self._indexed_chain(db, (entry['batch_id'], entry['binding'], entry['destination']))
-                    retained = next((r for r in chain if r['report_id'] == entry['report_id']), None)
-                    _require(retained is not None and entry['batch_id'] == charge['batch_id'],
-                             'REPORT_REVIEW_CHAIN_INDEX_MISMATCH')
-                    group[retained['report_id']] = retained
-                group = list(group.values())
+                group = self._restoration_group(db, charge)
                 states = [DeliveryOutbox._load(db, d)[1]['status'] for r in group for d in r['delivery_ids']]
                 terminal = states and all(s in {'DELIVERED', 'FAILED', 'WITHDRAWN'} for s in states)
                 if terminal:
                     db.execute('UPDATE review_restoration_charge_v1 SET resolved=1 WHERE occurrence_id=? AND opening=?',
                                (charge['occurrence_id'], charge['opening']))
-                latest = db.execute('SELECT rowid FROM review_restoration_charge_v1 WHERE batch_id=? ORDER BY rowid DESC LIMIT 1',
-                                    (charge['batch_id'],)).fetchone()
-                if latest[0] != charge['rowid']:
-                    continue
-                reason = ('Restoration ' + ('FAILED' if 'FAILED' in states else
-                          'WITHDRAWN' if 'WITHDRAWN' in states else 'DELIVERED') if terminal else
-                          'Restoration reserved; unresolved until terminal readback')
-                for member in group[0]['review_batch']['members']:
-                    detail = db.execute('SELECT * FROM review_presentation_detail_v1 WHERE intent_id=?',
-                                        (member['intent_id'],)).fetchone()
-                    if detail and (detail['reason'] != reason or terminal and detail['retry_at'] is not None):
-                        self._detail(db, member['intent_id'], reason, now,
-                                     attempts=detail['window_attempts'], retry_at=None)
-                        if terminal:
-                            db.execute('UPDATE review_presentation_detail_v1 SET retry_at=NULL WHERE intent_id=?',
-                                       (member['intent_id'],))
-                        self._changed(db)
+                completed.append((charge, group, states))
+            for charge, group, states in completed:
+                self._restoration_detail(db, charge, group, states, now)
 
     def reconcile(self, receipt, calendar=None):
         """Persist verified readback; at most two attempts before next window.
