@@ -122,6 +122,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic.child_process import child_env  # noqa: E402
+from agentic import self_test_shards  # noqa: E402
 
 
 def inventory(root):
@@ -273,13 +274,8 @@ class SelectedLoader(unittest.TestLoader):
 
     def _find_test_path(self, full_path, pattern):
         relative = Path(full_path).relative_to(self.root).as_posix()
-        helper = '.agentic/tests/test_awf36_automation_fixtures.py'
-        if (relative in self.selected
-                and relative == '.agentic/tests/test_awf36_controller_automation.py'
-                and (self.root / helper).is_file()):
-            # The helper patches the consumer's setUp before discovery loads its
-            # cases, even when path allocation puts it in another shard.
-            importlib.import_module('test_awf36_automation_fixtures')
+        if relative in self.selected:
+            self_test_shards.load_fixture_prerequisites(self.root, relative)
         # Wrap the suite returned by real discovery, including its import-error
         # or explicit SkipTest cases. Do not guess dotted module names.
         tests, recurse = super()._find_test_path(full_path, pattern)

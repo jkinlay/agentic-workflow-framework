@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
+import importlib.util
 from pathlib import Path
 import re
 import subprocess
@@ -70,6 +72,13 @@ def runner_shards():
     return tuple(shards)
 
 
+def runner_module():
+    spec = importlib.util.spec_from_file_location("ci_shard_runner", RUN_WINDOWS_UNITTESTS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def discovered_suites(job):
     suites = set()
     for step in job.get("steps", []):
@@ -87,15 +96,82 @@ def steps_with(job, fragment):
 
 
 class CiSuiteCoverageTests(unittest.TestCase):
+    def test_linux_jobs_do_not_pin_patch_level_python_versions(self):
+        def python_versions(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "python-version":
+                        yield from child if isinstance(child, list) else [child]
+                    else:
+                        yield from python_versions(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from python_versions(child)
+
+        for job_id, job in workflow()["jobs"].items():
+            runners = job.get("runs-on", [])
+            if isinstance(runners, str):
+                runners = [runners]
+            if not any(str(runner).startswith("ubuntu") for runner in runners):
+                continue
+            for version in python_versions(job):
+                with self.subTest(job=job_id, version=version):
+                    self.assertNotRegex(str(version), r"\b\d+\.\d+\.\d+\b",
+                                        f"Linux job {job_id} pins patch-level Python")
+
+    def test_linux_shards_and_installed_self_test_have_bounded_matching_matrices(self):
+        jobs = workflow()["jobs"]
+        versions = ["3.11", "3.12", "3.13"]
+        for job_id in ("linux_unittests", "linux_installed_self_test"):
+            self.assertIn(job_id, jobs)
+            job = jobs[job_id]
+            self.assertEqual("ubuntu-latest", job["runs-on"])
+            self.assertNotIn("if", job)
+            self.assertNotIn("needs", job)
+            self.assertNotIn("continue-on-error", job)
+            self.assertLessEqual(job["timeout-minutes"], 60)
+            self.assertFalse(job["strategy"]["fail-fast"])
+            self.assertEqual(versions, job["strategy"]["matrix"]["python-version"])
+            setup = next(step for step in job["steps"]
+                         if step.get("uses") == "actions/setup-python@v5")
+            self.assertEqual("${{ matrix.python-version }}", setup["with"]["python-version"])
+            # Reuse the static job's checkout, identity, resolved interpreter and pip.
+            self.assertEqual(jobs["checks"]["steps"][:5], job["steps"][:5])
+            for step in job["steps"]:
+                self.assertNotIn("if", step)
+                self.assertNotIn("continue-on-error", step)
+        self.assertEqual(
+            {"python-version": versions, "shard": list(runner_shards())},
+            jobs["linux_unittests"]["strategy"]["matrix"],
+        )
+        installed = jobs["linux_installed_self_test"]
+        self.assertEqual({"python-version": versions}, installed["strategy"]["matrix"])
+        self.assertEqual(6, len(installed["steps"]))
+        self.assertEqual(
+            '"$PY" -B -m unittest discover -s scripts/tests -t scripts/tests '
+            '-p test_installed_self_test.py',
+            installed["steps"][-1]["run"].strip(),
+        )
+        self.assertFalse(discovered_suites(jobs["checks"]))
+        self.assertFalse(discovered_suites(jobs["linux_unittests"]))
+
     def test_windows_unittest_matrix_matches_runner_shards_and_invocation_contract(self):
-        job = workflow()["jobs"]["windows_unittests"]
+        self.assert_shard_invocations("windows_unittests", "& $env:PY")
+
+    def test_linux_unittest_matrix_matches_runner_shards_and_invocation_contract(self):
+        self.assert_shard_invocations("linux_unittests", '"$PY"')
+
+    def assert_shard_invocations(self, job_id, interpreter):
+        job = workflow()["jobs"][job_id]
+        self.assertEqual(["3.11", "3.12", "3.13"],
+                         job["strategy"]["matrix"]["python-version"])
         self.assertEqual(
             job["strategy"]["matrix"]["shard"],
             list(runner_shards()),
         )
 
         matrix_expression = "${{ matrix.shard }}"
-        command = "& $env:PY -B scripts/run_windows_unittests.py --shard"
+        command = f"{interpreter} -B scripts/run_windows_unittests.py --shard"
         expected_guard = f"{command} {matrix_expression} --list"
         expected_execution = f"{command} {matrix_expression}"
         invocations = [
@@ -114,6 +190,8 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertLess(guard_index, execution_index)
         self.assertNotIn("continue-on-error", guard_step)
         self.assertNotIn("continue-on-error", execution_step)
+        self.assertNotIn("if", guard_step)
+        self.assertNotIn("if", execution_step)
         self.assertIn(matrix_expression, guard_command)
         self.assertIn(matrix_expression, execution_command)
 
@@ -122,17 +200,42 @@ class CiSuiteCoverageTests(unittest.TestCase):
         triggers = document.get("on", document.get(True))
         self.assertIn("pull_request", triggers)
 
-        checks = document["jobs"]["checks"]
-        self.assertEqual(
-            {"3.11", "3.12", "3.13"},
-            {str(version) for version in checks["strategy"]["matrix"]["python-version"]},
-        )
+        runner = runner_module()
         expected = publish_release_suites()
         self.assertTrue(expected, "default_validations must declare at least one portable suite")
-        self.assertEqual(expected, expected & discovered_suites(checks))
-        for step in checks["steps"]:
-            if expected & discovered_suites({"steps": [step]}):
-                self.assertFalse(step.get("continue-on-error", False), step.get("name"))
+        self.assertEqual(expected, expected & set(runner.SUITES))
+        self.assertEqual(
+            {".agentic/tests", "scripts/tests"} | expected, set(runner.SUITES),
+        )
+        inventory = runner.inventory(ROOT)
+        allocation = runner.allocate(inventory)
+        runner.guard(ROOT, allocation)
+        excluded = "scripts/tests/test_installed_self_test.py"
+        self.assertEqual({excluded}, set(runner.EXCLUDED_MODULES))
+        for job_id in ("linux_unittests", "windows_unittests"):
+            job = document["jobs"][job_id]
+            self.assertNotIn("if", job)
+            self.assertNotIn("continue-on-error", job)
+            self.assertEqual(
+                {"python-version": ["3.11", "3.12", "3.13"],
+                 "shard": list(runner_shards())}, job["strategy"]["matrix"],
+            )
+            for version in job["strategy"]["matrix"]["python-version"]:
+                with self.subTest(job=job_id, version=version):
+                    counts = Counter(
+                        path for suite in runner.SUITES
+                        for shard in job["strategy"]["matrix"]["shard"]
+                        for path in allocation[suite][shard]
+                    )
+                    self.assertEqual(
+                        Counter({path: runner.copies(path)
+                                 for paths in inventory.values() for path in paths
+                                 if path != excluded}), counts,
+                    )
+                    self.assertNotIn(excluded, counts)
+                    # The existing runner tests prove the split module's two
+                    # fixed halves execute disjoint cases exactly once.
+                    self.assertEqual({runner.UPGRADE_MATRIX}, set(runner.SPLIT_MODULES))
 
     def test_windows_installed_runtime_job_is_single_and_path_gated(self):
         document = workflow()
@@ -148,9 +251,12 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertEqual(1, len(harness_jobs))
         job_id, job = harness_jobs[0]
         self.assertEqual("installed-runtime-self-test", job_id)
-        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }})", job["name"])
+        self.assertEqual("Windows installed-runtime self-test (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})", job["name"])
         self.assertEqual("windows-latest", job["runs-on"])
         self.assertEqual({"3.12.10", "3.13.3"}, set(job["strategy"]["matrix"]["python-version"]))
+        self.assertEqual(list(range(9)), job["strategy"]["matrix"]["shard"])
+        self.assertIs(False, job['strategy']['fail-fast'])
+        self.assertLessEqual(job['timeout-minutes'], 90)
         self.assertEqual("${{ matrix.python-version }}", str(next(
             step["with"]["python-version"]
             for step in job["steps"]
@@ -190,7 +296,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertEqual(1, len(steps_with(job, "scripts/bootstrap_project.py")))
         self.assertEqual(1, len(steps_with(job, ".agentic/scripts/self_test.py")))
         self.assertIn(
-            "& $installedPython -B $selfTest --checks-only --report $reportPath",
+            "& $installedPython -B -I $selfTest --checks-only --report $reportPath",
             steps_with(job, ".agentic/scripts/self_test.py")[0]["run"],
         )
 
@@ -200,6 +306,24 @@ class CiSuiteCoverageTests(unittest.TestCase):
         artifact_paths = uploads[0]["with"]["path"]
         self.assertIn("self-test.json", artifact_paths)
         self.assertIn("installer.log", artifact_paths)
+        self.assertIn('selection.json', artifact_paths)
+        self.assertIn('--shard ${{ matrix.shard }} --selection-file $selectionFile --expected-selection-sha256 $selectionDigest',
+                      steps_with(job, '.agentic/scripts/self_test.py')[0]['run'])
+        self.assertEqual(1, len(steps_with(job, 'scripts/plan_installed_self_test.py')))
+
+    def test_windows_installed_aggregate_always_reconciles_candidate_source(self):
+        job = workflow()['jobs']['windows_installed_runtime_suite']
+        self.assertEqual('Windows installed-runtime suite', job['name'])
+        self.assertEqual(['installed-runtime-self-test'], job['needs'])
+        self.assertEqual('always()', job['if'])
+        self.assertLessEqual(job['timeout-minutes'], 10)
+        checkout = next(s for s in job['steps'] if s.get('uses') == 'actions/checkout@v4')
+        self.assertEqual("${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+                         checkout['with']['ref'])
+        step, = steps_with(job, 'scripts/check_installed_self_test_shards.py')
+        self.assertEqual('always()', step['if'])
+        self.assertIn('--matrix-result', step['run'])
+        self.assertIn('--event-file', step['run'])
 
     def test_windows_self_test_report_is_fresh_and_fallback_never_overwrites(self):
         steps = workflow()["jobs"]["installed-runtime-self-test"]["steps"]
@@ -221,10 +345,10 @@ class CiSuiteCoverageTests(unittest.TestCase):
 
         before_self_test = "\n".join(step.get("run", "") for step in steps[:run_index])
         self.assertNotIn("self-test.json", before_self_test)
-        invocation = "& $installedPython -B $selfTest --checks-only --report $reportPath"
+        invocation = "& $installedPython -B -I $selfTest --checks-only --report $reportPath"
         invocation_offset = run_step["run"].index(invocation)
         failed_exit_offset = run_step["run"].index("if ($selfTestExit -ne 0)")
-        fallback_write_offset = run_step["run"].index("Set-Content -Encoding utf8 -LiteralPath $reportPath")
+        fallback_write_offset = run_step["run"].index("[System.IO.FileMode]::CreateNew")
         self.assertLess(invocation_offset, failed_exit_offset)
         self.assertLess(failed_exit_offset, fallback_write_offset)
         self.assertIn("if (-not (Test-Path -LiteralPath $reportPath))", run_step["run"])
@@ -233,7 +357,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertLess(fallback_index, upload_index)
         self.assertEqual("always()", fallback_step.get("if"))
         self.assertIn("if (-not (Test-Path -LiteralPath $reportPath))", fallback_step["run"])
-        self.assertIn("Set-Content -Encoding utf8 -LiteralPath $reportPath", fallback_step["run"])
+        self.assertIn("[System.IO.FileMode]::CreateNew", fallback_step["run"])
 
     def test_windows_installed_runtime_path_detection_is_robust_and_fail_closed(self):
         jobs = workflow()["jobs"]
