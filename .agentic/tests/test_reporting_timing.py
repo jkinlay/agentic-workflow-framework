@@ -8,6 +8,66 @@ from agentic.reporting.bounded import DeliveryBudget
 
 
 class ReportingTimingTests(unittest.TestCase):
+    def test_unsent_recheck_budget_defers_without_losing_the_intent(self):
+        from copy import deepcopy
+        from agentic import ValidationError
+        from agentic.review_batching import ReviewBatchStore
+        import test_reporting_e6_regressions as e6
+        case = e6.ControllerTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.helper.listed = [deepcopy(case.helper.current)]
+        with patch.object(ReviewBatchStore, 'recheck', side_effect=ValidationError('REPORT_DESTINATION_BUDGET')):
+            result = case.cycle('2026-11-11T16:00:00Z')
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['review_batching']['state'], 'DEFERRED')
+        self.assertEqual(result['review_batching']['owner_alerts'], [])
+        self.assertEqual(ReviewBatchStore(case.helper.store).pending_batches(), [])
+        with case.helper.store.connection() as db:
+            self.assertEqual([r[0] for r in db.execute('SELECT state FROM review_presentation_intent_v1')], ['PENDING'])
+        self.assertFalse(any(r['kind'] == 'final-human-review' for r in case.status()['reports']))
+
+    def test_slow_sustained_reviews_preserve_recurring_hourly_progress(self):
+        from copy import deepcopy
+        import json
+        import time
+        import test_reporting_e6_regressions as e6
+        case = e6.ControllerTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.network.latency = 1.5
+        original = case.helper.observe_candidate
+        def observe(candidate, now):
+            time.sleep(2.5)
+            return dict(original(candidate, now), candidate=deepcopy(candidate))
+        case.helper.observe_candidate = observe
+        turns, errors = [], []
+        for second in range(6):
+            case.restart()
+            case.helper.current['pull_request'] = 41 + second
+            case.helper.listed = [deepcopy(case.helper.current)]
+            errors.extend(case.cycle('2026-11-11T16:00:0%dZ' % second)['errors'])
+            status = case.status()
+            kinds = {r['report_id']: r['kind'] for r in status['reports']}
+            turns.append({platform: {
+                kind: [dict(status=d['status'], attempts=len(d['attempts']))
+                       for d in status['deliveries'] if d['platform'] == platform
+                       and kinds[d['report_id']] == kind]
+                for kind in ('hourly', 'final-human-review')}
+                for platform in ('teams', 'slack')})
+        print('sustained slow reporting turns: ' + json.dumps(turns, sort_keys=True))
+        self.assertEqual(errors, [])
+        for platform in ('teams', 'slack'):
+            with self.subTest(platform=platform):
+                self.assertTrue(any(d['attempts'] for turn in turns[:2]
+                                    for d in turn[platform]['hourly']), turns)
+                self.assertTrue(any(d['status'] == 'DELIVERED'
+                                    for d in turns[-1][platform]['hourly']), turns)
+                self.assertTrue(any(d['status'] == 'DELIVERED'
+                                    for d in turns[-1][platform]['final-human-review']), turns)
+                self.assertTrue(all(d['attempts'] <= 2 for turn in turns
+                                    for states in turn[platform].values() for d in states))
+
     def test_request_grace_is_bounded_scoped_and_cannot_admit_after_cancellation(self):
         from agentic import ValidationError
         from agentic.reporting.bounded import (request_scope, admit_request, transport_timeout,

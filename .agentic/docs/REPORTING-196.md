@@ -45,15 +45,14 @@ unavailable totals and separate delivery admission. Delivered batches rotate:
 one reobservation/cycle. Withdrawal corrects each delivery once;
 delivered corrections seed restorations.
 
-Destination threads admit alerts, hourly, EoD, then review: four advances,
-one historical reconciliation and 32 HTTP calls/platform per 30-second admission
-deadline. Review reserves one advance. Alternate review turns limit periodic
-admission to ten seconds; joins end five seconds before the common deadline.
-Phases share counters/gates; cancellation preserves reserved review admission.
-Overflow/deferred classes rotate after alerts; new/historical reviews alternate
-across restarts. Batches contain one candidate; restoration destinations share
-one drain turn. Observers cap at 15 seconds, checking before/after
-calls outside SQLite write transactions.
+Platforms share four advances, one historical reconciliation, 32 HTTP calls and
+a 30-second admission deadline. Alerts stay first; review reserves one advance.
+Durable NEW/RETRY turns alternate review-first and periodic-first scheduling
+across restarts. Periodic-first uses the ten-second slice and first reconciliation
+use; joins end five seconds before the shared deadline. Phases share counters/gates;
+cancellation preserves reserved review admission. Deferred classes rotate after
+alerts. Batches hold one candidate; restorations share one drain. Observations
+check before/after calls outside write transactions, capped at 15 seconds.
 
 HTTP's monotonic 15-second maximum spans DNS through body; expiry closes sockets.
 Direct TLS ignores proxies; redirects/retries are disabled. Delivery, cancellation

@@ -3442,7 +3442,10 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 				# freshly invalid members; retry survivors in a new immutable batch.
 				batch_store.release_unsent(batch['batch_id'], now, calendar, checked,
 					reason='Pre-send check refused: ' + type(exc).__name__)
-				failed('review_recheck', exc)
+				if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+					result.update(state='DEFERRED', reason=str(exc))
+				else:
+					failed('review_recheck', exc)
 				from .review_batching import _observation_valid
 				blocked = {identity for identity, value in checked.items()
 					if not _observation_valid(value, next(m['candidate'] for m in batch['members']
@@ -4039,17 +4042,20 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 					JOIN controller_report_delivery d ON json_extract(d.intent_json,'$.report_id')=r.report_id
 					WHERE r.kind='final-human-review' AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED')
 					LIMIT 1""").fetchone())
-			# Alerts keep first admission. When review is waiting, postpone
-			# periodic work until after its bounded observations and delivery:
-			# reserving an advance alone leaves no time for a slow fresh claim.
+			# Alerts keep first admission. The durable NEW/RETRY turn also
+			# protects recurring periodic time: NEW runs review before periodic
+			# work; RETRY admits periodic work in the existing reporting slice.
+			# A tail drain alone cannot rotate once review exhausts the budget.
 			defer_periodic_reporting = review_waiting and port is not None
 			with store.connection() as db:
 				priority_ids = {r[0] for r in db.execute("SELECT report_id FROM controller_reports WHERE kind='owner-action'")}
 			reporting['deliveries'] = drain(store, operating_root, report_binding, reporting_providers or {},
-				report_ids=priority_ids if defer_periodic_reporting else None,
-				owner_action_turn=defer_periodic_reporting,
+				report_ids=priority_ids if defer_periodic_reporting and not review_retry_first else None,
+				owner_action_turn=defer_periodic_reporting and not review_retry_first,
 				budget=report_delivery_budget.reporting_slice() if review_waiting and review_retry_first else report_delivery_budget,
-				reserve_review=port is not None, reserve_reconciliation=review_retry_first and review_waiting,
+				# The same one reconciliation belongs to periodic work on its
+				# protected turn; review gets first use on the alternate turn.
+				reserve_review=port is not None,
 				before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy))
 		except Exception as exc:
 			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})

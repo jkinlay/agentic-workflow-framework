@@ -67,7 +67,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/52-ADOPTION-REPAIRS.md` | `15c0d80b6bdfb2314aba088dd0cb022da73e69afcc9339132a894eae6e1783db` |
 | `.agentic/docs/JIRA-WRITE-SCOPE.md` | `0e613dab6288b420210b87d088d38dbebc9a5d43faaa4640d703952a045193f9` |
 | `.agentic/docs/REFERENCE-JIRA-ADAPTER.md` | `6f26fd81e5525178084e22995863f61579a0ed4d960ca5ef28d488e2bca70e9a` |
-| `.agentic/docs/REPORTING-196.md` | `0d4ef489220f16c53da0205c3da5b5046ad1365e2a4a32b5e2736771b7abb326` |
+| `.agentic/docs/REPORTING-196.md` | `1a31d85e99fdabdb133f38a53a365ffc3a8f69cadbdb76d4a6ff855b7acfd979` |
 | `.agentic/docs/REPORTING-SETTINGS-196.md` | `b569c99c42bddd2dc0ce454a137ef17cd60de09483aa0f1aa5704a724ba61001` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `765124f19ce8a4b2be22ad7e2ba5e71b0624f48369b9af88fdffac1e21747806` |
 | `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
@@ -104,7 +104,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `29e7eb343b78305c31310b590b439a03cf3dca0a5de6c54561fed3354767fc36` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `b15be0f1c9e98544e7c00c07cc24e9d50daac23e1cfe619b50928a1e4c83e877` |
+| `.agentic/lib/agentic/continuous_controller.py` | `a08fa5df60a927d72bfa3681fb3bcd5cf2d48246c13ffb8d60118dc80bc5e833` |
 | `.agentic/lib/agentic/contracts.py` | `c5ffd7177fde55b8ffd00cd58d62fe23ba121761c848e4f1ebf5d4fade249ce7` |
 | `.agentic/lib/agentic/controller_state.py` | `276d34922841eb46c732997933816eb42892045b5a8f0282d34415ec30f6eacf` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -535,7 +535,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_reporting_settings_pr.py` | `83256cbfc0c229311a267ab949003e459bf8f8327d92ef173a8689d529b1a39a` |
 | `.agentic/tests/test_reporting_source_independence.py` | `0dafa5d0db7eb0a9b57d31cb25d19106b0e2edad2f2067565a3229d848dd400e` |
 | `.agentic/tests/test_reporting_stage2.py` | `152920db9bfa73ebdf3d7790c3a4d4be4e76a8091b4400bfbc81b3a8a349b771` |
-| `.agentic/tests/test_reporting_timing.py` | `c429a8220204f5f5dd8ebd34b209d903d84b0b250d42e9d53238c70aa25ab615` |
+| `.agentic/tests/test_reporting_timing.py` | `82654bb179f34f49bfc38e55ec06c14192d2091c1b2d9d84a9dde1072245378f` |
 | `.agentic/tests/test_reporting_wiring.py` | `beaafc031fff59b072dc15dc60e352ea3dd158c52800c4db9816278acca0215d` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
 | `.agentic/tests/test_retry_authority.py` | `f70839c477e6ada7cf574bd9a324a4002adeadf454fce5645e9c5876ef976c3a` |
