@@ -244,7 +244,10 @@ class DirectoryContinuityTests(unittest.TestCase):
             with self.subTest(retained=retained), contextlib.ExitStack() as stack:
                 tree = stack.enter_context(patch.object(installer, 'Tree')).return_value.__enter__.return_value
                 stack.enter_context(patch.object(installer, 'install_lock', return_value=contextlib.nullcontext()))
-                stack.enter_context(patch.object(installer, '_exists_read', side_effect=[installer.json_bytes(journal), None]))
+                # Journal, marker, then one terminal unresolved-inventory read.
+                # The finalizer is mocked, so this fixture publishes no record.
+                reads = stack.enter_context(patch.object(installer, '_exists_read',
+                    side_effect=[installer.json_bytes(journal), None, None]))
                 stack.enter_context(patch.object(installer, '_validate_transaction_journal'))
                 stack.enter_context(patch.object(installer, '_bind_transaction_temporaries'))
                 finalize = stack.enter_context(patch.object(installer, '_finalize_compact_rollback', return_value=retained))
@@ -254,6 +257,9 @@ class DirectoryContinuityTests(unittest.TestCase):
                     expected['retained_directories'] = retained
                 self.assertEqual(expected, result)
                 finalize.assert_called_once_with(tree, journal, marker_present=False)
+                self.assertEqual([(tree, installer.JOURNAL), (tree, installer.MARKER),
+                                  (tree, installer.RETAINED_JOURNAL)],
+                                 [call.args for call in reads.call_args_list])
 
     def test_posix_mkdir_never_publishes_deletion_authority(self):
         tree = Mock()

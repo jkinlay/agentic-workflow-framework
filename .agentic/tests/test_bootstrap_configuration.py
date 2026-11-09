@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 import uuid
 import zipfile
 
@@ -1262,12 +1262,18 @@ class ConfiguredInstallerTests(unittest.TestCase):
     def test_runtime_stage_failure_leaves_no_partial_runtime_or_transaction_residue(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
+        with installer.Tree(self.dest) as tree:
+            before = {path: sha256(tree.read(path)) for path in tree.file_list()}
         captured = {}
         def fail(interpreter, root, stage, *args):
-            captured.update(path=stage, digest=installer._runtime_tree_sha256(stage))
+            captured.update(path=stage, digest=installer._runtime_tree_sha256(stage),
+                files={p.relative_to(stage).as_posix(): sha256(p.read_bytes())
+                       for p in stage.rglob('*') if p.is_file() and not p.is_symlink()},
+                links={p.relative_to(stage).as_posix(): os.readlink(p)
+                       for p in stage.rglob('*') if p.is_symlink()})
             raise ValidationError('injected staged runtime validation failure')
         with patch.object(adoption, '_validate_runtime', side_effect=fail):
-            with self.assertRaisesRegex(ValidationError, "injected staged"):
+            with self.assertRaisesRegex(ValidationError, "injected staged") as raised:
                 adoption.ensure_installed_runtime(self.dest, wheelhouse)
         self.assertFalse((self.dest / ".agentic/.venv").exists())
         self.assertEqual([captured['path']], list((self.dest / '.agentic').glob('.venv.staging-*')))
@@ -1276,6 +1282,26 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual('RECOVERY_REFUSED', evidence['status'])
         self.assertEqual([captured['path'].relative_to(self.dest).as_posix()], evidence['retained_directories'])
         self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+        stage = captured['path']
+        relative = stage.relative_to(self.dest).as_posix()
+        self.assertEqual(captured['links'], {p.relative_to(stage).as_posix(): os.readlink(p)
+                                           for p in stage.rglob('*') if p.is_symlink()})
+        size = None if captured['links'] else sum((stage / path).stat().st_size for path in captured['files'])
+        row = dict(path=relative, size_bytes=size, reason=installer._CLEANUP_REASON,
+                   owner_action=installer._CLEANUP_OWNER_ACTION)
+        expected = dict(format='awf-retained-cleanup-1', status='RECOVERY_REFUSED',
+                        retained_directories=[relative], cleanup_pending=[row])
+        with installer.Tree(self.dest) as tree:
+            self.assertEqual(installer.json_bytes(expected), tree.read(installer.RETAINED_JOURNAL))
+            after = {path: sha256(tree.read(path))
+                     for path in tree.file_list(exclude_prefixes=(relative + '/',))}
+        self.assertEqual(dict(before, **{installer.RETAINED_JOURNAL: sha256(installer.json_bytes(expected))}), after)
+        self.assertEqual(captured['files'], {p.relative_to(stage).as_posix(): sha256(p.read_bytes())
+                                           for p in stage.rglob('*') if p.is_file() and not p.is_symlink()})
+        self.assertTrue(any('Runtime cleanup pending' in note for note in raised.exception.__notes__))
+        self.assertFalse((self.dest / installer.JOURNAL).exists())
+        self.assertFalse((self.dest / installer.MARKER).exists())
+        self.assertEqual([], list((self.dest / '.agentic').glob('.venv.cleanup-*')))
 
     def test_runtime_success_atomically_replaces_previous_runtime_and_cleans_transactions(self):
         wheelhouse = self.prepare_runtime_source()
@@ -2156,6 +2182,51 @@ class BootstrapMainTests(unittest.TestCase):
             self.assertEqual(module.main(), 2)
 
 
+class PosixCleanupRetentionSimulationTests(unittest.TestCase):
+    def test_contained_link_proof_is_retained_and_escapes_refuse(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        tree = Path('synthetic-cleanup')
+        operating = Mock(wraps=os)
+        operating.name = 'posix'
+        def info(mode, inode):
+            return SimpleNamespace(st_mode=mode, st_dev=1, st_ino=inode, st_file_attributes=0)
+        root_info = info(stat.S_IFDIR | 0o700, 2)
+        targets = {'lib64': 'lib'}
+        def entry(name, mode, inode, parent=tree):
+            return SimpleNamespace(name=name, path=str(parent / name),
+                                   stat=lambda **kwargs: info(mode, inode))
+        def scan(path):
+            if Path(path) == tree:
+                return [entry('lib', stat.S_IFDIR | 0o700, 3),
+                        entry('lib64', stat.S_IFLNK | 0o777, 4)] + (
+                        [entry('escape', stat.S_IFLNK | 0o777, 6)] if 'escape' in targets else [])
+            self.assertEqual(tree / 'lib', Path(path))
+            return [entry('site.py', stat.S_IFREG | 0o600, 5, tree / 'lib')]
+        operating.lstat.return_value = root_info
+        operating.scandir.side_effect = scan
+        operating.readlink.side_effect = lambda path: targets[Path(path).name]
+        with patch.object(installer, 'os', operating), patch('builtins.open', mock_open(read_data=b'x\n')), \
+                patch.object(installer.shutil, 'rmtree') as remove, patch.object(Path, 'exists', return_value=True):
+            proof = installer._runtime_cleanup_proof(tree)
+            self.assertEqual([['lib64', 'link', 0o777, ['0000000000000001', '0000000000000004'], 'lib']],
+                             [row for row in proof['members'] if row[0] == 'lib64'])
+            installer._verify_runtime_cleanup_proof(tree, proof)
+            for target in ('../outside.txt', '/owner/outside.txt', 'lib/../../outside.txt'):
+                with self.subTest(target=target):
+                    targets['escape'] = target
+                    with self.assertRaisesRegex(ValidationError, 'unsafe member'):
+                        installer._runtime_cleanup_proof(tree)
+            del targets['escape']
+            with self.assertRaisesRegex(ValidationError, 'Runtime cleanup pending'):
+                installer._remove_runtime_transaction_path(tree)
+            self.assertEqual(proof, installer._runtime_cleanup_proof(tree))
+            self.assertEqual({'lib64': 'lib'}, targets)
+            remove.assert_not_called()
+            operating.unlink.assert_not_called()
+            operating.rename.assert_not_called()
+
+
 @unittest.skipIf(os.name == "nt", "POSIX venvs create the lib64 -> lib link")
 class VenvInternalLinkRegressionTests(unittest.TestCase):
     """64-bit POSIX venvs contain ``lib64 -> lib``; upgrades must tolerate it."""
@@ -2190,8 +2261,12 @@ class VenvInternalLinkRegressionTests(unittest.TestCase):
                         installer._runtime_cleanup_proof(tree)
                 finally:
                     escape.unlink()
-        installer._remove_runtime_transaction_path(tree)
-        self.assertFalse(tree.exists())
+        with self.assertRaisesRegex(ValidationError, 'Runtime cleanup pending'):
+            installer._remove_runtime_transaction_path(tree)
+        self.assertTrue(tree.exists())
+        self.assertEqual(proof, installer._runtime_cleanup_proof(tree))
+        self.assertEqual('lib', os.readlink(tree / 'lib64'))
+        self.assertEqual(b'x\n', (tree / 'lib/site.py').read_bytes())
         self.assertEqual(b"keep\n", outside.read_bytes())
 
 

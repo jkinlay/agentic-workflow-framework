@@ -735,10 +735,19 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
 
 def render_status(report):
     lines = [report['line']]
-    for row in (report.get('installation_recovery') or {}).get('cleanup_pending', []):
+    recovery = report.get('installation_recovery') or {}
+    cleanup = recovery.get('cleanup_pending', [])
+    for row in cleanup:
         size = 'unknown size' if row['size_bytes'] is None else str(row['size_bytes']) + ' bytes'
         lines.append('Cleanup pending: ' + row['path'] + ' (' + size + '). ' +
                      row['reason'] + '. Owner: ' + row['owner_action'])
+    # Legacy journal retention has paths but no runtime cleanup rows. Render
+    # that independent evidence even when ordinary integrity checks fail.
+    detailed = {row['path'] for row in cleanup}
+    for path in recovery.get('retained_directories', []):
+        if path not in detailed:
+            lines.append('Retained directory: ' + path + '. Owner: inspect retained evidence '
+                         'and preserve needed bytes under exclusive owner control before recovery.')
     budgeting = (report.get('operating') or {}).get('budgeting') or {}
     if budgeting.get('disposition') == 'LEGACY_RETAINED':
         lines.append('Budgeting: LEGACY_RETAINED; legacy enforcement UNOBSERVED; ' + budgeting['history_import'] +
