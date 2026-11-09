@@ -361,6 +361,9 @@ class DirectoryContinuityTests(unittest.TestCase):
         self.assertIsNone(recovered['created_directories'][0]['identity'])
 
     def test_interrupted_directory_prepare_retains_paths_and_reports_recovery(self):
+        if os.name != 'nt':
+            self.assert_unproved_directory_prepare_recovery()
+            return
         for interrupt_cleanup in (False, True):
             with self.subTest(interrupt_cleanup=interrupt_cleanup):
                 destination, before, kind = self.interrupt_update('directory_prepare', 'marker')
@@ -388,6 +391,124 @@ class DirectoryContinuityTests(unittest.TestCase):
                 self.assertFalse((destination / installer.JOURNAL).exists())
                 self.assertFalse((destination / installer.MARKER).exists())
                 self.assertTrue((destination / installer.RECOVERY_OBJECTS).is_dir())
+
+    def assert_unproved_directory_prepare_recovery(self):
+        for interrupt_cleanup in (False, True):
+            with self.subTest(interrupt_cleanup=interrupt_cleanup):
+                source, destination, pin, content = self.prepare_install(
+                    unchanged_files=0, changed_files=1)
+                before = self.snapshot_project(destination)
+                original_update = installer._write_bound_journal_update
+                observed = []
+
+                def interrupt_after_prepare(tree, journal, update_kind=None):
+                    if update_kind != 'directory_prepare':
+                        return original_update(tree, journal, update_kind)
+                    intent = (tree.read(installer.JOURNAL), tree.read(installer.MARKER))
+                    original_update(tree, journal, update_kind)
+                    self.assertEqual(intent, (tree.read(installer.JOURNAL),
+                                              tree.read(installer.MARKER)))
+                    self.assertTrue(all(row['identity'] is None
+                                        for row in journal['created_directories']))
+                    observed.append(update_kind)
+                    # Physical creation is complete, but no identity transition
+                    # exists to precommit. Interrupt before any recovery objects.
+                    raise pending_tests.CapturedIntent
+
+                with patch.object(installer, 'verify_release', return_value=(pin, content)), \
+                        patch.object(installer, '_write_bound_journal_update', interrupt_after_prepare), \
+                        self.assertRaises(pending_tests.CapturedIntent):
+                    installer.install(source, destination, pin, conflict='backup')
+                self.assertEqual(['directory_prepare'], observed)
+                journal = load_yaml((destination / installer.JOURNAL).read_bytes())
+                self.assertEqual('object_prepare', journal['phase'])
+                self.assertTrue(all(row['identity'] is None
+                                    for row in journal['created_directories']))
+                marker = load_yaml((destination / installer.MARKER).read_bytes())
+                self.assertIsNone(marker['pending_journal_sha256'])
+                self.assertIsNone(marker['pending_update_kind'])
+                paths = [row['path'] for row in reversed(journal['created_directories'])]
+                self.assertTrue(paths)
+                original_unlink = installer.Tree.unlink
+
+                def interrupt(tree, path):
+                    original_unlink(tree, path)
+                    if path == installer.MARKER:
+                        raise pending_tests.CapturedIntent
+
+                def forbid_directory_disposition(handle, information_class, information):
+                    import ctypes
+                    info = safeio.FileInformation()
+                    if not safeio.kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    self.assertFalse(info.attributes & 0x10, 'Unproved directory deletion')
+                    return original_disposition(handle, information_class, information)
+
+                diagnostics = io.StringIO()
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(contextlib.redirect_stderr(diagnostics))
+                    rmdir = stack.enter_context(patch.object(installer.os, 'rmdir',
+                        side_effect=AssertionError('Unproved directory deletion')))
+                    if installer.os.name == 'nt':
+                        original_disposition = safeio._win_set_file_information
+                        stack.enter_context(patch.object(safeio, '_win_set_file_information',
+                                                        forbid_directory_disposition))
+                    if interrupt_cleanup:
+                        with patch.object(installer.Tree, 'unlink', interrupt), \
+                                self.assertRaises(pending_tests.CapturedIntent):
+                            installer.recover(destination)
+                    result = installer.recover(destination)
+                    rmdir.assert_not_called()
+                self.assertEqual(dict(status='ROLLED_BACK', retained_directories=paths), result)
+                self.assertEqual(before, self.snapshot_project(destination))
+                for path in paths:
+                    self.assertTrue((destination / path).is_dir(), path)
+                    self.assertIn('Directory retained; ownership unproved: ' + path,
+                                  diagnostics.getvalue())
+                self.assertFalse((destination / installer.JOURNAL).exists())
+                self.assertFalse((destination / installer.MARKER).exists())
+
+    def test_unproved_directory_prepare_recovery_on_every_os(self):
+        create = installer._windows_create_directory
+
+        def unproved_create(handle, name):
+            create(handle, name)
+            return None
+
+        # Keep native filesystem operations, but model POSIX's missing creating
+        # identity even on Windows, including interrupted retirement and retry.
+        with patch.object(installer, '_windows_create_directory', unproved_create), \
+                patch.object(sys.modules[__name__], 'os', SimpleNamespace(name='posix')):
+            self.test_interrupted_directory_prepare_retains_paths_and_reports_recovery()
+
+    def test_posix_prepare_unchanged_journal_emits_no_pending_marker(self):
+        path = installer.RECOVERY_OBJECTS
+        journal = dict(format='awf-install-journal-4', phase='object_prepare',
+            transaction_id='11111111-1111-4111-8111-111111111111', files=[], runtime=None,
+            managed_before_sha256=installer.sha256(installer.json_bytes([])),
+            managed_after_sha256=None, created_directories=[dict(path=path, identity=None)])
+        raw = installer.json_bytes(journal)
+        tree = Mock()
+        tree.parent.return_value = (Path('project'), 123, 'objects')
+        operating = Mock(name='posix_operations')
+        operating.name = 'posix'
+        with patch.object(installer, 'os', operating), \
+                patch.object(installer, '_read_bound_journal',
+                             return_value=(installer._copy_journal(journal), raw, {})), \
+                patch.object(installer, '_directory_identity', return_value=['1' * 32, '2' * 32]), \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            installer._prepare_transaction_directories(tree, journal)
+            self.assertEqual(raw, installer.json_bytes(journal))
+            tree.write.assert_not_called()
+            retained = installer._cleanup_transaction_directories(tree, journal)
+        self.assertIsNone(journal['created_directories'][0]['identity'])
+        self.assertEqual([path], retained)
+        self.assertIn('Directory retained; ownership unproved: ' + path, diagnostics.getvalue())
+        operating.mkdir.assert_called_once_with('objects', dir_fd=123)
+        operating.fsync.assert_called_once_with(123)
+        operating.rmdir.assert_not_called()
+        operating.unlink.assert_not_called()
+        tree.close.assert_not_called()
 
     def test_reused_id_reconstruction_never_calls_deletion_disposition(self):
         identity = ['1' * 32, '2' * 32]

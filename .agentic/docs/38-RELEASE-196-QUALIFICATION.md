@@ -93,7 +93,7 @@ state-store/per-host history into one shared ledger. Independently capture
 charges/UNKNOWN values and deduplication proofs. Test published API-generated
 history, lost-row injection, interruption/replay and concurrency. Installed
 qualification requires this import/check/replay. Follow
-[owner adoption](../../MIGRATION-v1.9.5-to-v1.9.6.md), and Jira identity.
+the root guide `MIGRATION-v1.9.5-to-v1.9.6.md` for owner adoption, and Jira identity.
 
 ## Recovery and final gates
 

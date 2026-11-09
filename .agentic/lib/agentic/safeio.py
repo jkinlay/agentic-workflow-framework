@@ -805,6 +805,34 @@ class _WatchedFileLimit(ValidationError):
     pass
 
 
+def windows_directory_identity(handle):
+    """Read ownership only from FILE_ID_INFO on a pinned no-follow handle.
+
+    Creating, reconstructing and deleting directories must use this same source;
+    Python's stat volume/index representation differs between supported versions.
+    BY_HANDLE_FILE_INFORMATION is used only to reject non-directories/reparses.
+    """
+    import ctypes
+    from ctypes import wintypes
+    info = FileInformation()
+    if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not info.attributes & 0x10 or info.attributes & 0x400:
+        raise ValidationError("Unsafe created directory handle; journal retained")
+
+    class FileIdInfo(ctypes.Structure):
+        _fields_ = [("volume", ctypes.c_ulonglong), ("file_id", ctypes.c_ubyte * 16)]
+
+    get_id = kernel.GetFileInformationByHandleEx
+    get_id.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    get_id.restype = wintypes.BOOL
+    identity = FileIdInfo()
+    if not get_id(handle, 18, ctypes.byref(identity), ctypes.sizeof(identity)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return [format(identity.volume, "032x"),
+            format(int.from_bytes(bytes(identity.file_id), "little"), "032x")]
+
+
 def _file_identity(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_nlink)
 

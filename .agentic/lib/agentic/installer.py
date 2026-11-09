@@ -14,7 +14,8 @@ import uuid
 
 from . import ValidationError, VERSION
 from .canonical import MAX_DOCUMENT_BYTES, load_yaml, loads, now_text, sha256
-from .safeio import Tree, relative_parts, validate_windows_metadata
+from .safeio import (Tree, relative_parts, validate_windows_metadata,
+                     windows_directory_identity as _windows_directory_identity)
 from .providers.github import load_observation_report, validate_codeowner
 
 MANIFEST = "MANIFEST.json"
@@ -624,38 +625,27 @@ def _read_recovery_object(tree, digest, size):
 
 def _directory_identity(tree, relative):
     parent, handle, name = tree.parent(relative)
-    info = (os.lstat(parent / name) if os.name == "nt" else
-            os.stat(name, dir_fd=handle, follow_symlinks=False))
+    if os.name == "nt":
+        return _windows_directory_path_identity(parent / name)
+    return _posix_directory_identity(handle, name, relative)
+
+
+def _posix_directory_identity(handle, name, relative):
+    info = os.stat(name, dir_fd=handle, follow_symlinks=False)
     if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
             getattr(info, "st_file_attributes", 0) & 0x400):
         raise ValidationError("Unsafe created directory; journal retained: " + relative)
     return [format(info.st_dev, "032x"), format(info.st_ino, "032x")]
 
 
-def _windows_directory_identity(handle):
-    """Inspect the actual creating/deleting handle, never a later path lookup."""
-    import ctypes
-    from .safeio import kernel, FileInformation
-    info = FileInformation()
-    if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    if not info.attributes & 0x10 or info.attributes & 0x400:
-        raise ValidationError("Unsafe created directory handle; journal retained")
-    # Python 3.12+ reports the full volume serial and 128-bit file ID on
-    # Windows. BY_HANDLE_FILE_INFORMATION truncates the volume serial.
-    from ctypes import wintypes
-
-    class FileIdInfo(ctypes.Structure):
-        _fields_ = [("volume", ctypes.c_ulonglong), ("file_id", ctypes.c_ubyte * 16)]
-
-    get_id = kernel.GetFileInformationByHandleEx
-    get_id.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-    get_id.restype = wintypes.BOOL
-    identity = FileIdInfo()
-    if not get_id(handle, 18, ctypes.byref(identity), ctypes.sizeof(identity)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    return [format(identity.volume, "032x"),
-            format(int.from_bytes(bytes(identity.file_id), "little"), "032x")]
+def _windows_directory_path_identity(path):
+    """Pin a no-follow directory for the same identity API used at creation."""
+    from .safeio import kernel, win_open
+    handle = win_open(path, directory=True)
+    try:
+        return _windows_directory_identity(handle)
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def _windows_create_directory(parent_handle, name):
@@ -1197,24 +1187,28 @@ def _runtime_cleanup_proof(path):
 
     path = Path(path)
     root = os.lstat(path)
-    proof = {"identity": identity(root), "members": []}
+    proof = {"identity": (_windows_directory_path_identity(path) if os.name == "nt"
+                          else identity(root)), "members": []}
     def visit(directory, prefix=""):
         for entry in sorted(os.scandir(directory), key=lambda item: item.name):
             relative = entry.name if not prefix else prefix + "/" + entry.name
             info = entry.stat(follow_symlinks=False)
             reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
             mode = stat.S_IMODE(info.st_mode)
-            object_identity = identity(info)
             if stat.S_ISDIR(info.st_mode) and not reparse:
+                object_identity = (_windows_directory_path_identity(entry.path)
+                                   if os.name == "nt" else identity(info))
                 proof["members"].append([relative, "directory", mode, object_identity, None])
                 visit(entry.path, relative)
             elif stat.S_ISREG(info.st_mode) and not reparse:
+                object_identity = identity(info)
                 h = hashlib.sha256()
                 with open(entry.path, "rb") as stream:
                     for block in iter(lambda: stream.read(1024 * 1024), b""):
                         h.update(block)
                 proof["members"].append([relative, "file", mode, object_identity, h.hexdigest()])
             elif stat.S_ISLNK(info.st_mode) and not reparse:
+                object_identity = identity(info)
                 # Venvs on 64-bit POSIX create ``lib64 -> lib``. Accept only a
                 # relative link whose lexical target stays inside the cleanup root;
                 # rmtree removes the link itself and never follows it.
@@ -1387,11 +1381,17 @@ def _validated_runtime_journal(journal):
         raise ValidationError("Invalid runtime recovery paths or digests")
     if proof_keys <= set(runtime):
         identity, members = runtime["cleanup_identity"], runtime["cleanup_members"]
-        valid_identity = lambda value: (isinstance(value, list) and len(value) == 2 and
-                                        all(isinstance(part, str) and
-                                            re.fullmatch(r"[0-9a-f]{16}", part) is not None
-                                            for part in value))
-        if identity is not None and not valid_identity(identity):
+        def valid_identity(value, *, directory=False):
+            # Legacy stat proofs have two 16-digit parts. Windows directory
+            # proofs now use the same 32-digit FILE_ID_INFO parts as creation.
+            # Keep legacy bytes readable, but never pad/convert them: exact
+            # verification refuses them against a new handle proof before delete.
+            return (isinstance(value, list) and len(value) == 2 and
+                    any(all(isinstance(part, str) and
+                            re.fullmatch(r"[0-9a-f]{%d}" % width, part) is not None
+                            for part in value)
+                        for width in ((16, 32) if directory else (16,))))
+        if identity is not None and not valid_identity(identity, directory=True):
             raise ValidationError("Invalid authenticated cleanup identity")
         if members is not None:
             if not isinstance(members, list) or len(members) > 100000:
@@ -1400,7 +1400,7 @@ def _validated_runtime_journal(journal):
             for row in members:
                 if (not isinstance(row, list) or len(row) != 5 or not isinstance(row[0], str) or
                         row[1] not in {"directory", "file", "link"} or type(row[2]) is not int or
-                        not valid_identity(row[3]) or
+                        not valid_identity(row[3], directory=row[1] == "directory") or
                         (row[1] == "file" and (not isinstance(row[4], str) or
                          re.fullmatch(r"[0-9a-f]{64}", row[4]) is None)) or
                         (row[1] == "directory" and row[4] is not None) or
