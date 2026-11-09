@@ -1,13 +1,12 @@
 """Offline stage-two regressions; all network effects use fake HTTP."""
 import copy
 from datetime import datetime, timezone
-import importlib
 from pathlib import Path
+import runpy
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'adapters'))
 from agentic import ValidationError
 
 
@@ -431,8 +430,8 @@ class HTTPTests(unittest.TestCase):
                                            **{'from': dict(user=dict(id='sender'))})])
                 return dict(ok=True, id='1')
             transport.http = http
-            module = importlib.import_module(platform + '_reporting_adapter')
-            adapter = module.ReportingAdapter(transport, b, resolve_secret=lambda ref: 'fixture-secret', mode=platform)
+            module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'adapters' / (platform + '_reporting_adapter.py')))
+            adapter = module['ReportingAdapter'](transport, b, resolve_secret=lambda ref: 'fixture-secret', mode=platform)
             self.assertEqual(adapter.send(intent, 'a')['status'], 'ACCEPTED_UNVERIFIED')
             self.assertEqual(adapter.reconcile(intent, ['a'])['status'], 'VISIBLE')
             self.assertTrue(any(c[0] == 'POST' for c in calls))

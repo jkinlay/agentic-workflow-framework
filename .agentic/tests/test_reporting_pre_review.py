@@ -1,12 +1,11 @@
 """Concrete AWF-241 auxiliary-review regressions; no real provider calls."""
-import importlib
 from pathlib import Path
+import runpy
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'adapters'))
 from agentic import ValidationError
 from agentic.reporting.compose import compose_report
 from agentic.reporting.bodies import render_body
@@ -142,7 +141,8 @@ class DeliveryRegressions(unittest.TestCase):
                 return dict(id='channel')
             return dict(value=messages)
         transport.http = http
-        adapter = importlib.import_module(platform + '_reporting_adapter').ReportingAdapter(
+        module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'adapters' / (platform + '_reporting_adapter.py')))
+        adapter = module['ReportingAdapter'](
             transport, b, resolve_secret=lambda ref: 'fixture-secret', mode=platform)
         return intent, adapter, posts
 
