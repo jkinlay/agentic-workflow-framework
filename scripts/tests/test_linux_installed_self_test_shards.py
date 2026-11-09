@@ -18,6 +18,19 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 
+def pipe_set_blocking_unavailable(os_name, version_info):
+    return os_name == 'nt' and version_info < (3, 12)
+
+
+class PlatformSupportTests(unittest.TestCase):
+    def test_pipe_set_blocking_skip_is_limited_to_windows_before_312(self):
+        for os_name in ('posix', 'linux', 'darwin', 'nt'):
+            for version in ((3, 11), (3, 12), (3, 13)):
+                with self.subTest(os_name=os_name, version=version):
+                    self.assertEqual(os_name == 'nt' and version == (3, 11),
+                                     pipe_set_blocking_unavailable(os_name, version))
+
+
 class LauncherTests(unittest.TestCase):
     def test_dependency_import_orders_in_fresh_isolated_process(self):
         code = '''import ast,pathlib,sys
@@ -176,6 +189,8 @@ exec(compile(tree,str(path),'exec'),{'__file__':str(path)})
         self.assertEqual(1, self.invoke(child=child)[0])
         self.assertEqual(b'partial real report', (self.artifacts / 'self-test.json').read_bytes())
 
+    @unittest.skipIf(pipe_set_blocking_unavailable(os.name, sys.version_info),
+                     'os.set_blocking on Windows pipes requires Python 3.12 or later')
     def test_real_isolated_child_executes_only_its_selected_installed_tests(self):
         # Exercise the actual process boundary and InstalledLoader, without pip
         # or a native Linux interpreter on the Windows writer host.

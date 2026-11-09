@@ -715,7 +715,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_installed_self_test.py` | `1733ca84ddf1e17772b03b6629b73f11b320c706aed732b77daa74c90a024486` |
 | `scripts/tests/test_installed_self_test_shards.py` | `e1bae09a347dad14e2924ec747949d5261b535cc4b2ca6c7fed0e5160d742d6a` |
 | `scripts/tests/test_installed_shard_review_regressions.py` | `edf6f618242cebe45484047d49e583a6d7fe40b48e8c8e07caf815c2428d71c6` |
-| `scripts/tests/test_linux_installed_self_test_shards.py` | `aa2cf0932242f467b79e49a9a8b4c0acea63537eed90131c4c61f2590317bf73` |
+| `scripts/tests/test_linux_installed_self_test_shards.py` | `5f8e2a50c45c45754992e322414c75f73187b2c785b27b77d7666f1deee804c6` |
 | `scripts/tests/test_manifest_conflicts.py` | `22156e2b07c769f00a8144dca5a2d3a66932150717cd90cde3c7e7ef96519475` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
