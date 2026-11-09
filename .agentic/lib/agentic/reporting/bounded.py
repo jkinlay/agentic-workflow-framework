@@ -25,6 +25,7 @@ _source = ContextVar('report_source_budget', default=None)
 _current = ContextVar('report_destination_budget', default=None)
 _send_start = ContextVar('report_send_start', default=None)
 _checking = ContextVar('report_candidate_budget', default=None)
+_request = ContextVar('report_http_request', default=None)
 
 
 class SourceBudget:
@@ -186,12 +187,55 @@ def admit_http(method):
     timeout = current[0].http(current[1]) if current else HTTP_TIMEOUT_SECONDS
     if method == 'POST' and _send_start.get() is not None:
         _send_start.get()()
-    # Candidate observations and reservation consume the SAME allowance.
-    return current[0].remaining() if current else timeout
+    # Candidate observations still consume the shared admission allowance.
+    # A request admitted at the durable reservation keeps only its original
+    # request grace, including time spent committing that reservation.
+    return transport_timeout() if current else timeout
 
 
 @contextmanager
-def send_guard():
+def request_scope(method):
+    token = _request.set({'method': method})
+    try:
+        yield
+    finally:
+        _request.reset(token)
+
+
+def admit_request():
+    """Admit one POST after fresh checks, immediately before durable commit.
+
+    This is local to one transport call, never a stored or reusable permit.
+    Late observations/cancelled workers cannot create an admission. Existing
+    admissions may finish within the already documented request/stage grace.
+    """
+    current, request = _current.get(), _request.get()
+    if current is None or request is None or request['method'] != 'POST':
+        return
+    budget, platform = current
+    with budget.lock:
+        now = monotonic()
+        if budget.cancelled or now >= budget.deadline:
+            raise ValidationError('REPORT_DESTINATION_BUDGET')
+        if 'deadline' in request:
+            raise ValidationError('REPORT_SEND_ALREADY_STARTED')
+        request.update(budget=budget, platform=platform,
+                       deadline=min(budget.stage_deadline, now + HTTP_TIMEOUT_SECONDS))
+
+
+def transport_timeout():
+    current, request = _current.get(), _request.get()
+    if (current is not None and request is not None and request.get('budget') is current[0]
+            and request.get('platform') == current[1]):
+        remaining = request['deadline'] - monotonic()
+        if remaining <= 0:
+            raise ValidationError('REPORT_DESTINATION_BUDGET')
+        return min(HTTP_TIMEOUT_SECONDS, remaining)
+    return delivery_timeout()
+
+
+@contextmanager
+def send_guard(*, transport=False):
     """Atomically check the cancellation token at reservation and transport entry."""
     current = _current.get()
     if current is None:
@@ -199,7 +243,7 @@ def send_guard():
         return
     budget, platform = current
     with budget.send_locks[platform]:
-        budget.remaining()
+        transport_timeout() if transport else budget.remaining()
         yield
 
 

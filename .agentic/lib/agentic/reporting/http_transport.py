@@ -227,14 +227,15 @@ class BaseTransport:
         try:
             require(isinstance(secret, str) and secret and not any(ord(c) < 32 for c in secret), 'REPORT_SECRET_INVALID')
             self.cooldown(url)
-            from .bounded import admit_http, delivery_timeout, send_guard
-            timeout = admit_http(method)
-            # Recheck under the destination cancellation gate, immediately at
-            # transport entry, after candidate checks and SQLite reservation.
-            with send_guard():
-                timeout = min(timeout, delivery_timeout())
-                options = {'timeout': timeout} if self.http is http_json else {}
-                raw = self.http(method, url, {'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/json; charset=utf-8'}, payload, **options)
+            from .bounded import admit_http, transport_timeout, send_guard, request_scope
+            with request_scope(method):
+                timeout = admit_http(method)
+                # An already admitted POST may complete within its original
+                # grace. Later GETs/POSTs receive no admission from this scope.
+                with send_guard(transport=True):
+                    timeout = min(timeout, transport_timeout())
+                    options = {'timeout': timeout} if self.http is http_json else {}
+                    raw = self.http(method, url, {'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/json; charset=utf-8'}, payload, **options)
             require(isinstance(raw, dict), 'REPORT_HTTP_RESPONSE_SHAPE')
             return raw
         except TerminalRejection:

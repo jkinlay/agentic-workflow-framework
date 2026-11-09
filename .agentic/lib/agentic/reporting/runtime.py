@@ -298,7 +298,7 @@ def reporting_status(store, operating, binding, *, report_ids=None):
 
 
 def drain(store, operating, binding, providers, *, report_ids=None, allow_send=True, budget=None, before_send=None,
-          reserve_review=False, reserve_reconciliation=False):
+          reserve_review=False, reserve_reconciliation=False, owner_action_turn=False, after_review=False):
     settings, destinations = _bindings(operating, binding)
     if settings['mode'] == 'off':
         return []
@@ -352,7 +352,7 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                 (platform, canonical(destination).decode(), canonical({k: v for k, v in destination.items()
                     if k != 'scope_revision'}).decode(), report_ids is not None, allow_send, ids, ids,
                  MAX_ADVANCES)).fetchall()
-        fresh = [r for r in rows if r['fresh']]
+        fresh = [r for r in rows if r['fresh'] and not (after_review and r[2] == 'owner-action')]
         history = sorted([r for r in rows if not r['fresh']],
                          key=lambda r: (r['observations'], r[3]))[:1]
         if reserve_reconciliation:
@@ -384,6 +384,11 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
         selected_ids.update(r[1] for r in selected)
         selected += [r for r in fresh if r[1] not in selected_ids][:slots - len(selected)]
         work = selected[:slots]
+        if owner_action_turn:
+            # One protected alert admission precedes review. Additional alerts
+            # cannot take the hourly/EoD slots simply because those classes
+            # are drained later in the same shared cycle.
+            work = alerts[:1] or history
         # Time can run out before the last class even when count admission is
         # fair. Its next turn omits competing periodic classes, preserving
         # alert-first ordering while giving the deferred class a full chance.
@@ -822,6 +827,14 @@ class ReviewReportingPort:
         budget = budget or self.delivery_budget or DeliveryBudget()
         with budget.checking():
             now, checked = self.clock(), {}
+            window = next_review_presentation(now, calendar)
+            if window['held']:
+                # A closed presentation window is scheduling, not an unknown
+                # provider outcome. Refuse before remote reads/recheck; the
+                # post-observation policy, expiry and window guards still run.
+                refusal = ValidationError('REPORT_REVIEW_WINDOW_EXHAUSTED')
+                refusal.retry_at = window['presentation_at']
+                raise refusal
             # Observe outside SQLite's write transaction: no remote callback
             # may hold persistence hostage or prevent a durable timeout record.
             for member in payload['members'] if observe_candidate is not None else ():
@@ -1034,7 +1047,13 @@ class ReviewReportingPort:
             if not states:
                 # Recovery of a crash between claim/recheck and report intent.
                 # Same immutable batch, never another presentation attempt.
-                self.deliver_review_batch(payload)
+                try:
+                    self.deliver_review_batch(payload)
+                except ValidationError as exc:
+                    self._defer(report_id, str(exc), retry_at=getattr(exc, 'retry_at', None))
+                    if str(exc) in {'REPORT_DESTINATION_BUDGET', 'REPORT_REVIEW_WINDOW_EXHAUSTED'}:
+                        return
+                    raise
                 continue
             pending.track_reporting(payload['batch_id'])
             pending.finish_reporting_failure(payload['batch_id'], self.clock())
@@ -1045,8 +1064,8 @@ class ReviewReportingPort:
             except ValidationError as exc:
                 # Budget deferral is expected scheduling, durably visible to
                 # the owner rather than an unreported forever-CLAIMED record.
-                self._defer(report_id, str(exc))
-                if str(exc) == 'REPORT_DESTINATION_BUDGET':
+                self._defer(report_id, str(exc), retry_at=getattr(exc, 'retry_at', None))
+                if str(exc) in {'REPORT_DESTINATION_BUDGET', 'REPORT_REVIEW_WINDOW_EXHAUSTED'}:
                     return
                 raise
             drain(self.store, self.operating, self.binding, self.providers, report_ids={report_id}, budget=budget,

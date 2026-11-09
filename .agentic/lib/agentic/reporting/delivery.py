@@ -16,7 +16,7 @@ import uuid
 from .. import ValidationError
 from ..canonical import canonical, fingerprint, loads, timestamp
 from .safety import safe_report
-from .bounded import send_guard, delivery_timeout, source_timeout
+from .bounded import send_guard, delivery_timeout, source_timeout, admit_request
 
 
 def require(condition, reason):
@@ -314,6 +314,7 @@ class DeliveryOutbox:
                     # Its window charge and delivery fence commit or roll back together.
                     if callable(reservation):
                         reservation(db, intent)
+                    admit_request()
                     current['attempts'].append(attempt_id)
                     current['history'].append(dict(kind='ATTEMPT_RESERVED', attempt_id=attempt_id))
                     current.pop('retry_not_before', None)
