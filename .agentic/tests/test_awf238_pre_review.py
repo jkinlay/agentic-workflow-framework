@@ -567,15 +567,22 @@ class ForwardModeTests(unittest.TestCase):
             setattr(operating, name, getattr(os, name, 0))
         operating.open.return_value = 456
         operating.fdopen.return_value = stream
-        operating.fchmod = Mock(side_effect=apply_error or (lambda fd, value: events.append(('mode', value))))
+        metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=101, st_gid=202)
+        operating.fstat.side_effect = lambda fd: metadata
+        def chmod(fd, value):
+            events.append(('mode', value))
+            metadata.st_mode = stat.S_IFREG | value
+        operating.fchmod = Mock(side_effect=apply_error or chmod)
         operating.replace.side_effect = lambda *a, **kw: events.append(('replace', kw))
         tree = Mock()
         tree.inspect.side_effect = read_error if read_error else None
-        tree.inspect.return_value = SimpleNamespace(st_mode=stat.S_IFREG | mode) if exists else None
+        tree.inspect.return_value = SimpleNamespace(st_mode=stat.S_IFREG | mode,
+                                                    st_uid=101, st_gid=202) if exists else None
         tree.read.return_value = b'old content'
         tree.parent.return_value = (Path('project'), 123, 'PROJECT_CONFIG.yaml')
         tree.write_temporary_names = {}
         tree.write_modes = {} if override is None else {path: override}
+        tree.write_ownership = {}
         with patch.object(safeio, 'os', operating):
             if read_error or apply_error:
                 with self.assertRaises(OSError):

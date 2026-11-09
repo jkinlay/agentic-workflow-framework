@@ -18,7 +18,8 @@ from ..canonical import load_yaml, loads, now_text, sha256, timestamp
 from ..child_process import child_env
 from ..configuration import inspect_config
 from ..contracts import Contracts
-from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
+from ..installer import (CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed,
+                         verify_installed, retained_directory_status)
 from .github import (GITHUB_REST_API_VERSION, MAX_PR_FILE_PAGES, PR_FILES_PER_PAGE, _gh_get, _gh_get_pr_files, _gh_graphql,
                      branch_name, repository_name)
 from ..release_trust import establish_release_trust
@@ -465,6 +466,11 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
     # Installation, configuration, operating state, host preflight and release
     # trust are independent stages. Keep every safely observable result.
     try:
+        retained = retained_directory_status(root)
+        if retained:
+            result['installation_recovery'] = retained
+            raise ValidationError('Unresolved restoration; owner must resolve retained directories/journal: ' +
+                                  ', '.join(retained['retained_directories']))
         receipt, files = installed_bytes(root)
         result.update(project_state='INSTALLED', integrity_valid=True, line=f'AWF {VERSION}: INSTALLED')
         add('INSTALLATION_INTEGRITY', 'installation', 'PASS',

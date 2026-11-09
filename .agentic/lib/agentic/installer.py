@@ -21,6 +21,7 @@ from .providers.github import load_observation_report, validate_codeowner
 MANIFEST = "MANIFEST.json"
 LOCK = ".agentic-install/lock"
 JOURNAL = ".agentic-install/journal.json"
+RETAINED_JOURNAL = ".agentic-install/retained-journal.json"
 RECOVERY_OBJECTS = ".agentic-install/objects"
 MARKER = ".agentic/INSTALLING.json"
 INSTALLED = ".agentic/installed-manifest.json"
@@ -549,7 +550,7 @@ def _compact_journal(journal):
 
 def _temporary_targets(journal):
     """Every atomic-write destination, including recovery and coordination writes."""
-    targets = {JOURNAL, MARKER, *(item['path'] for item in journal['files'])}
+    targets = {JOURNAL, MARKER, RETAINED_JOURNAL, *(item['path'] for item in journal['files'])}
     targets.update(_recovery_object_path(item['old_sha256']) for item in journal['files']
                    if item['old_sha256'] is not None)
     targets.update(_recovery_object_path(row['sha256'])
@@ -833,9 +834,13 @@ def _verify_compact_old_endpoint(tree, journal, context):
         if not matches:
             raise ValidationError(f"Transaction old file state differs at {item['path']}")
         if current is not None:
-            mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
+            info = tree.inspect(item["path"])
+            mode = stat.S_IMODE(info.st_mode)
             if mode != item["old_mode"]:
                 raise ValidationError(f"Transaction old file mode differs at {item['path']}")
+            owner = journal.get('posix_ownership', {}).get(item['path'])
+            if owner is not None and (os.name == 'nt' or [info.st_uid, info.st_gid] != owner):
+                raise ValidationError(f"Transaction old ownership differs at {item['path']}")
     for path, reference in journal.get('windows_metadata', {}).items():
         if os.name != 'nt' or sha256(json_bytes(tree.windows_metadata(path))) != reference['sha256']:
             raise ValidationError('Transaction old Windows metadata differs; journal retained: ' + path)
@@ -862,10 +867,44 @@ def _finalize_compact_rollback(tree, journal, *, marker_present):
             if members:
                 raise ValidationError("Recovery found an external directory member; journal retained: " + members[0])
     retained = _cleanup_transaction_directories(tree, journal)
+    if retained:
+        # Preserve the complete terminal journal and exact unresolved inventory
+        # durably before either active coordination artifact can disappear.
+        record = {'format': 'awf-retained-journal-1', 'journal': journal,
+                  'retained_directories': retained}
+        tree.write(RETAINED_JOURNAL, json_bytes(record))
     if marker_present:
         tree.unlink(MARKER)
     tree.unlink(JOURNAL)
     return retained
+
+
+def _retained_directory_result(tree):
+    raw = _exists_read(tree, RETAINED_JOURNAL)
+    if raw is None:
+        return None
+    record = loads(raw.decode('utf-8'))
+    if (not isinstance(record, dict) or set(record) != {
+            'format', 'journal', 'retained_directories'} or
+            record['format'] != 'awf-retained-journal-1'):
+        raise ValidationError('Invalid retained installation journal')
+    journal = _validate_transaction_journal(record['journal'])
+    retained = record['retained_directories']
+    allowed = {row['path'] for row in journal.get('created_directories', [])}
+    if (not isinstance(retained, list) or not retained or
+            any(not isinstance(path, str) or path not in allowed for path in retained) or
+            len(set(retained)) != len(retained) or
+            journal.get('phase') not in {'object_prepare', 'rollback_cleanup'}):
+        raise ValidationError('Invalid retained-directory inventory')
+    # Diagnostic evidence grants no recovery/deletion authority. Only an owner
+    # may retire this record after resolving the reported directories.
+    return {'status': 'ROLLED_BACK', 'retained_directories': retained}
+
+
+def retained_directory_status(destination):
+    """Read unresolved restoration evidence without changing it."""
+    with Tree(destination) as tree:
+        return _retained_directory_result(tree)
 
 
 def _old_file_bytes(journal, item, objects):
@@ -1272,6 +1311,10 @@ def ensure_usable(root):
     with Tree(root) as tree:
         if tree.inspect(MARKER) is not None or tree.inspect(JOURNAL) is not None:
             raise ValidationError("Installation is incomplete; use bootstrap --recover before running tools")
+        retained = _retained_directory_result(tree)
+        if retained:
+            raise ValidationError('Unresolved restoration; owner must resolve retained directories/journal: ' +
+                                  ', '.join(retained['retained_directories']))
 
 
 def _verify_installed(root, expected_version):
@@ -1353,7 +1396,7 @@ def _validated_runtime_journal(journal):
                             "managed_before", "managed_after"}:
             raise ValidationError("Invalid recovery journal")
     elif journal["format"] == "awf-install-journal-4":
-        keys = set(journal) - {'windows_metadata', 'temporary_files'}
+        keys = set(journal) - {'windows_metadata', 'posix_ownership', 'temporary_files'}
         if keys not in ({"format", "transaction_id", "phase", "files", "runtime",
                             "managed_before_sha256", "managed_after_sha256"},
                            {"format", "transaction_id", "phase", "files", "runtime",
@@ -1472,6 +1515,14 @@ def _validate_transaction_journal(journal):
                 not re.fullmatch('[0-9a-f]{64}', reference['sha256']) or
                 type(reference['size']) is not int or not 0 < reference['size'] <= MAX_DOCUMENT_BYTES):
             raise ValidationError('Invalid Windows recovery metadata reference')
+    ownership = journal.get('posix_ownership', {})
+    if not isinstance(ownership, dict):
+        raise ValidationError('Invalid POSIX recovery ownership inventory')
+    for path, owner in ownership.items():
+        relative_parts(path)
+        if (not isinstance(owner, list) or len(owner) != 2 or
+                any(type(value) is not int or value < 0 for value in owner)):
+            raise ValidationError('Invalid POSIX recovery ownership')
     backup_prefix = f".agentic-backup/{transaction_id}/"
     mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     for item in journal["files"]:
@@ -1495,6 +1546,8 @@ def _validate_transaction_journal(journal):
                    else item["old"] is not None)
         if item['path'] in metadata and not has_old:
             raise ValidationError('Windows recovery metadata has no original file')
+        if item['path'] in ownership and not has_old:
+            raise ValidationError('POSIX recovery ownership has no original file')
         if (not safe_path or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new or
                 (transaction_backup and (has_old or item["new_sha256"] is None))):
             raise ValidationError("Unsafe or duplicate recovery path/digest")
@@ -1522,6 +1575,8 @@ def _validate_transaction_journal(journal):
                 raise ValidationError("Invalid recovery file mode")
     if set(metadata) - {item['path'] for item in journal['files']}:
         raise ValidationError('Windows recovery metadata has no journalled path')
+    if set(ownership) - {item['path'] for item in journal['files']}:
+        raise ValidationError('POSIX recovery ownership has no journalled path')
     _transaction_temporary_paths(journal)
     return journal
 
@@ -1583,6 +1638,8 @@ def rollback(tree, journal):
     recovery_objects = _load_recovery_objects(tree, journal)
     if journal.get('windows_metadata') and os.name != 'nt':
         raise ValidationError('Windows metadata recovery requires Windows; journal retained')
+    if journal.get('posix_ownership') and os.name == 'nt':
+        raise ValidationError('POSIX ownership recovery requires POSIX; journal retained')
     runtime = _validated_runtime_journal(journal)
     backup_prefix = f".agentic-backup/{journal['transaction_id']}/"
     mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
@@ -1659,6 +1716,7 @@ def rollback(tree, journal):
     if mode_aware:
         tree.write_modes = {item['path']: item['old_mode'] for item in journal['files']
                             if item['old_mode'] is not None}
+    tree.write_ownership = journal.get('posix_ownership', {})
     for item in reversed(journal["files"]):
         old = _old_file_bytes(journal, item, recovery_objects)
         if old is None:
@@ -1669,8 +1727,6 @@ def rollback(tree, journal):
                 tree.write(item['path'], old)
             else:
                 tree.write(item['path'], old, windows_metadata=loads(recovery_objects[reference['sha256']].decode('utf-8')))
-            if mode_aware:
-                os.chmod(tree.root / item["path"], item["old_mode"])
     if backup_root.exists() and "created_directories" not in journal:
         shutil.rmtree(backup_root)
     if mode_aware:
@@ -1977,7 +2033,7 @@ def recover(destination):
         journal_raw = _exists_read(tree, JOURNAL)
         marker_raw = _exists_read(tree, MARKER)
         if journal_raw is None and marker_raw is None:
-            return {"status": "NO_PENDING_INSTALL"}
+            return _retained_directory_result(tree) or {"status": "NO_PENDING_INSTALL"}
         if journal_raw is None:
             raise ValidationError("Installation recovery marker has no journal; recovery failed closed")
         if marker_raw is None:
@@ -2162,6 +2218,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     "gitignore": ignore_report, "codeowners": owner_report,
                     "operating": operating_report, **rules_report()}
     with Tree(destination, create=not dry_run) as dst, ExitStack() as planning_context:
+        if dst.inspect(RETAINED_JOURNAL) is not None:
+            raise ValidationError('Unresolved directories require owner action on retained installation journal')
         if dst.inspect(JOURNAL) is not None or dst.inspect(MARKER) is not None:
             raise ValidationError("An interrupted installation requires --recover")
         existing_config = _exists_read(dst, CONFIG)
@@ -2414,7 +2472,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         with install_lock(dst):
             # Re-read while locked: another cooperating installer or editor may
             # have changed a leaf between preflight and lock acquisition.
-            if dst.inspect(JOURNAL) is not None or dst.inspect(MARKER) is not None:
+            if any(dst.inspect(path) is not None for path in (JOURNAL, MARKER, RETAINED_JOURNAL)):
                 raise ValidationError("Another installation changed destination state")
             for path, old in owner_inputs.items():
                 if _exists_read(dst, path) != old:
@@ -2437,12 +2495,15 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                         backup_plan[backup_path] = old
             recovery_objects = {}
             metadata_references = {}
+            posix_ownership = {}
 
             def recovery_entry(path, old, new_digest):
                 info = dst.inspect(path)
                 old_digest = sha256(old) if old is not None else None
                 if old is not None:
                     recovery_objects[old_digest] = old
+                    if os.name != 'nt':
+                        posix_ownership[path] = [info.st_uid, info.st_gid]
                 entry = {"path": path,
                         "old_sha256": old_digest,
                         "old_size": len(old) if old is not None else None,
@@ -2470,6 +2531,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 "runtime": None}
             if metadata_references:
                 journal['windows_metadata'] = metadata_references
+            if posix_ownership:
+                journal['posix_ownership'] = posix_ownership
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
             # Commit each exact sibling name before it can be created. Reusing
@@ -2492,6 +2555,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             _write_recovery_objects(dst, recovery_objects)
             journal["phase"] = "active"
             _write_bound_journal_update(dst, journal, "activate")
+            dst.write_ownership = posix_ownership
+            dst.write_modes = {path: stat.S_IREAD for path in archive_paths
+                               if originals[path] is None}
             try:
                 for path, data in sorted(backup_plan.items()):
                     dst.write(path, data)
@@ -2515,9 +2581,6 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     raise ValidationError("Operating initialization failed after staged writes: " +
                                           "; ".join(item["path"] + ": " + item["reason"]
                                                     for item in operating_report["refusals"]))
-                for path in archive_paths:
-                    if originals[path] is None:
-                        (destination / Path(path)).chmod(stat.S_IREAD)
                 _capture_managed_after(dst, journal)
                 _write_bound_journal_update(dst, journal, "managed_after")
                 _verify_journal_managed_state(dst, journal, "after", "after managed writes")

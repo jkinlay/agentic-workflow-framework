@@ -620,6 +620,28 @@ if os.name == "nt":
                 handle, information_class, ctypes.byref(information), ctypes.sizeof(information)):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def _windows_set_mode(fd, mode):
+        """Set the unpublished leaf's read-only bit through its creating handle."""
+        class BasicInformation(ctypes.Structure):
+            _fields_ = [('created', ctypes.c_longlong), ('accessed', ctypes.c_longlong),
+                        ('written', ctypes.c_longlong), ('changed', ctypes.c_longlong),
+                        ('attributes', wintypes.DWORD)]
+
+        handle = msvcrt.get_osfhandle(fd)
+        info = FileInformation()
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if info.attributes & (0x400 | 0x10) or info.links != 1:
+            raise ValidationError('Unsafe replacement metadata handle')
+        attributes = info.attributes & ~FILE_ATTRIBUTE_READONLY
+        if not mode & stat.S_IWRITE:
+            attributes = (attributes & ~0x80) | FILE_ATTRIBUTE_READONLY
+        _win_set_file_information(handle, 0, BasicInformation(0, 0, 0, 0, attributes or 0x80))
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if bool(info.attributes & FILE_ATTRIBUTE_READONLY) != (not bool(mode & stat.S_IWRITE)):
+            raise ValidationError('Replacement mode differs; original file retained')
+
     def win_unlink(path):
         """Validate and atomically mark one leaf for deletion through one handle."""
         delete = 0x00010000
@@ -1063,20 +1085,24 @@ class Tree:
     def write(self, relative, data, *, windows_metadata=None):
         if not isinstance(data, bytes):
             raise TypeError("write requires bytes")
+        info = self.inspect(relative)
+        mode = getattr(self, 'write_modes', {}).get(relative)
+        ownership = getattr(self, 'write_ownership', {}).get(relative)
+        if os.name != 'nt' and info is not None:
+            if mode is None:
+                mode = stat.S_IMODE(info.st_mode)
+            if ownership is None:
+                ownership = (info.st_uid, info.st_gid)
         # Replacing identical bytes would create a mode-only intermediate state:
         # the existing mode becomes the private temporary-file mode even though
         # the content did not change. Keep an already-durable identical leaf so
         # an interrupted journaled operation has no ambiguous mode transition.
-        if (self.inspect(relative) is not None and self.read(relative) == data
+        if (info is not None and self.read(relative) == data
+                and (mode is None or stat.S_IMODE(info.st_mode) == mode)
+                and (ownership is None or (info.st_uid, info.st_gid) == tuple(ownership))
                 and (windows_metadata is None or self.windows_metadata(relative) == windows_metadata)):
             return
         parent, handle, name = self.parent(relative, create=True)
-        info = self.inspect(relative)
-        mode = getattr(self, 'write_modes', {}).get(relative)
-        if os.name != 'nt' and mode is None and info is not None:
-            # inspect reads the leaf through its pinned parent. Preserve existing
-            # owner and managed modes; only new files use the private default.
-            mode = stat.S_IMODE(info.st_mode)
         if os.name == 'nt' and windows_metadata is None and info is not None:
             windows_metadata = self.windows_metadata(relative)
         # Transaction owners may precommit exact sibling names before a write.
@@ -1094,10 +1120,24 @@ class Tree:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
                 stream.flush()
+                if os.name != 'nt' and ownership is not None:
+                    uid, gid = ownership
+                    current = os.fstat(stream.fileno())
+                    if (current.st_uid, current.st_gid) != (uid, gid):
+                        os.fchown(stream.fileno(), -1 if current.st_uid == uid else uid,
+                                  -1 if current.st_gid == gid else gid)
                 if os.name != 'nt' and mode is not None:
                     # Forward replacement and recovery publish bytes and mode
                     # together. Failure here leaves the original leaf intact.
                     os.fchmod(stream.fileno(), mode)
+                if os.name != 'nt' and (ownership is not None or mode is not None):
+                    current = os.fstat(stream.fileno())
+                    if ownership is not None and (current.st_uid, current.st_gid) != tuple(ownership):
+                        raise ValidationError('Replacement ownership differs; original file retained')
+                    if mode is not None and stat.S_IMODE(current.st_mode) != mode:
+                        raise ValidationError('Replacement mode differs; original file retained')
+                if os.name == 'nt' and mode is not None and windows_metadata is None:
+                    _windows_set_mode(stream.fileno(), mode)
                 os.fsync(stream.fileno())
             if os.name == 'nt' and windows_metadata is not None:
                 _apply_windows_metadata(parent / temp, windows_metadata)

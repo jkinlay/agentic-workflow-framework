@@ -356,7 +356,8 @@ except (ValidationError, OSError, ValueError) as exc:
         self.assertFalse((destination / installer.MARKER).exists())
         self.assertFalse((destination / runtime["backup"]).exists())
         self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
-        self.assertEqual({"status": "NO_PENDING_INSTALL"}, installer.recover(destination))
+        self.assertEqual(expected if expected.get('retained_directories') else
+                         {"status": "NO_PENDING_INSTALL"}, installer.recover(destination))
         self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
 
     def test_awf217_n2_recovery_keeps_git_status_clean(self):
@@ -471,7 +472,8 @@ except (ValidationError, OSError, ValueError) as exc:
         self.assertFalse(installer._runtime_cleanup_path(destination, runtime).exists())
         repeated = self.run_awf215_recovery(destination)
         self.assertEqual(0, repeated.returncode, repeated.stderr)
-        self.assertEqual({"status": "NO_PENDING_INSTALL"}, json.loads(repeated.stdout))
+        self.assertEqual(expected if expected.get('retained_directories') else
+                         {"status": "NO_PENDING_INSTALL"}, json.loads(repeated.stdout))
         self.assertEqual(stage_digest, installer._runtime_tree_sha256(moved[0]))
         self.assertEqual(sentinel_bytes, sentinel.read_bytes())
         self.assertEqual(ignore_bytes, (destination / installer.GITIGNORE).read_bytes())
