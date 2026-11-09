@@ -18,19 +18,6 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 
-def pipe_set_blocking_unavailable(os_name, version_info):
-    return os_name == 'nt' and version_info < (3, 12)
-
-
-class PlatformSupportTests(unittest.TestCase):
-    def test_pipe_set_blocking_skip_is_limited_to_windows_before_312(self):
-        for os_name in ('posix', 'linux', 'darwin', 'nt'):
-            for version in ((3, 11), (3, 12), (3, 13)):
-                with self.subTest(os_name=os_name, version=version):
-                    self.assertEqual(os_name == 'nt' and version == (3, 11),
-                                     pipe_set_blocking_unavailable(os_name, version))
-
-
 class LauncherTests(unittest.TestCase):
     def test_dependency_import_orders_in_fresh_isolated_process(self):
         code = '''import ast,pathlib,sys
@@ -112,6 +99,29 @@ exec(compile(tree,str(path),'exec'),{'__file__':str(path)})
         unborn.assert_called_once()
         self.assertLessEqual(child.call_args.kwargs['timeout'], 3000 - self.launcher.CLEANUP_RESERVE_SECONDS)
 
+    def test_default_runner_is_the_durable_capture_implementation(self):
+        from installed_self_test_capture import run_bounded
+        self.assertIs(run_bounded, self.launcher.run_bounded)
+        status, _, _, child = self.invoke()
+        self.assertEqual(0, status)
+        child.assert_called_once()
+        self.assertEqual(self.artifacts / 'capture', child.call_args.kwargs['evidence_parent'])
+        self.assertTrue(child.call_args.kwargs['capture_output'])
+        self.assertTrue(child.call_args.kwargs['text'])
+        self.assertGreater(child.call_args.kwargs['timeout'], 0)
+        self.assertLessEqual(child.call_args.kwargs['timeout'],
+                             3000 - self.launcher.CLEANUP_RESERVE_SECONDS)
+        # Windows 3.11 checks the same forwarding contract above; supported
+        # runtimes also exercise persistence with the real isolated child.
+        if os.name != 'nt' or sys.version_info >= (3, 12):
+            (self.artifacts / 'self-test.json').unlink()
+            self.real_isolated_child(run_bounded)
+            captures = list((self.artifacts / 'capture').glob('*/capture.json'))
+            self.assertEqual(1, len(captures))
+            evidence = json.loads(captures[0].read_bytes())
+            self.assertEqual('exit', evidence['outcome'])
+            self.assertEqual(0, evidence['returncode'])
+
     def test_unborn_probe_is_immediately_before_launch(self):
         order = []
         def prepare(*args, **kwargs):
@@ -189,9 +199,7 @@ exec(compile(tree,str(path),'exec'),{'__file__':str(path)})
         self.assertEqual(1, self.invoke(child=child)[0])
         self.assertEqual(b'partial real report', (self.artifacts / 'self-test.json').read_bytes())
 
-    @unittest.skipIf(pipe_set_blocking_unavailable(os.name, sys.version_info),
-                     'os.set_blocking on Windows pipes requires Python 3.12 or later')
-    def test_real_isolated_child_executes_only_its_selected_installed_tests(self):
+    def real_isolated_child(self, child_runner):
         # Exercise the actual process boundary and InstalledLoader, without pip
         # or a native Linux interpreter on the Windows writer host.
         def prepare(root, project, **kwargs):
@@ -226,17 +234,26 @@ pathlib.Path(sys.argv[sys.argv.index('--report')+1]).write_text(json.dumps(repor
 ''')
             return Path(sys.executable)
         with mock.patch.object(self.launcher, 'prepare_project', side_effect=prepare), \
+                mock.patch.object(self.launcher, 'run_bounded', side_effect=child_runner) as runner, \
                 mock.patch.object(self.launcher, 'assert_unborn_head'), \
                 mock.patch.dict(os.environ, {'PYTHONPATH': str(ROOT / 'scripts')}), \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(0, self.launcher.main(self.args))
+        runner.assert_called_once()
         report = json.loads((self.artifacts / 'self-test.json').read_bytes())
         self.assertEqual(['.agentic/tests/test_selected.py'], report['selected_modules'])
-        captures = list((self.artifacts / 'capture').glob('*/capture.json'))
-        self.assertEqual(1, len(captures))
-        evidence = json.loads(captures[0].read_bytes())
-        self.assertEqual('exit', evidence['outcome'])
-        self.assertEqual(0, evidence['returncode'])
+
+    def test_real_isolated_child_executes_only_its_selected_installed_tests(self):
+        def portable_runner(command, *, evidence_parent, **kwargs):
+            # Persistence is covered by the installed harness; this regression
+            # exercises selection and isolation on every unit-matrix runtime.
+            self.assertEqual(self.artifacts / 'capture', evidence_parent)
+            self.assertGreater(kwargs['timeout'], 0)
+            self.assertLessEqual(kwargs['timeout'],
+                                 3000 - self.launcher.CLEANUP_RESERVE_SECONDS)
+            return subprocess.run(command, **kwargs)
+
+        self.real_isolated_child(portable_runner)
 
     def test_remaining_budget_caps_setup_child_and_stops_expired_launch(self):
         observed = []
