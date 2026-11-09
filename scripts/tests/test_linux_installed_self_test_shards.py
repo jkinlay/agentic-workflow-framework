@@ -19,6 +19,27 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 
 class LauncherTests(unittest.TestCase):
+    def test_dependency_import_orders_in_fresh_isolated_process(self):
+        code = '''import ast,pathlib,sys
+path=pathlib.Path(sys.argv[1])
+sys.path.insert(0,str(path.parent))
+tree=ast.parse(path.read_text())
+dependencies={'installed_self_test_fixture','installed_self_test_capture','agentic.child_process'}
+positions=[i for i,node in enumerate(tree.body)
+           if isinstance(node,ast.ImportFrom) and node.module in dependencies]
+nodes=[tree.body[i] for i in positions]
+nodes.sort(key=lambda node: (node.module=='agentic.child_process') != (sys.argv[2]=='agentic-first'))
+for i,node in zip(positions,nodes): tree.body[i]=node
+tree.body=tree.body[:max(positions)+1]
+exec(compile(tree,str(path),'exec'),{'__file__':str(path)})
+'''
+        for order in ('helpers-first', 'agentic-first'):
+            with self.subTest(order=order):
+                done = subprocess.run([sys.executable, '-B', '-I', '-c', code,
+                                       str(ROOT / 'scripts/run_installed_self_test_shard.py'), order],
+                                      capture_output=True, text=True, timeout=30)
+                self.assertEqual(0, done.returncode, done.stderr)
+
     def setUp(self):
         self.launcher = importlib.import_module('run_installed_self_test_shard')
         temporary = tempfile.TemporaryDirectory()
@@ -227,6 +248,42 @@ pathlib.Path(sys.argv[sys.argv.index('--report')+1]).write_text(json.dumps(repor
         self.assertEqual(0, status)
         self.assertTrue(all(c.kwargs['timeout'] <= 170 for c in run.call_args_list))
         self.assertLessEqual(child.call_args.kwargs['timeout'], 170)
+
+    def test_setup_captured_output_retained_on_success_timeout_and_nonzero(self):
+        for outcome in ('success', 'timeout', 'nonzero'):
+            with self.subTest(outcome=outcome):
+                (self.artifacts / 'self-test.json').unlink(missing_ok=True)
+                (self.artifacts / 'installer.log').unlink(missing_ok=True)
+                stdout, stderr = b'partial setup stdout', b'partial setup stderr'
+                def runner(command, **kwargs):
+                    if outcome == 'timeout':
+                        raise subprocess.TimeoutExpired(command, 1, output=stdout, stderr=stderr)
+                    if outcome == 'nonzero':
+                        raise subprocess.CalledProcessError(1, command, output=stdout, stderr=stderr)
+                    return subprocess.CompletedProcess(command, 0, stdout.decode(), stderr.decode())
+                def prepare(root, project, **kwargs):
+                    kwargs['run'](['setup'], timeout=1, capture_output=True, check=True)
+                    return self.prepare(root, project, **kwargs)
+                with mock.patch.object(self.launcher.subprocess, 'run', side_effect=runner):
+                    status, _, _, child = self.invoke(prepare=prepare)
+                self.assertEqual(0 if outcome == 'success' else 1, status)
+                log = (self.artifacts / 'installer.log').read_bytes()
+                self.assertIn(stdout, log)
+                self.assertIn(stderr, log)
+                if outcome != 'success':
+                    child.assert_not_called()
+
+    def test_setup_output_is_byte_bounded_and_marked_when_truncated(self):
+        def prepare(root, project, **kwargs):
+            for _ in range(3):
+                kwargs['run'](['setup'], timeout=1, capture_output=True)
+            return self.prepare(root, project, **kwargs)
+        done = subprocess.CompletedProcess(['setup'], 0, b'x' * 200000, b'y' * 200000)
+        with mock.patch.object(self.launcher.subprocess, 'run', return_value=done):
+            self.assertEqual(0, self.invoke(prepare=prepare)[0])
+        log = (self.artifacts / 'installer.log').read_bytes()
+        self.assertLessEqual(len(log), self.launcher.SETUP_OUTPUT_LIMIT_BYTES)
+        self.assertIn(b'[setup output truncated]', log)
 
 
 class FixtureTests(unittest.TestCase):

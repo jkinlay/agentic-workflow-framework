@@ -11,14 +11,18 @@ import subprocess
 import sys
 import time
 
+ROOT = Path(__file__).resolve().parents[1]
+# Initialize our library path explicitly; dependency imports must be order-independent.
+sys.path.insert(0, str(ROOT / '.agentic/lib'))
+
 from installed_self_test_fixture import (prepare_project, assert_unborn_head,
                                          assert_committed_head_skips)
 from installed_self_test_capture import run_bounded
 from agentic.child_process import child_env
 
-ROOT = Path(__file__).resolve().parents[1]
 DEADLINE_SECONDS = 50 * 60
 CLEANUP_RESERVE_SECONDS = 30
+SETUP_OUTPUT_LIMIT_BYTES = 64 * 1024
 
 
 def failure_report(path, shard, reason):
@@ -46,6 +50,8 @@ def main(argv=None):
     project = args.work_dir.resolve() / 'project'
     selection = args.selection_file.resolve()
     report_path = artifacts / 'self-test.json'
+    setup_output_bytes = 0
+    setup_output_truncated = False
 
     def remaining(cap):
         seconds = deadline - time.monotonic() - CLEANUP_RESERVE_SECONDS
@@ -53,8 +59,33 @@ def main(argv=None):
             raise TimeoutError('installed shard overall deadline exhausted')
         return min(cap, seconds)
 
+    def retain_setup_output(result):
+        nonlocal setup_output_bytes, setup_output_truncated
+        marker = b'\n[setup output truncated]\n'
+        for label in ('stdout', 'stderr'):
+            output = getattr(result, label, None)
+            if setup_output_truncated or not isinstance(output, (str, bytes)) or not output:
+                continue
+            if isinstance(output, str):
+                output = output.encode('utf-8', errors='replace')
+            data = label.encode('ascii') + b':\n' + output + b'\n'
+            available = SETUP_OUTPUT_LIMIT_BYTES - len(marker) - setup_output_bytes
+            retained = data[:available]
+            if len(data) > available:
+                retained += marker
+                setup_output_truncated = True
+            with (artifacts / 'installer.log').open('ab') as stream:
+                stream.write(retained)
+            setup_output_bytes += len(retained)
+
     def setup_run(command, *, timeout, env=None, **kwargs):
-        return subprocess.run(command, timeout=remaining(timeout), env=child_env(env), **kwargs)
+        try:
+            result = subprocess.run(command, timeout=remaining(timeout), env=child_env(env), **kwargs)
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+            retain_setup_output(exc)
+            raise
+        retain_setup_output(result)
+        return result
 
     try:
         artifacts.mkdir(parents=True, exist_ok=True)
