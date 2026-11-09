@@ -64,12 +64,20 @@ class AuthenticBaselineTests(unittest.TestCase):
         self.assertEqual(b'previous runtime bytes', (project / retained / 'previous-runtime').read_bytes())
         for relative in (retained + '/previous-runtime', retained + '/unexpected'):
             with self.subTest(tamper=relative):
-                copy = self.base / ('runtime-tamper-' + Path(relative).name)
-                shutil.copytree(project, copy)
-                (copy / relative).write_bytes(b'tampered owner evidence')
-                rejected = qualify_upgrade.compare_upgrade(before, inventory(copy), policy, copy)
-                self.assertFalse(rejected['preserved'])
-                self.assertIn(relative, rejected['remaining_changes'])
+                accepted = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                self.assertTrue(accepted['preserved'], accepted['violations'])
+                target = project / relative
+                original = target.read_bytes() if target.exists() else None
+                try:
+                    target.write_bytes(b'tampered owner evidence')
+                    rejected = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                    self.assertFalse(rejected['preserved'])
+                    self.assertIn(relative, rejected['remaining_changes'])
+                finally:
+                    if original is None:
+                        target.unlink()
+                    else:
+                        target.write_bytes(original)
 
     def test_adoption_evidence_is_an_exact_preservation_output(self):
         from agentic import installer
@@ -138,43 +146,68 @@ class AuthenticBaselineTests(unittest.TestCase):
         self.assertTrue(accepted['preserved'], accepted['violations'])
         record = json.loads((project / installer.RETAINED_JOURNAL).read_bytes())
         self.assertGreaterEqual(len(record['journal']['created_directories']), 25)
-        for mutation in ('existing-backup', 'missing-file', 'metadata-reference', 'missing-directories'):
+        raw = (project / installer.RETAINED_JOURNAL).read_bytes()
+        for mutation in ('missing-file', 'metadata-reference', 'missing-directories',
+                         'forged-runtime-proofs', 'existing-backup'):
             with self.subTest(mutation=mutation):
-                copy = self.base / ('journal-' + mutation)
-                shutil.copytree(project, copy)
+                accepted = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                self.assertTrue(accepted['preserved'], accepted['violations'])
                 changed = deepcopy(record)
                 journal = changed['journal']
-                if mutation == 'existing-backup':
-                    identity = journal['transaction_id']
-                    changed = json.loads(json.dumps(changed).replace(identity, previous_id))
-                    old = copy / record['journal']['runtime']['backup']
-                    prior = copy / ('.agentic/.venv.backup-' + previous_id)
-                    (prior / 'previous-runtime').write_bytes((old / 'previous-runtime').read_bytes())
-                    self.assertTrue(old.resolve().is_relative_to(copy.resolve()))
-                    shutil.rmtree(old)
-                    file_backups = copy / '.agentic-backup' / identity
-                    if file_backups.exists():
-                        self.assertTrue(file_backups.resolve().is_relative_to(copy.resolve()))
-                        self.assertTrue(file_backups.with_name(previous_id).resolve().is_relative_to(copy.resolve()))
-                        file_backups.rename(file_backups.with_name(previous_id))
-                    self.assertNotEqual(b'prior backup owner bytes', (prior / 'previous-runtime').read_bytes())
-                elif mutation == 'missing-file':
-                    row = next(row for row in journal['files'] if row['old_sha256'] is None
-                               and row['path'].startswith('.agentic/lib/agentic/'))
-                    journal['files'].remove(row)
-                elif mutation == 'metadata-reference':
-                    references = journal.setdefault('windows_metadata', {})
-                    path = next(iter(references), next(row['path'] for row in journal['files']
-                                                     if row['old_sha256'] is not None))
-                    references[path] = dict(sha256='f' * 64, size=123)
-                else:
-                    del journal['created_directories'][:25]
-                installer._retained_record_result(changed)
-                (copy / installer.RETAINED_JOURNAL).write_bytes(installer.json_bytes(changed))
-                rejected = qualify_upgrade.compare_upgrade(before, inventory(copy), policy, copy)
-                self.assertFalse(rejected['preserved'], mutation)
-                self.assertIn(installer.RETAINED_JOURNAL, rejected['remaining_changes'])
-        self.assertEqual(clean, inventory(project))
+                moved_runtime = moved_files = None
+                prior_bytes = (previous_backup / 'previous-runtime').read_bytes()
+                try:
+                    if mutation == 'existing-backup':
+                        identity = journal['transaction_id']
+                        changed = json.loads(json.dumps(changed).replace(identity, previous_id))
+                        old = project / record['journal']['runtime']['backup']
+                        quarantine = self.base / 'retention-original-runtime'
+                        self.assertTrue(old.resolve().is_relative_to(project.resolve()))
+                        self.assertTrue(quarantine.resolve().is_relative_to(self.base.resolve()))
+                        self.assertFalse(quarantine.exists())
+                        (previous_backup / 'previous-runtime').write_bytes((old / 'previous-runtime').read_bytes())
+                        old.rename(quarantine)
+                        moved_runtime = (quarantine, old)
+                        file_backups = project / '.agentic-backup' / identity
+                        if file_backups.exists():
+                            target = file_backups.with_name(previous_id)
+                            self.assertTrue(file_backups.resolve().is_relative_to(project.resolve()))
+                            self.assertTrue(target.resolve().is_relative_to(project.resolve()))
+                            self.assertFalse(target.exists())
+                            file_backups.rename(target)
+                            moved_files = (target, file_backups)
+                        self.assertNotEqual(b'prior backup owner bytes',
+                                            (previous_backup / 'previous-runtime').read_bytes())
+                    elif mutation == 'missing-file':
+                        row = next(row for row in journal['files'] if row['old_sha256'] is None
+                                   and row['path'].startswith('.agentic/lib/agentic/'))
+                        journal['files'].remove(row)
+                    elif mutation == 'metadata-reference':
+                        references = journal.setdefault('windows_metadata', {})
+                        path = next(iter(references), next(row['path'] for row in journal['files']
+                                                         if row['old_sha256'] is not None))
+                        references[path] = dict(sha256='f' * 64, size=123)
+                    elif mutation == 'forged-runtime-proofs':
+                        journal['runtime']['cleanup_identity'] = ['1' * 32, '2' * 32]
+                        journal['runtime']['cleanup_members'] = [
+                            ['nonexistent', 'file', 17, ['3' * 16, '4' * 16], 'f' * 64]]
+                    else:
+                        del journal['created_directories'][:25]
+                    installer._retained_record_result(changed)
+                    (project / installer.RETAINED_JOURNAL).write_bytes(installer.json_bytes(changed))
+                    rejected = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                    self.assertFalse(rejected['preserved'], mutation)
+                    self.assertIn(installer.RETAINED_JOURNAL, rejected['remaining_changes'])
+                    self.assertFalse(any('directory identities differ' in value
+                                         for value in rejected['violations']), rejected['violations'])
+                finally:
+                    if moved_files:
+                        moved_files[0].rename(moved_files[1])
+                    if moved_runtime:
+                        moved_runtime[0].rename(moved_runtime[1])
+                    (previous_backup / 'previous-runtime').write_bytes(prior_bytes)
+                    (project / installer.RETAINED_JOURNAL).write_bytes(raw)
+                self.assertEqual(clean, inventory(project))
 
     def test_adoption_audit_cannot_rebind_the_upgrade_transaction(self):
         from agentic import installer
@@ -205,10 +238,15 @@ class AuthenticBaselineTests(unittest.TestCase):
         audit = json.loads(audit_path.read_bytes())
         for identity in (previous_id, str(uuid.uuid4())):
             with self.subTest(transaction_id=identity):
-                event = audit['transactions'][0]
+                audit_path.write_bytes(installer.json_bytes(audit))
+                accepted = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                self.assertTrue(accepted['preserved'], accepted['violations'])
+                from copy import deepcopy
+                changed = deepcopy(audit)
+                event = changed['transactions'][0]
                 event['transaction_id'] = identity
                 event['resolution'] = 'adopted by transaction ' + identity
-                audit_path.write_bytes(installer.json_bytes(audit))
+                audit_path.write_bytes(installer.json_bytes(changed))
                 rejected = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
                 self.assertFalse(rejected['preserved'])
                 self.assertIn(installer.DIRECTORY_ADOPTIONS, rejected['remaining_changes'])

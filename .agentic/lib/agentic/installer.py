@@ -13,7 +13,7 @@ from pathlib import Path
 import uuid
 
 from . import ValidationError, VERSION
-from .canonical import MAX_DOCUMENT_BYTES, load_yaml, loads, now_text, sha256
+from .canonical import MAX_DOCUMENT_BYTES, load_yaml, loads, now_text, sha256, validate_value
 from .safeio import (Tree, relative_parts, validate_windows_metadata,
                      windows_directory_identity as _windows_directory_identity)
 from .providers.github import load_observation_report, validate_codeowner
@@ -890,8 +890,8 @@ def _finalize_compact_rollback(tree, journal, *, marker_present):
     return retained
 
 
-# Keep coordination documents small; each immutable source still obeys the
-# existing canonical parser bound. Pages never embed the accumulated history.
+# Keep coordination documents small. Oversized sources have hash-bound parts;
+# every stored document obeys the unchanged canonical parser bound.
 _EVIDENCE_INLINE_MAXIMUM = 1024 * 1024
 EVIDENCE_OBJECTS = '.agentic-install/evidence'
 
@@ -939,7 +939,11 @@ def _evidence_list_put(tree, items):
                 break
             offset += 1
         if not page['items']:
-            raise ValidationError('Retained evidence item exceeds its page bound')
+            # A single large item is represented by a bounded source reference,
+            # never by increasing either the page or document limit.
+            page = dict(format='awf-evidence-page-2', previous=head,
+                        items=[_evidence_source_put(tree, items[offset])])
+            offset += 1
         head = _evidence_put(tree, page)
     return head
 
@@ -952,12 +956,109 @@ def _evidence_list_get(tree, head):
         seen.add(head)
         page = _evidence_get(tree, head)
         if (not isinstance(page, dict) or set(page) != {'format', 'previous', 'items'} or
-                page['format'] != 'awf-evidence-page-1' or not isinstance(page['items'], list) or
+                page['format'] not in {'awf-evidence-page-1', 'awf-evidence-page-2'} or
+                not isinstance(page['items'], list) or
                 not 1 <= len(page['items']) <= 128 or len(json_bytes(page)) > _EVIDENCE_INLINE_MAXIMUM):
             raise ValidationError('Invalid retained evidence page')
-        pages.append(page['items'])
+        if page['format'] == 'awf-evidence-page-2':
+            if len(page['items']) != 1:
+                raise ValidationError('Invalid retained evidence reference page')
+            pages.append([_evidence_source_get(tree, page['items'][0])])
+        else:
+            pages.append(page['items'])
         head = page['previous']
     return [item for page in reversed(pages) for item in page]
+
+
+def _evidence_value_put(tree, value):
+    """Split JSON values structurally; no oversized document is parsed."""
+    def encode(item):
+        if len(json_bytes(item)) <= _EVIDENCE_INLINE_MAXIMUM // 4:
+            return dict(value=item)
+        return dict(reference=_evidence_value_put(tree, item))
+
+    if isinstance(value, dict):
+        kind = 'mapping'
+        items = [[encode(key), encode(item)] for key, item in value.items()]
+    elif isinstance(value, list):
+        kind = 'sequence'
+        items = [encode(item) for item in value]
+    elif isinstance(value, str):
+        kind = 'string'
+        # Six bytes per escaped control character is the largest JSON encoding;
+        # this also leaves room for multibyte scalars and page framing.
+        width = _EVIDENCE_INLINE_MAXIMUM // 12
+        items = [value[offset:offset + width] for offset in range(0, len(value), width)]
+    else:
+        raise ValidationError('Invalid oversized evidence value')
+    return _evidence_put(tree, dict(format='awf-evidence-value-1', kind=kind,
+                                   items=_evidence_list_put(tree, items)))
+
+
+def _evidence_value_get(tree, reference, active=None):
+    if not isinstance(reference, str) or re.fullmatch('[0-9a-f]{64}', reference) is None:
+        raise ValidationError('Invalid retained evidence reference')
+    active = set() if active is None else active
+    if reference in active or len(active) > 64:
+        raise ValidationError('Cyclic or overnested retained evidence value')
+    active.add(reference)
+    try:
+        node = _evidence_get(tree, reference)
+        if (not isinstance(node, dict) or set(node) != {'format', 'kind', 'items'} or
+                node['format'] != 'awf-evidence-value-1'):
+            raise ValidationError('Invalid retained evidence value')
+        items = _evidence_list_get(tree, node['items'])
+
+        def decode(item):
+            if not isinstance(item, dict):
+                raise ValidationError('Invalid retained evidence part')
+            if set(item) == {'value'}:
+                return item['value']
+            if set(item) == {'reference'}:
+                return _evidence_value_get(tree, item['reference'], active)
+            raise ValidationError('Invalid retained evidence part')
+
+        if node['kind'] == 'sequence':
+            return [decode(item) for item in items]
+        if node['kind'] == 'mapping':
+            result = {}
+            for pair in items:
+                if not isinstance(pair, list) or len(pair) != 2:
+                    raise ValidationError('Invalid retained evidence mapping part')
+                key = decode(pair[0])
+                if not isinstance(key, str) or key in result:
+                    raise ValidationError('Duplicate or invalid retained evidence mapping key')
+                result[key] = decode(pair[1])
+            return result
+        if node['kind'] == 'string' and all(isinstance(item, str) for item in items):
+            return ''.join(items)
+        raise ValidationError('Invalid retained evidence value kind')
+    finally:
+        active.remove(reference)
+
+
+def _evidence_source_put(tree, source):
+    raw = json_bytes(source)
+    if len(raw) <= MAX_DOCUMENT_BYTES:
+        return _evidence_put(tree, source)
+    validate_value(source)
+    return _evidence_put(tree, dict(format='awf-evidence-source-1',
+        source_sha256=sha256(raw), source_size=len(raw), value=_evidence_value_put(tree, source)))
+
+
+def _evidence_source_get(tree, reference):
+    source = _evidence_get(tree, reference)
+    if isinstance(source, dict) and source.get('format') == 'awf-evidence-source-1':
+        if (set(source) != {'format', 'source_sha256', 'source_size', 'value'} or
+                type(source['source_size']) is not int or source['source_size'] <= MAX_DOCUMENT_BYTES):
+            raise ValidationError('Invalid split retained evidence source')
+        value = _evidence_value_get(tree, source['value'])
+        validate_value(value)
+        raw = json_bytes(value)
+        if len(raw) != source['source_size'] or sha256(raw) != source['source_sha256']:
+            raise ValidationError('Retained evidence source binding mismatch')
+        return value
+    return source
 
 
 def _pack_retained_record(tree, record):
@@ -965,7 +1066,7 @@ def _pack_retained_record(tree, record):
     if len(json_bytes(record)) <= _EVIDENCE_INLINE_MAXIMUM:
         return record
     return dict(format='awf-retained-directories-3',
-        records=_evidence_list_put(tree, [_evidence_put(tree, source) for source in _retained_sources(record)]),
+        records=_evidence_list_put(tree, [_evidence_source_put(tree, source) for source in _retained_sources(record)]),
         retained_directories=_evidence_list_put(tree, record['retained_directories']))
 
 
@@ -974,7 +1075,7 @@ def _unpack_retained_record(tree, record):
         if set(record) != {'format', 'records', 'retained_directories'} or tree is None:
             raise ValidationError('Invalid paged retained evidence')
         record = dict(format='awf-retained-directories-2',
-            records=[_evidence_get(tree, digest) for digest in _evidence_list_get(tree, record['records'])],
+            records=[_evidence_source_get(tree, digest) for digest in _evidence_list_get(tree, record['records'])],
             retained_directories=_evidence_list_get(tree, record['retained_directories']))
     _retained_record_result(record)
     return record
@@ -1126,7 +1227,7 @@ def _directory_adoption_audit(raw, *, tree=None):
     if isinstance(audit, dict) and audit.get('format') == 'awf-directory-adoptions-2':
         if set(audit) != {'format', 'transactions'} or tree is None:
             raise ValidationError('Invalid paged directory adoption audit')
-        events = [_evidence_get(tree, ref) for ref in _evidence_list_get(tree, audit['transactions'])]
+        events = [_evidence_source_get(tree, ref) for ref in _evidence_list_get(tree, audit['transactions'])]
         audit = dict(format='awf-directory-adoptions-1', transactions=[
             dict(event, evidence=_unpack_retained_record(tree, event['evidence'])) for event in events])
     if (not isinstance(audit, dict) or set(audit) != {'format', 'transactions'} or
@@ -1155,7 +1256,7 @@ def _write_directory_adoption_audit(tree, audit):
     if len(json_bytes(audit)) <= _EVIDENCE_INLINE_MAXIMUM:
         tree.write(DIRECTORY_ADOPTIONS, json_bytes(audit))
         return
-    events = [_evidence_put(tree, dict(event, evidence=_pack_retained_record(tree, event['evidence'])))
+    events = [_evidence_source_put(tree, dict(event, evidence=_pack_retained_record(tree, event['evidence'])))
               for event in audit['transactions']]
     tree.write(DIRECTORY_ADOPTIONS, json_bytes(dict(format='awf-directory-adoptions-2',
         transactions=_evidence_list_put(tree, events))))

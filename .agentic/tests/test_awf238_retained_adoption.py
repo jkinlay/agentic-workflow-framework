@@ -144,6 +144,67 @@ class RetainedAdoptionTests(unittest.TestCase):
                 self.assertLessEqual(len(raw), installer._EVIDENCE_INLINE_MAXIMUM)
                 self.assertLessEqual(len(value['items']), 128)
 
+    def test_oversized_source_is_split_without_blocking_transaction_operations(self):
+        path = '.agentic/old-only'
+        record = self.retain([path])
+        # Synthetic historical entries; no long filesystem names are created.
+        prefix = path + '/' + '/'.join(['x' * 120] * 71 + ['y' * 73])
+        record['journal']['files'] = [dict(path=prefix + '/%04d/old' % n,
+            old_sha256=None, old_size=None, old_mode=None, new_sha256='a' * 64,
+            new_mode=0o600) for n in range(1000)]
+        raw = installer.json_bytes(record)
+        self.assertGreater(len(raw), 8 * 1024 * 1024)
+        installer._retained_record_result(record)
+        (self.root / installer.RETAINED_JOURNAL).unlink()
+        with Tree(self.root) as tree:
+            installer._merge_retained_evidence(tree, record)
+            restored = installer._read_retained_record(tree)
+            self.assertEqual([record], installer._retained_sources(restored))
+            self.assertEqual(sha256(raw), sha256(installer.json_bytes(
+                installer._retained_sources(restored)[0])))
+            for relative in tree.file_list(subtree=installer.EVIDENCE_OBJECTS):
+                evidence = tree.read(relative)
+                self.assertLessEqual(len(evidence), 8 * 1024 * 1024)
+                installer.loads(evidence.decode('utf-8'))
+            packed = installer.loads(tree.read(installer.RETAINED_JOURNAL).decode('utf-8'))
+            reference = installer._evidence_list_get(tree, packed['records'])[0]
+            envelope = installer._evidence_get(tree, reference)
+            self.assertEqual('awf-evidence-source-1', envelope['format'])
+            self.assertEqual(sha256(raw), envelope['source_sha256'])
+            self.assertEqual(len(raw), envelope['source_size'])
+            envelope['source_sha256'] = 'f' * 64
+            forged = installer._evidence_put(tree, envelope)
+            with self.assertRaisesRegex(ValidationError, 'source binding mismatch'):
+                installer._evidence_source_get(tree, forged)
+            tree.unlink(installer.EVIDENCE_OBJECTS + '/' + forged + '.json')
+        for operation in (self.install, self.install, lambda: installer.recover(self.root)):
+            operation()
+            self.assertEqual([path], installer.retained_directory_status(self.root)['retained_directories'])
+        with Tree(self.root) as tree:
+            installer._adopt_transaction_directories(tree, dict(transaction_id=str(uuid.uuid4()),
+                directory_adoptions=[dict(path=path, identity=installer._directory_identity(tree, path),
+                    evidence_sha256=sha256(raw))]))
+            audit = installer._directory_adoption_audit(tree.read(installer.DIRECTORY_ADOPTIONS), tree=tree)
+            self.assertEqual([record], installer._retained_sources(audit['transactions'][0]['evidence']))
+            self.assertTrue((self.root / path).is_dir())
+
+    def test_single_oversized_page_item_keeps_exact_value_and_parser_limit(self):
+        class MemoryTree:
+            def __init__(self): self.files = {}
+            def inspect(self, path): return path in self.files or None
+            def read(self, path, **kwargs): return self.files[path]
+            def write(self, path, raw): self.files[path] = raw
+            write_exclusive = write
+        value = ('\u0001\U0001f642' * (1024 * 1024))
+        tree = MemoryTree()
+        with self.assertRaisesRegex(ValidationError, 'Document exceeds 8 MiB'):
+            installer.loads(installer.json_bytes(value).decode('utf-8'))
+        head = installer._evidence_list_put(tree, [value])
+        self.assertEqual([value], installer._evidence_list_get(tree, head))
+        for raw in tree.files.values():
+            self.assertLessEqual(len(raw), 8 * 1024 * 1024)
+            installer.loads(raw.decode('utf-8'))
+
     def test_evidence_replace_crash_has_only_bound_recoverable_temporaries(self):
         import base64
         import subprocess

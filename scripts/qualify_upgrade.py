@@ -587,6 +587,15 @@ def _authenticate_retained_journal(before, after, policy, project, journal):
     """Derive complete membership from baseline policy, never emitted rows."""
     identity = journal['transaction_id']
     _fresh_retention_namespace(before, policy, identity)
+    baseline = policy.get('runtime_before')
+    expected_runtime = dict(path=installation.RUNTIME,
+        previous_sha256=(baseline or {}).get('sha256'),
+        new_sha256=(after.get('runtime') or {}).get('sha256'),
+        stage='.agentic/.venv.staging-' + identity,
+        backup='.agentic/.venv.backup-' + identity,
+        cleanup_identity=None, cleanup_members=None)
+    if not baseline or journal['runtime'] != expected_runtime:
+        raise ValueError('Retained transaction runtime record differs from baseline policy')
     prior = policy.get('retention_before')
     if journal['format'] != 'awf-install-journal-4' or journal.get('temporary_files') != 'sibling-uuid5-v2':
         raise ValueError('Retention requires a complete compact transaction')
