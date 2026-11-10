@@ -268,10 +268,33 @@ class ReportingE2Regressions(unittest.TestCase):
         self.assertEqual({d['status'] for d in self.status()['deliveries'] if d['platform'] == 'teams'}, {'UNKNOWN'})
         # Time the complete production cycle, including its Git admission.
         # The harness publishes/observes fixture inputs before entering it.
+        from agentic.reporting import http_transport
+        from urllib.parse import unquote, urlsplit
+        pauses = []
+        original_init = http_transport.BaseTransport.__init__
+
+        def transport_init(transport, **kwargs):
+            original_init(transport, **kwargs)
+            original_pause = transport.pause
+            def pause(seconds):
+                pauses.append((transport.platform, seconds))
+                return original_pause(seconds)
+            transport.pause = pause
+
         def before_controller():
             timing['next_cycle_start'] = time.monotonic()
-        continued = self.cycle('2026-11-07T18:00:01Z', [ticket('EX-1', 1, paths=['README.md'])],
-                               before_controller=before_controller)
+            timing['next_cycle_calls'] = len(self.network.calls)
+        with patch.object(http_transport.BaseTransport, '__init__', transport_init):
+            continued = self.cycle('2026-11-07T18:00:01Z', [ticket('EX-1', 1, paths=['README.md'])],
+                                   before_controller=before_controller)
+        # One Teams verification and three bounded readbacks; Slack is done.
+        # Record the transport's own pauses, never patch shared stdlib clocks.
+        self.assertEqual(
+            [('GET', kind) for kind in ('me', 'organization', *TEAMS_DESTINATION.split('/'),
+                                        'members', 'messages', 'messages', 'messages')],
+            [(method, unquote(urlsplit(url).path).rsplit('/', 1)[-1])
+             for method, url in self.network.calls[timing['next_cycle_calls']:]])
+        self.assertEqual([('teams', 0.1), ('teams', 0.1)], pauses)
         self.assertEqual(
             (True, False, 1, [], {'UNKNOWN'}),
             (self.network.entered.is_set(), self.network.block.is_set(),

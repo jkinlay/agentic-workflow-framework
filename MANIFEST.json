@@ -509,7 +509,7 @@
     ".agentic/tests/test_reporting_e15_regressions.py": "51370c0d466a5d3587a56ce31eb8747e75a33427c91bc3c1dcf6f8a8d60ff18c",
     ".agentic/tests/test_reporting_e16_regressions.py": "5f261cba8b591625d98dcac01dc0d92a6556b3cbf8033b6e7dd92f9196a3a283",
     ".agentic/tests/test_reporting_e17_regressions.py": "db96695a0cd3fa47eada73de6c6cd84de805119584da67b21c797fcae423d230",
-    ".agentic/tests/test_reporting_e2_regressions.py": "51b90a7893033652d7f0844b35b4b02100d2f6366cae55295e6c7fa732366aa8",
+    ".agentic/tests/test_reporting_e2_regressions.py": "062a5120ae783cece3dfe5c3373621610a1b9df31e351889f1a42129d8fc7a64",
     ".agentic/tests/test_reporting_e3_regressions.py": "7675dd62800c46b00dfd13a2c610f034f6c32ccbde2bfdbcc9153b44b861568c",
     ".agentic/tests/test_reporting_e4_regressions.py": "56caaacaaf8add18b96d6b09c0411468181b16b72dbc3b9aec0c7a2995709fca",
     ".agentic/tests/test_reporting_e5_regressions.py": "9e819a4b150ba163bc4c79d1f63090a69d50c7e8efdc0a39212ddfbb65396911",
