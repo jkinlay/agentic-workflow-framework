@@ -558,6 +558,7 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         stage = Path(transaction.stage)
         backup = Path(transaction.backup)
         had_previous = transaction.had_previous
+    runtime_swap_started = False
     try:
         venv.EnvBuilder(with_pip=False, system_site_packages=False, clear=False).create(stage)
         stage_interpreter = _runtime_interpreter(stage)
@@ -571,6 +572,7 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
             transaction.record_staged_runtime()
         if had_previous:
             os.replace(runtime_root, backup)
+        runtime_swap_started = True
         os.replace(stage, runtime_root)
         _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files)
         # Final-path validation is the standalone commit point. A coordinated
@@ -582,7 +584,10 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         # Retain every possible recovery endpoint. In particular, no finally
         # block may retry deletion or replace the original build exception.
         try:
-            retained = [path for path in (stage, backup, runtime_root)
+            # Before canonical replacement, the previous runtime is still live,
+            # including when its rename to the backup fails. Report only residue.
+            candidates = (stage, backup) + ((runtime_root,) if runtime_swap_started else ())
+            retained = [path for path in candidates
                         if path.exists() or path.is_symlink()]
             if retained:
                 with Tree(root) as tree:

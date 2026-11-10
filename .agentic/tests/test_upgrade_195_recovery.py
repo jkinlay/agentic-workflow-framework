@@ -179,6 +179,23 @@ class SimulatedTermination(BaseException):
 
 @skip_unless_source_repo('requires authentic historical Git bytes', 'scripts/publish_release.py', '.git')
 class PublishedRecoveryTests(unittest.TestCase):
+    def test_conditional_runtime_recovery_and_diagnostic_retirement_are_consistent(self):
+        required = (
+            'If no backup exists and canonical `.agentic/.venv` matches `runtime.previous_sha256`, '
+            'quarantine only the stage outside the project; leave the canonical runtime untouched.',
+            'No owner retirement CLI exists.',
+            'move only the resolved `retained-journal.json` outside the project',
+            'legacy `.agentic-backup/<txid>`',
+        )
+        for relative in ('MIGRATION-v1.9.5-to-v1.9.6.md',
+                         '.agentic/docs/38-RELEASE-196-QUALIFICATION.md',
+                         'docs/runbook/19-runbook-journal-recovery.md'):
+            with self.subTest(document=relative):
+                text = (ROOT / relative).read_text(encoding='utf-8')
+                for clause in required:
+                    self.assertIn(clause, text)
+
+
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory()
@@ -548,6 +565,8 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
                         retained_before = refusal_inventory(project)
                         self.assertEqual(REFUSAL, self.recover_refused(project, forbid_mutation=True)['diagnostic'])
                         self.assertEqual(retained_before, refusal_inventory(project))
+                        if boundary == 'staged':
+                            self.assertFalse((project / runtime['backup']).exists())
                         old_path = runtime['path'] if boundary == 'staged' else runtime['backup']
                         self.assertEqual(runtime['previous_sha256'],
                                          installer._runtime_tree_sha256(project / old_path))

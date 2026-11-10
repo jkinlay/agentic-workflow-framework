@@ -1317,7 +1317,51 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertFalse((self.dest / installer.JOURNAL).exists())
         self.assertFalse((self.dest / installer.MARKER).exists())
 
-    def test_runtime_stage_failure_leaves_no_partial_runtime_or_transaction_residue(self):
+    def _assert_standalone_preswap_residue(self, error_type):
+        # Begin with an existing, validated runtime.
+        wheelhouse = self.prepare_runtime_source()
+        self.perform()
+        adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        canonical = self.dest / installer.RUNTIME
+        marker = canonical / 'untouched-owner-runtime'
+        marker.write_bytes(b'previous good runtime\n')
+        original_runtime = installer._runtime_tree_sha256(canonical)
+        captured = {}
+        def fail(interpreter, root, stage, *args):
+            captured.update(stage=stage, before=refusal_inventory(self.dest),
+                            digest=installer._runtime_tree_sha256(stage))
+            raise error_type('injected pre-swap failure')
+        with patch.object(adoption, '_validate_runtime', side_effect=fail):
+            with self.assertRaises(error_type) as raised:
+                adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        self.assertEqual('injected pre-swap failure', str(raised.exception))
+        stage, stages, relative = retained_stage_paths(self.dest, captured['stage'])
+        self.assertEqual([stage], stages)
+        evidence = installer.retained_directory_status(self.dest)
+        self.assertNotIn(installer.RUNTIME, evidence['retained_directories'])
+        self.assertTrue(any(row['path'] == relative for row in evidence['cleanup_pending']))
+        self.assertTrue(all(row['path'] != installer.RUNTIME for row in evidence['cleanup_pending']))
+        self.assertEqual('RECOVERY_REFUSED', evidence['status'])
+        assert_retained(self, self.dest, captured['before'], [relative])
+        self.assertEqual(original_runtime, installer._runtime_tree_sha256(canonical))
+        self.assertEqual(b'previous good runtime\n', marker.read_bytes())
+        self.assertEqual(captured['digest'], installer._runtime_tree_sha256(stage))
+        self.assertEqual([], list((self.dest / '.agentic').glob('.venv.backup-*')))
+        after = refusal_inventory(self.dest)
+        self.assertEqual({p: value for p, value in captured['before'].items()
+                          if p != installer.RETAINED_JOURNAL},
+                         {p: value for p, value in after.items()
+                          if p != installer.RETAINED_JOURNAL})
+        self.assertEqual(['Runtime cleanup pending; inspect retained-journal.json before owner recovery'],
+                         raised.exception.__notes__)
+
+    def test_standalone_validation_failure_reports_stage_without_live_runtime(self):
+        self._assert_standalone_preswap_residue(ValidationError)
+
+    def test_standalone_interrupt_reports_stage_without_live_runtime(self):
+        self._assert_standalone_preswap_residue(KeyboardInterrupt)
+
+    def test_runtime_stage_failure_retains_exact_stage_and_recovery_evidence(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
         with installer.Tree(self.dest) as tree:
@@ -1360,7 +1404,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertFalse((self.dest / installer.MARKER).exists())
         self.assertEqual([], list((self.dest / '.agentic').glob('.venv.cleanup-*')))
 
-    def test_runtime_success_atomically_replaces_previous_runtime_and_cleans_transactions(self):
+    def test_runtime_success_replaces_previous_runtime_and_retains_exact_backup(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
         adoption.ensure_installed_runtime(self.dest, wheelhouse)
@@ -1379,7 +1423,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual([backups[0].relative_to(self.dest).as_posix()],
                          installer.retained_directory_status(self.dest)['retained_directories'])
 
-    def test_runtime_cleanup_failure_after_commit_keeps_new_good_runtime_and_retries_cleanup(self):
+    def test_runtime_cleanup_diagnostic_failure_preserves_new_runtime_and_exact_backup(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
         adoption.ensure_installed_runtime(self.dest, wheelhouse)
@@ -1962,7 +2006,7 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         self.assertTrue((self.root / installer.JOURNAL).exists())
         self.assertTrue((self.root / installer.MARKER).exists())
 
-    def test_backup_cleanup_authenticates_before_delete_and_resumes_partial_removal(self):
+    def test_backup_cleanup_retains_exact_backup_without_removal_and_reports_pending(self):
         transaction_id = str(uuid.uuid4())
         managed = ".agentic/installed-manifest.json"
         new = b"upgraded receipt\n"
