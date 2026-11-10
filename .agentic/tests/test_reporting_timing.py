@@ -1,10 +1,21 @@
 """Deadline and progress regressions through offline ports and controller seams."""
 import threading
+from time import sleep as _slow_sleep
 import unittest
 from unittest.mock import patch
 
 import source_only
 from agentic.reporting.bounded import DeliveryBudget
+
+
+class _FixtureNamespace:
+    """Override one module consumer without mutating the shared module."""
+    def __init__(self, module, **overrides):
+        self.module = module
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name):
+        return getattr(self.module, name)
 
 
 class _LogicalSlowCalls:
@@ -13,6 +24,7 @@ class _LogicalSlowCalls:
     Each child inherits its parent's elapsed time. A join merges the later
     completion, so concurrent destination calls overlap rather than add up.
     Budget code sees the original 30/45-second deadlines and exact call delays.
+    Host subprocess polling, pipe readers and other infrastructure stay native.
     """
     def __init__(self):
         self.local = threading.local()
@@ -26,9 +38,16 @@ class _LogicalSlowCalls:
     def __enter__(self):
         from contextlib import ExitStack
         from contextvars import Context
+        from agentic.reporting import deadline
         from agentic.reporting.http_transport import BaseTransport
+        import test_reporting_e3_regressions as e3
         clock = self
         original = threading.Thread
+        workers = {
+            ('agentic.reporting.runtime', 'drain.<locals>.run_destination'),
+            ('agentic.continuous_controller',
+             'production_controller_cycle.<locals>.periodic_observations'),
+        }
         class JoinedThread(original):
             def start(self):
                 self.started_at = clock.now()
@@ -49,6 +68,16 @@ class _LogicalSlowCalls:
 
             def join(self, timeout=None):
                 clock.local.elapsed = max(clock.now(), self.finished_at)
+
+        class ReportingThread(JoinedThread):
+            def __new__(cls, *args, **kwargs):
+                target = kwargs.get('target', args[1] if len(args) > 1 else None)
+                identity = (getattr(target, '__module__', None),
+                            getattr(target, '__qualname__', None))
+                if identity not in workers:
+                    return original(*args, **kwargs)
+                return super().__new__(cls)
+
         class LogicalTimer:
             def __init__(self, *args, **kwargs):
                 pass
@@ -66,9 +95,12 @@ class _LogicalSlowCalls:
         for name, value in [('agentic.reporting.bounded.monotonic', self.now),
                             ('agentic.reporting.runtime.monotonic', self.now),
                             ('agentic.reporting.deadline.monotonic', self.now),
-                            ('time.sleep', self.sleep),
-                            ('threading.Timer', LogicalTimer),
-                            ('threading.Thread', JoinedThread),
+                            (__name__ + '._slow_sleep', self.sleep),
+                            ('test_reporting_e3_regressions.time',
+                             _FixtureNamespace(e3.time, sleep=self.sleep)),
+                            ('agentic.reporting.deadline.threading',
+                             _FixtureNamespace(deadline.threading, Timer=LogicalTimer)),
+                            ('threading.Thread', ReportingThread),
                             ('agentic.reporting.http_transport.BaseTransport.__init__', transport)]:
             self.stack.enter_context(patch(name, value))
         return self
@@ -86,7 +118,24 @@ def _logical_slow_calls(test):
     return run
 
 
+def _host_subprocess_waiter(polls):
+    """Model POSIX waitpid polling without changing its host clock or sleeper."""
+    import time
+    delay = .0005
+    for _ in range(polls):
+        delay = min(delay * 2, .05)
+        time.sleep(delay)
+
+
 class ReportingTimingTests(unittest.TestCase):
+    def test_host_subprocess_polling_never_advances_reporting_clock(self):
+        for polls in (0, 1, 100, 1000):
+            with self.subTest(polls=polls), _LogicalSlowCalls() as clock:
+                before = clock.now()
+                _host_subprocess_waiter(polls)
+                self.assertEqual(clock.now() - before, 0)
+
+    @_logical_slow_calls
     def test_budget_expiring_before_retention_releases_only_the_live_uninvoked_claim(self):
         from copy import deepcopy
         from agentic import ValidationError
@@ -125,11 +174,11 @@ class ReportingTimingTests(unittest.TestCase):
         case.network.latency = 0
         original_http = type(case.network).__call__
         def http(network, method, url, headers, payload):
-            time.sleep(1.5 if 'slack.com' in url else 2.2)
+            _slow_sleep(1.5 if 'slack.com' in url else 2.2)
             return original_http(network, method, url, headers, payload)
         original_observe = case.helper.observe_candidate
         def observe(candidate, now):
-            time.sleep(2.5)
+            _slow_sleep(2.5)
             return dict(original_observe(candidate, now), candidate=deepcopy(candidate))
         case.helper.observe_candidate = observe
         turns, errors = [], []
@@ -178,11 +227,11 @@ class ReportingTimingTests(unittest.TestCase):
         case.network.latency = 0
         original_http = type(case.network).__call__
         def http(network, method, url, headers, payload):
-            time.sleep(1.5 if 'slack.com' in url else 2.2)
+            _slow_sleep(1.5 if 'slack.com' in url else 2.2)
             return original_http(network, method, url, headers, payload)
         original_observe = case.helper.observe_candidate
         def observe(candidate, now):
-            time.sleep(2.5)
+            _slow_sleep(2.5)
             return dict(original_observe(candidate, now), candidate=deepcopy(candidate))
         case.helper.observe_candidate = observe
         turns = []
@@ -251,7 +300,7 @@ class ReportingTimingTests(unittest.TestCase):
         case.runner.inventory = []
         original_observe = case.helper.observe_candidate
         def observe(candidate, now):
-            time.sleep(2.5)
+            _slow_sleep(2.5)
             return dict(original_observe(candidate, now), candidate=deepcopy(candidate))
         case.helper.observe_candidate = observe
         with case.helper.store.transaction() as db:
@@ -360,7 +409,7 @@ class ReportingTimingTests(unittest.TestCase):
         case.network.latency = 1.5
         original = case.helper.observe_candidate
         def observe(candidate, now):
-            time.sleep(2.5)
+            _slow_sleep(2.5)
             return dict(original(candidate, now), candidate=deepcopy(candidate))
         case.helper.observe_candidate = observe
         turns, errors = [], []
@@ -459,6 +508,7 @@ class ReportingTimingTests(unittest.TestCase):
         self.assertEqual(latest[0]['status'], 'DELIVERED')
         self.assertEqual(latest[0]['attempts'], first[0]['attempts'])
 
+    @_logical_slow_calls
     def test_multiple_owner_alerts_preserve_hourly_and_eod_admission(self):
         from copy import deepcopy
         import json
