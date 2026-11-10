@@ -308,7 +308,13 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		class JournalCaptured(BaseException):
 			pass
 
+		write_update = installer._write_bound_journal_update
+
 		def capture_journal(_tree, journal, _update_kind=None):
+			if _update_kind == 'directory_prepare':
+				self.assertEqual('object_prepare', journal['phase'])
+				self.assertIsNone(journal['managed_after_sha256'])
+				return write_update(_tree, journal, _update_kind)
 			if journal['phase'] == 'active' and journal['managed_after_sha256'] is None:
 				captured['raw'] = installer._journal_bytes(journal)
 				raise JournalCaptured

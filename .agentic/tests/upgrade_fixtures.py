@@ -191,9 +191,12 @@ def advance_one_fixture_step(destination, version):
     state = {path.relative_to(root).as_posix(): path.read_bytes()
              for path in root.joinpath(".agentic-state").rglob("*") if path.is_file()}
     table = load_known_versions((ROOT / KNOWN_VERSIONS).read_bytes())
+    with Tree(root) as tree:
+        source_identity = identify_installation(tree, table, config, receipt)
     migrated = migrate_step(MigrationBundle(config, operating, receipt, provenance,
                                              MappingProxyType(state)),
-                            version, next_version, table["versions"][next_version])
+                            version, next_version, table["versions"][next_version],
+                            install_id=source_identity["install_id"])
 
     old_paths = set(current["managed_files"])
     new_paths = set(following["managed_files"])

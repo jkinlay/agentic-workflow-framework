@@ -17,6 +17,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -559,6 +560,19 @@ def git(cwd, *args):
 
 @unittest.skipUnless((ROOT / "MANIFEST.json").is_file(), "source repository only")
 class InstalledSelfTestTests(unittest.TestCase):
+    def test_budgeting_document_links_are_present_in_manifest_only_install(self):
+        from urllib.parse import unquote
+        from agentic.installer import managed
+        document = ROOT / '.agentic/docs/39-BUDGETING.md'
+        installed = {path for path in json.loads((ROOT / 'MANIFEST.json').read_bytes())['files']
+                     if managed(path)}
+        for target in re.findall(r'(?<!!)\[[^\]]+\]\(([^\s)]+)\)', document.read_text(encoding='utf-8')):
+            target = unquote(target.strip('<>').split('#', 1)[0])
+            if not target or re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', target):
+                continue
+            relative = (document.parent / target).resolve().relative_to(ROOT.resolve()).as_posix()
+            self.assertIn(relative, installed, 'Broken installed document link: ' + target)
+
     def assert_unborn_head(self, project):
         assert_unborn_head(project, run=run_with_timeout, env=child_env(dict(os.environ)))
 

@@ -16,6 +16,7 @@ from agentic.canonical import load_yaml
 from agentic.installer import CONFIG, INSTALLED, PROVENANCE, install, verify_installed
 from source_only import skip_unless_source_repo
 from upgrade_fixtures import materialize, verify_materialized
+from upgrade_195_fixtures import materialize_candidate
 
 
 @skip_unless_source_repo('requires committed historical fixtures, without requiring Git metadata',
@@ -42,7 +43,10 @@ class Upgrade196Tests(unittest.TestCase):
 
     def test_194_actual_upgrade_preserves_owner_state_through_195_and_196(self):
         with tempfile.TemporaryDirectory(prefix='awf-196-acceptance-') as temporary:
-            destination = Path(temporary).resolve()
+            base = Path(temporary).resolve()
+            destination = base / 'project'
+            destination.mkdir()
+            candidate = materialize_candidate(ROOT, base / 'candidate')
             before = materialize('1.9.4', destination)
             verify_materialized('1.9.4', destination)
             # Historical provenance carries the canonical UUID; receipt fixtures may use a marker.
@@ -51,8 +55,8 @@ class Upgrade196Tests(unittest.TestCase):
             self.assertTrue(ledger.is_file())
             accounting = self.accounting(ledger)
             self.assertTrue(accounting)
-            pin = hashlib.sha256((ROOT / 'MANIFEST.json').read_bytes()).hexdigest()
-            result = install(ROOT, destination, pin, mode='upgrade', configure=True, discover=False)
+            pin = hashlib.sha256((candidate / 'MANIFEST.json').read_bytes()).hexdigest()
+            result = install(candidate, destination, pin, mode='upgrade', configure=True, discover=False)
             steps = result['upgrade']['steps']
             self.assertEqual([('1.9.4', '1.9.5'), ('1.9.5', '1.9.6')],
                              [(step['from'], step['to']) for step in steps[:2]])

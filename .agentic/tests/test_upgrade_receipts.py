@@ -11,11 +11,15 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from agentic import ValidationError  # noqa: E402
-from agentic.canonical import sha256  # noqa: E402
+from agentic.canonical import load_yaml, sha256  # noqa: E402
 from agentic.installer import CONFIG, INSTALLED, PROVENANCE, install, verify_installed  # noqa: E402
-from agentic.upgrade import immutable_from_source_manifest, load_known_versions  # noqa: E402
+from agentic.safeio import Tree  # noqa: E402
+from agentic.upgrade import identify_installation, immutable_from_source_manifest, load_known_versions  # noqa: E402
+from test_awf238_same_version_identity import complete_inventory  # noqa: E402
+from upgrade_fixtures import fixture_blob, fixture_manifest  # noqa: E402
 from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo  # noqa: E402
 
 
@@ -99,7 +103,7 @@ class UpgradeReceiptTests(unittest.TestCase):
         )
         self.write(PROVENANCE, json.dumps(provenance, indent=2).encode("utf-8") + b"\n")
 
-    def test_registered_commit_backed_191_receipt_upgrades(self):
+    def assert_registered_identity(self):
         table = load_known_versions((ROOT / ".agentic/upgrade/known-versions.json").read_bytes())
         variants = table["versions"]["1.9.1"]["_receipt_variants"]
         hermes = next(item for item in variants
@@ -111,8 +115,47 @@ class UpgradeReceiptTests(unittest.TestCase):
             "repository": "this-repository",
             "commit": HERMES_COMMIT,
         })
+        with Tree(self.destination) as tree:
+            identity = identify_installation(tree, table, (self.destination / CONFIG).read_bytes(),
+                                             (self.destination / INSTALLED).read_bytes())
+        self.assertEqual('1.9.1', identity['version'])
+        self.assertEqual('11111111-1111-4111-8111-111111111111', identity['install_id'])
+        self.assertEqual(self.immutable, identity['immutable_files'])
+        return identity
 
+    def test_registered_commit_backed_191_unresolved_configuration_refuses_without_writes(self):
         self.materialize_receipt()
+        self.assert_registered_identity()
+        # The unresolved source template intentionally has no repository binding;
+        # qualification inventory requires one. Preserve every entry and its
+        # supported metadata without inventing owner repository choices.
+        before, files = complete_inventory(self.destination), tree_digest(self.destination)
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                with self.assertRaisesRegex(ValidationError,
+                        r'Upgrade configuration rejected: .*PROJECT_CONFIG.yaml.*resolve these choices.*no files changed'):
+                    install(ROOT, self.destination, sha256((ROOT / 'MANIFEST.json').read_bytes()),
+                            mode='upgrade', configure=True, discover=False, dry_run=dry_run)
+                self.assertEqual(before, complete_inventory(self.destination))
+                self.assertEqual(files, tree_digest(self.destination))
+
+    def test_registered_commit_backed_191_receipt_upgrades(self):
+        self.materialize_receipt()
+        identity = self.assert_registered_identity()
+        receipt_raw = (self.destination / INSTALLED).read_bytes()
+        provenance_raw = (self.destination / PROVENANCE).read_bytes()
+        # Explicit synthetic owner choices from the verified 1.9.1 fixture;
+        # the registered managed bytes and installation records remain intact.
+        fixture = fixture_manifest('1.9.1')
+        owner = load_yaml(fixture_blob(fixture['owner_files'][CONFIG]['sha256']))
+        config = load_yaml((self.destination / CONFIG).read_bytes())
+        config['project']['id'] = owner['project']['id']
+        config['validation']['commands'] = owner['validation']['commands']
+        self.write(CONFIG, b'# Synthetic disposable owner configuration.\n' +
+                   (json.dumps(config, indent=2) + '\n').encode())
+        self.assertEqual(receipt_raw, (self.destination / INSTALLED).read_bytes())
+        self.assertEqual(provenance_raw, (self.destination / PROVENANCE).read_bytes())
+        self.assert_registered_identity()
         target_manifest_sha256 = sha256((ROOT / "MANIFEST.json").read_bytes())
         result = install(
             ROOT,
@@ -125,6 +168,11 @@ class UpgradeReceiptTests(unittest.TestCase):
 
         self.assertEqual(result["upgrade"]["detected_version"], "1.9.1")
         self.assertEqual(verify_installed(self.destination), target_manifest_sha256)
+        after = load_yaml((self.destination / CONFIG).read_bytes())
+        self.assertEqual(owner['project']['id'], after['project']['id'])
+        self.assertEqual(owner['validation']['commands'], after['validation']['commands'])
+        self.assertEqual(identity['install_id'], json.loads((self.destination / INSTALLED).read_bytes())['install_id'])
+        self.assertEqual(identity['install_id'], load_yaml((self.destination / PROVENANCE).read_bytes())['installation']['install_id'])
 
     def test_unknown_191_receipt_fails_with_recovery_instructions_and_no_writes(self):
         self.materialize_receipt()
