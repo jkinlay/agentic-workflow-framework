@@ -547,7 +547,7 @@
     ".agentic/tests/test_reporting_source_independence.py": "0dafa5d0db7eb0a9b57d31cb25d19106b0e2edad2f2067565a3229d848dd400e",
     ".agentic/tests/test_reporting_stage2.py": "152920db9bfa73ebdf3d7790c3a4d4be4e76a8091b4400bfbc81b3a8a349b771",
     ".agentic/tests/test_reporting_timing.py": "883604e7d470adec40152cfff5f2f40f95a7899ae27355f692fa900c8149df06",
-    ".agentic/tests/test_reporting_wiring.py": "beaafc031fff59b072dc15dc60e352ea3dd158c52800c4db9816278acca0215d",
+    ".agentic/tests/test_reporting_wiring.py": "9ff673b2a0a61f696d54726cce6c1ade7978d2b24258a001603113ff7b39cd23",
     ".agentic/tests/test_repository_rules.py": "c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68",
     ".agentic/tests/test_retry_authority.py": "f70839c477e6ada7cf574bd9a324a4002adeadf454fce5645e9c5876ef976c3a",
     ".agentic/tests/test_review_completion.py": "c20268b5ba4f0d6e0ab1c3191bcf72b5815a0ef445a8cbb1495b52ef7f9244ef",
