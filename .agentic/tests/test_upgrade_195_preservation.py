@@ -36,6 +36,87 @@ class AuthenticBaselineTests(unittest.TestCase):
         cls.candidate = materialize_candidate(ROOT, cls.base / 'candidate')
         cls.pin = hashlib.sha256((cls.candidate / 'MANIFEST.json').read_bytes()).hexdigest()
 
+    def _lib64_upgrade(self, *, simulated):
+        from agentic import installer
+        from contextlib import nullcontext
+        # Agentic-only CI discovery does not add the scripts test root.
+        sys.path.insert(0, str(ROOT / 'scripts/tests'))
+        from test_qualify_upgrade import simulated_runtime_links
+        project = self.base / ('lib64-upgrade-simulated' if simulated else 'lib64-upgrade-real')
+        install_baseline(self.source, project)
+        runtime = project / installer.RUNTIME
+        (runtime / 'lib').mkdir(parents=True)
+        (runtime / 'lib/original').write_bytes(b'previous runtime bytes')
+        if simulated:
+            (runtime / 'lib64').write_bytes(b'lib')
+        else:
+            try:
+                (runtime / 'lib64').symlink_to('lib', target_is_directory=True)
+            except OSError as exc:
+                if os.name == 'nt' and exc.winerror == 1314:
+                    self.skipTest('Creating the real lib64 directory symlink requires Windows privilege (WinError 1314)')
+                raise
+        roots = {runtime}
+        with simulated_runtime_links(roots) if simulated else nullcontext():
+            before = inventory(project)
+            policy = qualify_upgrade.prepare_upgrade(self.candidate, project, self.pin, before)
+            installed = install(self.candidate, project, self.pin, mode='upgrade', configure=True,
+                                discover=False, conflict='backup', defer_runtime=True)
+            backup = project / ('.agentic/.venv.backup-' + installed['_runtime_transaction_id'])
+            roots.add(backup)
+            def build(transaction):
+                transaction.stage.mkdir()
+                (transaction.stage / 'new-runtime').write_bytes(b'new runtime bytes')
+                transaction.record_staged_runtime()
+                os.replace(transaction.runtime_root, transaction.backup)
+                os.replace(transaction.stage, transaction.runtime_root)
+                return {}
+            completed = installer.complete_runtime_transaction(project, installed['_runtime_transaction_id'], build)
+            self.assertEqual('COMMITTED_CLEANUP_PENDING', completed['transaction_cleanup'])
+            after = inventory(project)
+            self.assertEqual(before['excluded_paths'], after['excluded_paths'])
+            accepted = qualify_upgrade.compare_upgrade(before, after, policy, project)
+            self.assertTrue(accepted['preserved'], accepted['violations'])
+            self.assertEqual(set(accepted['changes']), set(accepted['approved_changes']))
+            link = backup.relative_to(project).as_posix() + '/lib64'
+            self.assertEqual('lib', after['files'][link]['link'])
+            # A fresh accepted control precedes every mutation of the SAME tree.
+            for mutation in ('bytes', 'added', 'link-target'):
+                with self.subTest(mutation=mutation):
+                    accepted = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                    self.assertTrue(accepted['preserved'], accepted['violations'])
+                    target = backup / ('extra' if mutation == 'added' else 'lib/original')
+                    if mutation == 'link-target': target = backup / 'lib64'
+                    original = target.read_bytes() if mutation != 'added' and (simulated or mutation != 'link-target') else None
+                    quarantined_link = None
+                    try:
+                        if mutation == 'link-target' and not simulated:
+                            quarantined_link = self.base / 'retained-original-lib64-link'
+                            self.assertFalse(quarantined_link.exists() or quarantined_link.is_symlink())
+                            target.rename(quarantined_link)
+                            target.symlink_to('.', target_is_directory=True)
+                        else:
+                            target.write_bytes(b'.' if mutation == 'link-target' else b'tampered')
+                        rejected = qualify_upgrade.compare_upgrade(before, inventory(project), policy, project)
+                        self.assertFalse(rejected['preserved'])
+                        self.assertTrue(any('Retained runtime bytes, membership or metadata differ' in value
+                                            for value in rejected['violations']), rejected['violations'])
+                    finally:
+                        if quarantined_link:
+                            target.rename(self.base / 'retained-mutated-link')
+                            quarantined_link.rename(target)
+                        elif original is None:
+                            target.rename(self.base / ('retained-extra-' + str(simulated)))
+                        else:
+                            target.write_bytes(original)
+                    self.assertEqual(after, inventory(project))
+
+    def test_lib64_upgrade_preserves_authenticated_backup_simulated_posix(self):
+        self._lib64_upgrade(simulated=True)
+
+    def test_lib64_upgrade_preserves_authenticated_backup_real_symlink(self):
+        self._lib64_upgrade(simulated=False)
+
     def test_retained_runtime_upgrade_has_exact_preservation_policy(self):
         from agentic import installer
         project = self.base / 'retained-runtime-upgrade'

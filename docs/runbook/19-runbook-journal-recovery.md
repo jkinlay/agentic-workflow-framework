@@ -34,13 +34,13 @@ A stable installer lock may remain after successful rollback; its presence alone
 **Owner recovery and retiring resolved diagnostics:**
 
 1. Obtain exclusive owner control; stop writers.
-2. Preserve journal/objects/endpoints/bytes/metadata. Authenticate any backup against `runtime.previous_sha256`; refuse mismatches.
-3. If no backup exists and canonical `.agentic/.venv` matches `runtime.previous_sha256`, quarantine only the stage outside the project; leave the canonical runtime untouched. Otherwise quarantine failed canonical/staged runtimes outside the project, leaving canonical absent. Authenticate recorded stages against `runtime.new_sha256`.
-4. Run trusted external bootstrap `--dest PROJECT --recover`: restore provable managed files/receipt/provenance and any authenticated backup.
+2. Preserve journal/objects/endpoints/bytes/metadata; use `PYTHON -B RELEASE/scripts/qualify_upgrade.py runtime-hash --path ENDPOINT --expected-sha256 DIGEST`: require exit 0/`matches:true`; mismatch/error stops. PYTHON=external bootstrap Python; RELEASE=the verified journal-writing candidate release. Backup: recorded-path/`runtime.previous_sha256`.
+3. If no backup exists and canonical `.agentic/.venv` matches `runtime.previous_sha256`, quarantine only the stage outside the project; leave the canonical runtime untouched. Otherwise quarantine failed canonical/staged runtimes outside the project, leaving canonical absent. Authenticate stages with the same `runtime-hash` command and `runtime.new_sha256`; use canonical/`runtime.previous_sha256` for the no-backup check.
+4. Run candidate release's external bootstrap `PYTHON -B RELEASE/scripts/bootstrap_project.py --dest PROJECT --recover`; restore provable managed files/receipt/provenance/authenticated backup.
 5. For legacy `.agentic-backup/<txid>` refusal, authenticate journal-recorded files/metadata; quarantine that exact directory externally; rerun `--recover`. Never edit journal/marker.
-6. Reconcile every diagnostic path/quarantine: canonical may hold the restored runtime. Never discard it or just remove the marker.
+6. Reconcile rows: record authenticated restoration/quarantine or deliberate retention. The canonical RECOVERY_REFUSED row names restored runtime; it is not automatically adopted. Resolve via step 7; never discard runtime/remove marker.
 7. After resolving every row, archive index/referenced evidence/path-by-path resolutions; move only the resolved `retained-journal.json` outside the project. No owner retirement CLI exists. Preserve evidence objects/adoption audit.
-8. Verify integrity/configuration/status through matching restored-version tooling's isolated canonical runtime. Rollback proves no CONFIGURED/ACTIVE state.
+8. Run `RUNTIME -B -I WORKFLOW --root PROJECT` with `verify-installation`, `validate-config`, then `status`. RUNTIME=restored `.agentic/.venv/bin/python` (`.agentic/.venv/Scripts/python.exe` on Windows); WORKFLOW=restored `.agentic/scripts/workflow.py`; use absolute paths. Restored 1.9.5 tooling prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE state.
 
 A later successful transaction can instead adopt an existing managed directory it actually reuses, without creation/deletion. It records the source evidence and "adopted by transaction <id>" in `.agentic-install/directory-adoptions.json` before resolving that row; the installer retires the index only when all rows are adopted. Missing/quarantined paths are not automatically adopted.
 

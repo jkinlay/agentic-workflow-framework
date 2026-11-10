@@ -29,7 +29,7 @@ from agentic.safeio import Tree, run_bounded
 from agentic import installer as installation
 from agentic.child_process import child_env, isolated_git_env
 from agentic.preservation_metadata import (FORMAT, EXCLUDED, inventory,
-                                           _permissions, _named_streams)
+                                           _permissions, _named_streams, runtime_tree_sha256)
 
 REQUIRED_CHECKS = ('source_managed_membership', 'historical_state_continuity', 'named_streams')
 QUALIFICATION_LEDGER = '.agentic-state/routing/ledger.sqlite'
@@ -704,7 +704,10 @@ def _retention_outputs(before, after, policy, project):
                     if path == prefix + '/' or path.startswith(prefix + '/')}
         if observed != expected:
             raise ValueError('Retained runtime bytes, membership or metadata differ from baseline')
-        size = sum(entry.get('size', 0) for entry in baseline['entries'].values())
+        # The installer's diagnostic refuses to size any tree containing links.
+        # Derive that null observation independently from the baseline inventory.
+        size = (None if any('link' in entry for entry in baseline['entries'].values()) else
+                sum(entry.get('size', 0) for entry in baseline['entries'].values()))
         if source['cleanup_pending'] != [dict(path=prefix, size_bytes=size,
                 reason=installation._CLEANUP_REASON, owner_action=installation._CLEANUP_OWNER_ACTION)]:
             raise ValueError('Retained runtime diagnostic inventory differs')
@@ -1241,6 +1244,9 @@ print(json.dumps(import_budget_history(sys.argv[2], sources,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
+    authentication = sub.add_parser('runtime-hash', help='read-only runtime endpoint authentication against a journal digest')
+    authentication.add_argument('--path', type=Path, required=True)
+    authentication.add_argument('--expected-sha256', required=True)
     snap = sub.add_parser('snapshot')
     snap.add_argument('--project', type=Path, required=True)
     snap.add_argument('--output', type=Path, required=True)
@@ -1269,6 +1275,14 @@ def main(argv=None):
     runtime.add_argument('--allowed-delta', type=Path,
                          help='optional exact constraints; cannot widen the derived migration policy')
     args = parser.parse_args(argv)
+    if args.command == 'runtime-hash':
+        if re.fullmatch('[0-9a-f]{64}', args.expected_sha256) is None:
+            raise ValueError('Expected runtime SHA-256 must be 64 lowercase hexadecimal digits')
+        digest = runtime_tree_sha256(args.path)
+        matches = digest == args.expected_sha256
+        print(json.dumps(dict(format='awf-runtime-authentication-1', sha256=digest,
+            expected_sha256=args.expected_sha256, matches=matches, execution_authority=False), sort_keys=True))
+        return 0 if matches else 1
     if args.command == 'installed':
         delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
         report = qualify(args.source, args.work_dir, args.wheelhouse, allowed_delta=delta)
