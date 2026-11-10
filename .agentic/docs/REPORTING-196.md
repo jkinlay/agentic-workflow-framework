@@ -13,7 +13,7 @@ are ineffective; merge/fetch applies next load. Unverified/malformed policy refu
 Never retarget corrections/reset attempts.
 
 configure_reporting requires a trusted repository root matching snapshot provenance. The provider factory requires validated
-snapshot/governance/root; it independently rederives accepted policy.
+snapshot/governance and that root; it independently rederives accepted policy.
 Require reviewed context/sender/channel IDs.
 env:VARIABLE resolves references; owners manage permissions/rotation.
 
@@ -27,7 +27,7 @@ means/totals; forecasts require canonical observations. Missing data stays unava
 
 AWF-244 supplies timezone/calendar, default EoD 17:00 Europe/London. Hourlies
 continue 24/7; UTC identities distinguish DST folds. Downtime retains snapshots:
-send labelled hourly CATCH-UP and at most two EoDs. Generate seven days/cycle. EoD excludes later merges. Invalid ticket times/order/forecast
+send labelled hourly CATCH-UP and at most two EoDs. Generation advances seven days/cycle. EoD excludes later merges. Invalid ticket times/order/forecast
 inputs invalidate affected figures without suppressing reports/alerts.
 Unknown inventory/dates establish no defects; elapsed statistics identify cohort coverage.
 
@@ -38,19 +38,19 @@ owner decisions/count omissions; reporting-status retains complete hashed bodies
 
 One controller owns snapshots/intents.
 
-Sources: 30 seconds via source_timeout(); expiry retains PARTIAL coverage,
+Sources: 30s via source_timeout(); expiry retains PARTIAL coverage,
 unavailable totals/separate delivery admission. Delivered batches rotate:
 one reobservation/cycle. Withdrawal corrects each delivery once;
 delivered corrections seed restorations.
 
-Shared: four advances, one historical reconciliation, 32 HTTP calls,
-30-second admission deadline. Alerts stay first; review reserves one advance.
+Per-platform: four advances, one historical reconciliation, 32 HTTP calls;
+platforms share a 30-second admission deadline. Alerts stay first; review reserves one advance.
 NEW/RETRY preserve review admission. Retries overlap one periodic
-class/observations under the original deadline. Durable review/periodic
+class with observations under the original deadline. Durable review/periodic
 readback priority and hourly/EoD selection rotate. Join before retention/exit; counters/gates remain shared. Batches: one candidate; restorations share one drain. Observations check before/after
-calls outside write transactions; cap: 15 seconds.
+calls outside write transactions; cap: 15s.
 
-Under sustained overload (restart, new owner alert/candidate/hourly each turn; Teams ~2.2 s/call, Slack ~1.5), strictly first alerts can delay reviews for many turns: a fresh Teams alert (~26.4 s) plus fresh review pre-POST checks (~21 s) exceed 30 s. 86071bf5's longest review-attempt gaps over 48 turns: 28 turns (Teams), 12 (Slack). Hourly/EoD reports, alert delivery, two-send ceiling, readback, reconciliation and charges are unaffected. A bounded fix is a 1.9.8 follow-up.
+Sustained overload (restart, new owner alert/candidate/hourly each turn; Teams ~2.2s/call, Slack ~1.5s/call) may delay reviews many turns while alerts stay strictly first: fresh Teams alert (~26.4s) plus fresh review pre-POST checks (~21s) exceed 30s. Measured longest review-attempt gaps over 48 turns: 28 (Teams), 12 (Slack). Hourly/EoD reports, alert delivery, two-send ceiling, readback, reconciliation and charges are unaffected. Bounded fix: 1.9.8 follow-up.
 
 HTTP's monotonic 15-second maximum spans DNS through body; expiry closes sockets.
 Direct TLS ignores proxies; redirects/retries are disabled. Delivery/cancellation/joins stay within **45 seconds**, sources plus delivery within **75 seconds**,
@@ -79,7 +79,7 @@ TWO_SEND_ATTEMPTS_EXHAUSTED.
 
 Filter credential grammar/resolved values throughout retention/delivery.
 Enqueue validates bindings/intent fields pre-write; persist references only.
-Custom resolvers prepare outside controller transactions. Link verification/filtering/rendering prepares immutable safe bytes; short write transactions
+Custom resolvers accompany preparation outside controller transactions. Link verification/filtering/rendering prepares immutable safe bytes; short write transactions
 recheck exact cursor/report/delivery/review dependencies before atomic persistence.
 REPORT_PROJECTION_STATE_CHANGED refuses stale preparation until next cycle;
 unrelated controller metadata cannot invalidate it. Unprepared transactional enqueue refuses.
@@ -93,7 +93,7 @@ destinations' channel evidence; review/merge authority stays separate.
 
 CLAIMED transfers to REPORTING after exact-payload outbox retention.
 REPORTING permits newer candidates. Crash recovery preserves send-started identities/attempts
-creating missing reports; provably unsent PREPARED claims release for fresh preparation.
+when creating missing reports; provably unsent PREPARED claims release for fresh preparation.
 Live uninvoked retention failures release; restarts cannot infer proof.
 Terminal failures close batches FAILED/members EXHAUSTED; platform successes survive.
 Exhausted reviews generate one deduplicated owner-action alert. Failed alerts
