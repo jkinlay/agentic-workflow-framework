@@ -186,6 +186,13 @@ class PublishedRecoveryTests(unittest.TestCase):
             'No owner retirement CLI exists.',
             'move only the resolved `retained-journal.json` outside the project',
             'legacy `.agentic-backup/<txid>`',
+            'runtime-hash --path ENDPOINT --expected-sha256 DIGEST',
+            'verified journal-writing candidate release',
+            'it is not automatically adopted',
+            'record authenticated restoration/quarantine or deliberate retention',
+            'Restored 1.9.5 tooling prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE state.',
+            '`.agentic/.venv/bin/python` (`.agentic/.venv/Scripts/python.exe` on Windows)',
+            '`.agentic/scripts/workflow.py`',
         )
         for relative in ('MIGRATION-v1.9.5-to-v1.9.6.md',
                          '.agentic/docs/38-RELEASE-196-QUALIFICATION.md',
@@ -207,6 +214,88 @@ class PublishedRecoveryTests(unittest.TestCase):
         install_baseline(cls.source, cls.baseline)
         (cls.baseline / 'PROJECT_INSTRUCTIONS.md').write_bytes(b'synthetic owner customization\n')
         cls.pin = hashlib.sha256((cls.target / 'MANIFEST.json').read_bytes()).hexdigest()
+
+    def test_documented_staged_owner_recovery_runs_steps_one_through_eight(self):
+        from agentic import ValidationError
+        from agentic.preservation_metadata import runtime_tree_sha256
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            project = base / 'staged-project'
+            shutil.copytree(self.baseline, project)
+            # Step 1: a sole test writer owns this disposable project.
+            self.provision_fixture_runtime(project)
+            previous = runtime_tree_sha256(project / installer.RUNTIME)
+            originals = {path: (project / path).read_bytes() for path in (INSTALLED, PROVENANCE, CONFIG)}
+            result = install(self.target, project, self.pin, mode='upgrade', configure=True,
+                             discover=False, defer_runtime=True)
+            def builder(transaction):
+                venv.EnvBuilder(with_pip=False).create(transaction.stage)
+                transaction.record_staged_runtime()
+                raise PermissionError('Simulated in-use canonical runtime: swap never started')
+            with self.assertRaises(ValidationError) as failure:
+                installer.complete_runtime_transaction(project, result['_runtime_transaction_id'], builder)
+            self.assertEqual(
+                'Bootstrap runtime failed and exact managed/runtime rollback cannot be proved; transaction '
+                + result['_runtime_transaction_id'] + ' and backup .agentic/.venv.backup-'
+                + result['_runtime_transaction_id'] + ' were retained', str(failure.exception))
+            self.assertEqual(REFUSAL, str(failure.exception.__cause__))
+            journal = json.loads((project / JOURNAL).read_bytes())
+            runtime = journal['runtime']
+            self.assertFalse((project / runtime['backup']).exists())
+            self.assertEqual(previous, runtime['previous_sha256'])
+            preserved = refusal_inventory(project)
+            archive = base / 'owner-archive'
+            shutil.copytree(project, archive / 'refused-project', symlinks=True)
+            # Steps 2-3: public command authenticates both endpoints; keep GOOD canonical.
+            for endpoint, digest in ((runtime['path'], previous),
+                                     (runtime['stage'], runtime['new_sha256'])):
+                checked = subprocess.run([sys.executable, '-B', str(self.target / 'scripts/qualify_upgrade.py'),
+                    'runtime-hash', '--path', str(project / endpoint), '--expected-sha256', digest],
+                    capture_output=True, text=True, env=child_env(), timeout=60)
+                self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+                self.assertEqual(dict(format='awf-runtime-authentication-1', sha256=digest,
+                    expected_sha256=digest, matches=True, execution_authority=False), json.loads(checked.stdout))
+            self.assertEqual(preserved, refusal_inventory(project))
+            stage = project / runtime['stage']
+            stage.rename(archive / 'quarantined-stage')
+            self.assertEqual(previous, runtime_tree_sha256(project / installer.RUNTIME))
+            self.assertFalse((project / runtime['backup']).exists())
+            # Step 4 uses the candidate release that wrote this journal, externally.
+            recover_command = [sys.executable, '-B', str(self.target / 'scripts/bootstrap_project.py'),
+                               '--dest', str(project), '--recover']
+            recovered = subprocess.run(recover_command, capture_output=True, text=True,
+                                       env=child_env(), timeout=120)
+            self.assertEqual(0, recovered.returncode, recovered.stdout + recovered.stderr)
+            report = json.loads(recovered.stdout)
+            self.assertEqual('ROLLED_BACK', report['status'])
+            self.assertFalse((project / JOURNAL).exists())
+            self.assertFalse((project / MARKER).exists())
+            for path, raw in originals.items(): self.assertEqual(raw, (project / path).read_bytes())
+            self.assertEqual(previous, runtime_tree_sha256(project / installer.RUNTIME))
+            # Step 5 is conditional: this compact journal has no legacy refusal.
+            self.assertIn('created_directories', journal)
+            # Steps 6-7: resolve every inventory row by authenticated quarantine or
+            # deliberate retention, archive all references, then move ONLY the index.
+            status = installer.retained_directory_status(project)
+            self.assertIn(runtime['stage'], status['retained_directories'])
+            resolutions = {path: ('authenticated stage quarantined' if path == runtime['stage'] else
+                                  'deliberately retained directory') for path in status['retained_directories']}
+            self.assertEqual(set(status['retained_directories']), set(resolutions))
+            shutil.copytree(project / '.agentic-install', archive / 'resolved-install-evidence')
+            (archive / 'resolutions.json').write_bytes(json_bytes(resolutions))
+            (project / RETAINED_JOURNAL).rename(archive / 'resolved-retained-journal.json')
+            self.assertEqual(previous, runtime_tree_sha256(project / installer.RUNTIME))
+            repeated = subprocess.run(recover_command, capture_output=True, text=True,
+                                      env=child_env(), timeout=120)
+            self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
+            self.assertEqual({'status': 'NO_PENDING_INSTALL'}, json.loads(repeated.stdout))
+            # Step 8 actually runs all three commands through restored 1.9.5 tooling.
+            self.assert_canonical_restored(project)
+            python = project / installer.RUNTIME / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+            observed = subprocess.run([str(python), '-B', '-I', str(project / '.agentic/scripts/workflow.py'),
+                '--root', str(project), 'status'], capture_output=True, text=True, env=child_env(), timeout=60)
+            self.assertEqual(0, observed.returncode, observed.stdout + observed.stderr)
+            self.assertIn('CONFIGURED', observed.stdout)
 
     def test_atomic_write_temporary_recovers_in_fresh_bootstrap(self):
         with tempfile.TemporaryDirectory() as temporary:

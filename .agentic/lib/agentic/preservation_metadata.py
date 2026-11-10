@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import uuid
 
 from .canonical import load_yaml
 from .installer import CONFIG
@@ -124,6 +125,7 @@ def _inventory(project, *, evidence_kind):
     """
     project = Path(project).resolve(strict=True)
     files = {}
+    runtime_backups = {}
     directories = {'/': {'mode': stat.S_IMODE(project.stat().st_mode),
                          'permissions': _permissions(project), 'named_streams': _named_streams(project)}}
 
@@ -167,6 +169,24 @@ def _inventory(project, *, evidence_kind):
                     continue
                 raise ValueError('Non-regular inventory member refused: ' + relative +
                                  '; preserve externally and replace with regular content before snapshot')
+        # Delegate only exact transaction backup roots to the runtime inventory.
+        # Keep their complete records in files/directories: this is not a delta
+        # exemption, and pre-existing backups remain ordinary preservation inputs.
+        for name in dirs:
+            path = parent / name
+            relative = path.relative_to(project).as_posix()
+            prefix = '.agentic/.venv.backup-'
+            key = scope_key(relative)
+            if key.startswith(prefix):
+                identity = key[len(prefix):]
+                try:
+                    valid = str(uuid.UUID(identity)) == identity
+                except ValueError:
+                    valid = False
+                if valid:
+                    runtime_backups[relative] = runtime_inventory(path)
+        dirs[:] = [name for name in dirs
+                   if (parent / name).relative_to(project).as_posix() not in runtime_backups]
         dirs[:] = sorted(name for name in dirs
                          if scope_key((parent / name).relative_to(project).as_posix()) not in EXCLUDED
                          and not (stat.S_ISLNK((parent / name).lstat().st_mode)
@@ -197,6 +217,10 @@ def _inventory(project, *, evidence_kind):
             files[relative] = {'sha256': hashlib.sha256(raw).hexdigest(),
                                'mode': stat.S_IMODE(path.stat().st_mode), 'size': len(raw),
                                'permissions': _permissions(path), 'named_streams': _named_streams(path)}
+    for prefix, runtime in runtime_backups.items():
+        for name, entry in runtime['entries'].items():
+            relative = prefix + ('/' if name == '/' else '/' + name)
+            (directories if name.endswith('/') else files)[relative] = entry
     try:
         config = load_yaml((project / CONFIG).read_bytes())
         github = config['github']
@@ -218,12 +242,12 @@ def _inventory(project, *, evidence_kind):
 
 def runtime_inventory(path):
     """Exact bytes and metadata of a quiescent runtime, for backup comparison."""
-    from .installer import _contained_cleanup_link, _runtime_tree_sha256
+    from .installer import _contained_cleanup_link
     from .safeio import Tree
     path = Path(path)
     if not path.exists() and not path.is_symlink():
         return None
-    before = _runtime_tree_sha256(path)
+    before = runtime_tree_sha256(path)
     entries = {}
     def capture(node, relative):
         info = node.lstat()
@@ -244,6 +268,56 @@ def runtime_inventory(path):
         else:
             raise ValueError('Runtime preservation requires contained independent regular content')
     capture(path, '')
-    if before != _runtime_tree_sha256(path):
+    if before != runtime_tree_sha256(path):
         raise ValueError('Runtime changed during preservation snapshot')
     return dict(sha256=before, entries=entries)
+
+
+def runtime_tree_sha256(path):
+    """Read-only journal-compatible runtime hash; links contribute text, never targets.
+
+    Requires exclusive ownership. Confined Tree reads reject hard links/reparse
+    points and retain the existing per-file read bound. No lock, mkdir or cleanup
+    is performed. A hash match authenticates an endpoint, not recovery authority.
+    """
+    from .safeio import Tree
+    path = Path(path).absolute()
+    digest = hashlib.sha256()
+
+    def add(value):
+        raw = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        digest.update(len(raw).to_bytes(8, 'big'))
+        digest.update(raw)
+
+    with Tree(path) as tree:
+        root = path.lstat()
+        if not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode) or getattr(root, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('Runtime hash requires an independent directory root')
+        add(['.', 'directory', stat.S_IMODE(root.st_mode)])
+
+        def visit(directory, prefix=''):
+            # Pin every directory before enumerating it, without following links.
+            if prefix:
+                tree.parent(prefix + '/.runtime-hash-pin')
+            with os.scandir(directory) as scan:
+                entries = sorted(scan, key=lambda item: item.name)
+            for entry in entries:
+                relative = entry.name if not prefix else prefix + '/' + entry.name
+                info = entry.stat(follow_symlinks=False)
+                mode = stat.S_IMODE(info.st_mode)
+                if stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400:
+                    add([relative, 'link', mode, os.readlink(entry.path)])
+                elif getattr(info, 'st_file_attributes', 0) & 0x400:
+                    raise ValueError('Runtime hash refuses reparse points: ' + relative)
+                elif stat.S_ISDIR(info.st_mode):
+                    add([relative, 'directory', mode])
+                    visit(entry.path, relative)
+                elif stat.S_ISREG(info.st_mode):
+                    raw = tree.read(relative)
+                    if len(raw) != info.st_size:
+                        raise ValueError('Runtime changed during hashing: ' + relative)
+                    add([relative, 'file', mode, len(raw), hashlib.sha256(raw).hexdigest()])
+                else:
+                    raise ValueError('Runtime hash refuses nonregular or linked files: ' + relative)
+        visit(path)
+    return digest.hexdigest()

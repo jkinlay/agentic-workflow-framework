@@ -14,6 +14,61 @@ import os
 from copy import deepcopy
 
 
+from contextlib import contextmanager
+import stat
+from types import SimpleNamespace
+
+
+@contextmanager
+def simulated_runtime_links(roots):
+    """Represent lib64 placeholders as POSIX links at filesystem observation seams."""
+    original_lstat, original_scandir, original_readlink = Path.lstat, os.scandir, os.readlink
+    original_os_lstat = os.lstat
+
+    def linked(path):
+        path = Path(path)
+        return (path.name == 'lib64' and os.path.normcase(os.path.realpath(path.parent)) in
+                {os.path.normcase(os.path.realpath(root)) for root in roots})
+
+    def link_stat(path):
+        info = original_os_lstat(path)
+        return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_nlink=1,
+            st_file_attributes=0, st_reparse_tag=0, st_size=info.st_size,
+            st_dev=info.st_dev, st_ino=info.st_ino)
+
+    def lstat(path, *args, **kwargs):
+        return link_stat(path) if linked(path) else original_lstat(path, *args, **kwargs)
+
+    def os_lstat(path, *args, **kwargs):
+        return link_stat(path) if linked(path) else original_os_lstat(path, *args, **kwargs)
+
+    class Entry:
+        def __init__(self, entry): self.entry = entry
+        def __getattr__(self, name): return getattr(self.entry, name)
+        def stat(self, *, follow_symlinks=True):
+            if not follow_symlinks and linked(self.entry.path): return link_stat(self.entry.path)
+            return self.entry.stat(follow_symlinks=follow_symlinks)
+        def is_symlink(self): return linked(self.entry.path) or self.entry.is_symlink()
+        def is_dir(self, *, follow_symlinks=True):
+            if linked(self.entry.path): return follow_symlinks
+            return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+    class Scan:
+        def __init__(self, path): self.scan = original_scandir(path)
+        def __iter__(self): return self
+        def __next__(self): return Entry(next(self.scan))
+        def __enter__(self): return self
+        def __exit__(self, *args): self.scan.close()
+        def close(self): self.scan.close()
+
+    def readlink(path, *args, **kwargs):
+        return Path(path).read_text(encoding='utf-8') if linked(path) else original_readlink(path, *args, **kwargs)
+
+    with patch.object(Path, 'lstat', lstat), patch.object(os, 'lstat', os_lstat), patch.object(os, 'scandir', Scan), \
+            patch.object(os, 'readlink', readlink):
+        yield
+
+
 class PreservationReportTests(unittest.TestCase):
     def test_budget_import_continuity_requires_baseline_and_real_sources(self):
         from qualify_upgrade import prepare_budget_import, check_budget_import
@@ -32,6 +87,130 @@ class PreservationReportTests(unittest.TestCase):
         self.config.write_text(json.dumps({'github': {'repository': 'example-org/example-repo',
             'repository_id': 101, 'base_branch': 'trunk'}}), encoding='utf-8')
         (self.root / 'PROJECT_INSTRUCTIONS.md').write_bytes(b'synthetic owner customization\n')
+
+    def test_retained_lib64_snapshot_is_authenticated_with_simulated_posix_links(self):
+        backup = self.root / '.agentic/.venv.backup-11111111-1111-4111-8111-111111111111'
+        (backup / 'lib').mkdir(parents=True)
+        (backup / 'lib/runtime').write_bytes(b'original runtime')
+        (backup / 'lib64').write_bytes(b'lib')
+        with simulated_runtime_links({backup}):
+            before = inventory(self.root)
+            self.assertEqual('lib', before['files'][backup.relative_to(self.root).as_posix() + '/lib64']['link'])
+            self.assertTrue(compare(before, inventory(self.root), {})['preserved'])
+            for mutation in ('bytes', 'added', 'target'):
+                with self.subTest(mutation=mutation):
+                    self.assertTrue(compare(before, inventory(self.root), {})['preserved'])
+                    target = backup / {'bytes': 'lib/runtime', 'added': 'extra', 'target': 'lib64'}[mutation]
+                    original = target.read_bytes() if target.exists() else None
+                    try:
+                        target.write_bytes(b'.' if mutation == 'target' else b'tampered')
+                        rejected = compare(before, inventory(self.root), {})
+                        self.assertFalse(rejected['preserved'])
+                        self.assertIn(target.relative_to(self.root).as_posix(), rejected['changes'])
+                    finally:
+                        if original is not None: target.write_bytes(original)
+                        else: target.rename(Path(self.temporary.name) / 'retained-extra')
+            (backup / 'lib64').write_bytes(b'../escape')
+            with self.assertRaisesRegex(ValueError, 'contained independent'):
+                inventory(self.root)
+
+    def test_lib64_lookalikes_outside_runtime_still_refuse_simulated_links(self):
+        for relative in ('.agentic/other', '.agentic/.venv.backup-unbound',
+                         '.agentic/nested/.venv.backup-11111111-1111-4111-8111-111111111111'):
+            with self.subTest(relative=relative):
+                parent = self.root / relative
+                parent.mkdir(parents=True)
+                (parent / 'lib64').write_bytes(b'lib')
+                with simulated_runtime_links({parent}):
+                    with self.assertRaisesRegex(ValueError, 'Linked/reparse inventory member refused'):
+                        inventory(self.root)
+
+    def test_retained_lib64_real_symlink_snapshot_and_tamper(self):
+        backup = self.root / '.agentic/.venv.backup-22222222-2222-4222-8222-222222222222'
+        (backup / 'lib').mkdir(parents=True)
+        (backup / 'lib/runtime').write_bytes(b'original')
+        try:
+            (backup / 'lib64').symlink_to('lib', target_is_directory=True)
+        except OSError as exc:
+            if os.name == 'nt' and exc.winerror == 1314:
+                self.skipTest('Creating the real lib64 directory symlink requires Windows privilege (WinError 1314)')
+            raise
+        before = inventory(self.root)
+        self.assertTrue(compare(before, inventory(self.root), {})['preserved'])
+        (backup / 'lib/runtime').write_bytes(b'changed')
+        result = compare(before, inventory(self.root), {})
+        self.assertFalse(result['preserved'])
+        self.assertIn(backup.relative_to(self.root).as_posix() + '/lib/runtime', result['changes'])
+
+    def test_runtime_hash_command_is_exact_read_only_and_checks_expected_digest(self):
+        import io
+        from contextlib import redirect_stdout
+        from agentic import installer
+        from qualify_upgrade import main
+        runtime = self.root / '.agentic/.venv'
+        (runtime / 'lib').mkdir(parents=True)
+        (runtime / 'lib/file').write_bytes(b'runtime contents')
+        expected = installer._runtime_tree_sha256(runtime)
+        before = {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mode)
+                  for p in self.root.rglob('*') if p.is_file()}
+        for digest, code in ((expected, 0), ('f' * 64, 1)):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                actual = main(['runtime-hash', '--path', str(runtime), '--expected-sha256', digest])
+            self.assertEqual(code, actual)
+            self.assertEqual(dict(format='awf-runtime-authentication-1', sha256=expected,
+                expected_sha256=digest, matches=code == 0, execution_authority=False), json.loads(output.getvalue()))
+        self.assertEqual(before, {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mode)
+                                 for p in self.root.rglob('*') if p.is_file()})
+
+    def test_runtime_hash_reads_link_text_without_following_simulated_posix_link(self):
+        from agentic.preservation_metadata import runtime_tree_sha256
+        from agentic import installer
+        runtime = self.root / '.agentic/.venv'
+        runtime.mkdir()
+        # Deliberately dangling external target: hashing observes text, never opens it.
+        (runtime / 'lib64').write_bytes(b'../../outside-unreadable')
+        original = Path.read_bytes
+        def read(path):
+            self.assertNotEqual('outside-unreadable', path.name)
+            self.assertNotEqual(runtime / 'lib64', path)
+            return original(path)
+        with simulated_runtime_links({runtime}), patch.object(Path, 'read_bytes', read):
+            self.assertEqual(installer._runtime_tree_sha256(runtime), runtime_tree_sha256(runtime))
+
+    def test_runtime_hash_rejects_missing_roots_hardlinks_and_reparse_entries(self):
+        from agentic.preservation_metadata import runtime_tree_sha256
+        from agentic import ValidationError
+        with self.assertRaises((OSError, ValidationError)):
+            runtime_tree_sha256(self.root / 'absent')
+        self.assertFalse((self.root / 'absent').exists())
+        runtime = self.root / '.agentic/.venv'
+        runtime.mkdir()
+        target = runtime / 'file'
+        target.write_bytes(b'original bytes')
+        os.link(target, Path(self.temporary.name) / 'owner-hardlink')
+        message = ('Refusing link, reparse point, or wrong file type' if os.name == 'nt' else
+                   'Unsafe file type/link count/size')
+        with self.assertRaisesRegex(ValidationError, message):
+            runtime_tree_sha256(runtime)
+        self.assertEqual(b'original bytes', target.read_bytes())
+        target.rename(Path(self.temporary.name) / 'preserved-hardlinked-runtime-file')
+        (runtime / 'lib64').write_bytes(b'lib')
+        # A reparse directory is refused even if it carries a runtime-looking name.
+        original = os.scandir
+        class Reparse:
+            def __init__(self, entry): self.entry = entry
+            def __getattr__(self, key): return getattr(self.entry, key)
+            def stat(self, *, follow_symlinks=True):
+                return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=0x400)
+        class Scan:
+            def __init__(self, path): self.scan = original(path)
+            def __enter__(self): return (Reparse(entry) for entry in self.scan)
+            def __exit__(self, *args): self.scan.close()
+        with patch.object(os, 'scandir', Scan):
+            with self.assertRaisesRegex(ValueError, 'reparse points'):
+                runtime_tree_sha256(runtime)
+        self.assertEqual(b'lib', (runtime / 'lib64').read_bytes())
 
     def test_installed_receipts_require_canonical_commands_and_bound_outputs(self):
         # Unit validation inputs, not executed qualification evidence.
