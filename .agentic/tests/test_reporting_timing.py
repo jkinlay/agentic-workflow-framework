@@ -25,13 +25,20 @@ class _LogicalSlowCalls:
 
     def __enter__(self):
         from contextlib import ExitStack
+        from contextvars import Context
+        from agentic.reporting.http_transport import BaseTransport
         clock = self
         original = threading.Thread
         class JoinedThread(original):
             def start(self):
                 self.started_at = clock.now()
                 self.finished_at = self.started_at
-                return super().start()
+                # Execute finite fixture calls on independent logical timelines.
+                # Native scheduling must not decide which simulated call wins.
+                try:
+                    Context().run(self.run)
+                finally:
+                    clock.local.elapsed = self.started_at
 
             def run(self):
                 clock.local.elapsed = self.started_at
@@ -41,15 +48,28 @@ class _LogicalSlowCalls:
                     self.finished_at = clock.now()
 
             def join(self, timeout=None):
-                value = super().join(timeout)
-                if not self.is_alive():
-                    clock.local.elapsed = max(clock.now(), self.finished_at)
-                return value
+                clock.local.elapsed = max(clock.now(), self.finished_at)
+        class LogicalTimer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+            cancel = join = start
+        original_transport = BaseTransport.__init__
+        def transport(instance, *args, **kwargs):
+            # BaseTransport captured sleep in its default argument at import.
+            kwargs['pause'] = clock.sleep
+            return original_transport(instance, *args, **kwargs)
         self.stack = ExitStack()
         for name, value in [('agentic.reporting.bounded.monotonic', self.now),
                             ('agentic.reporting.runtime.monotonic', self.now),
+                            ('agentic.reporting.deadline.monotonic', self.now),
                             ('time.sleep', self.sleep),
-                            ('threading.Thread', JoinedThread)]:
+                            ('threading.Timer', LogicalTimer),
+                            ('threading.Thread', JoinedThread),
+                            ('agentic.reporting.http_transport.BaseTransport.__init__', transport)]:
             self.stack.enter_context(patch(name, value))
         return self
 
@@ -143,6 +163,88 @@ class ReportingTimingTests(unittest.TestCase):
                                     for d in turns[-1][platform][kind]), turns)
                 self.assertTrue(all(d['attempts'] <= 2 for turn in turns
                                     for states in turn[platform].values() for d in states))
+
+    def sustained_periodic_arrivals(self, turn_count=28):
+        from copy import deepcopy
+        from datetime import datetime, timedelta, timezone
+        import json
+        import time
+        import test_reporting_e6_regressions as e6
+        import test_reporting_e7_regressions as e7
+        case = e6.ControllerTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.helper.calendar = {'review_batching': {'cutoff_time': '23:59'}}
+        case.network.latency = 0
+        original_http = type(case.network).__call__
+        def http(network, method, url, headers, payload):
+            time.sleep(1.5 if 'slack.com' in url else 2.2)
+            return original_http(network, method, url, headers, payload)
+        original_observe = case.helper.observe_candidate
+        def observe(candidate, now):
+            time.sleep(2.5)
+            return dict(original_observe(candidate, now), candidate=deepcopy(candidate))
+        case.helper.observe_candidate = observe
+        turns = []
+        with _LogicalSlowCalls() as clock, patch.object(type(case.network), '__call__', http):
+            for turn in range(turn_count):
+                case.restart()
+                case.helper.current['pull_request'] = 41 + turn
+                case.helper.listed = [deepcopy(case.helper.current)]
+                e7.E7ControllerTests.owner_alert(case, 'New owner action %d' % turn)
+                now = datetime(2026, 11, 11, 8, tzinfo=timezone.utc) + timedelta(hours=turn)
+                started = clock.now()
+                result = case.cycle(now.strftime('%Y-%m-%dT%H:00:00Z'))
+                self.assertEqual(result['operating_calendar']['review_batching']['cutoff_time'], '23:59')
+                self.assertEqual(result['operating_calendar']['eod']['time'], '17:00')
+                status = case.status()
+                reports = {r['report_id']: r for r in status['reports']}
+                turns.append(dict(now=now.isoformat(), elapsed=clock.now() - started, errors=result['errors'],
+                    deliveries=[dict(platform=d['platform'], kind=reports[d['report_id']]['kind'],
+                        report_id=d['report_id'], status=d['status'], attempts=len(d['attempts']),
+                        posts=sum(platform == d['platform'] and
+                                  ('AWF delivery: ' + d['delivery_id'] + ' / ') in str(payload)
+                                  for platform, payload in case.network.posts))
+                        for d in status['deliveries']]))
+        print('continuous hourly/alert turns: ' + json.dumps([
+            dict(now=t['now'], elapsed=t['elapsed'], errors=t['errors'],
+                 eod=[d for d in t['deliveries'] if d['kind'] == 'eod']) for t in turns], sort_keys=True))
+        self.assertTrue(all(d['attempts'] <= 2 for t in turns for d in t['deliveries']))
+        for platform in ('teams', 'slack'):
+            for kind in ('hourly', 'final-human-review'):
+                self.assertTrue(any(d['platform'] == platform and d['kind'] == kind
+                                    and d['status'] == 'DELIVERED' for d in turns[-1]['deliveries']))
+        return turns
+
+    def test_continuous_hourly_alert_arrivals_keep_eod_opportunity(self):
+        turns = self.sustained_periodic_arrivals()
+        # EoD first becomes due on turn 9. Carry its owed opportunity through
+        # exhausted turns: at most six turns, including the due turn, to POST.
+        for platform in ('teams', 'slack'):
+            with self.subTest(platform=platform):
+                self.assertTrue(any(d['platform'] == platform and d['kind'] == 'eod' and d['attempts']
+                                    for t in turns[9:15] for d in t['deliveries']), turns)
+        self.assertEqual([error for turn in turns for error in turn['errors']], [])
+
+    def test_elapsed_eod_readback_continues_without_repost_under_catchup(self):
+        turns = self.sustained_periodic_arrivals()
+        unknown = [(i, d) for i, t in enumerate(turns) for d in t['deliveries']
+                   if d['platform'] == 'teams' and d['kind'] == 'eod'
+                   and d['status'] == 'UNKNOWN' and d['attempts'] == 1]
+        self.assertTrue(unknown, turns)
+        first, delivery = unknown[0]
+        # Logical HTTP time consumed the shared admission deadline; a later
+        # cycle must read the retained send back ahead of older hourly work.
+        self.assertGreaterEqual(turns[first]['elapsed'], 30)
+        identity = delivery['report_id']
+        self.assertTrue(any(d['report_id'] == identity and d['platform'] == 'teams'
+                            and d['status'] == 'DELIVERED'
+                            for t in turns[first + 1:first + 5] for d in t['deliveries']), turns)
+        self.assertTrue(all(d['attempts'] == 1 for t in turns[first:] for d in t['deliveries']
+                            if d['report_id'] == identity and d['platform'] == 'teams'))
+        self.assertTrue(all(d['posts'] == 1 for t in turns[first:] for d in t['deliveries']
+                            if d['report_id'] == identity and d['platform'] == 'teams'))
+        self.assertEqual([error for turn in turns for error in turn['errors']], [])
 
     def test_unsent_recheck_budget_defers_without_losing_the_intent(self):
         from copy import deepcopy

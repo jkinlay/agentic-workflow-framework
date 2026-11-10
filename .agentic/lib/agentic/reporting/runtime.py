@@ -303,6 +303,31 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
     if settings['mode'] == 'off':
         return []
     budget = budget or DeliveryBudget()
+    if report_ids is None:
+        # Retain the oldest owed EoD even if this call has no time to launch
+        # workers. Alert admission still happens first in the controller. The
+        # first hourly admission precedes this debt; later hourly arrivals do
+        # not erase it. This metadata grants neither an admission nor a send.
+        with store.transaction() as db:
+            for destination in destinations:
+                key = 'report-periodic-owed:' + fingerprint('report-destination-turn', destination)
+                prior = db.execute('SELECT d.state_json FROM controller_meta m JOIN controller_report_delivery d '
+                    'ON d.delivery_id=m.value WHERE m.key=?', (key,)).fetchone()
+                if prior and loads(prior[0])['status'] not in {'DELIVERED', 'FAILED', 'WITHDRAWN'}:
+                    continue
+                db.execute('DELETE FROM controller_meta WHERE key=?', (key,))
+                owed = db.execute("""SELECT d.delivery_id FROM controller_reports r
+                    JOIN controller_report_delivery d ON json_extract(d.intent_json,'$.report_id')=r.report_id
+                    WHERE r.kind='eod' AND json_extract(d.intent_json,'$.binding')=json(?)
+                      AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED','WITHDRAWN')
+                      AND EXISTS (SELECT 1 FROM controller_reports h JOIN controller_report_delivery hd
+                        ON json_extract(hd.intent_json,'$.report_id')=h.report_id
+                        WHERE h.kind='hourly' AND json_extract(hd.intent_json,'$.binding')=json(?)
+                          AND json_array_length(json_extract(hd.state_json,'$.attempts'))>0)
+                    ORDER BY r.rowid LIMIT 1""",
+                    (canonical(destination).decode(), canonical(destination).decode())).fetchone()
+                if owed:
+                    db.execute('INSERT INTO controller_meta VALUES(?,?)', (key, owed[0]))
     try:
         budget.remaining()
     except ValidationError:
@@ -316,12 +341,16 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
         provider = providers.get(platform)
         if provider is None:
             return
+        owed_key = 'report-periodic-owed:' + fingerprint('report-destination-turn', destination)
         with store.connection() as db:
+            retained_turn = db.execute('SELECT value FROM controller_meta WHERE key=?', (owed_key,)).fetchone()
+            owed = retained_turn[0] if retained_turn else None
             ids = canonical(sorted(report_ids)).decode() if report_ids is not None else None
             rows = db.execute("""WITH actionable AS (
                 SELECT r.payload_json,d.delivery_id,r.kind,r.rowid AS sequence,
                     json_extract(d.state_json,'$.status') AS status,
                     json_array_length(json_extract(d.state_json,'$.history')) AS observations,
+                    json_array_length(json_extract(d.state_json,'$.attempts')) AS attempts,
                     (json_extract(d.state_json,'$.status') IN ('PENDING','ABSENT','THROTTLED')
                      AND coalesce(json_extract(d.state_json,'$.retry_action'),'SEND')<>'RECONCILE') AS fresh
                 FROM controller_reports r JOIN controller_report_delivery d
@@ -345,16 +374,17 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                   AND (? IS NULL OR r.report_id IN (SELECT value FROM json_each(?))))
                 SELECT * FROM (SELECT *,row_number() OVER (
                     PARTITION BY CASE WHEN fresh THEN kind ELSE 'history' END
-                    ORDER BY CASE WHEN fresh THEN sequence ELSE observations END,sequence) AS position
+                    ORDER BY CASE WHEN delivery_id=? THEN 0 ELSE 1 END,
+                        CASE WHEN fresh THEN sequence ELSE observations END,sequence) AS position
                     FROM actionable)
                 WHERE position<=? ORDER BY fresh DESC,
                     CASE kind WHEN 'owner-action' THEN 0 WHEN 'hourly' THEN 1 ELSE 2 END,position""",
                 (platform, canonical(destination).decode(), canonical({k: v for k, v in destination.items()
                     if k != 'scope_revision'}).decode(), report_ids is not None, allow_send, ids, ids,
-                 MAX_ADVANCES)).fetchall()
+                 owed, MAX_ADVANCES)).fetchall()
         fresh = [r for r in rows if r['fresh'] and not (after_review and r[2] == 'owner-action')]
         history = sorted([r for r in rows if not r['fresh']],
-                         key=lambda r: (r['observations'], r[3]))[:1]
+                         key=lambda r: (r[1] != owed, r['observations'], r[3]))[:1]
         if reserve_reconciliation:
             history = []
         slots = MAX_ADVANCES - bool(reserve_review)
@@ -393,10 +423,16 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                 key = 'report-periodic-class-turn:' + platform
                 row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
                 turn = int(row[0]) if row else 0
-                work = history if periodic_turn == 'history' and history else (groups[turn % len(groups)] if groups else [])
-                if groups and not (periodic_turn == 'history' and history):
+                owed_row = next((r for r in fresh + history if r[1] == owed), None)
+                # Selection is not service. An unsent opportunity survives an
+                # exhausted turn. An uncertain EoD retains its exact identity
+                # for readback ahead of unrelated hourly catch-up.
+                work = ([owed_row] if owed_row is not None else
+                        history if periodic_turn == 'history' and history else
+                        groups[turn % len(groups)] if groups else [])
+                if work and work[0][2] == 'eod' and (not owed or owed_row is not None):
                     db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                               (key, str(turn + 1)))
+                               (owed_key, work[0][1]))
         if owner_action_turn:
             # One protected alert admission precedes review. Additional alerts
             # cannot take the hourly/EoD slots simply because those classes
@@ -446,6 +482,15 @@ def drain(store, operating, binding, providers, *, report_ids=None, allow_send=T
                                            clock=getattr(provider, 'clock', None))
                 except Exception:
                     state = dict(status='UNKNOWN', reason='REPORT_PROVIDER_UNAVAILABLE')
+                if periodic_turn:
+                    served = (state['status'] in {'DELIVERED', 'FAILED', 'WITHDRAWN'} or
+                              len(state.get('attempts', [])) > row['attempts'])
+                    with store.transaction() as db:
+                        if served and row['fresh']:
+                            db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                                       (key, str(turn + 1)))
+                        if served and (row[2] != 'eod' or state['status'] in {'DELIVERED', 'FAILED', 'WITHDRAWN'}):
+                            db.execute('DELETE FROM controller_meta WHERE key=? AND value=?', (owed_key, row[1]))
                 if monotonic() >= budget.deadline:
                     remember(category(row))
                 else:
@@ -841,7 +886,7 @@ class ReviewReportingPort:
 
     def _check(self, payload, calendar, observe_candidate, *, budget=None, restoration=False,
                restoration_report_id=None, restoration_window=None):
-        from ..review_batching import ReviewBatchStore
+        from ..review_batching import ReviewBatchStore, _window
         require(all(str(m['candidate']['repository_id']) == self.binding['repository'] for m in payload['members']),
                 'REPORT_SCOPE_BINDING_MISMATCH')
         from .bounded import source_timeout
@@ -849,12 +894,12 @@ class ReviewReportingPort:
         with budget.checking():
             now, checked = self.clock(), {}
             window = next_review_presentation(now, calendar)
-            if window['held']:
+            if window['held'] or (not restoration and payload.get('presentation_window') != _window(now, calendar)):
                 # A closed presentation window is scheduling, not an unknown
                 # provider outcome. Refuse before remote reads/recheck; the
                 # post-observation policy, expiry and window guards still run.
                 refusal = ValidationError('REPORT_REVIEW_WINDOW_EXHAUSTED')
-                refusal.retry_at = window['presentation_at']
+                refusal.retry_at = window['presentation_at'] if window['held'] else _window(now, calendar)['next_opening']
                 raise refusal
             # Observe outside SQLite's write transaction: no remote callback
             # may hold persistence hostage or prevent a durable timeout record.
