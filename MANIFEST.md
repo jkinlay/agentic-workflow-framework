@@ -531,7 +531,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_twelve_streams.py` | `e439228f318f1166db7af81e4e4c8fa90c97f6eed3a04edc5c3a7dc517a52c97` |
 | `.agentic/tests/test_upgrade_194.py` | `9ed7a20ce999c7253c4c1f3db1121e7b4888b332afafcce452f0d01e6c4c7b7c` |
 | `.agentic/tests/test_upgrade_195.py` | `fec59067f854a1aecf42c09b835ad546ccdc3fcccbcc347cf1a376fdd2f890ff` |
-| `.agentic/tests/test_upgrade_195_preservation.py` | `8db757026f1bd9c1b2882c9c3a3be5f4f65d7ce68c3d98eade8403320573afb6` |
+| `.agentic/tests/test_upgrade_195_preservation.py` | `ecba06e928d0a38ad1f2b50585eac7a62cc86e79f0aebb54006c9bfed664a587` |
 | `.agentic/tests/test_upgrade_195_recovery.py` | `9ce0e57db54cb8706f063d800a7bd0e4b9d6fec1168b702f276ed4e4ee131ff3` |
 | `.agentic/tests/test_upgrade_196.py` | `3829f9852f85f106f2f894566cf00115a4111670da3e3236e75c763c6a8c5a9d` |
 | `.agentic/tests/test_upgrade_196_archives.py` | `3fbeaeacdba1f3f59def003b10691d1d2378f725a0576aebd16dbd9305bac2f1` |
@@ -748,7 +748,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
 | `scripts/tests/test_publish_release.py` | `62e1967c5f61f3c1dd030132f9136bc4398134746b8832c638bbc6704f0212b2` |
-| `scripts/tests/test_qualify_upgrade.py` | `288aeb84a89290fcca404f3c7b667480e6e6144435a86eaea3e26d7f6ed6d84e` |
+| `scripts/tests/test_qualify_upgrade.py` | `9a8019af755dd27f48fa740cf3861d4daaacd049baa333b491b3ecdc04b01455` |
 | `scripts/tests/test_release_hygiene.py` | `349ddb4ed2247235c70fe7ca48fb20697c0813818d9e15ba5f3c6fa972c16b37` |
 | `scripts/tests/test_release_review.py` | `83e200b350b22ec835a2386215ec2586ee0a671da3fc822a786021c943d09b26` |
 | `scripts/tests/test_self_test_review.py` | `30b77515f97fdb3f909fe7a1b8c17f650cf7417ae4dbef5011df31970268dc7e` |

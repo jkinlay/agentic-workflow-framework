@@ -14,14 +14,14 @@ import os
 from copy import deepcopy
 
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import stat
 from types import SimpleNamespace
 
 
 @contextmanager
-def simulated_runtime_links(roots):
-    """Represent lib64 placeholders as POSIX links at filesystem observation seams."""
+def simulated_runtime_links(roots, *, windows_reparse=False):
+    """Observe lib64 placeholders as POSIX links or Windows symlink reparse points."""
     original_lstat, original_scandir, original_readlink = Path.lstat, os.scandir, os.readlink
     original_os_lstat = os.lstat
 
@@ -33,7 +33,8 @@ def simulated_runtime_links(roots):
     def link_stat(path):
         info = original_os_lstat(path)
         return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_nlink=1,
-            st_file_attributes=0, st_reparse_tag=0, st_size=info.st_size,
+            st_file_attributes=0x400 if windows_reparse else 0,
+            st_reparse_tag=0xA000000C if windows_reparse else 0, st_size=info.st_size,
             st_dev=info.st_dev, st_ino=info.st_ino)
 
     def lstat(path, *args, **kwargs):
@@ -125,22 +126,91 @@ class PreservationReportTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'Linked/reparse inventory member refused'):
                         inventory(self.root)
 
+    @unittest.skipUnless(os.name == 'posix',
+        'Windows venvs never contain lib64; Windows reparse points are refused by design '
+        '(asserted by the Windows refusal companion and its privilege-independent simulation)')
     def test_retained_lib64_real_symlink_snapshot_and_tamper(self):
         backup = self.root / '.agentic/.venv.backup-22222222-2222-4222-8222-222222222222'
         (backup / 'lib').mkdir(parents=True)
         (backup / 'lib/runtime').write_bytes(b'original')
-        try:
-            (backup / 'lib64').symlink_to('lib', target_is_directory=True)
-        except OSError as exc:
-            if os.name == 'nt' and exc.winerror == 1314:
-                self.skipTest('Creating the real lib64 directory symlink requires Windows privilege (WinError 1314)')
-            raise
+        (backup / 'lib64').symlink_to('lib', target_is_directory=True)
         before = inventory(self.root)
         self.assertTrue(compare(before, inventory(self.root), {})['preserved'])
         (backup / 'lib/runtime').write_bytes(b'changed')
         result = compare(before, inventory(self.root), {})
         self.assertFalse(result['preserved'])
         self.assertIn(backup.relative_to(self.root).as_posix() + '/lib/runtime', result['changes'])
+
+    def _assert_reparse_refusal_preserves_inventory(self, backup, observations=None):
+        from agentic.preservation_metadata import (runtime_tree_sha256, runtime_inventory,
+                                                    _permissions, _named_streams)
+        from qualify_upgrade import main
+
+        def capture(root):
+            # The production inventory deliberately refuses this tree. This
+            # independent test inventory records links without traversing them.
+            result = {}
+            def visit(node, relative):
+                info = node.lstat()
+                metadata = {key: getattr(info, key, None) for key in (
+                    'st_mode', 'st_dev', 'st_ino', 'st_nlink', 'st_size', 'st_uid',
+                    'st_gid', 'st_mtime_ns', 'st_ctime_ns', 'st_file_attributes', 'st_reparse_tag')}
+                if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                    result[relative] = dict(metadata=metadata, link=os.readlink(node))
+                else:
+                    state = dict(metadata=metadata, permissions=_permissions(node),
+                                 named_streams=_named_streams(node))
+                    if stat.S_ISDIR(info.st_mode):
+                        result[relative] = state
+                        for child in sorted(node.iterdir()):
+                            visit(child, relative + '/' + child.name)
+                    else:
+                        self.assertTrue(stat.S_ISREG(info.st_mode))
+                        result[relative] = dict(state, contents=node.read_bytes())
+            visit(root, '.')
+            return result
+
+        project_before, backup_before = capture(self.root), capture(backup)
+        operations = (
+            ('runtime hash', lambda: runtime_tree_sha256(backup)),
+            ('runtime inventory', lambda: runtime_inventory(backup)),
+            ('project snapshot', lambda: inventory(self.root)),
+            ('runtime-hash command', lambda: main(['runtime-hash', '--path', str(backup),
+                                                  '--expected-sha256', '0' * 64])),
+        )
+        for name, operation in operations:
+            with self.subTest(operation=name):
+                with observations() if observations else nullcontext():
+                    with self.assertRaises(ValueError) as refused:
+                        operation()
+                    self.assertEqual('Runtime hash refuses reparse points: lib64', str(refused.exception))
+                self.assertEqual(backup_before, capture(backup))
+                self.assertEqual(project_before, capture(self.root))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows symlink reparse-point refusal; POSIX links have different semantics')
+    def test_retained_lib64_windows_symlink_is_refused_without_mutation(self):
+        backup = self.root / '.agentic/.venv.backup-33333333-3333-4333-8333-333333333333'
+        (backup / 'lib').mkdir(parents=True)
+        (backup / 'lib/runtime').write_bytes(b'original runtime')
+        try:
+            (backup / 'lib64').symlink_to('lib', target_is_directory=True)
+        except OSError as exc:
+            if exc.winerror == 1314:
+                self.skipTest('Creating a real Windows directory symlink requires privilege (WinError 1314); '
+                              'the reparse observation seam is exercised without privilege by the companion')
+            raise
+        self.assertTrue((backup / 'lib64').lstat().st_file_attributes & 0x400)
+        self._assert_reparse_refusal_preserves_inventory(backup)
+
+    def test_retained_lib64_windows_reparse_observations_refuse_without_mutation(self):
+        backup = self.root / '.agentic/.venv.backup-44444444-4444-4444-8444-444444444444'
+        (backup / 'lib').mkdir(parents=True)
+        (backup / 'lib/runtime').write_bytes(b'original runtime')
+        (backup / 'lib64').write_bytes(b'lib')
+        # The same non-following lstat/DirEntry.stat observations as a privileged
+        # Windows symlink, including FILE_ATTRIBUTE_REPARSE_POINT and its tag.
+        self._assert_reparse_refusal_preserves_inventory(backup,
+            lambda: simulated_runtime_links({backup}, windows_reparse=True))
 
     def test_runtime_hash_command_is_exact_read_only_and_checks_expected_digest(self):
         import io

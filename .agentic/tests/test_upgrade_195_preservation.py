@@ -50,12 +50,7 @@ class AuthenticBaselineTests(unittest.TestCase):
         if simulated:
             (runtime / 'lib64').write_bytes(b'lib')
         else:
-            try:
-                (runtime / 'lib64').symlink_to('lib', target_is_directory=True)
-            except OSError as exc:
-                if os.name == 'nt' and exc.winerror == 1314:
-                    self.skipTest('Creating the real lib64 directory symlink requires Windows privilege (WinError 1314)')
-                raise
+            (runtime / 'lib64').symlink_to('lib', target_is_directory=True)
         roots = {runtime}
         with simulated_runtime_links(roots) if simulated else nullcontext():
             before = inventory(project)
@@ -114,6 +109,9 @@ class AuthenticBaselineTests(unittest.TestCase):
     def test_lib64_upgrade_preserves_authenticated_backup_simulated_posix(self):
         self._lib64_upgrade(simulated=True)
 
+    @unittest.skipUnless(os.name == 'posix',
+        'Windows venvs never contain lib64; Windows reparse points are refused by design '
+        '(asserted by test_qualify_upgrade Windows refusal companions)')
     def test_lib64_upgrade_preserves_authenticated_backup_real_symlink(self):
         self._lib64_upgrade(simulated=False)
 
