@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -98,6 +100,50 @@ exec(compile(tree,str(path),'exec'),{'__file__':str(path)})
         self.assertEqual('bin', prepare.call_args.kwargs['bin_dir'])
         unborn.assert_called_once()
         self.assertLessEqual(child.call_args.kwargs['timeout'], 3000 - self.launcher.CLEANUP_RESERVE_SECONDS)
+
+    def test_timeout_rounding_preserves_overall_and_per_call_caps(self):
+        # (1096.002 + 3000) - 1096.002 - 30 == 2970.0000000000005.
+        monotonic_value = 1096.002
+        original_monotonic = time.monotonic
+        maximum = self.launcher.DEADLINE_SECONDS - self.launcher.CLEANUP_RESERVE_SECONDS
+        caps = (180, 1200, maximum, self.launcher.DEADLINE_SECONDS, 4000)
+
+        def prepare(root, project, **kwargs):
+            for cap in caps:
+                kwargs['run'](['setup'], timeout=cap)
+            return self.prepare(root, project, **kwargs)
+
+        proxy = SimpleNamespace(monotonic=lambda: monotonic_value)
+        with mock.patch.object(self.launcher, 'time', proxy), \
+                mock.patch.object(self.launcher.subprocess, 'run') as run:
+            self.assertIs(time.monotonic, original_monotonic)
+            status, _, _, child = self.invoke(prepare=prepare)
+        self.assertEqual(0, status)
+        self.assertLessEqual(child.call_args.kwargs['timeout'], maximum)
+        self.assertGreater(child.call_args.kwargs['timeout'], 0)
+        self.assertEqual([min(cap, maximum) for cap in caps],
+                         [call.kwargs['timeout'] for call in run.call_args_list])
+        self.assertIs(time.monotonic, original_monotonic)
+
+    def test_timeout_bounds_over_deterministic_monotonic_grid(self):
+        original_monotonic = time.monotonic
+        maximum = self.launcher.DEADLINE_SECONDS - self.launcher.CLEANUP_RESERVE_SECONDS
+        proxy = SimpleNamespace(monotonic=lambda: monotonic_value)
+        # Reuse injection mocks to keep 5,000 real main invocations inexpensive.
+        with mock.patch.object(self.launcher, 'time', proxy), \
+                mock.patch.object(self.launcher, 'prepare_project', side_effect=self.prepare), \
+                mock.patch.object(self.launcher, 'assert_unborn_head'), \
+                mock.patch.object(self.launcher, 'run_bounded', side_effect=self.child) as child, \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            # Offset the coarse grid so addition can round across an exponent boundary.
+            for index in range(5000):
+                monotonic_value = 1000 + index / 8 + 0.002
+                with self.subTest(monotonic=monotonic_value):
+                    self.assertIs(time.monotonic, original_monotonic)
+                    self.assertEqual(0, self.launcher.main(self.args))
+                    self.assertGreater(child.call_args.kwargs['timeout'], 0)
+                    self.assertLessEqual(child.call_args.kwargs['timeout'], maximum)
+                    (self.artifacts / 'self-test.json').unlink()
 
     def test_default_runner_is_the_durable_capture_implementation(self):
         from installed_self_test_capture import run_bounded
