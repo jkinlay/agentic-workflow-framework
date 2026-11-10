@@ -276,6 +276,50 @@ def recorded_local_files(dest, wanted):
     return validate_local_files(receipt.get("preserved_local_files", []), set(wanted) | set(receipt["files"]))
 
 
+def publish_cleanup_diagnostic(path, record):
+    """Create once through pinned, non-following parents; never replace a leaf."""
+    from contextlib import ExitStack
+    path = Path(os.path.abspath(path))
+    with ExitStack() as stack:
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                ctypes.c_void_p, wintypes.DWORD]
+            for parent in reversed(path.parents):
+                handle = kernel.CreateFileW(str(parent), 0x80, 3, None, 3, 0x02200000, None)
+                if handle == ctypes.c_void_p(-1).value:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                stack.callback(kernel.CloseHandle, handle)
+                attributes = (wintypes.DWORD * 2)()
+                if not kernel.GetFileInformationByHandleEx(handle, 9, attributes, ctypes.sizeof(attributes)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not attributes[0] & 0x10 or attributes[0] & 0x400:
+                    raise InstallError('Cleanup diagnostic parent is not an ordinary directory')
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY, 0o600)
+        else:
+            parent_fd = None
+            for parent in reversed(path.parents):
+                parent_fd = os.open(str(parent) if parent_fd is None else parent.name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    **({} if parent_fd is None else {'dir_fd': parent_fd}))
+                stack.callback(os.close, parent_fd)
+            fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent_fd)
+        with os.fdopen(fd, 'wb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise InstallError('Unsafe cleanup diagnostic file')
+            stream.write((json.dumps(record, indent=2) + '\n').encode('utf-8'))
+            stream.flush()
+            os.fsync(stream.fileno())
+
+
 def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_run=False, project=None, preserve_relative=()):
     source = safe_path(source)
     manifest, wanted = verify_package(source, expected_manifest_sha256)
@@ -378,9 +422,19 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
         return add_duplicate_warning(result, dest, project)
     finally:
         if stage.exists():
-            # Only the unique stage created by this invocation is removed.
-            safe_path(stage)
-            shutil.rmtree(stage)
+            # Verification cannot bind subsequent pathname recursive deletion.
+            # Retain the stage, and never hide the original installation error.
+            primary = sys.exc_info()[1]
+            try:
+                record = {"status": "CLEANUP_PENDING", "path": stage.name,
+                          "size_bytes": None,
+                          "reason": "Pathname recursive deletion refused",
+                          "owner_action": "Inspect retained stage under exclusive owner control; preserve needed bytes before manual recovery"}
+                publish_cleanup_diagnostic(stage.with_name(stage.name + '.cleanup-pending.json'), record)
+            except (OSError, InstallError) as error:
+                if primary is None:
+                    raise
+                primary.add_note('Stage retained; cleanup diagnostic unavailable: ' + type(error).__name__)
         lock.unlink()
 
 

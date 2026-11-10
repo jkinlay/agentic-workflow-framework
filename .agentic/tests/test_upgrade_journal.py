@@ -21,6 +21,8 @@ sys.path.insert(0, str(ROOT / ".agentic/tests"))
 from agentic.canonical import sha256  # noqa: E402
 from agentic.installer import JOURNAL, MARKER, install, recover, rollback, verify_installed  # noqa: E402
 import agentic.safeio as safeio  # noqa: E402
+from agentic import installer
+from retained_directory_expectations import assert_rollback_evidence
 from agentic.safeio import Tree  # noqa: E402
 from source_only import skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import file_tree, materialize, verify_materialized  # noqa: E402
@@ -199,27 +201,12 @@ class UpgradeJournalCrashTests(unittest.TestCase):
         return {path: digest for path, digest in file_tree(root).items()
                 if not path.startswith(".agentic-install/")}
 
-    @staticmethod
-    def snapshot(source, destination):
-        """Capture the durable crash state, excluding an uncommitted temp inode."""
-        def ignore(directory, names):
-            ignored = [name for name in names
-                       if name.startswith(".awf-") and name.endswith(".tmp")]
-            if Path(directory).name == ".agentic-install" and "lock" in names:
-                ignored.append("lock")
-            return ignored
-        shutil.copytree(source, destination, ignore=ignore, copy_function=shutil.copyfile)
-        # copyfile deliberately leaves metadata unspecified. Apply the captured
-        # modes explicitly so recovery sees the exact durable state on every
-        # supported Python/platform combination.
-        for original in source.rglob("*"):
-            copied = destination / original.relative_to(source)
-            if original.is_file() and copied.is_file():
-                copied.chmod(stat.S_IMODE(original.stat().st_mode))
-
     def crash_during_managed_after_update(self, phase):
         destination = self.base / ("destination-" + phase)
-        crashed = self.base / ("crashed-" + phase)
+        # Recover the actual durable tree after handles unwind. A filesystem
+        # copy changes Windows identities, creation times and inherited ACLs;
+        # accepting that copy would weaken the recovery preservation guards.
+        crashed = destination
         materialize("1.9.3", destination)
         verify_materialized("1.9.3", destination)
         before = self.application_tree(destination)
@@ -227,38 +214,44 @@ class UpgradeJournalCrashTests(unittest.TestCase):
         original_write = Tree.write
         original_fsync = os.fsync
         original_replace = os.replace
-        state = {"relative": None, "journal_writes": 0, "captured": False}
+        state = {"relative": None, "managed_after_write": False, "captured": False}
 
         def capture():
             if state["captured"]:
                 return
-            self.snapshot(destination, crashed)
             state["captured"] = True
             raise SimulatedCrash(phase)
 
         def write(tree, relative, data):
-            if relative == JOURNAL:
-                state["journal_writes"] += 1
             previous = state["relative"]
+            previous_managed_after = state["managed_after_write"]
             state["relative"] = relative
+            if relative == JOURNAL:
+                proposed = json.loads(data)
+                # Directory ownership adds earlier journal updates. Bind the
+                # crash to the intended managed-after publication itself.
+                state["managed_after_write"] = (
+                    proposed.get("phase") == "active" and
+                    proposed.get("managed_after_sha256") is not None)
             try:
-                if (relative == JOURNAL and state["journal_writes"] == 2
+                if (relative == JOURNAL and state["managed_after_write"]
                         and phase == "before_write"):
                     capture()
                 return original_write(tree, relative, data)
             finally:
                 state["relative"] = previous
+                state["managed_after_write"] = previous_managed_after
 
         def fsync(fd):
             result = original_fsync(fd)
-            if (state["relative"] == JOURNAL and state["journal_writes"] == 2
+            if (state["relative"] == JOURNAL and state["managed_after_write"]
                     and phase == "after_temp_write"):
                 capture()
             return result
 
         def replace(source, target, *args, **kwargs):
             target_name = os.fspath(target)
-            selected = (state["relative"] == JOURNAL and state["journal_writes"] == 2
+            selected = (state["relative"] == JOURNAL and state["managed_after_write"]
                         and Path(target_name).name == Path(JOURNAL).name)
             if selected and phase == "before_replace":
                 capture()
@@ -275,7 +268,17 @@ class UpgradeJournalCrashTests(unittest.TestCase):
                         configure=True, discover=False)
 
         self.assertTrue(state["captured"], "requested journal crash point was not reached")
-        self.assertEqual(recover(crashed)["status"], "ROLLED_BACK")
+        rollback_operation = installer.rollback
+        restored = {}
+
+        def capture_rollback(tree, journal):
+            result = rollback_operation(tree, journal)
+            restored.update(json.loads(installer.json_bytes(journal)))
+            return result
+
+        with patch.object(installer, 'rollback', capture_rollback):
+            self.assertEqual(recover(crashed)["status"], "ROLLED_BACK")
+        assert_rollback_evidence(self, crashed, restored)
         self.assertEqual(self.application_tree(crashed), before)
 
         result = install(self.source, crashed, self.pin, mode="upgrade",

@@ -24,10 +24,10 @@ disabling accounting disables enforcement. Preserve upgraded behavior until
 owner adoption; installed 1.9.5 stays unchanged/enabled. Recommend versioned
 preservation, never in-place edits to integrity-managed bytes or receipts.
 
-For budget or calendar questions in chat, run `workflow.py operating show`
+For budget/calendar questions, run `workflow.py operating show`
 without approval. Present switches/limits, source/commit, working differences
 and rules UNOBSERVED warnings. Publication/adoption observe live rules. Last PR/merger optional;
-say when unobserved. No terminal command is required of the owner.
+Report unobserved. No owner terminal commands.
 
 Branch from the fetched default branch. Edit only requested
 `OPERATING_CONFIG.yaml` values, preserving text/comments; accounting OFF also
@@ -42,8 +42,7 @@ Host rules govern merge; default-branch push/owner rights can bypass this. Offer
 `merge_gate.trusted_owner_ids` retains its merge-gate use.
 Calendar uses this same chat/PR route. Present effective timezone, continuous
 work mode, review days/opening/cutoff and EoD schedule from `operating show`.
-Defaults: 24/7 work; review batching enabled weekdays 07:00-17:00 Europe/London,
-EoD 17:00 daily. Validate proposed calendar values before preparing the PR.
+Defaults: 24/7; weekday review batching enabled 07:00-17:00 Europe/London; daily EoD 17:00. Validate proposed calendar values before preparing the PR.
 Working/PR-branch calendars cannot change batching; merged and fetched settings
 apply at the next load. Malformed accepted calendars refuse with a reason.
 
@@ -60,4 +59,5 @@ suspected external conflict, and never retries. Post validated digests.
 
 Declare each contract's risk tier and closure standard before review; block only on an acceptance criterion or a mandatory boundary; at the amendment cap record one owner disposition (merge with notes, park, rescope, bounded extension). Read the located review-tiers runbook.
 
-Reporting shares this PR route, including OFF/bindings. Show effective commit; validation is offline, reachability UNOBSERVED. Preserve delivery state.
+Absent budgeting/history stays legacy. Owner-requested `operating set --adopt-budgeting` prepares OFF controls by PR; owner merge/fetch applies. Enabling needs another PR/verified shared-ledger import.
+Reporting defaults OFF; settings/bindings share this PR route. Validation offline; reachability UNOBSERVED. Preserve delivery state.

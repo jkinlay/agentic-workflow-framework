@@ -21,6 +21,17 @@ class CapturedIntent(BaseException):
     """Model a process interruption without invoking installer rollback."""
 
 
+def expected_rollback_result(destination):
+    """Keep exact result assertions, including every declared unproved path."""
+    journal = json.loads((destination / installer.JOURNAL).read_bytes())
+    retained = [row['path'] for row in reversed(journal.get('created_directories', []))
+                if row['identity'] is None]
+    result = {'status': 'ROLLED_BACK'}
+    if retained:
+        result['retained_directories'] = retained
+    return result
+
+
 class CompactInstallerJournalTests(unittest.TestCase):
     PAYLOAD_SIZE = 64 * 1024
 
@@ -175,9 +186,10 @@ class CompactInstallerJournalTests(unittest.TestCase):
     def test_awf134_recover_round_trip_restores_prior_bytes_from_side_store(self):
         destination, _path, before, _journal = self.interrupt_after_journal_publish()
 
+        expected = expected_rollback_result(destination)
         result = installer.recover(destination)
 
-        self.assertEqual({"status": "ROLLED_BACK"}, result)
+        self.assertEqual(expected, result)
         self.assertEqual(before, self.snapshot_project(destination))
         self.assertFalse((destination / installer.JOURNAL).exists())
         self.assertFalse((destination / installer.MARKER).exists())

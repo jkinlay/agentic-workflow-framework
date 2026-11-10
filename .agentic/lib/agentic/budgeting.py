@@ -5,6 +5,7 @@ existing installation mean legacy behavior, never implicit consent to disable.
 Budget accounting never confers dispatch, security, recovery or merge authority.
 """
 from copy import deepcopy
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -206,7 +207,7 @@ class ControllerBudgeting:
     completion. Neither ticket content nor process ancestry enrolls a run.
     Constructing an OFF context opens no enrollment or accounting database.
     """
-    def __init__(self, path, governance, operating, host, *, repository_root, worktree_roots=(), credential_envs=()):
+    def __init__(self, path, governance, operating, host, *, repository_root, worktree_roots=(), legacy_store=None, credential_envs=()):
         from .budget_enrollment import EnrollmentRegistry
         operating = accepted_budget_snapshot(repository_root, governance, operating,
             credential_envs=credential_envs)
@@ -214,6 +215,7 @@ class ControllerBudgeting:
         self.operating = operating
         self.settings = resolve_settings(operating.config)
         self.host = host
+        self.legacy_store = legacy_store
         self.worktree_roots = worktree_roots = protected_state_roots(*worktree_roots)
         require(path is not None or not self.settings['accounting_enabled'],
                 'Enabled budgeting requires the canonical project ledger')
@@ -318,7 +320,8 @@ class ControllerBudgeting:
                 for key in ('model', 'reasoning_effort')), 'Budget route differs from the host launch route')
         self.registry.enroll(binding)
         reservation = self._ledger().reserve(binding['project_id'], policy, request, observed['capabilities'],
-            operating=self.operating, governance=self.governance, budget_registry=self.registry, budget_binding=binding)
+            operating=self.operating, governance=self.governance, budget_registry=self.registry, budget_binding=binding,
+            legacy_store=self.legacy_store)
         require(reservation['status'] == 'reserved', 'Budget routing admission refused: ' + str(reservation))
         require(all(reservation[key] == selected.get(key) for key in ('model', 'reasoning_effort')),
                 'Budget recovery route differs from the host launch route')
@@ -494,6 +497,28 @@ def bridge_stage_one(db):
         db.execute(f"CREATE TRIGGER IF NOT EXISTS stage_one_budget_no_{operation.lower()} BEFORE {operation} ON budget_charges BEGIN SELECT RAISE(ABORT,'archived budget charges; use canonical routing ledger'); END")
 
 
+@contextmanager
+def legacy_reservation_snapshot(store, canonical_path, project_id, *, enabled):
+    """Freeze an external source through admission; same-file rows use its lock.
+
+    OFF never opens a source. Trusted controllers supply their existing Store,
+    rather than accepting a worker assertion that history has been imported.
+    """
+    if not enabled or store is None:
+        yield ()
+        return
+    from .store import Store
+    require(isinstance(store, Store), 'Legacy reservation source must be a trusted Store')
+    if store.path.resolve() == Path(canonical_path).resolve():
+        yield ()
+        return
+    with store.transaction() as db:
+        retained = db.execute('SELECT rowid AS _source_id,* FROM reservations').fetchall()
+        require(not retained or store.project_id == project_id,
+                'Legacy reservation source differs from the admitted project')
+        yield retained
+
+
 class BudgetLedger(ProtectedDatabase):
     """Enrollment facade over RoutingLedger's sole authoritative model_runs.
 
@@ -513,7 +538,49 @@ class BudgetLedger(ProtectedDatabase):
             pass
         return RoutingLedger(self.path, worktree_roots=self.worktree_roots)
 
-    def reserve(self, binding, settings, tokens):
+    @staticmethod
+    def validate_legacy_imports(db, project_id, reservations):
+        """Validate retained source rows and their actual canonical charges.
+
+        The caller holds both the source snapshot lock and the canonical write
+        lock through admission. Proofs are protected import records, not owner
+        authorization or independent release provenance. Never trust a proof's
+        claimed canonical digest without deriving the charge from the source.
+        """
+        import re
+        from .upgrade import _budget_row_hash, _legacy_reservation_row
+        # The selected canonical database may itself be the legacy Store. Read
+        # it under the very same write lock, even when no external source was
+        # supplied. A caller cannot bypass retained history by omitting rows.
+        reservations = list(reservations)
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reservations'").fetchone():
+            retained = db.execute('SELECT rowid AS _source_id,* FROM reservations').fetchall()
+            owner = db.execute("SELECT value FROM meta WHERE key='project'").fetchone()
+            require(not retained or owner is not None and owner['value'] == project_id,
+                    'Legacy reservation source differs from the admitted project')
+            reservations.extend(retained)
+        if not reservations:
+            return
+        message = ('Unproven legacy reservation import; preserve/import all retained '
+                   'state-store reservations into the canonical routing ledger before admission')
+        require(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='budget_history_imports'").fetchone()
+                is not None, message)
+        columns = [r['name'] for r in db.execute('PRAGMA table_info(model_runs)')]
+        for entry in reservations:
+            legacy = dict(entry)
+            source_id = str(legacy.pop('_source_id'))
+            source_digest = _budget_row_hash(legacy)
+            expected_digest = _budget_row_hash(_legacy_reservation_row(legacy, project_id, columns))
+            actual = db.execute('SELECT * FROM model_runs WHERE run_id=?', (legacy['run_id'],)).fetchone()
+            require(actual is not None and _budget_row_hash(actual) == expected_digest, message)
+            proofs = db.execute("SELECT * FROM budget_history_imports WHERE source_table='reservations' "
+                'AND source_id=? AND run_id=?', (source_id, legacy['run_id'])).fetchall()
+            require(any(isinstance(p['source_sha256'], str) and
+                        re.fullmatch('[0-9a-f]{64}', p['source_sha256']) and
+                        p['source_row_sha256'] == source_digest and
+                        p['canonical_row_sha256'] == expected_digest for p in proofs), message)
+
+    def reserve(self, binding, settings, tokens, *, legacy_reservations=()):
         from datetime import datetime, timezone
         settings = validate_settings(settings)
         if not settings['accounting_enabled']:
@@ -525,6 +592,7 @@ class BudgetLedger(ProtectedDatabase):
                 'Enforcement requires a positive token reservation; accounting estimates may be UNKNOWN')
         stored_tokens = 0 if unknown else tokens
         with self._routing()._transaction() as db:
+            self.validate_legacy_imports(db, binding['project_id'], legacy_reservations)
             old = db.execute('SELECT * FROM model_runs WHERE run_id=?', (binding['run_id'],)).fetchone()
             if old is not None:
                 request = json.loads(old['request'])
