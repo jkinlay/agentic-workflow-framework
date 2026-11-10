@@ -8,6 +8,7 @@ import uuid
 
 from .canonical import load_yaml
 from .installer import CONFIG
+from . import ValidationError
 
 FORMAT = 'awf-upgrade-preservation-1'
 EXCLUDED = {'.git', '.agentic/.venv'}
@@ -169,18 +170,21 @@ def _inventory(project, *, evidence_kind):
                     continue
                 raise ValueError('Non-regular inventory member refused: ' + relative +
                                  '; preserve externally and replace with regular content before snapshot')
-        # Delegate only exact transaction backup roots to the runtime inventory.
+        # Delegate exact retained runtime roots to the runtime inventory.
         # Keep their complete records in files/directories: this is not a delta
         # exemption, and pre-existing backups remain ordinary preservation inputs.
         for name in dirs:
             path = parent / name
             relative = path.relative_to(project).as_posix()
-            prefix = '.agentic/.venv.backup-'
             key = scope_key(relative)
-            if key.startswith(prefix):
+            prefixes = tuple('.agentic/.venv.' + kind + '-' for kind in
+                             ('backup', 'staging', 'cleanup'))
+            prefix = next((value for value in prefixes if key.startswith(value)), None)
+            if prefix is not None:
                 identity = key[len(prefix):]
                 try:
-                    valid = str(uuid.UUID(identity)) == identity
+                    parsed = uuid.UUID(identity)
+                    valid = identity in (str(parsed), parsed.hex)
                 except ValueError:
                     valid = False
                 if valid:
@@ -273,12 +277,67 @@ def runtime_inventory(path):
     return dict(sha256=before, entries=entries)
 
 
+def _runtime_file_record(tree, relative, observed):
+    """Stream one no-follow, independent file; retain all ordinary read caps."""
+    from . import safeio
+    parent, handle, name = tree.parent(relative)
+    # Windows DirEntry.stat may report zero for inode/link-count fields. Obtain
+    # the complete no-follow observation before comparing it to the open file.
+    current = os.stat(name, dir_fd=handle, follow_symlinks=False) if os.name != 'nt' else os.lstat(parent / name)
+    # Windows lstat derives execute bits from extensions; fstat/DirEntry.stat
+    # do not. Compare the actual read-only bits and type, retaining the original
+    # DirEntry mode in the journal encoding below. POSIX modes compare in full.
+    mode = lambda info: info.st_mode & (~0o111 if os.name == 'nt' else ~0)
+    if (mode(current), current.st_size) != (mode(observed), observed.st_size):
+        raise ValidationError('Runtime changed during hashing: ' + relative)
+    observed = current
+    if not stat.S_ISREG(observed.st_mode) or getattr(observed, 'st_file_attributes', 0) & 0x400:
+        raise ValidationError('Runtime file is linked or nonregular: ' + relative +
+                              '; preserve externally and restore an independent regular copy')
+    if observed.st_nlink != 1:
+        prefix = ('Refusing link, reparse point, or wrong file type' if os.name == 'nt'
+                  else 'Unsafe file type/link count/size')
+        raise ValidationError(prefix + ': ' + relative +
+                              '; preserve externally and restore an independent regular copy')
+    if os.name == 'nt':
+        raw = safeio.win_open(parent / name)
+        try:
+            fd = safeio.msvcrt.open_osfhandle(raw, os.O_RDONLY | os.O_BINARY)
+        except BaseException:
+            safeio.kernel.CloseHandle(raw)
+            raise
+    else:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=handle)
+    try:
+        before = os.fstat(fd)
+        identity = lambda value: (value.st_dev, value.st_ino, mode(value), value.st_size,
+                                  value.st_mtime_ns, value.st_nlink)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or identity(before) != identity(observed)):
+            raise ValidationError('Runtime file changed or is linked: ' + relative +
+                                  '; preserve externally and restore an independent regular copy')
+        digest, size = hashlib.sha256(), 0
+        while True:
+            block = os.read(fd, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+        if identity(before) != identity(os.fstat(fd)) or size != before.st_size:
+            raise ValidationError('Runtime changed during hashing: ' + relative)
+        return size, digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
 def runtime_tree_sha256(path):
     """Read-only journal-compatible runtime hash; links contribute text, never targets.
 
-    Requires exclusive ownership. Confined Tree reads reject hard links/reparse
-    points and retain the existing per-file read bound. No lock, mkdir or cleanup
-    is performed. A hash match authenticates an endpoint, not recovery authority.
+    Canonical implementation shared by installer preflight and the operator
+    command. Requires exclusive ownership; streams independent regular files
+    without buffering them. Tree.read bounds are unchanged. Windows reparse
+    points refuse; POSIX link text contributes without opening its target.
+    No lock, mkdir or cleanup; a match grants no recovery authority.
     """
     from .safeio import Tree
     path = Path(path).absolute()
@@ -308,15 +367,15 @@ def runtime_tree_sha256(path):
                 if stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400:
                     add([relative, 'link', mode, os.readlink(entry.path)])
                 elif getattr(info, 'st_file_attributes', 0) & 0x400:
-                    raise ValueError('Runtime hash refuses reparse points: ' + relative)
+                    raise ValueError('Runtime hash refuses reparse points: ' + relative +
+                        '; retain the runtime and journal/marker; obtain an owner-reviewed recovery plan '
+                        'from an independently authenticated regular runtime')
                 elif stat.S_ISDIR(info.st_mode):
                     add([relative, 'directory', mode])
                     visit(entry.path, relative)
                 elif stat.S_ISREG(info.st_mode):
-                    raw = tree.read(relative)
-                    if len(raw) != info.st_size:
-                        raise ValueError('Runtime changed during hashing: ' + relative)
-                    add([relative, 'file', mode, len(raw), hashlib.sha256(raw).hexdigest()])
+                    size, file_digest = _runtime_file_record(tree, relative, info)
+                    add([relative, 'file', mode, size, file_digest])
                 else:
                     raise ValueError('Runtime hash refuses nonregular or linked files: ' + relative)
         visit(path)

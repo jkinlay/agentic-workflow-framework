@@ -181,19 +181,29 @@ class SimulatedTermination(BaseException):
 class PublishedRecoveryTests(unittest.TestCase):
     def test_conditional_runtime_recovery_and_diagnostic_retirement_are_consistent(self):
         required = (
-            'If no backup exists and canonical `.agentic/.venv` matches `runtime.previous_sha256`, '
-            'quarantine only the stage outside the project; leave the canonical runtime untouched.',
-            'No owner retirement CLI exists.',
-            'move only the resolved `retained-journal.json` outside the project',
-            'legacy `.agentic-backup/<txid>`',
+            'No backup/canonical `.agentic/.venv`=previous hash: quarantine stage only.',
+            'No retirement CLI;',
+            'move only resolved `retained-journal.json` externally',
+            'Legacy `.agentic-backup/<txid>`',
             'runtime-hash --path ENDPOINT --expected-sha256 DIGEST',
-            'verified journal-writing candidate release',
-            'it is not automatically adopted',
-            'record authenticated restoration/quarantine or deliberate retention',
-            'Restored 1.9.5 tooling prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE state.',
-            '`.agentic/.venv/bin/python` (`.agentic/.venv/Scripts/python.exe` on Windows)',
+            'verified journal-writing release',
+            'never automatically adopted',
+            'authenticated restoration/quarantine or deliberate retention',
+            'Restored 1.9.5 prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE.',
+            '`.agentic/.venv/bin/python` (Windows: `.agentic/.venv/Scripts/python.exe`)',
             '`.agentic/scripts/workflow.py`',
+            'Existing stage/null new_sha256: unauthenticated; retain diagnostics.',
+            'Quarantine needs independent owner-verified creation evidence; otherwise stop.',
+            'file-hash --path FILE --expected-sha256 DIGEST',
+            'unrecorded/unprovable metadata stops',
+            'owner-controlled same-filesystem rename outside PROJECT; preserve links/modes/ownership',
+            "owner stops/checks every host's installers/agents/editors/schedulers/processes/leases",
+            'stop for 1=mismatch or 2=malformed/refused',
+            'Fresh-install rollback: confirm runtime/workflow/receipt absent;',
+            'archive evidence/report uninstalled; checks unavailable.',
+            'Retry requires recovery/resolution/owner authorization.',
         )
+        procedures = []
         for relative in ('MIGRATION-v1.9.5-to-v1.9.6.md',
                          '.agentic/docs/38-RELEASE-196-QUALIFICATION.md',
                          'docs/runbook/19-runbook-journal-recovery.md'):
@@ -201,6 +211,8 @@ class PublishedRecoveryTests(unittest.TestCase):
                 text = (ROOT / relative).read_text(encoding='utf-8')
                 for clause in required:
                     self.assertIn(clause, text)
+                procedures.append(text[text.index('1. No exclusivity-proof CLI:'):].split('\n\n', 1)[0])
+        self.assertEqual([procedures[0]] * 3, procedures)
 
 
     @classmethod

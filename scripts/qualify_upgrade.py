@@ -19,6 +19,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from collections import Counter
+from contextlib import ExitStack
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
@@ -26,10 +27,11 @@ from agentic.canonical import load_yaml, loads
 from agentic.installer import (install, CONFIG, INSTALLED, PROVENANCE, CODEOWNERS,
                                managed, verify_release)
 from agentic.safeio import Tree, run_bounded
+from agentic import safeio
 from agentic import installer as installation
 from agentic.child_process import child_env, isolated_git_env
 from agentic.preservation_metadata import (FORMAT, EXCLUDED, inventory,
-                                           _permissions, _named_streams, runtime_tree_sha256)
+    _permissions, _named_streams, runtime_tree_sha256, _runtime_file_record)
 
 REQUIRED_CHECKS = ('source_managed_membership', 'historical_state_continuity', 'named_streams')
 QUALIFICATION_LEDGER = '.agentic-state/routing/ledger.sqlite'
@@ -121,13 +123,125 @@ def _json_identity(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
 
 
+def _posix_probe_parent(parent):
+    """Replicate inheritance outside the project; retain every probe on POSIX.
+
+    POSIX has no identity-conditioned unlink. Copy the pinned parent's complete
+    ownership/mode/xattrs (including default ACLs), or refuse. Never approximate
+    inheritance or exempt retained probes from the project inventory.
+    """
+    external = Path(tempfile.mkdtemp(prefix='awf-permission-probe-'))
+    with Tree(parent) as tree:
+        source = tree._dirs[tree.root]
+        fd = os.open(external, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            before = os.fstat(source)
+            if os.fstat(fd).st_dev != before.st_dev:
+                raise ValueError('Permission probes need external temporary storage on the project filesystem; probes retained')
+            if (os.fstat(fd).st_uid, os.fstat(fd).st_gid) != (before.st_uid, before.st_gid):
+                os.fchown(fd, before.st_uid, before.st_gid)
+            os.fchmod(fd, stat.S_IMODE(before.st_mode))
+            attrs = {name: os.getxattr(source, name) for name in os.listxattr(source)}
+            for name in os.listxattr(fd):
+                if name not in attrs:
+                    os.removexattr(fd, name)
+            for name, value in attrs.items():
+                os.setxattr(fd, name, value)
+            after = os.fstat(source)
+            clone = os.fstat(fd)
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                                      info.st_gid, info.st_ctime_ns)
+            if (identity(before) != identity(after)
+                    or (clone.st_mode, clone.st_uid, clone.st_gid) !=
+                       (before.st_mode, before.st_uid, before.st_gid)
+                    or attrs != {name: os.getxattr(fd, name) for name in os.listxattr(fd)}):
+                raise ValueError('Permission inheritance replica differs; probes retained externally')
+        except (OSError, AttributeError, TypeError) as exc:
+            raise ValueError('Permission inheritance cannot be replicated; retain external probes and restore supported ownership/mode/xattrs') from exc
+        finally:
+            os.close(fd)
+    return external
+
+
+def _windows_probe_directory(parent_handle, name):
+    """FILE_CREATE returns the directory's creating handle, never a reopened name.
+
+    This is the installer's existing atomic-create protocol, retaining the handle
+    rather than closing it after identity capture. It removes only empty probes.
+    """
+    ctypes, wintypes = safeio.ctypes, safeio.wintypes
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [('Length', wintypes.USHORT), ('MaximumLength', wintypes.USHORT),
+                    ('Buffer', wintypes.LPWSTR)]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [('Length', wintypes.ULONG), ('RootDirectory', wintypes.HANDLE),
+                    ('ObjectName', ctypes.POINTER(UnicodeString)), ('Attributes', wintypes.ULONG),
+                    ('SecurityDescriptor', ctypes.c_void_p), ('SecurityQualityOfService', ctypes.c_void_p)]
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [('StatusOrPointer', ctypes.c_void_p), ('Information', ctypes.c_size_t)]
+
+    create = ctypes.WinDLL('ntdll').NtCreateFile
+    create.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG,
+        ctypes.POINTER(ObjectAttributes), ctypes.POINTER(IoStatusBlock), ctypes.c_void_p,
+        wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
+    create.restype = wintypes.LONG
+    buffer = ctypes.create_unicode_buffer(name)
+    length = len(name.encode('utf-16-le'))
+    unicode_name = UnicodeString(length, length + 2, ctypes.cast(buffer, wintypes.LPWSTR))
+    attributes = ObjectAttributes(ctypes.sizeof(ObjectAttributes), parent_handle,
+                                 ctypes.pointer(unicode_name), 0x40, None, None)
+    owned, result = wintypes.HANDLE(), IoStatusBlock()
+    status = create(ctypes.byref(owned), 0x100000 | 0x10000 | 0x80, ctypes.byref(attributes),
+        ctypes.byref(result), None, 0x10, 3, 2, 0x1 | 0x20 | 0x00200000, None, 0)
+    if status < 0:
+        raise ValueError('Atomic permission probe creation failed; existing objects retained')
+    if result.Information != 2:  # FILE_CREATED; never claim FILE_OPENED.
+        safeio.kernel.CloseHandle(owned)
+        raise ValueError('Permission probe creation unproved; object retained')
+    return owned.value
+
+
+def _windows_probe_handle(path):
+    """Create and pin a probe until its handle-bound empty-object disposition."""
+    handle = safeio.kernel.CreateFileW(str(path), 0x10000 | 0xC0000000, 3, None,
+                                     1, 0x00200000, None)
+    if handle == safeio.INVALID_HANDLE:
+        raise safeio.ctypes.WinError(safeio.ctypes.get_last_error())
+    return handle
+
+
+def _close_windows_probe(handle, *, directory=False, fd=None):
+    try:
+        info = safeio.FileInformation()
+        if not safeio.kernel.GetFileInformationByHandle(handle, safeio.ctypes.byref(info)):
+            raise safeio.ctypes.WinError(safeio.ctypes.get_last_error())
+        if (info.attributes & 0x400 or bool(info.attributes & 0x10) != directory
+                or (not directory and info.links != 1)):
+            raise ValueError('Unsafe permission probe; original object retained')
+        # The kernel refuses nonempty directories. No pathname is reopened and
+        # the read-only override is atomic, never a chmod of a replacement.
+        safeio._win_set_file_information(handle, safeio.FILE_DISPOSITION_INFO_EX,
+            safeio.FileDispositionInformationEx(safeio.FILE_DISPOSITION_FLAG_DELETE |
+                safeio.FILE_DISPOSITION_FLAG_POSIX_SEMANTICS |
+                safeio.FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE))
+    finally:
+        if fd is None:
+            safeio.kernel.CloseHandle(handle)
+        else:
+            os.close(fd)
+
+
 def _creation_state(project, relative, *, directory=False, readonly=False):
-    """Measure Tree.write/mkdir inheritance in the disposable parent, then remove it.
+    """Measure Tree.write/mkdir inheritance without pathname cleanup.
 
     Names grant no permission exception. In particular, Windows DACL inheritance
     depends on the actual nearest existing parent and the number of new levels.
-    These short-lived probes precede the upgrade, never run against live adopters,
-    and must leave the preservation inventory unchanged.
+    Windows pins every created object through capture and handle disposition.
+    POSIX replicates the actual parent's inheritance outside the project and
+    retains it there. Unsupported replication refuses before project mutation.
     """
     parent = (project / relative.rstrip('/')).parent
     missing = 0
@@ -136,39 +250,58 @@ def _creation_state(project, relative, *, directory=False, readonly=False):
         parent = parent.parent
     # For a directory, the leaf adds one more inherited directory level.
     depth = missing + int(directory)
-    temporary_root = None
-    probe = None
-    try:
-        current = parent
+    with ExitStack() as pins:
+        parent_tree = pins.enter_context(Tree(parent))
+        current = parent if os.name == 'nt' else _posix_probe_parent(parent)
+        probe_tree = None if os.name == 'nt' else pins.enter_context(Tree(current))
+        parent_handle = parent_tree._dirs[parent_tree.root]
+        components = []
         if depth:
-            temporary_root = parent / ('.awf-permission-probe-' + uuid.uuid4().hex)
-            temporary_root.mkdir()  # Installer mkdir mode/umask, not mkdtemp's 0700.
-            current = temporary_root
-            for index in range(depth - 1):
-                current = current / str(index)
-                current.mkdir()
+            for index in range(depth):
+                current = current / ('.awf-permission-probe-' + uuid.uuid4().hex if index == 0 else str(index))
+                components.append(current.name)
+                if os.name == 'nt':
+                    handle = _windows_probe_directory(parent_handle, current.name)
+                    pins.callback(_close_windows_probe, handle, directory=True)
+                    parent_handle = handle
+                else:
+                    # mkdir/open relative to pinned descriptors, never through
+                    # a substituted POSIX ancestor. Retain the entire replica.
+                    _, parent_handle, _ = probe_tree.parent('/'.join(components + ['.pin']), create=True)
+        elif os.name != 'nt':
+            parent_handle = probe_tree._dirs[probe_tree.root]
         if directory:
             probe = current
+            fd = None
         else:
-            fd, name = tempfile.mkstemp(prefix='.awf-permission-probe-', dir=current)
-            os.close(fd)  # Same 0600 create mode as Tree.write.
-            probe = Path(name)
+            if os.name == 'nt':
+                probe = current / ('.awf-permission-probe-' + uuid.uuid4().hex)
+                handle = _windows_probe_handle(probe)
+                try:
+                    fd = safeio.msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+                except BaseException:
+                    safeio.kernel.CloseHandle(handle)
+                    raise
+                pins.callback(_close_windows_probe, handle, fd=fd)
+            else:
+                name = '.awf-permission-probe-' + uuid.uuid4().hex
+                fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW,
+                             0o600, dir_fd=parent_handle)
+                probe = current / name
+                pins.callback(os.close, fd)
             if readonly:
-                probe.chmod(stat.S_IREAD)
-        return {'mode': stat.S_IMODE(probe.stat().st_mode), 'permissions': _permissions(probe),
-                'named_streams': _named_streams(probe)}
-    finally:
-        if probe is not None and not directory:
-            probe.chmod(0o600)
-            probe.unlink()
-        if temporary_root is not None:
-            # Only our known empty probe chain; never recursively remove data.
-            current = probe if directory else probe.parent
-            while current != temporary_root:
-                previous = current.parent
-                current.rmdir()
-                current = previous
-            temporary_root.rmdir()
+                if os.name == 'nt':
+                    safeio._windows_set_mode(fd, stat.S_IREAD)
+                else:
+                    os.fchmod(fd, stat.S_IREAD)
+        before = probe.lstat()
+        state = {'mode': stat.S_IMODE(before.st_mode), 'permissions': _permissions(probe),
+                 'named_streams': _named_streams(probe)}
+        after = probe.lstat()
+        if (before.st_dev, before.st_ino, before.st_mode, before.st_nlink) != (
+                after.st_dev, after.st_ino, after.st_mode, after.st_nlink):
+            raise ValueError('Permission probe substituted; all objects retained')
+        return state
 
 
 def _ledger_projection(raw, columns=None):
@@ -1247,6 +1380,9 @@ def main(argv=None):
     authentication = sub.add_parser('runtime-hash', help='read-only runtime endpoint authentication against a journal digest')
     authentication.add_argument('--path', type=Path, required=True)
     authentication.add_argument('--expected-sha256', required=True)
+    file_authentication = sub.add_parser('file-hash', help='read-only journal file authentication and metadata capture')
+    file_authentication.add_argument('--path', type=Path, required=True)
+    file_authentication.add_argument('--expected-sha256', required=True)
     snap = sub.add_parser('snapshot')
     snap.add_argument('--project', type=Path, required=True)
     snap.add_argument('--output', type=Path, required=True)
@@ -1275,9 +1411,30 @@ def main(argv=None):
     runtime.add_argument('--allowed-delta', type=Path,
                          help='optional exact constraints; cannot widen the derived migration policy')
     args = parser.parse_args(argv)
-    if args.command == 'runtime-hash':
+    if args.command in ('runtime-hash', 'file-hash'):
         if re.fullmatch('[0-9a-f]{64}', args.expected_sha256) is None:
-            raise ValueError('Expected runtime SHA-256 must be 64 lowercase hexadecimal digits')
+            raise ValueError('Expected SHA-256 must be 64 lowercase hexadecimal digits')
+        if args.command == 'file-hash':
+            path = args.path.absolute()
+            with Tree(path.parent) as tree:
+                info = tree.inspect(path.name)
+                if info is None:
+                    raise ValueError('Journal-recorded file is absent; preserve evidence and reconcile its endpoint')
+                # Keep the same leaf pinned through permission/stream capture.
+                pin = safeio._PinnedWatchedOutput(path, info.st_size)
+                try:
+                    size, digest = _runtime_file_record(tree, path.name, info)
+                    metadata = dict(mode=stat.S_IMODE(info.st_mode), permissions=_permissions(path),
+                                    named_streams=_named_streams(path))
+                    if not metadata['permissions']['verified'] or not metadata['named_streams']['verified']:
+                        raise ValueError('Journal file metadata is unreadable; preserve evidence')
+                    pin.check()
+                finally:
+                    pin.close()
+            print(json.dumps(dict(format='awf-file-authentication-1', sha256=digest, size=size,
+                expected_sha256=args.expected_sha256, matches=digest == args.expected_sha256,
+                execution_authority=False, **metadata), sort_keys=True))
+            return 0 if digest == args.expected_sha256 else 1
         digest = runtime_tree_sha256(args.path)
         matches = digest == args.expected_sha256
         print(json.dumps(dict(format='awf-runtime-authentication-1', sha256=digest,

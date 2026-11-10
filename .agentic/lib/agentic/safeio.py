@@ -603,7 +603,7 @@ if os.name == "nt":
             raise ctypes.WinError(ctypes.get_last_error())
         try:
             attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
-            raw = kernel.CreateFileW(str(path), 0xC0000000, 0, ctypes.byref(attributes),
+            raw = kernel.CreateFileW(str(path), 0xC0000000, 3, ctypes.byref(attributes),
                                      1, 0x00200000, None)  # CREATE_NEW, no reparse following
             if raw == INVALID_HANDLE:
                 raise ctypes.WinError(ctypes.get_last_error())
@@ -734,13 +734,13 @@ def validate_windows_metadata(value):
     return value
 
 
-def _windows_metadata(path):
+def _windows_metadata(path, *, shared_write=False):
     """Capture owner/group/DACL, creation time, supported attributes and all ADS.
 
     Compression, encryption, sparse/offline and other unsupported attributes
     refuse before a transaction, rather than silently normalizing the file.
     """
-    handle = win_open(path)
+    handle = win_open(path, shared_write=shared_write)
     try:
         info = FileInformation()
         if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
@@ -800,7 +800,7 @@ def _apply_windows_metadata(path, value):
             stream.write(base64.b64decode(encoded, validate=True))
             stream.flush()
             os.fsync(stream.fileno())
-    handle = kernel.CreateFileW(str(path), 0x100, 0, None, 3, 0x00200000, None)
+    handle = kernel.CreateFileW(str(path), 0x100, 3, None, 3, 0x00200000, None)
     if handle == INVALID_HANDLE:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -1071,15 +1071,20 @@ class Tree:
         if preflight:
             # Exercise restoration outside the target before its first write.
             # Do not merely assume this token can restore another owner's ACL.
-            with tempfile.TemporaryDirectory(prefix='awf-metadata-probe-') as temporary:
-                probe = Path(temporary) / 'probe'
-                probe.write_bytes(b'')
+            # Retain this external probe: TemporaryDirectory would recursively
+            # delete an unbound pathname on exit. Pin its ancestry and creating
+            # handle until restoration AND verification finish; deny-delete
+            # sharing prevents pathname metadata APIs reaching a replacement.
+            temporary = Path(tempfile.mkdtemp(prefix='awf-metadata-probe-'))
+            with Tree(temporary):
+                probe = temporary / 'probe'
+                fd = _win_metadata_temp(probe)
                 try:
                     _apply_windows_metadata(probe, value)
-                    if _windows_metadata(probe) != value:
+                    if _windows_metadata(probe, shared_write=True) != value:
                         raise ValidationError('Windows metadata restoration differs; no files changed')
                 finally:
-                    probe.chmod(0o600)
+                    os.close(fd)
         return value
 
     def write(self, relative, data, *, windows_metadata=None):
@@ -1139,10 +1144,13 @@ class Tree:
                 if os.name == 'nt' and mode is not None and windows_metadata is None:
                     _windows_set_mode(stream.fileno(), mode)
                 os.fsync(stream.fileno())
-            if os.name == 'nt' and windows_metadata is not None:
-                _apply_windows_metadata(parent / temp, windows_metadata)
-                if _windows_metadata(parent / temp) != windows_metadata:
-                    raise ValidationError('Windows replacement metadata differs; original file retained')
+                if os.name == 'nt' and windows_metadata is not None:
+                    # The creating handle denies delete sharing continuously.
+                    # Do not close it before pathname ADS/descriptor operations
+                    # and their verification have completed.
+                    _apply_windows_metadata(parent / temp, windows_metadata)
+                    if _windows_metadata(parent / temp, shared_write=True) != windows_metadata:
+                        raise ValidationError('Windows replacement metadata differs; original file retained')
             # os.replace replaces a leaf entry rather than following it; pinned
             # directory parents prevent path redirection on Windows.
             if os.name == "nt":
@@ -1152,7 +1160,11 @@ class Tree:
                 os.fsync(handle)
         finally:
             try:
-                if os.name == "nt":
+                if os.name == 'nt' and windows_metadata is not None:
+                    # A failed metadata replacement stays available for journal
+                    # recovery; never reopen its name to authorize deletion.
+                    pass
+                elif os.name == "nt":
                     win_unlink(parent / temp)
                 else:
                     os.unlink(temp, dir_fd=handle)

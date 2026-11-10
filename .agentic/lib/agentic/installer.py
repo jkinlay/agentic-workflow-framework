@@ -1570,62 +1570,9 @@ def assert_quiescent(config_bytes):
 
 
 def _runtime_tree_sha256(path):
-    """Bind a runtime tree without following links or reparse-point directories."""
-    path = Path(path)
-    metadata = os.lstat(path)
-    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    junction = getattr(path, "is_junction", lambda: False)()
-    if stat.S_ISLNK(metadata.st_mode) or reparse or junction or not stat.S_ISDIR(metadata.st_mode):
-        raise ValidationError("Canonical runtime transaction root is linked or not a directory")
-    digest = hashlib.sha256()
-
-    def add(value):
-        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        digest.update(len(raw).to_bytes(8, "big"))
-        digest.update(raw)
-
-    def visit(directory, prefix=""):
-        try:
-            entries = sorted(os.scandir(directory), key=lambda item: item.name)
-        except OSError as exc:
-            raise ValidationError("Canonical runtime transaction inventory is unreadable") from exc
-        for entry in entries:
-            relative = entry.name if not prefix else prefix + "/" + entry.name
-            try:
-                info = entry.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise ValidationError("Canonical runtime transaction entry is unreadable: " + relative) from exc
-            entry_reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-            mode = stat.S_IMODE(info.st_mode)
-            if stat.S_ISLNK(info.st_mode):
-                try:
-                    target = os.readlink(entry.path)
-                except OSError as exc:
-                    raise ValidationError("Canonical runtime link is unreadable: " + relative) from exc
-                add([relative, "link", mode, target])
-            elif entry_reparse:
-                raise ValidationError("Canonical runtime contains a reparse point: " + relative)
-            elif stat.S_ISDIR(info.st_mode):
-                add([relative, "directory", mode])
-                visit(entry.path, relative)
-            elif stat.S_ISREG(info.st_mode):
-                file_digest = hashlib.sha256()
-                try:
-                    with open(entry.path, "rb") as stream:
-                        while True:
-                            block = stream.read(1024 * 1024)
-                            if not block:
-                                break
-                            file_digest.update(block)
-                except OSError as exc:
-                    raise ValidationError("Canonical runtime file is unreadable: " + relative) from exc
-                add([relative, "file", mode, info.st_size, file_digest.hexdigest()])
-            else:
-                raise ValidationError("Canonical runtime contains a special file: " + relative)
-
-    add([".", "directory", stat.S_IMODE(metadata.st_mode)])
-    visit(path)
-    return digest.hexdigest()
+    """Use the same streaming endpoint authentication as the recovery command."""
+    from .preservation_metadata import runtime_tree_sha256
+    return runtime_tree_sha256(path)
 
 
 def _contained_cleanup_link(relative, target):

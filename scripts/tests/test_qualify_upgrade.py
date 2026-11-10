@@ -183,7 +183,9 @@ class PreservationReportTests(unittest.TestCase):
                 with observations() if observations else nullcontext():
                     with self.assertRaises(ValueError) as refused:
                         operation()
-                    self.assertEqual('Runtime hash refuses reparse points: lib64', str(refused.exception))
+                    self.assertEqual('Runtime hash refuses reparse points: lib64; retain the runtime and '
+                        'journal/marker; obtain an owner-reviewed recovery plan from an independently '
+                        'authenticated regular runtime', str(refused.exception))
                 self.assertEqual(backup_before, capture(backup))
                 self.assertEqual(project_before, capture(self.root))
 

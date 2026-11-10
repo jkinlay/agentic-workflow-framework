@@ -4,8 +4,7 @@ Verify release/pin; quiesce/exclusively own; rehearse disposably; retain untouch
 
 [Adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md).
 
-Before managed commits/checkouts merge `.agentic/templates/installed.gitattributes`
-into root `.gitattributes`; preserve product rules. Prevent `core.autocrlf=true` corruption; inspect nested/info overrides. Never renormalize unrelated files. Reverify fresh checkouts.
+Before managed commits/checkouts merge `.agentic/templates/installed.gitattributes` into root `.gitattributes`; preserve product rules. Inspect nested/info overrides; prevent `core.autocrlf=true` corruption. Never renormalize unrelated files; reverify checkouts.
 
 `PYTHON` is the absolute interpreter in a separate bootstrap environment (`python -m venv BOOTSTRAP`). Install verified dependencies with `PYTHON -m pip install --require-hashes --no-index --find-links WHEELS -r RELEASE/.agentic/requirements.lock`. WHEELS satisfies the lock; uppercase paths are absolute.
 
@@ -41,21 +40,23 @@ Retain marker/journal/recovery objects. Automatic rollback that needs runtime re
 
 Owner recovery:
 
-1. Obtain exclusive owner control; stop writers.
-2. Preserve journal/objects/endpoints/bytes/metadata; use `PYTHON -B RELEASE/scripts/qualify_upgrade.py runtime-hash --path ENDPOINT --expected-sha256 DIGEST`: require exit 0/`matches:true`; mismatch/error stops. PYTHON=external bootstrap Python; RELEASE=the verified journal-writing candidate release. Backup: recorded-path/`runtime.previous_sha256`.
-3. If no backup exists and canonical `.agentic/.venv` matches `runtime.previous_sha256`, quarantine only the stage outside the project; leave the canonical runtime untouched. Otherwise quarantine failed canonical/staged runtimes outside the project, leaving canonical absent. Authenticate stages with the same `runtime-hash` command and `runtime.new_sha256`; use canonical/`runtime.previous_sha256` for the no-backup check.
-4. Run candidate release's external bootstrap `PYTHON -B RELEASE/scripts/bootstrap_project.py --dest PROJECT --recover`; restore provable managed files/receipt/provenance/authenticated backup.
-5. For legacy `.agentic-backup/<txid>` refusal, authenticate journal-recorded files/metadata; quarantine that exact directory externally; rerun `--recover`. Never edit journal/marker.
-6. Reconcile rows: record authenticated restoration/quarantine or deliberate retention. The canonical RECOVERY_REFUSED row names restored runtime; it is not automatically adopted. Resolve via step 7; never discard runtime/remove marker.
-7. After resolving every row, archive index/referenced evidence/path-by-path resolutions; move only the resolved `retained-journal.json` outside the project. No owner retirement CLI exists. Preserve evidence objects/adoption audit.
-8. Run `RUNTIME -B -I WORKFLOW --root PROJECT` with `verify-installation`, `validate-config`, then `status`. RUNTIME=restored `.agentic/.venv/bin/python` (`.agentic/.venv/Scripts/python.exe` on Windows); WORKFLOW=restored `.agentic/scripts/workflow.py`; use absolute paths. Restored 1.9.5 tooling prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE state.
+Quarantine: owner-controlled same-filesystem rename outside PROJECT; preserve links/modes/ownership; no copy/delete fallback.
+
+1. No exclusivity-proof CLI: owner stops/checks every host's installers/agents/editors/schedulers/processes/leases. Lock presence proves nothing.
+2. Preserve journal/objects/endpoints/metadata. `PYTHON -B RELEASE/scripts/qualify_upgrade.py runtime-hash --path ENDPOINT --expected-sha256 DIGEST` requires 0/`matches:true`; stop for 1=mismatch or 2=malformed/refused. PYTHON=external bootstrap interpreter; RELEASE=verified journal-writing release; PROJECT=absolute project. Backup=recorded-path/`runtime.previous_sha256`.
+3. No backup/canonical `.agentic/.venv`=previous hash: quarantine stage only. Otherwise authenticate canonical/stage=`runtime.new_sha256`; quarantine authenticated runtimes, leaving canonical absent. Absent stage: canonical=new when swapped, previous when unswapped. Existing stage/null new_sha256: unauthenticated; retain diagnostics. Quarantine needs independent owner-verified creation evidence; otherwise stop.
+4. `PYTHON -B RELEASE/scripts/bootstrap_project.py --dest PROJECT --recover` restores provable managed files/receipt/provenance/backup.
+5. Legacy `.agentic-backup/<txid>`: authenticate existing journal-listed FILEs: `PYTHON -B RELEASE/scripts/qualify_upgrade.py file-hash --path FILE --expected-sha256 DIGEST` (new_sha256). Require reported modes/permissions/streams=journal/accepted baseline; unrecorded/unprovable metadata stops. Reject extras; quarantine exact directory/rerun recovery. Never edit journal/marker.
+6. Resolve rows: authenticated restoration/quarantine or deliberate retention. Canonical RECOVERY_REFUSED names restored runtime, never automatically adopted; use step 7. Never discard runtime/remove marker.
+7. Archive index/references/path-by-path resolutions; move only resolved `retained-journal.json` externally. No retirement CLI; preserve evidence objects/adoption audit.
+8. Previous installation: `RUNTIME -B -I WORKFLOW --root PROJECT`: `verify-installation`, `validate-config`, `status`. Absolute restored paths: RUNTIME=`.agentic/.venv/bin/python` (Windows: `.agentic/.venv/Scripts/python.exe`); WORKFLOW=`.agentic/scripts/workflow.py`. Restored 1.9.5 prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE. Fresh-install rollback: confirm runtime/workflow/receipt absent; archive evidence/report uninstalled; checks unavailable. Retry requires recovery/resolution/owner authorization.
 
 Forward recovery with retained backups returns `status: COMMITTED`, `transaction_cleanup: COMMITTED_CLEANUP_PENDING`, `transaction_cleanup_failures`, `retained_directories`, `installation_recovery`; nested diagnostic status remains COMMITTED_CLEANUP_PENDING. Inspect exact inventory; recovery authorizes no deletion.
 
 Recovery recognises only exact sibling temporaries derived from journal transaction identity/naming scheme/targets. Unrecorded look-alikes/managed additions refuse, retaining marker. Older journals grant
 no cleanup authority. Never glob-delete `.awf-*.tmp` or edit recovery records.
 
-Budgeting stays LEGACY_RETAINED when absent, with original engine/limits; explicit settings remain. The upgrade report/state disposition records the prior hash and EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED, never completeness or adoption.
+Budgeting stays LEGACY_RETAINED when absent, with original engine/limits; explicit settings remain. Upgrade report/state disposition records prior hash/EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED, never completeness/adoption.
 
 Request AWF-chat adoption from fetched default: preserve OPERATING_CONFIG.yaml comments/text; add accounting/enforcement false, 4,000,000 tokens/ticket and 1,000,000,000/project lifetime in the upgrade PR. `operating set --adopt-budgeting --instruction "Adopt dormant budget controls"` prepares this without --set choices/enabling controls. Restricted publication prepares owner branch/body. Owner review/merge/fetch applies; unmerged edits do nothing. Non-OFF changes require another settings PR. Git/PR history replaces confirmation transactions.
 
@@ -67,7 +68,7 @@ Preserve sources/reservations/UNKNOWN usage/external results. Exact replay dedup
 reconcile conflicts. Enabled admission retains legacy import/charge checks; OFF
 adoption needs no import; declining retains legacy behavior.
 
-Published 1.9.5 operating records verify without confirmation; unsupported pre-release fields refuse. Preserve records; restore supported baseline before upgrade.
+Published 1.9.5 operating records verify without confirmation; unsupported pre-release fields refuse. Preserve records/restore supported baseline before upgrade.
 [Budgeting](.agentic/docs/39-BUDGETING.md).
 
 Rollout unauthorized.
