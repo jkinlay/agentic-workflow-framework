@@ -3583,7 +3583,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			accounting_enabled=budget_settings['accounting_enabled'],
 			worktree_roots=state_roots,
 			previous_paths=(store.path.with_suffix('.routing.sqlite3'),)),
-			governance=planning_config, operating=accepted_operating, repository_root=policy_root, worktree_roots=state_roots)
+			governance=planning_config, operating=accepted_operating, repository_root=policy_root, worktree_roots=state_roots,
+			legacy_store=planning_state_store)
 	else:
 		_require(not budget_settings['accounting_enabled'] or 'legacy_behavior' in budget_settings,
 			'Enabled budgeting requires a reviewed dispatch budgeting adapter')

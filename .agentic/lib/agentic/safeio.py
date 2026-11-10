@@ -6,14 +6,17 @@ hardlinked regular files are rejected. Writes replace a new temporary inode.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
+import base64
 import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path, PurePosixPath
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 from types import MappingProxyType
@@ -397,6 +400,40 @@ if os.name == "nt":
     kernel.SetFileInformationByHandle.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
+    advapi = ctypes.WinDLL('advapi32', use_last_error=True)
+    advapi.GetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                                      wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetFileSecurityW.restype = wintypes.BOOL
+    advapi.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    advapi.SetFileSecurityW.restype = wintypes.BOOL
+    advapi.SetSecurityDescriptorControl.argtypes = [ctypes.c_void_p, wintypes.WORD, wintypes.WORD]
+    advapi.SetSecurityDescriptorControl.restype = wintypes.BOOL
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR,
+        wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    advapi.GetSecurityDescriptorControl.argtypes = [ctypes.c_void_p,
+        ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetSecurityDescriptorControl.restype = wintypes.BOOL
+    advapi.IsValidSecurityDescriptor.argtypes = [ctypes.c_void_p]
+    advapi.IsValidSecurityDescriptor.restype = wintypes.BOOL
+    kernel.SetFileAttributesW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+    kernel.SetFileAttributesW.restype = wintypes.BOOL
+    kernel.SetFileTime.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+                                  ctypes.c_void_p, ctypes.c_void_p]
+    kernel.SetFileTime.restype = wintypes.BOOL
+
+    class StreamInformation(ctypes.Structure):
+        _fields_ = [('size', ctypes.c_longlong), ('name', wintypes.WCHAR * 296)]
+
+    kernel.FindFirstStreamW.argtypes = [wintypes.LPCWSTR, ctypes.c_int,
+        ctypes.POINTER(StreamInformation), wintypes.DWORD]
+    kernel.FindFirstStreamW.restype = wintypes.HANDLE
+    kernel.FindNextStreamW.argtypes = [wintypes.HANDLE, ctypes.POINTER(StreamInformation)]
+    kernel.FindNextStreamW.restype = wintypes.BOOL
+    kernel.FindClose.argtypes = [wintypes.HANDLE]
+    kernel.FindClose.restype = wintypes.BOOL
     kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
     kernel.CreateJobObjectW.restype = wintypes.HANDLE
     kernel.SetInformationJobObject.argtypes = [
@@ -549,10 +586,61 @@ if os.name == "nt":
             raise ValidationError(f"Refusing link, reparse point, or wrong file type: {path}")
         return handle
 
+    def _win_metadata_temp(path):
+        """Create an unpublished owner-only leaf with rights to restore metadata.
+
+        A parent's inherited modify-only ACEs need not grant WRITE_OWNER. Use
+        creation security, rather than changing an existing target's DACL, so
+        owner/group restoration remains possible until the original ACL is set.
+        """
+        class SecurityAttributes(ctypes.Structure):
+            _fields_ = [('size', wintypes.DWORD), ('descriptor', ctypes.c_void_p),
+                        ('inherit', wintypes.BOOL)]
+
+        descriptor = ctypes.c_void_p()
+        if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                'D:P(A;;FA;;;OW)', 1, ctypes.byref(descriptor), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+            raw = kernel.CreateFileW(str(path), 0xC0000000, 0, ctypes.byref(attributes),
+                                     1, 0x00200000, None)  # CREATE_NEW, no reparse following
+            if raw == INVALID_HANDLE:
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel.LocalFree(descriptor)
+        try:
+            return msvcrt.open_osfhandle(raw, os.O_WRONLY | os.O_BINARY)
+        except BaseException:
+            kernel.CloseHandle(raw)
+            raise
+
     def _win_set_file_information(handle, information_class, information):
         if not kernel.SetFileInformationByHandle(
                 handle, information_class, ctypes.byref(information), ctypes.sizeof(information)):
             raise ctypes.WinError(ctypes.get_last_error())
+
+    def _windows_set_mode(fd, mode):
+        """Set the unpublished leaf's read-only bit through its creating handle."""
+        class BasicInformation(ctypes.Structure):
+            _fields_ = [('created', ctypes.c_longlong), ('accessed', ctypes.c_longlong),
+                        ('written', ctypes.c_longlong), ('changed', ctypes.c_longlong),
+                        ('attributes', wintypes.DWORD)]
+
+        handle = msvcrt.get_osfhandle(fd)
+        info = FileInformation()
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if info.attributes & (0x400 | 0x10) or info.links != 1:
+            raise ValidationError('Unsafe replacement metadata handle')
+        attributes = info.attributes & ~FILE_ATTRIBUTE_READONLY
+        if not mode & stat.S_IWRITE:
+            attributes = (attributes & ~0x80) | FILE_ATTRIBUTE_READONLY
+        _win_set_file_information(handle, 0, BasicInformation(0, 0, 0, 0, attributes or 0x80))
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if bool(info.attributes & FILE_ATTRIBUTE_READONLY) != (not bool(mode & stat.S_IWRITE)):
+            raise ValidationError('Replacement mode differs; original file retained')
 
     def win_unlink(path):
         """Validate and atomically mark one leaf for deletion through one handle."""
@@ -613,8 +701,158 @@ class SnapshotChangedError(ValidationError):
     """The file changed or grew beyond the cap during a bounded read."""
 
 
+WINDOWS_METADATA_MAX_BYTES = 256 * 1024
+
+
+def validate_windows_metadata(value):
+    """Closed, bounded recovery data; ADS names cannot escape their pinned leaf."""
+    import re
+    if (not isinstance(value, dict) or set(value) != {'security', 'attributes', 'created', 'streams'}
+            or type(value['attributes']) is not int or value['attributes'] & ~0x20A7
+            or not isinstance(value['created'], str) or not re.fullmatch('[0-9a-f]{16}', value['created'])
+            or not isinstance(value['streams'], dict)):
+        raise ValidationError('Unsupported Windows file metadata; no files changed')
+    total = 0
+    try:
+        security = base64.b64decode(value['security'], validate=True)
+        total += len(security)
+        if not security:
+            raise ValueError('empty descriptor')
+        if os.name == 'nt' and not advapi.IsValidSecurityDescriptor(ctypes.create_string_buffer(security)):
+            raise ValueError('invalid descriptor')
+        if (not all(isinstance(name, str) for name in value['streams']) or
+                len({name.casefold() for name in value['streams']}) != len(value['streams'])):
+            raise ValueError('aliased stream name')
+        for name, encoded in value['streams'].items():
+            if not isinstance(name, str) or not re.fullmatch(r':[^:<>"/\\|?*\x00-\x1f]{1,255}:\$DATA', name):
+                raise ValueError('unsafe stream name')
+            total += len(base64.b64decode(encoded, validate=True))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError('Invalid Windows recovery metadata') from exc
+    if total > WINDOWS_METADATA_MAX_BYTES:
+        raise ValidationError('Windows file metadata exceeds preservation cap; no files changed')
+    return value
+
+
+def _windows_metadata(path):
+    """Capture owner/group/DACL, creation time, supported attributes and all ADS.
+
+    Compression, encryption, sparse/offline and other unsupported attributes
+    refuse before a transaction, rather than silently normalizing the file.
+    """
+    handle = win_open(path)
+    try:
+        info = FileInformation()
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        needed = wintypes.DWORD()
+        advapi.GetFileSecurityW(str(path), 7, None, 0, ctypes.byref(needed))
+        if not 0 < needed.value <= WINDOWS_METADATA_MAX_BYTES:
+            raise ValidationError('Windows security metadata cannot be preserved safely')
+        descriptor = ctypes.create_string_buffer(needed.value)
+        if not advapi.GetFileSecurityW(str(path), 7, descriptor, needed, ctypes.byref(needed)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        value = {'security': base64.b64encode(descriptor.raw).decode('ascii'),
+                 'attributes': info.attributes,
+                 'created': f'{((info.created.dwHighDateTime << 32) | info.created.dwLowDateTime):016x}',
+                 'streams': {}}
+        data = StreamInformation()
+        finder = kernel.FindFirstStreamW(str(path), 0, ctypes.byref(data), 0)
+        if finder == INVALID_HANDLE:
+            if ctypes.get_last_error() != 38:
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            try:
+                total = len(descriptor.raw)
+                while True:
+                    if data.name != '::$DATA':
+                        if not 0 <= data.size <= WINDOWS_METADATA_MAX_BYTES - total:
+                            raise ValidationError('Windows file metadata exceeds preservation cap; no files changed')
+                        with open(str(path) + data.name, 'rb') as stream:
+                            raw = stream.read(data.size + 1)
+                        if len(raw) != data.size:
+                            raise ValidationError('Windows stream changed during preservation capture')
+                        value['streams'][data.name] = base64.b64encode(raw).decode('ascii')
+                        total += len(raw)
+                    if not kernel.FindNextStreamW(finder, ctypes.byref(data)):
+                        if ctypes.get_last_error() != 38:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                        break
+            finally:
+                kernel.FindClose(finder)
+        value['streams'] = dict(sorted(value['streams'].items()))
+        return validate_windows_metadata(value)
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _apply_windows_metadata(path, value):
+    validate_windows_metadata(value)
+    descriptor = ctypes.create_string_buffer(base64.b64decode(value['security'], validate=True))
+    control, revision = wintypes.WORD(), wintypes.DWORD()
+    if (not advapi.IsValidSecurityDescriptor(descriptor) or
+            not advapi.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision))):
+        raise ValidationError('Invalid Windows security descriptor')
+    # Apply streams/time before the original ACL or read-only flag can restrict
+    # access. The temporary leaf is not published until every operation succeeds.
+    for name, encoded in value['streams'].items():
+        with open(str(path) + name, 'wb') as stream:
+            stream.write(base64.b64decode(encoded, validate=True))
+            stream.flush()
+            os.fsync(stream.fileno())
+    handle = kernel.CreateFileW(str(path), 0x100, 0, None, 3, 0x00200000, None)
+    if handle == INVALID_HANDLE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        ticks = int(value['created'], 16)
+        created = wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+        if not kernel.SetFileTime(handle, ctypes.byref(created), None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.CloseHandle(handle)
+    protection = 0x80000000 if control.value & 0x1000 else 0x20000000
+    # The full descriptor setter retains the captured inherited ACEs instead
+    # of deriving them from the scratch/temporary parent. AUTO_INHERIT_REQ must
+    # accompany AUTO_INHERITED to retain that control bit on the installed SD.
+    if not advapi.SetSecurityDescriptorControl(
+            descriptor, 0x100, 0x100 if control.value & 0x400 else 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not advapi.SetFileSecurityW(str(path), 7 | protection, descriptor):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not kernel.SetFileAttributesW(str(path), value['attributes']):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 class _WatchedFileLimit(ValidationError):
     pass
+
+
+def windows_directory_identity(handle):
+    """Read ownership only from FILE_ID_INFO on a pinned no-follow handle.
+
+    Creating, reconstructing and deleting directories must use this same source;
+    Python's stat volume/index representation differs between supported versions.
+    BY_HANDLE_FILE_INFORMATION is used only to reject non-directories/reparses.
+    """
+    import ctypes
+    from ctypes import wintypes
+    info = FileInformation()
+    if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not info.attributes & 0x10 or info.attributes & 0x400:
+        raise ValidationError("Unsafe created directory handle; journal retained")
+
+    class FileIdInfo(ctypes.Structure):
+        _fields_ = [("volume", ctypes.c_ulonglong), ("file_id", ctypes.c_ubyte * 16)]
+
+    get_id = kernel.GetFileInformationByHandleEx
+    get_id.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    get_id.restype = wintypes.BOOL
+    identity = FileIdInfo()
+    if not get_id(handle, 18, ctypes.byref(identity), ctypes.sizeof(identity)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return [format(identity.volume, "032x"),
+            format(int.from_bytes(bytes(identity.file_id), "little"), "032x")]
 
 
 def _file_identity(info):
@@ -825,25 +1063,86 @@ class Tree:
             return FileSnapshot(
                 data, len(data), hashlib.sha256(data).hexdigest(), identity(after))
 
-    def write(self, relative, data):
+    def windows_metadata(self, relative, *, preflight=False):
+        if os.name != 'nt' or self.inspect(relative) is None:
+            return None
+        parent, _, name = self.parent(relative)
+        value = _windows_metadata(parent / name)
+        if preflight:
+            # Exercise restoration outside the target before its first write.
+            # Do not merely assume this token can restore another owner's ACL.
+            with tempfile.TemporaryDirectory(prefix='awf-metadata-probe-') as temporary:
+                probe = Path(temporary) / 'probe'
+                probe.write_bytes(b'')
+                try:
+                    _apply_windows_metadata(probe, value)
+                    if _windows_metadata(probe) != value:
+                        raise ValidationError('Windows metadata restoration differs; no files changed')
+                finally:
+                    probe.chmod(0o600)
+        return value
+
+    def write(self, relative, data, *, windows_metadata=None):
         if not isinstance(data, bytes):
             raise TypeError("write requires bytes")
+        info = self.inspect(relative)
+        mode = getattr(self, 'write_modes', {}).get(relative)
+        ownership = getattr(self, 'write_ownership', {}).get(relative)
+        if os.name != 'nt' and info is not None:
+            if mode is None:
+                mode = stat.S_IMODE(info.st_mode)
+            if ownership is None:
+                ownership = (info.st_uid, info.st_gid)
         # Replacing identical bytes would create a mode-only intermediate state:
         # the existing mode becomes the private temporary-file mode even though
         # the content did not change. Keep an already-durable identical leaf so
         # an interrupted journaled operation has no ambiguous mode transition.
-        if self.inspect(relative) is not None and self.read(relative) == data:
+        if (info is not None and self.read(relative) == data
+                and (mode is None or stat.S_IMODE(info.st_mode) == mode)
+                and (ownership is None or (info.st_uid, info.st_gid) == tuple(ownership))
+                and (windows_metadata is None or self.windows_metadata(relative) == windows_metadata)):
             return
         parent, handle, name = self.parent(relative, create=True)
-        self.inspect(relative)
-        temp = f".awf-{uuid.uuid4().hex}.tmp"
+        if os.name == 'nt' and windows_metadata is None and info is not None:
+            windows_metadata = self.windows_metadata(relative)
+        # Transaction owners may precommit exact sibling names before a write.
+        # Ordinary Tree users retain fresh, exclusively created random names.
+        temp = getattr(self, 'write_temporary_names', {}).get(relative, f".awf-{uuid.uuid4().hex}.tmp")
+        if not isinstance(temp, str) or re.fullmatch(r'\.awf-[0-9a-f]{32}\.tmp', temp) is None:
+            raise ValidationError('Invalid atomic-write temporary name')
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(parent / temp, flags, 0o600) if os.name == "nt" else os.open(temp, flags, 0o600, dir_fd=handle)
+        if os.name == 'nt':
+            fd = (_win_metadata_temp(parent / temp) if windows_metadata is not None
+                  else os.open(parent / temp, flags, 0o600))
+        else:
+            fd = os.open(temp, flags, 0o600, dir_fd=handle)
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
                 stream.flush()
+                if os.name != 'nt' and ownership is not None:
+                    uid, gid = ownership
+                    current = os.fstat(stream.fileno())
+                    if (current.st_uid, current.st_gid) != (uid, gid):
+                        os.fchown(stream.fileno(), -1 if current.st_uid == uid else uid,
+                                  -1 if current.st_gid == gid else gid)
+                if os.name != 'nt' and mode is not None:
+                    # Forward replacement and recovery publish bytes and mode
+                    # together. Failure here leaves the original leaf intact.
+                    os.fchmod(stream.fileno(), mode)
+                if os.name != 'nt' and (ownership is not None or mode is not None):
+                    current = os.fstat(stream.fileno())
+                    if ownership is not None and (current.st_uid, current.st_gid) != tuple(ownership):
+                        raise ValidationError('Replacement ownership differs; original file retained')
+                    if mode is not None and stat.S_IMODE(current.st_mode) != mode:
+                        raise ValidationError('Replacement mode differs; original file retained')
+                if os.name == 'nt' and mode is not None and windows_metadata is None:
+                    _windows_set_mode(stream.fileno(), mode)
                 os.fsync(stream.fileno())
+            if os.name == 'nt' and windows_metadata is not None:
+                _apply_windows_metadata(parent / temp, windows_metadata)
+                if _windows_metadata(parent / temp) != windows_metadata:
+                    raise ValidationError('Windows replacement metadata differs; original file retained')
             # os.replace replaces a leaf entry rather than following it; pinned
             # directory parents prevent path redirection on Windows.
             if os.name == "nt":
@@ -854,11 +1153,28 @@ class Tree:
         finally:
             try:
                 if os.name == "nt":
-                    os.unlink(parent / temp)
+                    win_unlink(parent / temp)
                 else:
                     os.unlink(temp, dir_fd=handle)
             except FileNotFoundError:
                 pass
+
+    def write_exclusive(self, relative, data):
+        """Create one confined immutable leaf without a replacement temporary.
+
+        A failed write retains that exact leaf for inspection; it never truncates
+        a previous object or creates an unbound random sibling.
+        """
+        parent, handle, name = self.parent(relative, create=True)
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        fd = (os.open(parent / name, flags, 0o600) if os.name == 'nt'
+              else os.open(name, flags, 0o600, dir_fd=handle))
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != 'nt':
+            os.fsync(handle)
 
     def unlink(self, relative):
         try:
@@ -876,7 +1192,7 @@ class Tree:
             os.unlink(name, dir_fd=handle)
             os.fsync(handle)
 
-    def file_list(self, *, exclude_root_git=False, reject_root_git=False, exclude_prefixes=()):
+    def file_list(self, *, exclude_root_git=False, reject_root_git=False, exclude_prefixes=(), subtree=None):
         if exclude_root_git and reject_root_git:
             raise ValueError("Root Git metadata cannot be both excluded and rejected")
         result = []
@@ -886,7 +1202,10 @@ class Tree:
             entries = list(os.scandir(directory if os.name == "nt" else handle))
             for entry in entries:
                 relative = (directory / entry.name).relative_to(self.root).as_posix()
-                relative_parts(relative)
+                try:
+                    relative_parts(relative)
+                except ValidationError as exc:
+                    raise ValidationError(f"Unsupported source path: {relative}") from exc
                 # Windows scandir caches FindFirstFile metadata, whose link count
                 # can be zero. Request full metadata before enforcing one link.
                 info = os.lstat(directory / entry.name) if os.name == "nt" else entry.stat(follow_symlinks=False)
@@ -909,7 +1228,8 @@ class Tree:
                     result.append(relative)
                 else:
                     raise ValidationError(f"Unsupported source file: {relative}")
-        walk(self.root)
+        start = self.root.joinpath(*relative_parts(subtree)) if subtree is not None else self.root
+        walk(start)
         return sorted(result)
 
     def close(self):

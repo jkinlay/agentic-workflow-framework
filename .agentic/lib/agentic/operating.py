@@ -575,6 +575,8 @@ def _events(tree, *, additional_bytes=0):
                 # its bytes as evidence; it is never an audit event or authority.
                 continue
             event = loads(raw.decode("utf-8"))
+            if isinstance(event, dict) and "owner_admission" in event:
+                fail("$", "1.9.6 pre-release confirmation records are unsupported; preserve this record and restore a supported 1.9.5 baseline before upgrade")
             errors = _schema("operating-change", event)
             if errors:
                 raise OperatingError(errors)
@@ -655,12 +657,34 @@ def read_operating(project_root, governance):
     return second
 
 
+def _budget_admission_projection(value, protected):
+    # Legacy diagnostics do not claim that the new controls are active. A
+    # refused accepted-policy check must remain visible even without a block.
+    admission = protected.get('budget_admission', True)
+    # The fetched default branch may positively establish an absent file. Its
+    # accepted defaults/legacy state is admissible even without a budget block.
+    accepted_absence = (protected.get('commit') and
+        protected.get('policy_observation', '').startswith('file absent at default-branch commit;'))
+    return admission if admission is False or 'budgeting' in value or accepted_absence else None
+
+
+def _budgeting_projection(value):
+    if 'budgeting' in value:
+        return resolve_settings(value)
+    return {'disposition': 'LEGACY_RETAINED', 'settings_persisted': False,
+            'diagnostic_fallback': resolve_settings(value),
+            'diagnostic_fallback_meaning': 'Compatibility markers only; neither switch reports active 1.9.6 accounting or enforcement',
+            'legacy_enforcement': 'UNOBSERVED',
+            'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED',
+            'owner_adoption_required': True}
+
+
 def inspect_operating(project_root, governance):
     try:
         value = read_operating(project_root, governance)
-        return {"status": "ACCEPTED", "budget_admission": value.provenance.get('protected_settings', {}).get('budget_admission', True), "protected_settings": value.provenance.get("protected_settings", {}), "hash": value.operating_hash, "source": value.source,
+        return {"status": "ACCEPTED", "budget_admission": _budget_admission_projection(value.config, value.provenance.get('protected_settings', {})), "protected_settings": value.provenance.get("protected_settings", {}), "hash": value.operating_hash, "source": value.source,
                 "streams": value.count, "last_change_id": value.last_change_id, "refusals": [],
-                "budgeting": resolve_settings(value.config),
+                "budgeting": _budgeting_projection(value.config),
                 "reporting": effective_reporting(value.config),
                 **operating_ceiling(governance)}
     except OSError as exc:
@@ -1058,7 +1082,67 @@ def _editable_snapshot(tree, governance, initialize, *, working_only=False):
         return OperatingSnapshot(canonical(value), fingerprint("operating", value), fingerprint("operating-governance", governance), events[-1]["id"]), raw
 
 
-def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None):
+def prepare_budgeting_adoption(project_root, governance, instruction):
+    """Prepare only dormant defaults in a PR worktree; never publish policy."""
+    if not isinstance(instruction, str) or not instruction.strip() or len(instruction.encode('utf-8')) > 65536:
+        fail('$.instruction', 'Record the nonempty bounded user instruction verbatim')
+    from .protected_settings import _git
+    from .budgeting import fresh_settings
+    import yaml
+    with Tree(project_root) as tree:
+        _bound_governance(tree, governance)
+        working = _snapshot(tree, governance, working_only=True)
+        effective = _snapshot(tree, governance)
+        report = effective.provenance['protected_settings']
+        ref = report.get('ref')
+        branch = _git(tree.root, 'symbolic-ref', '-q', 'HEAD', optional=True)
+        try:
+            branch = branch.decode('utf-8').rstrip('\n') if branch else None
+        except UnicodeDecodeError:
+            fail('$.budgeting', 'Adoption branch must be a valid UTF-8 Git reference')
+        if branch:
+            _git(tree.root, 'check-ref-format', branch)
+        if (not ref or not report.get('commit') or not branch or
+                branch == ref.replace('refs/remotes/origin/', 'refs/heads/', 1)):
+            fail('$.budgeting', 'Prepare adoption on an upgrade/settings PR branch from the fetched default branch')
+        if 'budgeting' in working.config or 'budgeting' in effective.config:
+            fail('$.budgeting', 'Budgeting already exists; request settings changes through a separate PR')
+        before = tree.read(CONFIG, maximum=MAX_BYTES)
+        text = before.decode('utf-8')
+        node = yaml.compose(text)
+        defaults = fresh_settings()
+        newline = '\r\n' if '\r\n' in text else '\n'
+        if node.flow_style:
+            position = node.end_mark.index - 1
+            addition = ',' + newline + '  "budgeting": ' + json.dumps(defaults) + newline
+        else:
+            position = node.end_mark.index
+            addition = ('' if text[:position].endswith(('\n', '\r')) else newline)
+            addition += 'budgeting:' + newline
+            addition += ''.join('  ' + key + ': ' + json.dumps(value) + newline for key, value in defaults.items())
+        raw = (text[:position] + addition + text[position:]).encode('utf-8')
+        if len(raw) > MAX_BYTES:
+            fail('$.budgeting', 'Prepared operating file exceeds its 1 MiB bound')
+        expected = {**working.config, 'budgeting': defaults}
+        if load_yaml(raw) != expected:
+            fail('$.budgeting', 'Cannot preserve this operating text safely; prepare the dormant block in the PR manually')
+        validate_operating(expected, governance)
+        # The protected change has no local audit transaction: Git/PR history is
+        # its audit trail. Retain all existing events and installer receipts.
+        with _lock(tree):
+            if tree.read(CONFIG, maximum=MAX_BYTES) != before:
+                fail('$.budgeting', 'Operating bytes changed during PR preparation; retry from the current branch')
+            tree.write(CONFIG, raw)
+            return _snapshot(tree, governance)
+
+
+def set_operating(project_root, governance, instruction, assignments=(), *, recommendation_id=None, accept=None, initialize=False, epic_id=None, adopt_budgeting=False):
+    if type(adopt_budgeting) is not bool:
+        fail("$.budgeting", "Budget adoption must be explicit")
+    if adopt_budgeting:
+        if assignments or recommendation_id or accept or initialize or epic_id is not None:
+            fail("$.budgeting", "Adoption prepares OFF defaults only; request other settings in a separate PR")
+        return prepare_budgeting_adoption(project_root, governance, instruction)
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction.encode("utf-8")) > 65536:
         fail("$.instruction", "Record the nonempty bounded user instruction verbatim")
     if bool(assignments) == bool(recommendation_id) or bool(recommendation_id) != bool(accept):
@@ -1426,12 +1510,17 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
                   + "review floor " + _display(policy["review_floor"]) + "; risk route " + _display(policy["risk_route"]),
                   "Options: keep | review Epics and recommend | custom (say what you want)"])
     from .budgeting import resolve_settings
-    budget = resolve_settings(value)
-    lines.extend(['Budgeting (effective):',
-                  'Accounting: ' + ('ON' if budget['accounting_enabled'] else 'OFF'),
-                  'Enforcement: ' + ('ON' if budget['enforcement_enabled'] else 'OFF'),
-                  f"Token limit per ticket: {format(budget['max_tokens_per_ticket'], ',') if budget['max_tokens_per_ticket'] is not None else 'legacy reviewed limit'}",
-                  f"Token limit per project lifetime: {format(budget['max_tokens_per_project'], ',') if budget['max_tokens_per_project'] is not None else 'legacy reviewed limit'}"])
+    if 'budgeting' not in value:
+        lines.extend(['Budgeting: LEGACY_RETAINED; existing engine and reviewed limits remain.',
+                      'Switches: non-persisted diagnostic fallback only; legacy enforcement UNOBSERVED.',
+                      'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED before enabling; owner adoption through a PR adds dormant OFF controls.'])
+    else:
+        budget = resolve_settings(value)
+        lines.extend(['Budgeting (effective):',
+                      'Accounting: ' + ('ON' if budget['accounting_enabled'] else 'OFF'),
+                      'Enforcement: ' + ('ON' if budget['enforcement_enabled'] else 'OFF'),
+                      f"Token limit per ticket: {format(budget['max_tokens_per_ticket'], ',') if budget['max_tokens_per_ticket'] is not None else 'legacy reviewed limit'}",
+                      f"Token limit per project lifetime: {format(budget['max_tokens_per_project'], ',') if budget['max_tokens_per_project'] is not None else 'legacy reviewed limit'}"])
     lines.append("Operating calendar (effective settings): " + json.dumps(effective_calendar(value), sort_keys=True))
     lines.append('Reporting (effective settings): ' + json.dumps(effective_reporting(value), sort_keys=True))
     return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
@@ -1490,6 +1579,7 @@ def main(argv=None, default_root=None):
     setter.add_argument("--accept")
     setter.add_argument("--epic", help="Exact observed Epic ID; scope only the selected stream/role routes")
     setter.add_argument("--initialize", action="store_true", help="Explicitly start from Balanced defaults only when the root file is absent; validate all selected changes first")
+    setter.add_argument("--adopt-budgeting", action="store_true", help="Prepare dormant OFF defaults on the upgrade/settings PR branch; takes effect after owner merge and fetch")
     setter.add_argument("--json", action="store_true")
     recommend = sub.add_parser("recommend")
     recommend.add_argument("--epics", required=True, type=Path)
@@ -1516,7 +1606,7 @@ def main(argv=None, default_root=None):
             return 0
         if args.command == "set":
             snapshot = set_operating(args.root, governance, args.instruction, args.assignments,
-                                     recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic)
+                                     recommendation_id=args.recommendation, accept=args.accept, initialize=args.initialize, epic_id=args.epic, adopt_budgeting=args.adopt_budgeting)
         elif args.command == "recover":
             snapshot = recover_operating(args.root, governance, args.expected_journal_sha256)
         else:
@@ -1532,7 +1622,8 @@ def main(argv=None, default_root=None):
         protected = snapshot.provenance.get('protected_settings', {})
         if protected.get('differences') and 'PR' not in protected.get('next_action', ''):
             protected['next_action'] += '; then open a PR for the requested protected settings'
-        result.update(protected_settings=protected, budget_admission=protected.get('budget_admission', True),
+        result.update(protected_settings=protected, budget_admission=_budget_admission_projection(snapshot.config, protected),
+                      budgeting=_budgeting_projection(snapshot.config),
                       repository_rules=repository_rules_warning())
         result['last_settings_pr'] = dict(status='UNOBSERVED', reason='Last settings PR and merger not observed; optional information only')
         result['table'] += '\nProtected settings: ' + str(protected.get('source', 'unobserved'))

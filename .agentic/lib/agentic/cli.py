@@ -446,6 +446,10 @@ def main(argv=None, default_root=None):
             digest = verify_installed(root)
             if args.command == "verify-installation":
                 output = {"integrity_valid": True, "source_manifest_sha256": digest, "execution_authority": False}
+                from .installer import retained_directory_status
+                retained = retained_directory_status(root)
+                if retained:
+                    output['installation_recovery'] = retained
             else:
                 contracts = Contracts(root / ".agentic/schemas")
                 workflow = load(root / ".agentic/workflow.yaml")

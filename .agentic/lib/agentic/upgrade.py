@@ -1,4 +1,4 @@
-"""Data-driven historical installation identification and pure migrations."""
+"""Historical installation identification, pure migrations and explicit ledger import."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,8 +19,218 @@ INSTALLED = ".agentic/installed-manifest.json"
 PROVENANCE = ".agentic/workflow-version.yaml"
 OPERATING = "OPERATING_CONFIG.yaml"
 ARCHIVE_ROOT = f".agentic-state/archive/upgrade-to-{VERSION}"
-_ARCHIVE_PREFIXES = (".agentic-state/archive/upgrade-to-1.9.5/", ARCHIVE_ROOT + "/")
+_ARCHIVE_PREFIXES = (".agentic-state/archive/",)
 CURRENT_RECEIPT_SCHEMA = "awf-installed-receipt-embedded-manifest-1"
+BUDGET_DISPOSITION = ".agentic-state/upgrade/budgeting-1.9.6.json"
+
+
+def budget_upgrade_disposition(config, operating, previous):
+    """Record compatibility, never adopt fresh OFF defaults over an upgrade."""
+    settings = load_yaml(operating).get('budgeting') if operating is not None else None
+    # The upgrade receipt's detected_version/steps and configuration diff retain
+    # provenance. The owner policy remains in PROJECT_CONFIG.yaml, not this record.
+    # Compatibility state must converge for direct and chained upgrades.
+    return {'format': 'awf-budget-upgrade-1',
+            'target_version': '1.9.6',
+            'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
+            'operating_sha256': sha256(operating) if operating is not None else None,
+            'settings': settings,
+            'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED',
+            # Retained working bytes do not establish default-branch PR acceptance.
+            'owner_adoption_required': True}
+
+
+def _budget_row_hash(row):
+    # Bind SQLite types too: a retrospective 0/False or integer/text substitution
+    # is a different row, even when Python equality would conflate values.
+    return sha256(_canonical_manifest({key: [type(value).__name__, value]
+                                      for key, value in dict(row).items()}))
+
+
+def _legacy_reservation_row(legacy, project_id, columns):
+    """Exact, conservative state-store projection used by import and admission."""
+    from .budget_enrollment import require
+    require(legacy['status'] in ('RESERVED', 'SETTLED', 'UNKNOWN'), 'Unsupported legacy budget status')
+    require(all(legacy[k] is None or type(legacy[k]) is int and legacy[k] >= 0
+                for k in ('tokens', 'cost', 'actual_tokens', 'actual_cost')),
+            'Invalid legacy usage; UNKNOWN must stay NULL')
+    violations = []
+    for actual, reserved, message in (
+        ('actual_tokens', 'tokens', 'host token ceiling overrun'),
+        ('actual_cost', 'cost', 'host cost ceiling overrun')):
+        if legacy[actual] is not None and legacy[reserved] is not None and legacy[actual] > legacy[reserved]:
+            violations.append(message)
+    # No invented enrollment, model, timestamp or observed usage.
+    # Existing legacy quotas continue to count unattributed history.
+    row = dict.fromkeys(columns)
+    row.update(run_id=legacy['run_id'], project_id=project_id, ticket_id=legacy['ticket'],
+        role='UNKNOWN', agent_id='UNKNOWN', phase='legacy-state-store', created_at='UNKNOWN',
+        day=legacy['day'], policy_hash='legacy-state-store',
+        status='reserved' if legacy['status'] == 'RESERVED' else 'quarantined' if violations else 'settled',
+        reserved_tokens=legacy['tokens'] if legacy['tokens'] is not None else 0,
+        reserved_cost=legacy['cost'], actual_tokens=legacy['actual_tokens'],
+        actual_cost=legacy['actual_cost'], escalated=0,
+        request=json.dumps({'_legacy_attribution': 'UNKNOWN',
+            '_legacy_status': legacy['status'],
+            '_reservation_unknown': legacy['tokens'] is None}, sort_keys=True),
+        route='{}', outcome=None if legacy['status'] == 'RESERVED' else
+            json.dumps({'historical_time': 'UNKNOWN', 'violations': violations,
+                        'budget_overrun': bool(violations)}, sort_keys=True),
+        operating_hash=legacy.get('operating_hash'))
+    return row
+
+
+def _import_budget_row(db, row, source_hash, source_table, source_id, source_row_hash):
+    columns = tuple(row)
+    old = db.execute('SELECT * FROM model_runs WHERE run_id=?', (row['run_id'],)).fetchone()
+    if old is not None:
+        if _budget_row_hash(old) != _budget_row_hash(row):
+            raise ValidationError('Budget history identity conflict; retain both sources and reconcile')
+    else:
+        db.execute('INSERT INTO model_runs (' + ','.join(map(_quoted, columns)) + ') VALUES (' +
+                   ','.join('?' for _ in columns) + ')', tuple(row.values()))
+    proof = (source_hash, source_table, str(source_id), source_row_hash,
+             row['run_id'], _budget_row_hash(row))
+    saved = db.execute('SELECT * FROM budget_history_imports WHERE source_sha256=? AND '
+                       'source_table=? AND source_id=?', proof[:3]).fetchone()
+    if saved is not None and tuple(saved) != proof:
+        raise ValidationError('Budget import proof conflict; source history must not be rebound')
+    if saved is None:
+        db.execute('INSERT INTO budget_history_imports VALUES (?,?,?,?,?,?)', proof)
+    return old is not None
+
+
+def import_budget_history(canonical_path, sources, *, project_id, worktree_roots=()):
+    """Explicit owner/operator migration into the shared protected project ledger.
+
+    ``sources`` maps stable labels to {path, sha256} for quiescent checkpointed
+    source databases. No source is opened for write. The host must stop legacy
+    writers, retain the pinned snapshots and select the SAME destination for all
+    adapters. One transaction includes imported charges, recovery state and proofs;
+    an interruption rolls everything back, and exact replay never charges twice.
+    This operation neither authenticates owner adoption nor changes budget modes.
+    """
+    from .budget_enrollment import ProtectedDatabase, require, text_id
+    from .model_routing import initialize_routing_ledger
+    from .safeio import Tree
+    require(text_id(project_id) and isinstance(sources, dict) and bool(sources),
+            'Explicit project and pinned budget sources are required')
+    snapshots = []
+    for name, spec in sorted(sources.items()):
+        require(text_id(name) and isinstance(spec, dict) and set(spec) == {'path', 'sha256'},
+                'Invalid pinned budget source')
+        path = Path(spec['path']).absolute()
+        require(path != Path(canonical_path).absolute(), 'Budget source cannot be the canonical destination')
+        with Tree(path.parent) as tree:
+            # A database file without its live WAL is not a complete snapshot.
+            require(tree.inspect(path.name + '-wal') is None,
+                    'Budget source has a WAL; quiesce and checkpoint before pinning')
+            raw = tree.read(path.name)
+        require(sha256(raw) == spec['sha256'], 'Budget source digest mismatch; no import performed')
+        require(raw.startswith(b'SQLite format 3\0'), 'Budget source is not SQLite')
+        snapshots.append((spec['sha256'], raw))
+    imported = deduplicated = 0
+    with ProtectedDatabase(canonical_path, worktree_roots).transaction('') as db:
+        initialize_routing_ledger(db)
+        require(db.execute('SELECT 1 FROM model_runs WHERE project_id != ? LIMIT 1',
+                           (project_id,)).fetchone() is None, 'Canonical budget ledger project mismatch')
+        for statement in (
+            '''CREATE TABLE IF NOT EXISTS budget_history_imports (
+               source_sha256 TEXT NOT NULL, source_table TEXT NOT NULL, source_id TEXT NOT NULL,
+               source_row_sha256 TEXT NOT NULL, run_id TEXT NOT NULL, canonical_row_sha256 TEXT NOT NULL,
+               PRIMARY KEY(source_sha256,source_table,source_id))''',
+            *[f"CREATE TRIGGER IF NOT EXISTS budget_import_no_{op.lower()} BEFORE {op} ON budget_history_imports "
+              "BEGIN SELECT RAISE(ABORT,'immutable budget import proof'); END" for op in ('UPDATE', 'DELETE')],
+            '''CREATE TRIGGER IF NOT EXISTS budget_import_no_replace BEFORE INSERT ON budget_history_imports
+               WHEN EXISTS(SELECT 1 FROM budget_history_imports WHERE
+                 (source_sha256=NEW.source_sha256 AND source_table=NEW.source_table AND source_id=NEW.source_id)
+                 OR rowid=NEW.rowid)
+               BEGIN SELECT RAISE(ABORT,'immutable budget import proof'); END'''):
+            db.execute(statement)
+        for source_hash, raw in snapshots:
+            source = sqlite3.connect(':memory:')
+            source.row_factory = sqlite3.Row
+            try:
+                # Checkpointed WAL databases retain WAL format header bytes.
+                # SQLite deserialize cannot attach WALs to :memory:. Change
+                # only that copy's read/write-mode flags, never source pages.
+                memory_raw = raw[:18] + b'\x01\x01' + raw[20:] if raw[18:20] == b'\x02\x02' else raw
+                source.deserialize(memory_raw)
+                require(source.execute('PRAGMA quick_check').fetchone()[0] == 'ok', 'Invalid budget source')
+                tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                require(bool(tables & {'model_runs', 'reservations', 'budget_charges'}),
+                        'Unsupported budget source; retain history for explicit reconciliation')
+                if 'reservations' in tables:
+                    identity = source.execute("SELECT value FROM meta WHERE key='project'").fetchone()
+                    require(identity is not None and identity[0] == project_id, 'Budget source project mismatch')
+                    for entry in source.execute('SELECT rowid AS _source_id,* FROM reservations'):
+                        legacy = dict(entry)
+                        row = _legacy_reservation_row(legacy, project_id,
+                            (r['name'] for r in db.execute('PRAGMA table_info(model_runs)')))
+                        duplicate = _import_budget_row(db, row, source_hash, 'reservations',
+                            legacy['_source_id'], _budget_row_hash({k: v for k, v in legacy.items() if k != '_source_id'}))
+                        deduplicated += duplicate
+                        imported += not duplicate
+                if tables & {'model_runs', 'budget_charges'}:
+                    original_runs = {}
+                    if 'model_runs' in tables:
+                        for entry in source.execute('SELECT rowid AS _source_id,* FROM model_runs'):
+                            original = dict(entry)
+                            source_id = original.pop('_source_id')
+                            original_runs[original['run_id']] = (source_id, _budget_row_hash(original))
+                    # Transform only an in-memory copy. This retains stage-one
+                    # UNKNOWN values and preserves the source's sealed bytes.
+                    initialize_routing_ledger(source)
+                    tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    for entry in source.execute('SELECT rowid AS _source_id,* FROM model_runs'):
+                        row = dict(entry)
+                        row.pop('_source_id')
+                        require(row['project_id'] == project_id, 'Budget source project mismatch')
+                        if row['run_id'] not in original_runs:
+                            # A bridge-created row is proved by its original
+                            # budget_charges row below, never a fictitious source
+                            # model_runs row or post-migration column digest.
+                            continue
+                        source_id, source_row_hash = original_runs[row['run_id']]
+                        duplicate = _import_budget_row(db, row, source_hash, 'model_runs', source_id, source_row_hash)
+                        deduplicated += duplicate
+                        imported += not duplicate
+                    if 'budget_charges' in tables:
+                        for entry in source.execute('SELECT rowid AS _source_id,* FROM budget_charges'):
+                            legacy = dict(entry)
+                            source_id = legacy.pop('_source_id')
+                            row = dict(source.execute('SELECT * FROM model_runs WHERE run_id=?', (legacy['run_id'],)).fetchone())
+                            duplicate = _import_budget_row(db, row, source_hash, 'budget_charges', source_id, _budget_row_hash(legacy))
+                            deduplicated += duplicate
+                            imported += not duplicate
+                    # Recovery ceilings, incidents, provenance and authorizations
+                    # cannot disappear when a per-host routing ledger is retired.
+                    for table in sorted(tables - {'model_runs', 'budget_charges', 'sqlite_sequence', 'budget_history_imports'}):
+                        available = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                        entries = source.execute('SELECT * FROM ' + _quoted(table)).fetchall()
+                        require(table in available or not entries, 'Unsupported per-host history; reconcile before import')
+                        for entry in entries:
+                            value = dict(entry)
+                            names = tuple(value)
+                            matches = db.execute('SELECT * FROM ' + _quoted(table) + ' WHERE ' +
+                                ' AND '.join(_quoted(k) + ' IS ?' for k in names), tuple(value.values())).fetchall()
+                            if matches:
+                                continue
+                            try:
+                                db.execute('INSERT INTO ' + _quoted(table) + ' (' + ','.join(map(_quoted, names)) +
+                                    ') VALUES (' + ','.join('?' for _ in names) + ')', tuple(value.values()))
+                            except sqlite3.IntegrityError as exc:
+                                raise ValidationError('Per-host recovery history conflict; explicit reconciliation required') from exc
+            finally:
+                source.close()
+        for spec in sources.values():
+            path = Path(spec['path']).absolute()
+            with Tree(path.parent) as tree:
+                require(tree.inspect(path.name + '-wal') is None and sha256(tree.read(path.name)) == spec['sha256'],
+                        'Budget source changed during import; transaction rolled back')
+    return {'status': 'IMPORTED', 'project_id': project_id, 'source_sha256': sorted(set(h for h, _ in snapshots)),
+            'imported_rows': imported, 'deduplicated_rows': deduplicated, 'sources_retained': True,
+            'budget_mode_changed': False}
 
 
 def _canonical_manifest(value):
@@ -219,8 +429,26 @@ def identify_installation(tree, table, config_raw, receipt_raw):
     if (provenance.get("template", {}).get("version") != claimed
             or provenance.get("installation", {}).get("source_manifest_sha256") != receipt_identity["source_manifest_sha256"]):
         raise ValidationError("Unrecognised AWF installation: workflow provenance does not match the registered receipt; no files changed")
+    install_id = _historical_install_id(receipt, provenance, claimed, schema,
+                                      primary=receipt_identity is entry)
     return {"version": claimed, "entry": entry, "receipt": receipt, "immutable_files": expected,
-            "install_id": provenance.get("installation", {}).get("install_id") or receipt.get("install_id")}
+            "install_id": install_id}
+
+
+def _historical_install_id(receipt, provenance, claimed, schema, *, primary):
+    """Select identity only after the caller authenticates the registered source."""
+    provenance_id = provenance.get("installation", {}).get("install_id")
+    receipt_id = receipt.get("install_id")
+    # Registered compatibility formats: 1.8.3's legacy-1 snapshot and the
+    # primary 1.9.3/1.9.4 historical receipts with their exact fixture markers.
+    # Those formats use provenance as the canonical UUID. No published 1.9.5
+    # receipt (or registered variant) is eligible for the marker exception.
+    legacy_marker = (claimed in {"1.9.3", "1.9.4"} and primary
+                     and receipt_id == "fixture-install-" + claimed)
+    if schema == CURRENT_RECEIPT_SCHEMA and not legacy_marker:
+        if not isinstance(receipt_id, str) or not receipt_id or receipt_id != provenance_id:
+            raise ValidationError("Installed receipt/provenance install_id values differ or are missing; no files changed")
+    return provenance_id or receipt_id
 
 
 def _replace_scalar(raw, key, previous, current, *, question):
@@ -358,11 +586,13 @@ class MigrationBundle:
     state: MappingProxyType
 
 
-def _target_receipt(raw, current, target):
+def _target_receipt(raw, current, target, install_id):
     value = loads(raw.decode("utf-8"))
     value["template_version"] = current
     value["source_manifest_sha256"] = target["source_manifest_sha256"]
     value["immutable_files"] = dict(target["_immutable_files"])
+    if install_id is not None:
+        value["install_id"] = install_id
     source_raw = target.get("_source_manifest_json")
     if source_raw is None:
         value.pop("source_manifest_json", None)
@@ -371,10 +601,12 @@ def _target_receipt(raw, current, target):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
-def _target_provenance(raw, current, target):
+def _target_provenance(raw, current, target, install_id):
     value = loads(raw.decode("utf-8"))
     value.setdefault("template", {})["version"] = current
     value.setdefault("installation", {})["source_manifest_sha256"] = target["source_manifest_sha256"]
+    if install_id is not None:
+        value["installation"]["install_id"] = install_id
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
@@ -611,7 +843,7 @@ def _migrate_state(state, previous, current):
     return migrated
 
 
-def migrate_step(bundle, previous, current, target):
+def migrate_step(bundle, previous, current, target, *, install_id=None):
     """Pure adjacent step with target-valid receipt/provenance and schema-classified state."""
     config = _replace_scalar(bundle.project_config, "expected_workflow_version", previous, current,
         question=f"should the unique template.expected_workflow_version scalar be changed from {previous} to {current}?")
@@ -619,8 +851,10 @@ def migrate_step(bundle, previous, current, target):
         config = _insert_legacy_routing(config)
     if previous == "1.9.2" and current == "1.9.3":
         config = _insert_unbound_jira_identity(config)
-    receipt = _target_receipt(bundle.receipt, current, target)
-    provenance = _target_provenance(bundle.provenance, current, target)
+    # Installation callers pass the canonical ID from authenticated source
+    # identification. Pure configuration-only callers need not supply identity.
+    receipt = _target_receipt(bundle.receipt, current, target, install_id)
+    provenance = _target_provenance(bundle.provenance, current, target, install_id)
     if bundle.operating_config is not None:
         from .protected_settings import load_operating_yaml
         try:
@@ -632,30 +866,30 @@ def migrate_step(bundle, previous, current, target):
                            MappingProxyType(state))
 
 
-def migrate_1_8_3_to_1_8_9(bundle, target):
-    return migrate_step(bundle, "1.8.3", "1.8.9", target)
+def migrate_1_8_3_to_1_8_9(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.8.3", "1.8.9", target, install_id=install_id)
 
 
-def migrate_1_8_9_to_1_9_1(bundle, target):
-    return migrate_step(bundle, "1.8.9", "1.9.1", target)
+def migrate_1_8_9_to_1_9_1(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.8.9", "1.9.1", target, install_id=install_id)
 
 
-def migrate_1_9_1_to_1_9_2(bundle, target):
-    return migrate_step(bundle, "1.9.1", "1.9.2", target)
+def migrate_1_9_1_to_1_9_2(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.9.1", "1.9.2", target, install_id=install_id)
 
 
-def migrate_1_9_2_to_1_9_3(bundle, target):
-    return migrate_step(bundle, "1.9.2", "1.9.3", target)
+def migrate_1_9_2_to_1_9_3(bundle, target, *, install_id=None):
+    return migrate_step(bundle, "1.9.2", "1.9.3", target, install_id=install_id)
 
 
-def migrate_1_9_3_to_1_9_4(bundle, target):
+def migrate_1_9_3_to_1_9_4(bundle, target, *, install_id=None):
     """The shipped 1.9.3 -> 1.9.4 step is version-only."""
-    return migrate_step(bundle, "1.9.3", "1.9.4", target)
+    return migrate_step(bundle, "1.9.3", "1.9.4", target, install_id=install_id)
 
 
-def migrate_1_9_4_to_1_9_5(bundle, target):
+def migrate_1_9_4_to_1_9_5(bundle, target, *, install_id=None):
     """Apply the additive review-tier migration while retaining all history."""
-    migrated = migrate_step(bundle, "1.9.4", "1.9.5", target)
+    migrated = migrate_step(bundle, "1.9.4", "1.9.5", target, install_id=install_id)
     return MigrationBundle(review_tier_defaults(migrated.project_config),
                             migrated.operating_config, migrated.receipt,
                             migrated.provenance, migrated.state)
@@ -893,7 +1127,8 @@ def migration_chain(table, version):
     return tuple(steps)
 
 
-def apply_chain(table, version, project_config, operating_config, receipt, provenance, state, target_entry):
+def apply_chain(table, version, project_config, operating_config, receipt, provenance, state, target_entry,
+                *, install_id=None):
     bundle = MigrationBundle(project_config, operating_config, receipt, provenance,
                              MappingProxyType(dict(state)))
     reports = []
@@ -901,7 +1136,8 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
         target = target_entry if current == table["target"] else table["versions"][current]
         migration = {("1.9.3", "1.9.4"): migrate_1_9_3_to_1_9_4,
                      ("1.9.4", "1.9.5"): migrate_1_9_4_to_1_9_5}.get((previous, current))
-        migrated = migration(bundle, target) if migration else migrate_step(bundle, previous, current, target)
+        migrated = (migration(bundle, target, install_id=install_id) if migration else
+                    migrate_step(bundle, previous, current, target, install_id=install_id))
         reports.append({"from": previous, "to": current, "configuration_diff":
                         config_diff(bundle.project_config, migrated.project_config, previous, current),
                         "new_required_settings": list(new_settings),
@@ -911,23 +1147,26 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
     return bundle, reports
 
 
-def state_archive_plan(state):
+def state_archive_plan(state, *, target_version=VERSION):
+    if _version_tuple(target_version) is None:
+        raise ValidationError("Invalid state archive target version")
+    archive_root = f".agentic-state/archive/upgrade-to-{target_version}"
     unknown = {path: (raw, _state_validation(path, raw)[1]) for path, raw in state.items()
-               if _state_validation(path, raw)[0] is None
-               and not path.startswith(_ARCHIVE_PREFIXES)}
+               if not path.startswith(_ARCHIVE_PREFIXES)
+               and _state_validation(path, raw)[0] is None}
     if not unknown:
         return {}, []
     files = []
     additions = {}
     for path, (raw, reason) in sorted(unknown.items()):
         relative = path.removeprefix(".agentic-state/")
-        archive = f"{ARCHIVE_ROOT}/files/{relative}"
+        archive = f"{archive_root}/files/{relative}"
         additions[archive] = raw
         files.append({"source": path, "archive": archive, "sha256": sha256(raw),
                       "source_retained": True, "validation_path": path,
                       "validation_reason": reason})
-    manifest = {"format": "awf-state-archive-1", "target_version": VERSION, "files": files}
-    additions[f"{ARCHIVE_ROOT}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+    manifest = {"format": "awf-state-archive-1", "target_version": target_version, "files": files}
+    additions[f"{archive_root}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
     return additions, [{"path": item["source"], "action": "archived_read_only_copy",
                         "archive": item["archive"],
                         "validation_path": item["validation_path"],

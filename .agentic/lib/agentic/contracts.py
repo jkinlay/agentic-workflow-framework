@@ -9,10 +9,15 @@ import uuid
 from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 
 from . import ValidationError
 from .canonical import load, timestamp, validate_value
+
+
+class _SanitizedSchemaError(SchemaError, ValidationError):
+    """Retain both schema and AWF refusal interfaces without owner contents."""
 
 
 def schema_inventory(schema_dir: Path):
@@ -102,8 +107,15 @@ class Contracts:
         self.schemas = {}
         resources = []
         for path in sorted(schema_dir.glob("*.schema.json")):
-            value = load(path)
-            _check_schema(value)
+            try:
+                value = load(path)
+                _check_schema(value)
+            except (ValueError, OSError, SchemaError) as exc:
+                error = _SanitizedSchemaError if isinstance(exc, SchemaError) else ValidationError
+                # Parser/validator causes can contain rejected owner contents.
+                raise error('Invalid schema: .agentic/schemas/' + path.name +
+                    '; preserve the owner file externally, correct its JSON/schema or move it outside '
+                    '.agentic/schemas, then rerun the plan') from None
             name = path.name.removesuffix(".schema.json")
             if value.get("$id") != f"urn:awf:1.2:{name}":
                 raise ValidationError(f"Invalid schema identity: {path.name}")

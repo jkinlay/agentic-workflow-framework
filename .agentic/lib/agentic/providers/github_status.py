@@ -18,7 +18,8 @@ from ..canonical import load_yaml, loads, now_text, sha256, timestamp
 from ..child_process import child_env
 from ..configuration import inspect_config
 from ..contracts import Contracts
-from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
+from ..installer import (CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed,
+                         verify_installed, retained_directory_status)
 from .github import (GITHUB_REST_API_VERSION, MAX_PR_FILE_PAGES, PR_FILES_PER_PAGE, _gh_get, _gh_get_pr_files, _gh_graphql,
                      branch_name, repository_name)
 from ..release_trust import establish_release_trust
@@ -453,7 +454,8 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
               'line': f'AWF {VERSION}: UNVERIFIED', 'next_action': 'Install or recover the verified AWF files.',
               'decision_codes': ['report_installation_unverified'],
               'checks': [], 'github_rest_api_version': GITHUB_REST_API_VERSION,
-              'next_command': 'python -B .agentic/scripts/workflow.py status --require-active',
+              'next_command': ('.agentic/.venv/Scripts/python.exe' if os.name == 'nt' else '.agentic/.venv/bin/python') +
+                              ' -B -I .agentic/scripts/workflow.py status --require-active',
               'observation_limit': 'Read-only trusted-host Git/GitHub observations; not a server-signed attestation or live automation qualification.'}
     from ..activation import activation_summary, build_capability_matrix, check
     receipt = files = config = report = None
@@ -464,6 +466,9 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
     # Installation, configuration, operating state, host preflight and release
     # trust are independent stages. Keep every safely observable result.
     try:
+        retained = retained_directory_status(root)
+        if retained:
+            result['installation_recovery'] = retained
         receipt, files = installed_bytes(root)
         result.update(project_state='INSTALLED', integrity_valid=True, line=f'AWF {VERSION}: INSTALLED')
         add('INSTALLATION_INTEGRITY', 'installation', 'PASS',
@@ -504,6 +509,15 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
             report = with_operating(root, config, base_report)
             result.update(configuration=report, ci_gate=report['ci_gate'], operating=report['operating'])
             operating = report['operating']
+            if report['status'] != 'ACCEPTED':
+                result.update(project_state='INSTALLED', line=f'AWF {VERSION}: INSTALLED (configuration REJECTED)',
+                              decision_codes=['report_state_installed_unconfigured'])
+                if operating['status'] != 'ACCEPTED':
+                    # Retain precise governance paths/remedies when both layers
+                    # reject. A valid operating layer must never erase them.
+                    prior_action = result['next_action'] if base_report['status'] != 'ACCEPTED' else ''
+                    result['next_action'] = ((prior_action + ' ') if prior_action else '') + \
+                        'Run workflow.py validate-config and reconcile the reported operating refusals.'
             if operating['status'] == 'ACCEPTED':
                 add('OPERATING_SNAPSHOT', 'operating', 'PASS',
                     'Read-only operating snapshot is accepted at ' + operating['hash'],
@@ -721,6 +735,23 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
 
 def render_status(report):
     lines = [report['line']]
+    recovery = report.get('installation_recovery') or {}
+    cleanup = recovery.get('cleanup_pending', [])
+    for row in cleanup:
+        size = 'unknown size' if row['size_bytes'] is None else str(row['size_bytes']) + ' bytes'
+        lines.append('Cleanup pending: ' + row['path'] + ' (' + size + '). ' +
+                     row['reason'] + '. Owner: ' + row['owner_action'])
+    # Legacy journal retention has paths but no runtime cleanup rows. Render
+    # that independent evidence even when ordinary integrity checks fail.
+    detailed = {row['path'] for row in cleanup}
+    for path in recovery.get('retained_directories', []):
+        if path not in detailed:
+            lines.append('Retained directory: ' + path + '. Owner: inspect retained evidence '
+                         'and preserve needed bytes under exclusive owner control before recovery.')
+    budgeting = (report.get('operating') or {}).get('budgeting') or {}
+    if budgeting.get('disposition') == 'LEGACY_RETAINED':
+        lines.append('Budgeting: LEGACY_RETAINED; legacy enforcement UNOBSERVED; ' + budgeting['history_import'] +
+                     '; owner adoption prepares dormant OFF controls in OPERATING_CONFIG.yaml through an owner-merged PR; fetch the default branch to apply.')
     trust = report.get('release_trust') or {}
     if trust.get('basis') == 'trusted_host_installed_awf_skill':
         lines.extend(('Codex home: ' + trust['codex_home'],
