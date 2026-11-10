@@ -541,7 +541,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_upgrade_pycache.py` | `35cf97c639c3e62c9eed297dff05973ae807e15d5c914db34e5494d83e09c2b7` |
 | `.agentic/tests/test_upgrade_receipts.py` | `812a0d2b512d86336366ad427bb3701ce681373ed6a55b4441222251fed35eb9` |
 | `.agentic/tests/test_upgrade_source_independence.py` | `753ac538fe9359d2a6a30d3c03b21b122acc66a37050b9be411a021f75059a3b` |
-| `.agentic/tests/test_windows_diagnostics.py` | `475b5ca4a44c8fdf59ff8cc14700edf1451c83f91388f65b3f772da90311ccd0` |
+| `.agentic/tests/test_windows_diagnostics.py` | `0fd2e94394dde55513e35204887546a02f5292a9a91fb857810b37f70fde2b35` |
 | `.agentic/tests/upgrade_195_fixtures.py` | `b07a3b55c99664ad33300ac01c89967eb5f91de44a04f8bc233f1c673eadfff2` |
 | `.agentic/tests/upgrade_fixtures.py` | `970d2acf6034820a54b2cd406505f0a2b72f4b3af4f383a65aeb99e8135e20d9` |
 | `.agentic/upgrade/blobs/3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883` | `3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883` |
