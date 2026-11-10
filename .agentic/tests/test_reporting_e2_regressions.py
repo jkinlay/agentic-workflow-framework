@@ -272,7 +272,11 @@ class ReportingE2Regressions(unittest.TestCase):
             timing['next_cycle_start'] = time.monotonic()
         continued = self.cycle('2026-11-07T18:00:01Z', [ticket('EX-1', 1, paths=['README.md'])],
                                before_controller=before_controller)
-        self.assertLess(time.monotonic() - timing['next_cycle_start'], 1.5)
+        self.assertEqual(
+            (True, False, 1, [], {'UNKNOWN'}),
+            (self.network.entered.is_set(), self.network.block.is_set(),
+             len(self.network.remote_pending), self.network.messages['teams'],
+             {d['status'] for d in self.status()['deliveries'] if d['platform'] == 'teams'}))
         self.assertEqual(len(continued['dispatch_receipts']), 1)
         self.assertEqual(len(self.network.posts), 2)
         self.network.block.set()
