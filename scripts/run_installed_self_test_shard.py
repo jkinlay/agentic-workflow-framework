@@ -57,7 +57,7 @@ def main(argv=None):
         seconds = deadline - time.monotonic() - CLEANUP_RESERVE_SECONDS
         if seconds <= 0:
             raise TimeoutError('installed shard overall deadline exhausted')
-        return min(cap, seconds)
+        return min(cap, seconds, DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS)
 
     def retain_setup_output(result):
         nonlocal setup_output_bytes, setup_output_truncated

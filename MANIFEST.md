@@ -575,7 +575,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_upgrade_matrix.py` | `8fe0be683806135c04863c00c8acbf110d54975127b0759fd64a0c112eecfbf7` |
 | `.agentic/tests/test_upgrade_pycache.py` | `35cf97c639c3e62c9eed297dff05973ae807e15d5c914db34e5494d83e09c2b7` |
 | `.agentic/tests/test_upgrade_receipts.py` | `49c519c70d6bc29fee8186a61e2e06f30934c377a8342408345b627e5078679f` |
-| `.agentic/tests/test_windows_diagnostics.py` | `475b5ca4a44c8fdf59ff8cc14700edf1451c83f91388f65b3f772da90311ccd0` |
+| `.agentic/tests/test_windows_diagnostics.py` | `0fd2e94394dde55513e35204887546a02f5292a9a91fb857810b37f70fde2b35` |
 | `.agentic/tests/upgrade_fixtures.py` | `e6a3eb6f07a3b2a2432d2c6fdd64453d8a57399d94b008aaff8a72a87fba9674` |
 | `.agentic/upgrade/blobs/3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883` | `3dc94e5fdacaae13b0b3a883ed5329905974e65d7572b0c8f99dd27808c8d883` |
 | `.agentic/upgrade/blobs/da8c1e0121daddc22579b061661c9c08ff0745a905ee0f1381492af6b9b77900` | `da8c1e0121daddc22579b061661c9c08ff0745a905ee0f1381492af6b9b77900` |
@@ -743,7 +743,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/release_hygiene.py` | `6464bc40a969246566bc56ad39bb74cde23a3d0ab68e3cbd157324c422feb7bc` |
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
 | `scripts/release_review.py` | `e2b452f19c52a4f61671bd6b47342d3385f98e109e5663a1d4162f577d95e089` |
-| `scripts/run_installed_self_test_shard.py` | `c64fb0b12dcd567cf2d00907d010ccffba905c11f72720ac48e960d65b405a37` |
+| `scripts/run_installed_self_test_shard.py` | `afee6d98210a2858e6af8527c605489d0dafc1b3b8c81075ffa210246781467d` |
 | `scripts/run_publication_pre_controller.py` | `a1fe82f65ad6a3b135f2a18ac0d69d4bebbabd8a1b76241556f97b3b2474c297` |
 | `scripts/run_windows_unittests.py` | `e849aef97bac26522c6aa7f207dd72573d807e81a0038f7fd834b29258eb2d97` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
@@ -772,7 +772,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_installed_self_test.py` | `1733ca84ddf1e17772b03b6629b73f11b320c706aed732b77daa74c90a024486` |
 | `scripts/tests/test_installed_self_test_shards.py` | `e1bae09a347dad14e2924ec747949d5261b535cc4b2ca6c7fed0e5160d742d6a` |
 | `scripts/tests/test_installed_shard_review_regressions.py` | `edf6f618242cebe45484047d49e583a6d7fe40b48e8c8e07caf815c2428d71c6` |
-| `scripts/tests/test_linux_installed_self_test_shards.py` | `63b09df846b37044b013ff925af48dd609297fb4d8df353d27bcb43fae60c5aa` |
+| `scripts/tests/test_linux_installed_self_test_shards.py` | `92b899791c0919781b828db6418b32ccec1d1d483cac197fdbfbeb43753862c5` |
 | `scripts/tests/test_manifest_conflicts.py` | `22156e2b07c769f00a8144dca5a2d3a66932150717cd90cde3c7e7ef96519475` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
