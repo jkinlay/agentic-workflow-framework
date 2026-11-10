@@ -41,7 +41,7 @@ class SourceBudget:
         remaining = self.deadline - monotonic()
         if remaining <= 0:
             raise ValidationError('REPORT_SOURCE_BUDGET')
-        return remaining
+        return min(SOURCE_SECONDS, remaining)
 
     def __enter__(self):
         self.token = _source.set(self)
@@ -125,10 +125,11 @@ class DeliveryBudget:
 
     def http(self, platform):
         with self.lock:
-            if self.cancelled or monotonic() >= self.deadline or self.http_counts.get(platform, 0) >= MAX_HTTP_CALLS:
+            remaining = self.deadline - monotonic()
+            if self.cancelled or remaining <= 0 or self.http_counts.get(platform, 0) >= MAX_HTTP_CALLS:
                 raise ValidationError('REPORT_DESTINATION_BUDGET')
             self.http_counts[platform] = self.http_counts.get(platform, 0) + 1
-            return min(HTTP_TIMEOUT_SECONDS, self.deadline - monotonic())
+            return min(HTTP_TIMEOUT_SECONDS, remaining)
 
     def cancel(self):
         with self.lock:

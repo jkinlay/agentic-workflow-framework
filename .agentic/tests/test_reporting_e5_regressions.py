@@ -173,6 +173,97 @@ class SlowSourceRunner:
         return dict(items=[], complete=page >= self.pages, next_page=None if page >= self.pages else page+1)
 
 
+class BudgetRoundingTests(unittest.TestCase):
+    def test_pinned_source_timeout_never_exceeds_thirty_seconds(self):
+        from unittest.mock import patch
+        from agentic.reporting import bounded
+        # Binary64 addition/subtraction overshoots even without elapsed time.
+        self.assertGreater((2.002 + 30) - 2.002, 30)
+        with patch.object(bounded, 'monotonic', return_value=2.002):
+            with bounded.SourceBudget() as budget:
+                self.assertTrue(0 < budget.remaining() <= 30)
+                self.assertTrue(0 < bounded.source_timeout() <= 30)
+
+    def test_five_thousand_clock_values_preserve_all_timeout_maxima(self):
+        from unittest.mock import patch
+        from agentic.reporting import bounded, deadline
+        violations = []
+        for n in range(5000):
+            now = n / 1000
+            with patch.object(bounded, 'monotonic', return_value=now), \
+                 patch.object(deadline, 'monotonic', return_value=now):
+                with bounded.SourceBudget() as source:
+                    timeouts = [('source', source.remaining(), 30),
+                                ('source_port', bounded.source_timeout(), 30)]
+                delivery = bounded.DeliveryBudget()
+                with delivery.destination('teams'):
+                    timeouts.extend([('delivery', delivery.remaining(), 15),
+                                     ('http', delivery.http('teams'), 15),
+                                     ('delivery_port', bounded.delivery_timeout(), 15)])
+                    with bounded.request_scope('POST'):
+                        bounded.admit_request()
+                        timeouts.append(('admitted_request', bounded.transport_timeout(), 15))
+                for maximum in (15, .05):
+                    request = deadline.RequestDeadline(maximum)
+                    timeouts.append(('request_deadline', request.remaining(), maximum))
+                violations.extend((name, now, value, maximum) for name, value, maximum in timeouts
+                                  if not 0 < value <= maximum)
+        self.assertEqual(violations, [])
+
+    def test_expired_timeouts_keep_their_existing_errors(self):
+        from unittest.mock import patch
+        from agentic.reporting import bounded, deadline
+        for elapsed in (30, 31):
+            with patch.object(bounded, 'monotonic', return_value=0):
+                source, delivery = bounded.SourceBudget(), bounded.DeliveryBudget()
+            with patch.object(bounded, 'monotonic', return_value=elapsed):
+                with self.assertRaisesRegex(ValidationError, 'REPORT_SOURCE_BUDGET'):
+                    source.remaining()
+                with self.assertRaisesRegex(ValidationError, 'REPORT_DESTINATION_BUDGET'):
+                    delivery.remaining()
+                with self.assertRaisesRegex(ValidationError, 'REPORT_DESTINATION_BUDGET'):
+                    delivery.http('teams')
+                self.assertEqual(delivery.http_counts, {})
+        with patch.object(deadline, 'monotonic', return_value=0):
+            request = deadline.RequestDeadline(15)
+        with patch.object(deadline, 'monotonic', return_value=15):
+            with self.assertRaisesRegex(TimeoutError, 'REPORT_HTTP_DEADLINE'):
+                request.remaining()
+
+    def test_http_timeout_uses_the_checked_admission_clock_read(self):
+        from unittest.mock import patch
+        from agentic.reporting import bounded
+        with patch.object(bounded, 'monotonic', side_effect=[0, 29, 30]):
+            delivery = bounded.DeliveryBudget()
+            self.assertEqual(delivery.http('teams'), 1)
+            self.assertEqual(delivery.http_counts, {'teams': 1})
+
+
+class SourcePortRoundingTests(unittest.TestCase):
+    setUp = e2.ReportingE2Regressions.setUp
+
+    def test_cli_source_adapter_receives_a_capped_timeout(self):
+        from unittest.mock import patch
+        from agentic.reporting import bounded
+        calls = []
+        original = self.runner.run
+        def capture(argv, **kwargs):
+            if '/pulls?state=closed' in argv[-1]:
+                calls.append(kwargs['timeout'])
+                return dict(items=[], complete=True, next_page=None)
+            return original(argv, **kwargs)
+        self.runner.run = capture
+        now = '2026-11-10T10:00:00Z'
+        self.adapters['observe_inventory'](now)
+        # This is the shipped source adapter invoked by e3.cli_probe, including
+        # command() and its runner timeout; host Git/subprocess clocks stay real.
+        with patch.object(bounded, 'monotonic', return_value=2.002):
+            with bounded.SourceBudget():
+                self.adapters['observe_reporting_sources'](dict(binding=self.binding, observed_at=now))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(0 < timeout <= 30 for timeout in calls), calls)
+
+
 class CLITests(unittest.TestCase):
     def test_actual_cli_slow_sources_do_not_consume_delivery_budget(self):
         observed = []

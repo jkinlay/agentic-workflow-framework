@@ -155,9 +155,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/reporting/__init__.py` | `723e4874b32aaae6b5cd307a53c6d62b78af2524dbb8c2eb5ec1f54dd9df7aae` |
 | `.agentic/lib/agentic/reporting/analysis.py` | `906617702da477fbd1aa9b3fa644acdef86d99dd1001ae4d36d34384c93b2c68` |
 | `.agentic/lib/agentic/reporting/bodies.py` | `100711390358c96f828acc222b0c1f349eba9f53aae7d204e1e611a06fc2fb65` |
-| `.agentic/lib/agentic/reporting/bounded.py` | `0cf841d5149f861e03390957a9a55a8ef33bf8d98c37ae536ff79a0b0cdf298f` |
+| `.agentic/lib/agentic/reporting/bounded.py` | `332d732a8c779f08b7a808ccbc90682e1b4d35d21dc81534c85c6e0e0b852834` |
 | `.agentic/lib/agentic/reporting/compose.py` | `76ad704418046ac61ae071b3c1d9cfe59802f9add5a56ea2d7a55946324e1f95` |
-| `.agentic/lib/agentic/reporting/deadline.py` | `595c64d1033615d4094e1ff68fd373f36d90edb8232b2b9505ba39ea0794afe6` |
+| `.agentic/lib/agentic/reporting/deadline.py` | `2f4fe0e509091b3491fcea533f0ec5b2330aead19547b139841dc6d276bd8cad` |
 | `.agentic/lib/agentic/reporting/delivery.py` | `51658d1b2799ec71ffdd4ebc5e59d186ef5978a998f6e532e14c59b568ccedb2` |
 | `.agentic/lib/agentic/reporting/events.py` | `099f9373736c960602da429409258d345a6ba49c44e1ec4c99f84b402b334dd5` |
 | `.agentic/lib/agentic/reporting/http_transport.py` | `d00f7ce1165bf704fb5dab29f9e0c7f5e89e3690931de987f49d30aee97bd0c8` |
@@ -518,7 +518,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_reporting_e2_regressions.py` | `48073a051a9b36cef9bbfc0020ea277a00d48cda04f7d8d16dd42caab7094f11` |
 | `.agentic/tests/test_reporting_e3_regressions.py` | `7675dd62800c46b00dfd13a2c610f034f6c32ccbde2bfdbcc9153b44b861568c` |
 | `.agentic/tests/test_reporting_e4_regressions.py` | `56caaacaaf8add18b96d6b09c0411468181b16b72dbc3b9aec0c7a2995709fca` |
-| `.agentic/tests/test_reporting_e5_regressions.py` | `6b78810968636a3bb00cc49209de7deff14208de6d5d4196b17f669f4d60e9a4` |
+| `.agentic/tests/test_reporting_e5_regressions.py` | `9e819a4b150ba163bc4c79d1f63090a69d50c7e8efdc0a39212ddfbb65396911` |
 | `.agentic/tests/test_reporting_e6_regressions.py` | `9c6ca8a2d9c0a065bc77a31586f50e8bd8235d247f8e0054880d0c4029aec4dc` |
 | `.agentic/tests/test_reporting_e7_regressions.py` | `056e4ae9a1f7246c1e36e9098c7f586377c94ee1bdd2474a9774dba5ccbcee93` |
 | `.agentic/tests/test_reporting_e8_regressions.py` | `f6ed5c8c7908c31d6bab5422a388c4c2af119cfbc0549d958809d119acb27c3c` |

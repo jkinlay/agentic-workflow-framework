@@ -14,6 +14,7 @@ from urllib.request import HTTPSHandler
 
 class RequestDeadline:
     def __init__(self, seconds):
+        self.seconds = seconds
         self.end = monotonic() + seconds
         self.lock = threading.Lock()
         self.sockets = []
@@ -24,7 +25,7 @@ class RequestDeadline:
         remaining = self.end - monotonic()
         if self.expired or remaining <= 0:
             raise TimeoutError('REPORT_HTTP_DEADLINE')
-        return remaining
+        return min(self.seconds, remaining)
 
     @staticmethod
     def stop(sock):
