@@ -218,13 +218,96 @@ class ReportingTimingTests(unittest.TestCase):
 
     def test_continuous_hourly_alert_arrivals_keep_eod_opportunity(self):
         turns = self.sustained_periodic_arrivals()
-        # EoD first becomes due on turn 9. Carry its owed opportunity through
-        # exhausted turns: at most six turns, including the due turn, to POST.
+        # Six turns to POST applies to this asymmetric scenario only: Teams
+        # 2.2 s, Slack 1.5 s, observations 2.5 s, and one new alert, candidate
+        # and hourly per restarted turn. EoD first becomes due on turn 9;
+        # the six turns include that due turn.
         for platform in ('teams', 'slack'):
             with self.subTest(platform=platform):
                 self.assertTrue(any(d['platform'] == platform and d['kind'] == 'eod' and d['attempts']
                                     for t in turns[9:15] for d in t['deliveries']), turns)
         self.assertEqual([error for turn in turns for error in turn['errors']], [])
+
+    def test_boundary_burst_eod_admission_and_readback_keep_one_identity(self):
+        """Both platforms take 2.2 s/call with eight new owner actions per turn.
+
+        Start RETRY/PERIODIC, with the first due EoD and no older EoD debt.
+        Restart with a new candidate/hourly each turn; observations take 2.5 s.
+        Admission takes at most seven turns, then readback at most four more.
+        These bounds do not cover other conditions.
+        """
+        from copy import deepcopy
+        from datetime import datetime, timedelta, timezone
+        import json
+        import time
+        import test_reporting_e6_regressions as e6
+        from test_reference_controller_adapter import _issue
+        case = e6.ControllerTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.helper.calendar = {'review_batching': {'cutoff_time': '23:59'}}
+        case.network.latency = 2.2
+        template = json.loads(case.runner.inventory[0]['body'])
+        case.runner.inventory = []
+        original_observe = case.helper.observe_candidate
+        def observe(candidate, now):
+            time.sleep(2.5)
+            return dict(original_observe(candidate, now), candidate=deepcopy(candidate))
+        case.helper.observe_candidate = observe
+        with case.helper.store.transaction() as db:
+            for key, value in (('report-review-work-turn', 'RETRY'),
+                               ('report-periodic-reconciliation-turn', 'PERIODIC')):
+                db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) '
+                           'DO UPDATE SET value=excluded.value', (key, value))
+        identities, turns = {}, []
+        with _LogicalSlowCalls():
+            for turn in range(11):
+                case.restart()
+                case.helper.current['pull_request'] = 41 + turn
+                case.helper.listed = [deepcopy(case.helper.current)]
+                case.runner.inventory.extend([
+                    _issue(dict(template, ticket='AWF-%d' % (32 + 8 * turn + n),
+                                disposition='BLOCKED', actor='owner',
+                                reason='Storm turn %d action %d' % (turn, n),
+                                next_action='Investigate'), number=32 + 8 * turn + n)
+                    for n in range(8)])
+                now = datetime(2026, 11, 11, 17, tzinfo=timezone.utc) + timedelta(hours=turn)
+                self.assertEqual(case.cycle(now.strftime('%Y-%m-%dT%H:00:00Z'))['errors'], [])
+                status = case.status()
+                self.assertEqual(len(case.runner.inventory), 8 * (turn + 1))
+                self.assertEqual(sum(r.get('owner_action_event', {}).get('record', {}).get('action', {})
+                                     .get('reason', '').startswith('Storm turn ') for r in status['reports']),
+                                 8 * (turn + 1))
+                self.assertEqual(sum(r['kind'] == 'eod' for r in status['reports']), 1)
+                self.assertTrue(all(len(d['attempts']) <= 2 for d in status['deliveries']))
+                first_eod = next(r['report_id'] for r in status['reports'] if r['kind'] == 'eod')
+                states = {}
+                for delivery in status['deliveries']:
+                    if delivery['report_id'] != first_eod:
+                        continue
+                    platform = delivery['platform']
+                    with case.helper.store.connection() as db:
+                        intent = db.execute('SELECT intent_json FROM controller_report_delivery '
+                                            'WHERE delivery_id=?', (delivery['delivery_id'],)).fetchone()[0]
+                    identity = (first_eod, delivery['delivery_id'], intent)
+                    self.assertEqual(identity, identities.setdefault(platform, identity))
+                    posts = sum(p == platform and ('AWF delivery: ' + delivery['delivery_id'] + ' / ')
+                                in str(payload) for p, payload in case.network.posts)
+                    states[platform] = dict(status=delivery['status'], attempts=len(delivery['attempts']), posts=posts)
+                self.assertEqual(set(states), {'teams', 'slack'})
+                turns.append(states)
+        print('boundary burst EoD turns: ' + json.dumps(turns, sort_keys=True))
+        for platform in ('teams', 'slack'):
+            with self.subTest(platform=platform):
+                admitted = [i for i, states in enumerate(turns) if states[platform]['posts']]
+                self.assertTrue(admitted, turns)
+                first = admitted[0]
+                self.assertLess(first, 7, turns)
+                self.assertTrue(any(states[platform]['status'] == 'DELIVERED'
+                                    for states in turns[first:first + 5]), turns)
+                self.assertTrue(all(states[platform]['posts'] == 1 and states[platform]['attempts'] == 1
+                                    for states in turns[first:]), turns)
+                self.assertEqual(turns[-1][platform]['status'], 'DELIVERED')
 
     def test_elapsed_eod_readback_continues_without_repost_under_catchup(self):
         turns = self.sustained_periodic_arrivals()
