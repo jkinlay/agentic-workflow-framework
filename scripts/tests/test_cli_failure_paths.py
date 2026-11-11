@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from validate_archive import PREFIX, RELEASE_LINE, VERSION, preflight
 import validate_archive
 import validate_git_checkout
+import release_self_test
 
 
 def snapshot(root):
@@ -657,10 +658,8 @@ class CliFailurePathTests(unittest.TestCase):
                 args = self.archive_args(archive, pin, work, report)
                 if requested is not None:
                     args += ['--self-test-timeout-seconds', requested]
-                failure = subprocess.TimeoutExpired(['synthetic-self-test'], expected,
-                                                    output=b'Synthetic partial stdout', stderr=b'Synthetic partial stderr')
                 with mock.patch.object(validate_archive,'review_source',return_value={'status':'PASS','synthetic':True}), \
-                        mock.patch.object(validate_archive, 'run_self_test', side_effect=failure) as run, \
+                        mock.patch.object(validate_archive, 'run_self_test', side_effect=self.real_shard_timeout) as run, \
                         redirect_stdout(io.StringIO()) as stdout:
                     code = validate_archive.main(list(map(str,args)))
                 data = json.loads(report.read_bytes())
@@ -672,8 +671,15 @@ class CliFailurePathTests(unittest.TestCase):
                 self.assertEqual(pin, data['archive_sha256'])
                 self.assertTrue(data['report_written'])
                 self.assertTrue(Path(data['run_directory'], PREFIX.rstrip('/'), 'MANIFEST.json').is_file())
-                self.assertIn('Synthetic partial stdout', Path(data['partial_log']).read_text())
-                self.assertIn('Synthetic partial stderr', Path(data['partial_log']).read_text())
+                self.assertIn('partial stdout', Path(data['partial_log']).read_text())
+                self.assertIn('partial stderr', Path(data['partial_log']).read_text())
+                shard_log = data['failing_shard_log']
+                log = Path(shard_log['path'])
+                self.assertEqual('shard-0.log', log.name)
+                self.assertEqual(hashlib.sha256(log.read_bytes()).hexdigest(), shard_log['sha256'])
+                self.assertEqual(log.read_bytes(), Path(data['partial_log']).read_bytes())
+                aggregate = json.loads(Path(data['shard_aggregate']).read_bytes())
+                self.assertEqual(shard_log, aggregate['failing_shard_log'])
                 self.assertEqual(['PASS','PASS','PASS','FAILED'],[check['status'] for check in data['checks']])
                 modes = Path(data['run_directory']) / 'rebuild-git-modes.json'
                 self.assertEqual(hashlib.sha256(modes.read_bytes()).hexdigest(),
@@ -691,11 +697,21 @@ class CliFailurePathTests(unittest.TestCase):
         self.assertEqual(before, snapshot(self.root))
         self.assertFalse((self.root / 'unused-work').exists())
 
+    def real_shard_timeout(self, root, report, **kwargs):
+        """Use the actual bounded runner and orchestration exception chain."""
+        child = release_self_test.run_child
+        def hang(command, **options):
+            return child([sys.executable, '-B', '-c',
+                          'import sys,time; print("partial stdout",flush=True); '
+                          'print("partial stderr",file=sys.stderr,flush=True); time.sleep(30)'],
+                         **{**options, 'timeout': 0.3})
+        with mock.patch.object(release_self_test, 'run_child', side_effect=hang):
+            return release_self_test.run_self_test(root, report, **kwargs)
+
     def test_archive_timeout_report_write_failure_is_explicit_without_stale_pass(self):
         archive, pin = self.archive()
-        failure = subprocess.TimeoutExpired(['synthetic-self-test'], 600, output=b'Partial output')
         with mock.patch.object(validate_archive,'review_source',return_value={'status':'PASS','synthetic':True}), \
-                mock.patch.object(validate_archive, 'run_self_test', side_effect=failure), \
+                mock.patch.object(validate_archive, 'run_self_test', side_effect=self.real_shard_timeout), \
                 mock.patch.object(validate_archive, 'write_report', side_effect=PermissionError('synthetic write denial')), \
                 redirect_stdout(io.StringIO()) as stdout:
             code = validate_archive.main(list(map(str,self.archive_args(archive, pin))))
@@ -705,6 +721,9 @@ class CliFailurePathTests(unittest.TestCase):
         self.assertEqual('PermissionError', report['report_write_error'])
         self.assertFalse((self.root / 'report.json').exists())
         self.assertTrue(Path(report['partial_log']).is_file())
+        self.assertIn('partial stdout', Path(report['partial_log']).read_text())
+        log = report['failing_shard_log']
+        self.assertEqual(hashlib.sha256(Path(log['path']).read_bytes()).hexdigest(), log['sha256'])
 
     def synthetic_source_stage(self, command):
         """Advance non-target stages without recursive tests or acceptance writes."""

@@ -35,6 +35,7 @@ from agentic.contracts import Contracts
 from agentic.safeio import relative_parts
 import safe_materialize
 from release_modes import write_mode_manifest
+from release_self_test import ShardFailure
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
 RAW_GIT_ARGUMENTS = ("--no-replace-objects", "-c", "core.useReplaceRefs=false")
 RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
@@ -818,7 +819,7 @@ def main(argv=None):
                              args.expected_clean_windows_check_sha256, dry_run=args.dry_run, gh=args.gh)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
-    except (ReleaseError, OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+    except (ReleaseError, ShardFailure, OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         print(json.dumps({"status": "REJECTED", "reason": str(exc)}, indent=2), file=sys.stderr)
         return 2
 

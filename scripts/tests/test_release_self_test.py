@@ -127,12 +127,122 @@ class SequentialReleaseTests(unittest.TestCase):
         self.mutate = lambda r: r['split_cases'].update({UPGRADE_MATRIX: ['foreign.case']})
         self.assert_refuses('success')
 
+    def test_rejects_selection_digest_from_another_run(self):
+        self.mutate = lambda r: r.update(selection_sha256='0' * 64)
+        self.assert_refuses('success')
+
+    def test_rejects_wrong_scope(self):
+        self.mutate = lambda r: r.update(scope='installed-shard')
+        self.assert_refuses('success')
+
+    def test_rejects_wrong_shard_number(self):
+        self.mutate = lambda r: r.update(shard=1)
+        self.assert_refuses('success')
+
+    def test_rejects_wrong_shard_count(self):
+        self.mutate = lambda r: r.update(shard_count=8)
+        self.assert_refuses('success')
+
+    def test_rejects_child_release_qualification(self):
+        self.mutate = lambda r: r.update(release_qualified=True)
+        self.assert_refuses('success')
+
+    def test_rejects_child_suite_complete(self):
+        self.mutate = lambda r: r.update(suite_complete=True)
+        self.assert_refuses('success')
+
+    def test_rejects_child_failed_status(self):
+        self.mutate = lambda r: r.update(status='FAILED')
+        self.assert_refuses('success')
+
+    def test_rejects_failed_integrity(self):
+        self.mutate = lambda r: r['checks'].update(integrity='FAILED')
+        self.assert_refuses('success')
+
+    def test_rejects_wrong_manifest(self):
+        self.mutate = lambda r: r.update(source_manifest_sha256='0' * 64)
+        self.assert_refuses('success')
+
+    def test_rejects_test_failures(self):
+        self.mutate = lambda r: r['tests'].update(failures=1)
+        self.assert_refuses('success')
+
+    def test_rejects_test_errors(self):
+        self.mutate = lambda r: r['tests'].update(errors=1)
+        self.assert_refuses('success')
+
+    def test_rejects_unsuccessful_tests(self):
+        self.mutate = lambda r: r['tests'].update(successful=False)
+        self.assert_refuses('success')
+
+    def test_rejects_zero_tests_for_nonempty_shard(self):
+        self.mutate = lambda r: r['tests'].update(run=0)
+        self.assert_refuses('success')
+
+    def test_rejects_unnamed_skip(self):
+        self.mutate = lambda r: r['tests']['skipped'].append({'test': '', 'reason': 'platform'})
+        self.assert_refuses('success')
+
+    def test_rejects_unexplained_skip(self):
+        self.mutate = lambda r: r['tests']['skipped'].append({'test': 'case.test', 'reason': ' '})
+        self.assert_refuses('success')
+
+    def test_rejects_split_all_cases(self):
+        self.mutate = lambda r: r['split_all_cases'].update({UPGRADE_MATRIX: ['foreign.case']})
+        self.assert_refuses('success')
+
+    def test_rejects_zero_test_module_disposition(self):
+        self.mutate = lambda r: r['zero_test_modules'].update({'foreign.py': 0})
+        self.assert_refuses('success')
+
+    def test_non_shard_failures_have_phase_and_no_shard(self):
+        for phase in ('plan', 'pins', 'aggregate'):
+            with self.subTest(phase=phase):
+                self.report = self.work / (phase + '.json')
+                self.calls.clear()
+                if phase == 'plan':
+                    patch = mock.patch.object(release, 'build_release_plan', side_effect=ValueError('bad plan'))
+                elif phase == 'pins':
+                    patch = mock.patch.object(release, 'verify_release', side_effect=ValueError('bad pin'))
+                else:
+                    patch = mock.patch.object(release, 'Counter', side_effect=ValueError('bad aggregate'))
+                with patch, self.assertRaises(release.ShardFailure):
+                    self.invoke()
+                report = json.loads(self.report.read_bytes())
+                self.assertIsNone(report['failing_shard'])
+                self.assertIsNone(report['coverage_reconciliation']['failing_shard'])
+                self.assertEqual(phase, report['failure_phase'])
+                self.assertIn(phase, report['error'])
+                self.assertEqual(9 if phase == 'aggregate' else 0, len(self.calls))
+
+    def test_each_child_records_elapsed_wall_time_and_unchanged_deadline(self):
+        with mock.patch.object(release.time, 'monotonic', side_effect=range(18)):
+            report = self.invoke()
+        self.assertEqual([1] * 9, [r['wall_seconds'] for r in report['shard_reports']])
+        self.assertEqual([600] * 9, [r['timeout_seconds'] for r in report['shard_reports']])
+
+    def test_timeout_aggregate_binds_failing_shard_log_and_elapsed_time(self):
+        def timeout_child(command, **kwargs):
+            kwargs['log_path'].write_bytes(b'stdout: partial child output\n')
+            raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+        with mock.patch.object(release, 'run_child', side_effect=timeout_child), \
+                self.assertRaises(release.ShardFailure):
+            release.run_self_test(self.root, self.report, timeout=600)
+        report = json.loads(self.report.read_bytes())
+        self.assertEqual(0, report['failing_shard'])
+        log = report['failing_shard_log']
+        self.assertEqual((self.report.with_name(self.report.name + '.shards') / 'shard-0.log').resolve(), Path(log['path']))
+        self.assertEqual(hashlib.sha256(Path(log['path']).read_bytes()).hexdigest(), log['sha256'])
+        self.assertEqual(600, report['failed_child']['timeout_seconds'])
+        self.assertGreaterEqual(report['failed_child']['wall_seconds'], 0)
+
     def test_real_child_timeout_retains_log(self):
         log = self.work / 'timeout.log'
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
             release.run_child([sys.executable, '-B', '-c', 'import time; print("started", flush=True); time.sleep(30)'],
                               cwd=self.root, env=os.environ, timeout=0.3, log_path=log)
         self.assertIn(b'started', log.read_bytes())
+        self.assertEqual(log.read_bytes(), raised.exception.output)
 
     def test_real_selected_discovery_executes_complete_source_union(self):
         plan = planner.build_release_plan(self.root)

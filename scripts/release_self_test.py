@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 
 from plan_installed_self_test import build_release_plan, encode
@@ -22,19 +23,23 @@ from agentic import ValidationError
 class ShardFailure(RuntimeError):
     """A failed attempt has retained its aggregate and available child evidence."""
 
+    def __init__(self, message, *, shard_log=None):
+        super().__init__(message)
+        self.shard_log = shard_log
+
 
 def run_child(command, *, cwd, env, timeout, log_path):
     """Bound output and kill the owned POSIX group / Windows Job on failure."""
-    with Path(log_path).open('xb') as log:
-        def retain(channel, data):
-            log.write(channel.encode('ascii') + b': ' + data)
-            log.flush()
-        try:
+    try:
+        with Path(log_path).open('xb') as log:
+            def retain(channel, data):
+                log.write(channel.encode('ascii') + b': ' + data)
+                log.flush()
             return run_bounded(command, cwd=cwd, env=env, timeout=timeout, stream_sink=retain)
-        except ValidationError as exc:
-            if str(exc).startswith('SUBPROCESS_TIMEOUT:'):
-                raise subprocess.TimeoutExpired(command, timeout) from exc
-            raise
+    except ValidationError as exc:
+        if str(exc).startswith('SUBPROCESS_TIMEOUT:'):
+            raise subprocess.TimeoutExpired(command, timeout, output=Path(log_path).read_bytes()) from exc
+        raise
 
 
 def strict_report(raw):
@@ -126,7 +131,7 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
                      tests=dict(run=0, failures=0, errors=0, skipped=[], successful=False),
                      coverage_reconciliation={'status': 'INCOMPLETE'},
                      shard_reports=[], deadlines={'per_child_seconds': timeout, 'whole_sequence_seconds': None})
-    shard = 0
+    shard, phase, log_path, child_timing = None, 'plan', None, None
     try:
         plan = build_release_plan(root, installed_root)
         raw = encode(plan)
@@ -137,6 +142,7 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
         validate_release_selection(raw, digest, plan['inventory'], plan['source_manifest_sha256'], plan['scope'])
         aggregate.update(scope=plan['scope'] + '-suite', plan_sha256=digest, selection_sha256=digest,
                          shard_count=plan['shard_count'], source_manifest_sha256=plan['source_manifest_sha256'])
+        phase = 'pins'
         pins = {root / 'MANIFEST.json': (root / 'MANIFEST.json').read_bytes()}
         with Tree(root) as tree:
             _, content = verify_release(tree, plan['source_manifest_sha256'], allow_source_checkout=(root / '.git').exists())
@@ -179,9 +185,11 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
         # Discovery imports only the split module, never the whole test inventory.
         partitions = expected_partitions(root, plan)
         records = []
-        for shard in range(plan['shard_count']):
+        for index in range(plan['shard_count']):
             recheck()
+            shard, phase = index, 'shard'
             path = evidence / f'shard-{shard}.json'
+            log_path = evidence / f'shard-{shard}.log'
             command = [str(interpreter or sys.executable), '-B', *(['-I'] if installed_root is not None else []),
                        str(target / '.agentic/scripts/self_test.py'), '--report', str(path),
                        '--shard', str(shard), '--selection-file', str(selection),
@@ -189,11 +197,16 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
             if arguments:
                 command.append('--release')
             kwargs = dict(cwd=target, env=child_env(env), timeout=timeout, capture_output=True)
-            if runner is None:
-                done = run_child(command, cwd=target, env=kwargs['env'], timeout=timeout,
-                                 log_path=evidence / f'shard-{shard}.log')
-            else:
-                done = runner(command, **kwargs)
+            started = time.monotonic()
+            try:
+                if runner is None:
+                    done = run_child(command, cwd=target, env=kwargs['env'], timeout=timeout,
+                                     log_path=log_path)
+                else:
+                    done = runner(command, **kwargs)
+            finally:
+                child_timing = {'shard': shard, 'wall_seconds': time.monotonic() - started,
+                                'timeout_seconds': timeout}
             recheck()
             if done.returncode:
                 raise ValueError(f'child exited {done.returncode}')
@@ -201,9 +214,10 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
             report = strict_report(data)
             validate_report(plan, report, shard, digest, partitions)
             records.append(report)
-            aggregate['shard_reports'].append({'shard': shard, 'report': path.name,
-                                               'sha256': hashlib.sha256(data).hexdigest(),
-                                               'timeout_seconds': timeout})
+            aggregate['shard_reports'].append({**child_timing, 'report': path.name,
+                                               'sha256': hashlib.sha256(data).hexdigest()})
+            shard, phase, log_path, child_timing = None, 'pins', None, None
+        phase = 'aggregate'
         recheck()
         if review() != current_review:
             raise ValueError('review changed before aggregation')
@@ -217,7 +231,6 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
         # Re-read immutable child reports before admitting the aggregate.
         for item in aggregate['shard_reports']:
             if hashlib.sha256((evidence / item['report']).read_bytes()).hexdigest() != item['sha256']:
-                shard = item['shard']
                 raise ValueError('shard report changed')
         aggregate.update(status='PASS', suite_complete=True, current_review=current_review,
                          review=current_review['status'], coverage_reconciliation={'status': 'PASS',
@@ -229,13 +242,20 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
             raise ValueError('review changed after aggregation')
         recheck()
     except Exception as exc:
+        shard_log = None
+        if log_path is not None and log_path.is_file():
+            shard_log = {'path': str(log_path), 'sha256': hashlib.sha256(log_path.read_bytes()).hexdigest()}
+            aggregate['failing_shard_log'] = shard_log
+        if child_timing is not None:
+            aggregate['failed_child'] = child_timing
+        label = f'shard {shard}' if shard is not None else phase
         aggregate.update(status='FAILED', suite_complete=False, release_qualified=False,
-                         failing_shard=shard, error=f'shard {shard}: {type(exc).__name__}: {exc}')
+                         failing_shard=shard, failure_phase=phase, error=f'{label}: {type(exc).__name__}: {exc}')
         aggregate['tests']['successful'] = False
         aggregate['coverage_reconciliation'] = {'status': 'FAILED', 'failing_shard': shard}
         with report_path.open('xb') as stream:
             stream.write(encode(aggregate))
-        raise ShardFailure(aggregate['error']) from exc
+        raise ShardFailure(aggregate['error'], shard_log=shard_log) from exc
     with report_path.open('xb') as stream:
         stream.write(encode(aggregate))
     return aggregate

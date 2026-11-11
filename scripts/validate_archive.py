@@ -448,13 +448,15 @@ def validate(argv=None):
         except (ShardFailure, subprocess.TimeoutExpired) as exc:
             timeout = isinstance(exc, subprocess.TimeoutExpired) or isinstance(exc.__cause__, subprocess.TimeoutExpired)
             cause = exc.__cause__ or exc
-            def decoded(value):
-                return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else value or ''
+            def encoded(value):
+                return value if isinstance(value, bytes) else (value or '').encode('utf-8')
             log = RUN / 'failure.log'
             log_error = None
             try:
-                with log.open('x', encoding='utf-8') as stream:
-                    stream.write(decoded(getattr(cause, 'stdout', None)) + '\n' + decoded(getattr(cause, 'stderr', None)))
+                output = encoded(getattr(cause, 'stdout', None))
+                stderr = encoded(getattr(cause, 'stderr', None))
+                with log.open('xb') as stream:
+                    stream.write(output + (b'\n' + stderr if stderr else b''))
             except OSError as error:
                 log_error = type(error).__name__
             partial = {'template_version':VERSION, 'status':'FAILED', 'validation_complete':False,
@@ -464,6 +466,7 @@ def validate(argv=None):
                        'timeout_seconds':selected_self_test_timeout,
                        'self_test_timeout_seconds':selected_self_test_timeout, 'run_directory':str(RUN),
                        'partial_log':str(log) if log_error is None else None, 'log_write_error':log_error,
+                       'failing_shard_log':getattr(exc, 'shard_log', None),
                        'shard_aggregate':str(path), 'report':str(OUTPUT), 'report_written':True}
             try:
                 write_report(OUTPUT, partial)
