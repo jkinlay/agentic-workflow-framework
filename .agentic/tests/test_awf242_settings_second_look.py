@@ -502,6 +502,7 @@ class SecondLookTests(unittest.TestCase):
                     self.assertEqual(2, self.show()[0])
 
     def test_reftable_reads_policy_through_git(self):
+        source_only.require_reftable_migration(self.git)
         self.publish(self.enabled())
         self.git('refs', 'migrate', '--ref-format=reftable')
         self.write(self.value)

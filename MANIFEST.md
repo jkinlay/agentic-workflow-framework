@@ -374,7 +374,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/rollback_refusal_expectations.py` | `0141bc507480655cd904de7eb21398c93c9b0afe5fd4dd1677ca56dc30bf6ae3` |
 | `.agentic/tests/routing_fixtures.py` | `6856f82ca5887958fbfcb9578fbaf1f78e6c3ed936c3c2abe13a41c269beef47` |
 | `.agentic/tests/settings_pr_fixtures.py` | `4c1582c7c74acaafac62ff54a2157e2e950b6cc75f838e911ec509d1d0a8f037` |
-| `.agentic/tests/source_only.py` | `7880bf7dde397f8cc71e2ee9b6b0183a904a130c6caf6fea98e1e2cb9f4e4e3c` |
+| `.agentic/tests/source_only.py` | `e6a90f58532a60f7d9c097fb8d0cd73fee57358de1eed4254afcc83b013c8a1d` |
 | `.agentic/tests/test_adoption_status.py` | `a2e8e4eab6b4930bd92a58b5e81475c0d8ff5049aaae55753a3dad913d9c5260` |
 | `.agentic/tests/test_adoption_validation.py` | `eb5e578ddf1367c46aca02cc3c091af8a1e36d50653cd36f8435d6603d84c01d` |
 | `.agentic/tests/test_approved_models_awf82.py` | `006351548c9a5803ac29b303b767aac15603c9db740a42e357de4bb6731559b0` |
@@ -419,7 +419,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf242_prereview.py` | `e2ed05715cbaae0e7869fbd45288d7ea7a78e7cf1c56f51138ce1fcd66ef3cc9` |
 | `.agentic/tests/test_awf242_refresh_review.py` | `18a85cf581f67e45fec13336253be06b500d6445c67ed644c7d440dab847a6b5` |
 | `.agentic/tests/test_awf242_settings_pr.py` | `c3b39fc8e53b5b606c7d4a4b7989ab4d8091363bcba72f5c9ff61f87a7011738` |
-| `.agentic/tests/test_awf242_settings_second_look.py` | `4c29ac0ef7cecf40270377be9d6bfbaa11ab2717a368faacc0eaf9924a3c7171` |
+| `.agentic/tests/test_awf242_settings_second_look.py` | `c9ff25cb9e539a688841bd1ebaddc866ec749e75f46c43de831621186875a180` |
 | `.agentic/tests/test_awf243_jira_protocol.py` | `9971b366f0a0d19bd63ada508c81ecd2dcd4c37fb18eecdf162bfba5990dc6a7` |
 | `.agentic/tests/test_awf243_operator_recovery.py` | `2afc947ba78536abb7162d81ad8daa85562f3b612ed55bfcccd96f026716c7cd` |
 | `.agentic/tests/test_awf243_owner_closure_http.py` | `6b88f6ec69cde50082e603f2b317f28c912b7326e744f12ccf04f7b7b10812e5` |
@@ -437,6 +437,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf244_settings.py` | `5e544b2135be10ec7852596edb058442c7ef42da93049c3963c401a273c690cb` |
 | `.agentic/tests/test_awf244_settings_pr.py` | `f420d137766e242ca33938a49f4346964595f27a6ac37c1ceed2e8cd9d3f5204` |
 | `.agentic/tests/test_awf244_window_regressions.py` | `31931718426668f3cc3cbe2067d6e153b7277316337df9eca0a8f6450364f990` |
+| `.agentic/tests/test_awf275_reftable_gate.py` | `967a0ca1317bdde3077acbb442e076e179130b7feac80a4e604f1bc1a40adb40` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `b458c1df63a738f95d9ef26d2de1d3f815894784ea795bc737bd3acf8c63d0aa` |
 | `.agentic/tests/test_awf36_controller_automation.py` | `5284c37e0a30eb346bf64b1ca1978a354aef4275267382be63667be9ee109d6d` |
