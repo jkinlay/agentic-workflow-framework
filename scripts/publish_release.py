@@ -581,9 +581,21 @@ def build_assets(source, output, epoch, mode_manifest):
 
 
 def default_validations(source, output, env):
-    from release_self_test import run_self_test
+    from release_self_test import run_self_test, reconcile_installed_acceptance
+    from installed_self_test_fixture import prepare_project, assert_unborn_head
     report = output / "self-test.json"
     aggregate = run_self_test(source, report, timeout=3600, env=env)
+    # The source plan defers the installed harness to this manifest-only run.
+    # Installation/setup keep their existing fixture budgets; each self-test
+    # child gets the same 3600 seconds as a source child, never a whole-suite cap.
+    installed_report = output / "installed-self-test.json"
+    with tempfile.TemporaryDirectory(prefix="awf-release-installed-") as raw:
+        project = Path(raw) / 'project'
+        interpreter = prepare_project(source, project, run=subprocess.run, env=child_env(env))
+        assert_unborn_head(project, run=subprocess.run, env=child_env(env))
+        installed = run_self_test(source, installed_report, timeout=3600, env=env,
+                                  installed_root=project, interpreter=interpreter)
+    coverage = reconcile_installed_acceptance(aggregate, installed)
     hygiene = run([sys.executable, "-B", str(source / "scripts/release_hygiene.py")], cwd=source, env=env)
     suites = {}
     for label, directory in (("portable_core", source / "global/awf/tests"),
@@ -594,6 +606,9 @@ def default_validations(source, output, env):
     self_test = json.loads(report.read_text(encoding="utf-8"))
     return {"self_test": self_test.get("tests", {}),
             "self_test_aggregate_sha256": sha256(report), "self_test_shards": aggregate['shard_reports'],
+            "installed_self_test_aggregate_sha256": sha256(installed_report),
+            "installed_self_test_shards": installed['shard_reports'],
+            "coverage_reconciliation": coverage,
             "self_test_plan_sha256": aggregate['plan_sha256'], "release_hygiene": json.loads(hygiene.stdout),
             "portable_suites": suites}
 

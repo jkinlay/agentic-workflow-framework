@@ -13,7 +13,7 @@ import unittest
 from plan_installed_self_test import build_release_plan, encode
 from check_installed_self_test_shards import validate_component_phases
 from agentic.self_test_shards import (_unique_object, flatten,
-                                     validate_release_selection)
+                                     validate_release_selection, INSTALLED_ACCEPTANCE_COVERAGE)
 from agentic.child_process import child_env
 from agentic.safeio import run_bounded, Tree
 from agentic.installer import verify_release
@@ -222,7 +222,8 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
         if review() != current_review:
             raise ValueError('review changed before aggregation')
         counts = Counter(p for record in records for p in record['completed_modules'])
-        if counts != Counter({p: 2 if p in plan['split'] else 1 for p in plan['inventory']}):
+        if counts != Counter({p: 2 if p in plan['split'] else 1 for p in plan['inventory']
+                              if p not in plan['deferred_coverage']}):
             raise ValueError('coverage reconciliation failed')
         for record in records:
             for key in ('run', 'failures', 'errors'):
@@ -232,10 +233,14 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
         for item in aggregate['shard_reports']:
             if hashlib.sha256((evidence / item['report']).read_bytes()).hexdigest() != item['sha256']:
                 raise ValueError('shard report changed')
-        aggregate.update(status='PASS', suite_complete=True, current_review=current_review,
-                         review=current_review['status'], coverage_reconciliation={'status': 'PASS',
-                         'modules': len(plan['inventory']), 'split_cases': partitions},
-                         release_qualified=plan['scope'] == 'source' and current_review.get('release_qualified') is True)
+        deferred = plan['deferred_coverage']
+        aggregate.update(status='PASS', suite_complete=not deferred, current_review=current_review,
+                         review=current_review['status'], coverage_reconciliation={
+                         'status': 'PENDING_INSTALLED_ACCEPTANCE' if deferred else 'PASS',
+                         'modules': len(plan['inventory']), 'split_cases': partitions,
+                         'deferred_coverage': deferred},
+                         release_qualified=not deferred and plan['scope'] == 'source'
+                         and current_review.get('release_qualified') is True)
         aggregate['tests']['successful'] = True
         recheck()
         if review() != current_review:
@@ -259,3 +264,36 @@ def run_self_test(root, report_path, *, timeout, installed_root=None, interprete
     with report_path.open('xb') as stream:
         stream.write(encode(aggregate))
     return aggregate
+
+
+def reconcile_installed_acceptance(source, installed):
+    """Close the sole source substitution only after all installed shards pass.
+
+    Keep both original aggregates immutable; the entry point retains this final
+    reconciliation alongside their digests. A source-only PASS cannot qualify
+    a release with deferred coverage.
+    """
+    coverage = source.get('coverage_reconciliation', {})
+    if (source.get('scope') != 'source-suite' or source.get('status') != 'PASS'
+            or coverage.get('status') != 'PENDING_INSTALLED_ACCEPTANCE'
+            or coverage.get('deferred_coverage') != INSTALLED_ACCEPTANCE_COVERAGE
+            or source.get('suite_complete') is not False
+            or source.get('release_qualified') is not False):
+        raise ValueError('source lacks the closed installed acceptance entry')
+    if (installed.get('scope') != 'installed-suite' or installed.get('status') != 'PASS'
+            or installed.get('suite_complete') is not True
+            or installed.get('source_manifest_sha256') != source.get('source_manifest_sha256')
+            or installed.get('coverage_reconciliation', {}).get('status') != 'PASS'
+            or installed.get('coverage_reconciliation', {}).get('deferred_coverage') != {}
+            or installed.get('tests', {}).get('failures') != 0
+            or installed.get('tests', {}).get('errors') != 0
+            or installed.get('tests', {}).get('successful') is not True
+            or installed.get('shard_count') != source.get('shard_count')
+            or [r.get('shard') for r in installed.get('shard_reports', [])]
+            != list(range(source['shard_count']))):
+        raise ValueError('complete matching sharded installed acceptance required')
+    return dict(status='PASS', suite_complete=True,
+                covered_by_installed_acceptance=dict(INSTALLED_ACCEPTANCE_COVERAGE),
+                installed_plan_sha256=installed['plan_sha256'],
+                source_plan_sha256=source['plan_sha256'],
+                release_qualified=source.get('current_review', {}).get('release_qualified') is True)

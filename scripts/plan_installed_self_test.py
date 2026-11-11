@@ -44,22 +44,25 @@ def build_release_plan(root=ROOT, installed_root=None):
     """Complete release inventory using the existing CI owners and split halves.
 
     The version-1 hosted selection above deliberately remains byte compatible.
-    Release selection includes CI's excluded installed-harness regression module.
+    CI's one excluded harness is reconciled against separate installed acceptance.
     """
-    from agentic.self_test_shards import installed_inventory, source_inventory
+    from agentic.self_test_shards import (INSTALLED_ACCEPTANCE_COVERAGE,
+                                         installed_inventory, source_inventory)
     root = Path(root).resolve()
     inventory = (installed_inventory(installed_root) if installed_root is not None
                  else source_inventory(root))
+    if installed_root is not None:
+        expected = [p for p in source_inventory(root) if p.startswith('.agentic/tests/')]
+        if inventory != expected:
+            raise ValueError('installed test inventory differs from source candidate')
+    if set(source.EXCLUDED_MODULES) != set(INSTALLED_ACCEPTANCE_COVERAGE):
+        raise ValueError('CI exclusions differ from the closed installed acceptance entry')
     allocation = source.allocate({'release': inventory})['release']
-    for path in sorted(set(inventory) & source.EXCLUDED_MODULES):
-        owner = source.HEAVY_MODULE_SHARDS.get(path)
-        if owner is None:
-            owner = int.from_bytes(hashlib.sha256(path.encode('utf-8')).digest(), 'big') % len(source.SHARDS)
-        allocation[owner].append(path)
     return dict(format='awf-release-selection-1', scope='installed' if installed_root is not None else 'source',
                 shard_count=len(source.SHARDS), allocation_policy='windows-unittest-shards-9',
                 source_manifest_sha256=hashlib.sha256((root / 'MANIFEST.json').read_bytes()).hexdigest(),
                 inventory=inventory, shards={str(n): sorted(allocation[n]) for n in source.SHARDS},
+                deferred_coverage={p: reason for p, reason in INSTALLED_ACCEPTANCE_COVERAGE.items() if p in inventory},
                 split={p: {'shards': list(owners), 'first_half': sorted(names)}
                        for p, (owners, names) in source.SPLIT_MODULES.items() if p in inventory},
                 zero_test_modules=sorted(source.ZERO_TEST_MODULES & set(inventory)))

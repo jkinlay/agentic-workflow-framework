@@ -23,7 +23,7 @@ from agentic.safeio import Tree
 from agentic.runtime_commands import installed_paths
 from release_review import add_review_arguments, review_arguments, review_source
 from release_modes import FORMAT as RAW_MODES_FORMAT, REGULAR_MODES
-from release_self_test import run_self_test, ShardFailure
+from release_self_test import run_self_test, ShardFailure, reconcile_installed_acceptance
 RELEASE_LINE = VERSION.removesuffix('.0')
 PREFIX = f'agentic-workflow-template-v{RELEASE_LINE}/'
 
@@ -732,8 +732,11 @@ def validate(argv=None):
     assert git_checkout['status']=='PASS'
     extracted_tests = json.loads((RUN/'extracted-self-test.json').read_text())
     installed_tests = json.loads((RUN/'installed-self-test.json').read_text())
+    coverage = reconcile_installed_acceptance(extracted_tests, installed_tests)
+    default_coverage = reconcile_installed_acceptance(default_checks, installed_tests)
     report = {'template_version':VERSION,'status':'PASS','archive':ARCHIVE.name,
      'current_review':current_review,
+     'coverage_reconciliation':coverage, 'default_coverage_reconciliation':default_coverage,
      'self_test_timeout_seconds':selected_self_test_timeout,
      'archive_sha256':hashlib.sha256(ARCHIVE.read_bytes()).hexdigest(),'manifest_sha256':MANIFEST,
      'checks':checks,'git_checkout':git_checkout,'extracted_tests':extracted_tests,

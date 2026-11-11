@@ -66,7 +66,7 @@ class SequentialReleaseTests(unittest.TestCase):
         shard = int(command[command.index('--shard') + 1])
         selected = plan['shards'][str(shard)]
         parts = release.expected_partitions(self.root, plan)
-        report = dict(scope='source-shard', status='SHARD_PASS', suite_complete=False,
+        report = dict(scope=plan['scope'] + '-shard', status='SHARD_PASS', suite_complete=False,
                       release_qualified=False, shard=shard, shard_count=plan['shard_count'],
                       source_manifest_sha256=plan['source_manifest_sha256'],
                       selection_sha256=hashlib.sha256(planner.encode(plan)).hexdigest(),
@@ -74,7 +74,7 @@ class SequentialReleaseTests(unittest.TestCase):
                       component_phases={phase: {'count': 1, 'results': [{'status': 'PASS', 'checks': {
                           key: {'status': 'PASS', 'result': 'PASS'} for key in keys}}]}
                           for phase, keys in COMPONENT_CHECKS.items()} if shard == 0 else {},
-                      checks={'integrity': 'PASS'}, current_review={'status': 'NOT_PROVIDED'},
+                      checks={'integrity': 'PASS'}, isolation='PASS', current_review={'status': 'NOT_PROVIDED'},
                       tests=dict(run=1, failures=0, errors=0, successful=True, skipped=[]),
                       split_cases={p: owners[shard] for p, owners in parts.items() if shard in owners},
                       split_all_cases={p: sorted(sum(owners.values(), [])) for p, owners in parts.items() if shard in owners},
@@ -97,16 +97,41 @@ class SequentialReleaseTests(unittest.TestCase):
 
     def test_success_sequential_deadlines_and_complete_inventory(self):
         report = self.invoke()
-        self.assertEqual(('PASS', True, False), (report['status'], report['suite_complete'], report['release_qualified']))
+        self.assertEqual(('PASS', False, False), (report['status'], report['suite_complete'], report['release_qualified']))
         self.assertEqual(9, len(self.calls))
         self.assertEqual([600] * 9, [kw['timeout'] for _, kw in self.calls])
         self.assertEqual(9, len(report['shard_reports']))
-        self.assertEqual('PASS', report['coverage_reconciliation']['status'])
+        self.assertEqual('PENDING_INSTALLED_ACCEPTANCE', report['coverage_reconciliation']['status'])
         plan = json.loads((self.work / 'stage.json.shards/selection.json').read_bytes())
         self.assertIn('scripts/tests/test_installed_self_test.py', plan['inventory'])
         self.assertIn('global/awf/tests/test_global.py', plan['inventory'])
         with self.assertRaises(FileExistsError):
             self.invoke()
+
+    def test_only_named_installed_acceptance_module_is_deferred(self):
+        plan = planner.build_release_plan(self.root)
+        path = 'scripts/tests/test_installed_self_test.py'
+        self.assertEqual({path: 'installed-acceptance'}, plan['deferred_coverage'])
+        self.assertNotIn(path, sum(plan['shards'].values(), []))
+        self.assertIn(path, plan['inventory'])
+
+    def test_unknown_or_second_ci_exclusion_refuses_release_plan(self):
+        for excluded in ({'scripts/tests/test_foreign.py'},
+                         {'scripts/tests/test_installed_self_test.py', 'scripts/tests/test_foreign.py'}):
+            with self.subTest(excluded=excluded), mock.patch.object(planner.source, 'EXCLUDED_MODULES', excluded):
+                with self.assertRaisesRegex(ValueError, 'closed installed acceptance'):
+                    planner.build_release_plan(self.root)
+
+    def test_unknown_or_second_coverage_exception_refuses_selection(self):
+        for deferred in ({'scripts/tests/test_foreign.py': 'installed-acceptance'},
+                         {'scripts/tests/test_installed_self_test.py': 'installed-acceptance',
+                          'global/awf/tests/test_global.py': 'installed-acceptance'}):
+            plan = planner.build_release_plan(self.root)
+            plan['deferred_coverage'] = deferred
+            raw = planner.encode(plan)
+            with self.subTest(deferred=deferred), self.assertRaisesRegex(ValueError, 'closed installed acceptance'):
+                validate_release_selection(raw, hashlib.sha256(raw).hexdigest(), plan['inventory'],
+                                           plan['source_manifest_sha256'], 'source')
 
     def assert_refuses(self, mode):
         with self.assertRaisesRegex(release.ShardFailure, 'shard 0'):
@@ -281,8 +306,8 @@ class SequentialReleaseTests(unittest.TestCase):
             loader.reconcile()
             completed.extend(loader.completed)
             splits.extend(loader.split_cases.get(UPGRADE_MATRIX, []))
-        self.assertEqual(set(plan['inventory']), set(completed))
-        self.assertEqual(len(plan['inventory']) + 1, len(completed))
+        self.assertEqual(set(plan['inventory']) - set(plan['deferred_coverage']), set(completed))
+        self.assertEqual(len(plan['inventory']) - len(plan['deferred_coverage']) + 1, len(completed))
         self.assertEqual(len(planner.source.UPGRADE_MATRIX_FIRST_HALF) + 1, len(set(splits)))
 
     def test_shard_count_is_a_plan_property(self):
@@ -311,6 +336,18 @@ class SequentialReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'receipt'):
             planner.build_release_plan(self.root, target)
 
+    def test_installed_receipt_cannot_omit_a_source_test_module(self):
+        target = self.work / 'installed'
+        self.prepare_installed(target)
+        path = '.agentic/tests/test_adoption_status.py'
+        (target / path).unlink()
+        receipt = target / '.agentic/installed-manifest.json'
+        value = json.loads(receipt.read_bytes())
+        del value['immutable_files'][path]
+        receipt.write_text(json.dumps(value), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'source candidate'):
+            planner.build_release_plan(self.root, target)
+
     def test_review_pin_mutation_stops_before_next_child(self):
         review = self.work / 'review.json'
         review.write_bytes(b'{"synthetic":true}')
@@ -329,7 +366,8 @@ class SequentialReleaseTests(unittest.TestCase):
         with mock.patch('release_review.review_source', return_value={'status': 'PASS', 'release_qualified': True}) as check:
             report = release.run_self_test(self.root, self.report, timeout=3600, runner=self.runner,
                 review_args=['--reviews', str(review), '--expected-reviews-sha256', hashlib.sha256(review.read_bytes()).hexdigest()])
-        self.assertTrue(report['release_qualified'])
+        self.assertFalse(report['release_qualified'])
+        self.assertFalse(report['suite_complete'])
         self.assertEqual(3, check.call_count)
         self.assertTrue(all(kwargs['timeout'] == 3600 for _, kwargs in self.calls))
 
@@ -372,19 +410,59 @@ class SequentialReleaseTests(unittest.TestCase):
 
     def test_publisher_binds_aggregate_and_children_with_3600_per_child(self):
         import test_publish_release as fixtures
+        import installed_self_test_fixture as installed_fixture
         output = self.work / 'publisher'
         output.mkdir()
-        aggregate = {'tests': {'run': 3}, 'plan_sha256': 'a' * 64,
-                     'shard_reports': [{'shard': 0, 'sha256': 'b' * 64}]}
+        original = release.run_self_test
+        self.mode = 'success'
         def orchestration(source, path, **kwargs):
-            path.write_text(json.dumps(aggregate), encoding='utf-8')
-            return aggregate
+            return original(source, path, runner=self.runner, **kwargs)
+        def prepare(source, project, **kwargs):
+            self.prepare_installed(project)
+            return project / '.agentic/.venv/Scripts/python.exe'
         with mock.patch.object(release, 'run_self_test', side_effect=orchestration) as invoke, \
+                mock.patch.object(installed_fixture, 'prepare_project', side_effect=prepare), \
+                mock.patch.object(installed_fixture, 'assert_unborn_head'), \
                 mock.patch.object(fixtures.publisher, 'run', return_value=subprocess.CompletedProcess([], 0, '{"status":"PASS"}', 'Ran 2 tests')):
             result = fixtures.publisher.default_validations(self.root, output, {})
-        self.assertEqual(3600, invoke.call_args.kwargs['timeout'])
+        aggregate = json.loads((output / 'self-test.json').read_bytes())
+        self.assertEqual([3600, 3600], [c.kwargs['timeout'] for c in invoke.call_args_list])
+        self.assertEqual([3600] * 18, [kw['timeout'] for _, kw in self.calls])
+        self.assertTrue(all('-I' in cmd for cmd, _ in self.calls[9:]))
+        self.assertEqual(list(range(9)) * 2, [int(cmd[cmd.index('--shard') + 1]) for cmd, _ in self.calls])
         self.assertEqual(aggregate['shard_reports'], result['self_test_shards'])
         self.assertEqual(hashlib.sha256((output / 'self-test.json').read_bytes()).hexdigest(), result['self_test_aggregate_sha256'])
+        self.assertEqual('PASS', result['coverage_reconciliation']['status'])
+        self.assertEqual(hashlib.sha256((output / 'installed-self-test.json').read_bytes()).hexdigest(),
+                         result['installed_self_test_aggregate_sha256'])
+
+    def prepare_installed(self, target):
+        paths = [p for p in planner.build_release_plan(self.root)['inventory'] if p.startswith('.agentic/tests/')]
+        for path in paths:
+            dest = target / path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes((self.root / path).read_bytes())
+        (target / '.agentic/installed-manifest.json').write_text(
+            json.dumps({'immutable_files': dict.fromkeys(paths)}), encoding='utf-8')
+
+    def test_installed_acceptance_closes_source_coverage_with_600_per_child(self):
+        source = self.invoke()
+        target = self.work / 'installed'
+        self.prepare_installed(target)
+        installed = release.run_self_test(self.root, self.work / 'installed.json', timeout=600,
+                                          installed_root=target, interpreter='installed-python', runner=self.runner)
+        final = release.reconcile_installed_acceptance(source, installed)
+        self.assertEqual(('PASS', True), (final['status'], final['suite_complete']))
+        self.assertEqual({'scripts/tests/test_installed_self_test.py': 'installed-acceptance'},
+                         final['covered_by_installed_acceptance'])
+        self.assertEqual([600] * 18, [kw['timeout'] for _, kw in self.calls])
+        for field, value in [('status', 'FAILED'), ('suite_complete', False),
+                             ('source_manifest_sha256', '0' * 64), ('shard_reports', installed['shard_reports'][:-1])]:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'sharded installed acceptance'):
+                release.reconcile_installed_acceptance(source, {**installed, field: value})
+        for field, value in [('errors', 1), ('failures', 1), ('successful', False)]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                release.reconcile_installed_acceptance(source, {**installed, 'tests': {**installed['tests'], field: value}})
 
 
 if __name__ == '__main__':

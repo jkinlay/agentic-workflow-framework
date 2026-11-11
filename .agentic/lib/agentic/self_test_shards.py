@@ -16,6 +16,11 @@ FIXTURE_PREREQUISITES = {
 }
 SHARDS = tuple(range(9))
 UPGRADE_MATRIX = '.agentic/tests/test_upgrade_matrix.py'
+# Closed substitution: the release entry point must execute and reconcile the
+# installed acceptance separately. Never use CI exclusions as an open allowlist.
+INSTALLED_ACCEPTANCE_COVERAGE = {
+    'scripts/tests/test_installed_self_test.py': 'installed-acceptance',
+}
 COMPONENT_CHECKS = {
     'discovery': ('integrity', 'schema_catalog_and_workflow', 'host_loop_output_schemas',
                   'default_automatic_policy_unqualified_until_enrolled',
@@ -276,7 +281,7 @@ def validate_release_selection(raw, digest, inventory, manifest_digest, scope):
         raise ValueError('release selection digest mismatch')
     plan = json.loads(raw, object_pairs_hook=_unique_object)
     if (not isinstance(plan, dict) or set(plan) != {'format', 'scope', 'shard_count', 'allocation_policy',
-            'source_manifest_sha256', 'inventory', 'shards', 'split', 'zero_test_modules'}
+            'source_manifest_sha256', 'inventory', 'shards', 'split', 'zero_test_modules', 'deferred_coverage'}
             or plan['format'] != 'awf-release-selection-1' or plan['scope'] != scope
             or plan['source_manifest_sha256'] != manifest_digest
             or type(plan['shard_count']) is not int or plan['shard_count'] <= 0):
@@ -293,6 +298,9 @@ def validate_release_selection(raw, digest, inventory, manifest_digest, scope):
         return set(value)
     if paths(plan['inventory']) != set(inventory):
         raise ValueError('release inventory mismatch')
+    deferred = {p: reason for p, reason in INSTALLED_ACCEPTANCE_COVERAGE.items() if p in inventory}
+    if plan['deferred_coverage'] != deferred:
+        raise ValueError('release coverage needs the closed installed acceptance entry')
     if not isinstance(plan['shards'], dict) or set(plan['shards']) != {str(n) for n in range(plan['shard_count'])}:
         raise ValueError('missing release shards')
     counts = Counter()
@@ -309,7 +317,7 @@ def validate_release_selection(raw, digest, inventory, manifest_digest, scope):
                 or spec['first_half'] != sorted(set(spec['first_half']))
                 or [n for n in range(plan['shard_count']) if path in plan['shards'][str(n)]] != spec['shards']):
             raise ValueError('wrong split coverage')
-    if counts != Counter({p: 2 if p in plan['split'] else 1 for p in inventory}):
+    if counts != Counter({p: 2 if p in plan['split'] else 1 for p in inventory if p not in deferred}):
         raise ValueError('duplicate or omitted membership')
     if not paths(plan['zero_test_modules']) <= set(inventory):
         raise ValueError('foreign zero-test module')
