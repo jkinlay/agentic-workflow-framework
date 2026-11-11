@@ -1,4 +1,5 @@
 """Pre-E6: real controller and CLI, with only urllib network transport faked."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 from contextlib import redirect_stdout
 import io
@@ -42,6 +43,7 @@ class ControllerTests(unittest.TestCase):
         self.network_patch.start()
         self.addCleanup(self.network_patch.stop)
 
+    @_logical_slow_calls
     def test_observed_work_survives_unknown_ticket_details(self):
         self.network.latency = .3
         result = self.cycle('2026-11-10T10:00:00Z', [e2.ticket('EX-1', 1, paths=['README.md'])])
@@ -185,6 +187,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual({d['status'] for d in case.status()['deliveries']}, {'DELIVERED'})
         self.assertTrue(all(len(d['attempts']) == 1 for d in case.status()['deliveries']))
 
+    @_logical_slow_calls
     def test_unescaped_graph_message_next_link_reaches_second_page(self):
         def prepare(case, net):
             net.messages_paged = True
@@ -194,6 +197,7 @@ class CliTests(unittest.TestCase):
                                 for _, url in case.network.calls))
         self.probe(prepare, inspect)
 
+    @_logical_slow_calls
     def test_approved_member_on_page_two_admits_send(self):
         def prepare(case, net):
             net.membership_paged = True
@@ -203,6 +207,7 @@ class CliTests(unittest.TestCase):
             self.assertTrue(any(TEAM_ID in url for method, url in case.network.calls if method == 'POST'))
         self.probe(prepare, inspect)
 
+    @_logical_slow_calls
     def test_slack_emoji_normalization_preserves_delivery_confirmation(self):
         def prepare(case, net):
             item = json.loads(case.runner.inventory[0]['body'])

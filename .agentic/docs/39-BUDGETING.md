@@ -14,21 +14,21 @@ Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enable
 Limits: integers 1..9007199254740991; switches: booleans. No Epic overrides.
 Run `operating validate --file PROPOSED`; invalid combinations refuse before PR preparation.
 
-Branch from fetched default; preserve text/comments. Show before/after under publication authority. Restricted pushes: branch/body for owner publication. Owners merge.
+Branch from fetched default; preserve text/comments. Show before/after under publication authority; change requested values. Restricted pushes: branch/body for owner publication. Owners merge; agents never merge.
 No owner terminal commands. Git/PR history audits protected changes;
 protected `operating set` refuses without writes. Calendar uses the same PR route,
 effective source and validation; see [calendar](operating-calendar.md).
 Reporting defaults OFF; Teams/Slack/both share this PR route with project-bound destinations; preserve delivery state.
 
-Effective protected settings come from the locally fetched default-branch commit.
+Protected settings use the locally fetched default-branch commit.
 Only `refs/remotes/origin/HEAD` identifies it. Configuration is never an identity
 input; `show` reports disagreement with configured `github.base_branch`.
 Working-tree edits and PR branches have no effect on budget admission,
 recovery, controller or routing, including disabling enforcement. Only merged
-and fetched changes take effect. Older checkouts read the same policy; differences
+and fetched changes take effect. Older checkouts read that policy; differences
 mean update the checkout when behind, otherwise propose a PR.
 
-An absent default-branch file is accepted: fresh defaults or legacy retained. With configured origin but no origin/HEAD, the default is unverified.
+Absent default-branch files accept fresh defaults or legacy retained. With configured origin but no origin/HEAD, the default is unverified.
 Show/validation/installation retain the warning; working values are provisional. Admission tries refresh first. If still unverified,
 tracking refs or nondefault working values refuse budget work even if enforcement
 says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
@@ -40,7 +40,7 @@ OFF needs no ledger/telemetry/reservations. Preserve upgrade choices/history; ne
 
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
 ref, never evidence of policy refresh. New merges remain invisible until fetched.
-The controller's own checkout requires repository-local remote.origin.url;
+The controller checkout requires repository-local remote.origin.url;
 relative/inside-checkout paths refuse. Use Git 2.29+ ([notes](https://git-scm.com/docs/RelNotes/2.29.0)); older-binary execution remains unproven. Lock before 30-second discovery/fetch,
 advertised-commit checking and publication. Mismatches retry next cycle.
 UTF-8 names use check-ref-format. Preserve unverified tracking HEAD when identity

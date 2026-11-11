@@ -1,4 +1,5 @@
 from test_reporting_fixtures import reporting_policy_snapshot
+from test_reporting_timing import _logical_slow_calls
 """Pre-E10 regressions: real controller/CLI, restarts and production HTTP."""
 from copy import deepcopy
 from datetime import timedelta
@@ -111,15 +112,19 @@ class E10Tests(unittest.TestCase):
         self.assertIn(old['report_id'], str(hourly['body']))
         self.assertIn('FAILED', str(hourly['body']))
 
+    @_logical_slow_calls
     def test_alert_first_cycle_with_slow_historical_review(self):
         self.alert_probe(self, self.cycle)
 
+    @_logical_slow_calls
     def test_exhausted_both_destinations_release_claim(self):
         self.failure_probe(self, self.cycle, {'teams', 'slack'})
 
+    @_logical_slow_calls
     def test_exhausted_teams_preserves_slack_and_new_head(self):
         self.failure_probe(self, self.cycle, {'teams'})
 
+    @_logical_slow_calls
     def test_uncertain_old_destination_does_not_block_new_candidate(self):
         self.network.latency = .3
         self.helper.listed = [deepcopy(self.helper.current)]
@@ -142,6 +147,7 @@ class E10Tests(unittest.TestCase):
         self.assertEqual(old_teams['status'], 'UNKNOWN')
         self.assertEqual(old_teams['attempts'], next(d['attempts'] for d in prior if d['platform'] == 'teams'))
 
+    @_logical_slow_calls
     def test_claim_without_report_recovers_same_identity_after_restart(self):
         self.network.latency = .3
         now = '2026-11-11T10:00:00Z'
@@ -163,6 +169,7 @@ class E10Tests(unittest.TestCase):
         self.assertTrue(all(d['status'] == 'DELIVERED' and len(d['attempts']) == 1
                             for d in self.status()['deliveries'] if d['report_id'] == reviews[0]['report_id']))
 
+    @_logical_slow_calls
     def test_review_readback_progresses_during_continuous_periodic_uncertainty(self):
         self.network.latency = .3
         self.helper.listed = [deepcopy(self.helper.current)]
@@ -180,6 +187,7 @@ class E10Tests(unittest.TestCase):
         states = [d for d in self.status()['deliveries'] if d['report_id'] == review['report_id']]
         self.assertTrue(all(d['status'] == 'DELIVERED' and len(d['attempts']) == 1 for d in states))
 
+    @_logical_slow_calls
     def test_pending_observer_failure_rotates_without_blocking_other_candidates(self):
         self.network.latency = .3
         now = '2026-11-11T10:00:00Z'
@@ -204,6 +212,7 @@ class E10Tests(unittest.TestCase):
         self.assertTrue(all(d['status'] == 'DELIVERED' for d in self.status()['deliveries']
                             if d['report_id'] == reviews[0]['report_id']))
 
+    @_logical_slow_calls
     def test_two_second_alert_transport_gets_full_turn_despite_unresolved_review(self):
         self.network.latency = .3
         self.helper.listed = [deepcopy(self.helper.current)]
@@ -223,6 +232,7 @@ class E10Tests(unittest.TestCase):
         self.assertEqual({d['platform'] for d in states}, {'teams', 'slack'})
         self.assertTrue(all(d['status'] == 'DELIVERED' and len(d['attempts']) == 1 for d in states))
 
+    @_logical_slow_calls
     def test_alert_hourly_eod_and_review_continue_under_sustained_arrivals(self):
         self.network.latency = .3
         self.helper.listed = [deepcopy(self.helper.current)]
@@ -251,12 +261,15 @@ class E10CliTests(unittest.TestCase):
             probe(self, case, lambda now: e7.E7CliTests.rerun(self, case, now))
         e6.CliTests.probe(self, lambda case, net: None, inspect)
 
+    @_logical_slow_calls
     def test_cli_alert_first_cycle_with_slow_historical_review(self):
         self.probe(E10Tests.alert_probe)
 
+    @_logical_slow_calls
     def test_cli_terminal_failure_releases_claim(self):
         self.probe(lambda owner, case, run: E10Tests.failure_probe(owner, case, run, {'teams', 'slack'}))
 
+    @_logical_slow_calls
     def test_cli_terminal_teams_failure_preserves_slack(self):
         self.probe(lambda owner, case, run: E10Tests.failure_probe(owner, case, run, {'teams'}))
 

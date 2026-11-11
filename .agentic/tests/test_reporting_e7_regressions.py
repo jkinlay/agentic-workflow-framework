@@ -1,4 +1,5 @@
 """Pre-E7: real controller/CLI, production HTTP, network-only faults."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 from contextlib import redirect_stdout
 import io
@@ -35,6 +36,7 @@ class E7ControllerTests(unittest.TestCase):
         item.update(disposition='BLOCKED', actor='owner', reason=reason, next_action='Investigate')
         self.runner.inventory[0]['body'] = json.dumps(item)
 
+    @_logical_slow_calls
     def test_quoted_timed_out_hourly_marker_in_real_owner_alert_never_confirms_hourly(self):
         self.settings['mode'] = 'slack'
         def timeout(method, url):
@@ -58,6 +60,7 @@ class E7ControllerTests(unittest.TestCase):
         self.assertIn('AWF delivery (quoted):', text)
         self.assertEqual([d['status'] for k, d in states.items() if k != hourly['delivery_id']], ['DELIVERED'])
 
+    @_logical_slow_calls
     def test_correct_final_marker_with_wrong_content_is_unknown(self):
         self.settings['mode'] = 'slack'
         def corrupt(platform, messages):
@@ -69,6 +72,7 @@ class E7ControllerTests(unittest.TestCase):
         self.assertEqual(self.status()['deliveries'][0]['status'], 'UNKNOWN')
         self.assertEqual(len(self.status()['deliveries'][0]['attempts']), 1)
 
+    @_logical_slow_calls
     def test_history_newest_first_cursor_and_thread_separation(self):
         self.settings['mode'] = 'slack'
         self.network.slack_page_size = 2
@@ -93,6 +97,7 @@ class E7ControllerTests(unittest.TestCase):
         self.assertTrue(any('cursor=4' in u for m, u in self.network.calls))
         self.assertEqual(len(self.network.posts), 1)
 
+    @_logical_slow_calls
     def test_normalized_slack_entities_and_graph_html_still_match(self):
         self.owner_alert('Check A & B < C \U0001f389')
         def normalize(platform, messages):
@@ -173,24 +178,31 @@ class E7ControllerTests(unittest.TestCase):
         if operation != 'POST':
             self.assertTrue(all(len(d['attempts']) == 1 for d in self.status()['deliveries']))
 
+    @_logical_slow_calls
     def test_slack_post_cooldown_shared_by_reports_and_restart(self):
         self.cooldown('slack', 'POST')
 
+    @_logical_slow_calls
     def test_graph_post_cooldown_shared_by_reports_and_restart(self):
         self.cooldown('teams', 'POST')
 
+    @_logical_slow_calls
     def test_slack_history_cooldown_shared_by_reports_and_restart(self):
         self.cooldown('slack', 'conversations.history')
 
+    @_logical_slow_calls
     def test_graph_message_read_cooldown_shared_by_reports_and_restart(self):
         self.cooldown('teams', '/messages?')
 
+    @_logical_slow_calls
     def test_slack_verification_cooldown_never_spends_attempt(self):
         self.cooldown('slack', 'conversations.info')
 
+    @_logical_slow_calls
     def test_graph_verification_cooldown_never_spends_attempt(self):
         self.cooldown('teams', '/members')
 
+    @_logical_slow_calls
     def test_slack_workspace_post_cooldown_covers_new_destination_and_binding(self):
         self.settings['mode'] = 'slack'
         self.network.throttled = {'slack'}
@@ -236,6 +248,7 @@ class E7CliTests(unittest.TestCase):
         self.assertEqual(code, 0, output.getvalue())
         self.assertEqual(json.loads(output.getvalue())['errors'], [])
 
+    @_logical_slow_calls
     def test_cli_read_throttle_shared_with_other_report_and_recovered_after_restart(self):
         def prepare(case, net):
             net.read_throttled = {'conversations.history', '/messages?'}
@@ -254,6 +267,7 @@ class E7CliTests(unittest.TestCase):
             self.delivered(case)
         self.probe(prepare, inspect)
 
+    @_logical_slow_calls
     def test_cli_post_throttle_shared_with_other_report_and_recovered_after_restart(self):
         def prepare(case, net):
             net.throttled = {'slack', 'teams'}
@@ -273,6 +287,7 @@ class E7CliTests(unittest.TestCase):
             self.assertEqual(sorted(len(d['attempts']) for d in case.status()['deliveries']), [1, 1, 2, 2])
         self.probe(prepare, inspect)
 
+    @_logical_slow_calls
     def test_cli_timed_out_hourly_quoted_by_delivered_alert_remains_unknown(self):
         def prepare(case, net):
             net.timeout_post = lambda platform, payload: 'Hourly progress' in str(payload)
