@@ -1582,7 +1582,10 @@ def _build(config):
 		except (OSError, ValueError, UnicodeError) as exc:
 			raise ValidationError('Status outbox write or readback failed') from exc
 		_require(found.get('digest_sha256') == fingerprint('controller-delivery', digest), 'Status outbox readback differs from the requested digest')
-		return {'delivery_id': delivery_id, 'status': 'DELIVERED', 'observed_at': found['observed_at']}
+		# DELIVERED retains the local status-outbox API. This is exclusively a
+		# local receipt; channel reports require the separate reporting port.
+		return {'delivery_id': delivery_id, 'status': 'DELIVERED', 'observed_at': found['observed_at'],
+			'evidence_kind': 'LOCAL_RECEIPT', 'channel_delivery': False}
 
 	def jira_authorization():
 		token = os.environ.get(token_env)
@@ -2246,8 +2249,121 @@ def _build(config):
 		_require(isinstance(body, str) and comment['user'].get('id') == request['actor_id'] and body == owner_source.get('raw_body') and sha256(body.encode('utf-8')) == request['raw_body_sha256'], 'GitHub owner comment differs from the recorded owner source')
 		_require(comment.get('created_at') == comment.get('updated_at') == owner_source.get('created_at'), 'GitHub owner comment was edited or differs from its recorded time')
 		return {'status': 'VERIFIED', 'actor_id': request['actor_id'], 'binding': deepcopy(request['binding']), 'raw_body_sha256': request['raw_body_sha256'], 'source_id': 'github-comment:' + comment['node_id'], 'observed_at': _clock_text(clock)}
+
+	reporting_secret_refs = []
+	def configure_reporting(operating, binding, *, repository_root=None):
+		from agentic.reporting.platform import build_reporting_providers
+		from agentic.operating import OperatingSnapshot, GOVERNANCE
+		from agentic.budgeting import policy_repository_root
+		_require(isinstance(operating, OperatingSnapshot),
+			'REPORT_ACCEPTED_POLICY_REQUIRED')
+		_require(repository_root is not None, 'REPORT_ACCEPTED_POLICY_REQUIRED')
+		policy_root = policy_repository_root(repository_root, operating)
+		governance = load_yaml((policy_root / GOVERNANCE).read_bytes())
+		accepted = dict(project=github['project_id'], repository=str(github['repository_id']), scope_revision=github['scope_sha256'])
+		_require(binding == accepted, 'REPORT_SCOPE_BINDING_MISMATCH')
+		providers = build_reporting_providers(config.get('reporting'), operating, binding,
+			repository_root=policy_root, governance=governance,
+			http=config.get('_reporting_http'), clock=lambda: _clock_text(clock))
+		# Keep admitted references only; never cache resolved credential bytes.
+		reporting_secret_refs[:] = [p.binding['secret_ref'] for p in providers.values()]
+		return providers
+
+	def reporting_request(request):
+		_require(isinstance(request, dict) and set(request) == {'binding', 'observed_at'}, 'REPORT_SOURCE_ENVELOPE_INVALID')
+		_require(request['binding'] == dict(project=github['project_id'], repository=str(github['repository_id']),
+			scope_revision=github['scope_sha256']), 'REPORT_SCOPE_BINDING_MISMATCH')
+		timestamp(request['observed_at'])
+
+	def observe_reporting_sources(request):
+		from agentic.reporting.bounded import source_timeout
+		reporting_request(request)
+		inventory = deepcopy(inventory_cache)
+		_require(inventory.get('observed_at') == request['observed_at'], 'REPORT_CURRENT_INVENTORY_REQUIRED')
+		# The existing authenticated controller inventory is the ticket source.
+		# It supplies no project history, estimates, Jira Done or review authority.
+		tickets, actions = [], []
+		for item in inventory['tickets']:
+			tickets.append(dict(key=item['ticket'], kind='implementation', state='UNKNOWN',
+				actor=item['actor'], activity=item['activity'], planning_observed=False))
+			if item['disposition'] == 'BLOCKED' and item['actor'] == 'owner':
+				actions.append(dict(id=item['ticket'], decision=item['next_action'], owner=item['actor'],
+					due='Owner response required', reason=item['reason'], options=[item['next_action'], 'Park'],
+					resume=item['resume_trigger']))
+		source = config.get('reporting_sources')
+		prs = None
+		if source is not None:
+			_require(isinstance(source, dict) and set(source) == {'binding', 'pull_requests'}
+				and source['binding'] == request['binding'], 'REPORT_SOURCE_BINDING_MISMATCH')
+			ids = source['pull_requests']
+			_require(isinstance(ids, list) and len(ids) <= 100 and len(set(ids)) == len(ids)
+				and all(type(n) is int and n > 0 for n in ids), 'REPORT_SOURCE_PR_SCOPE_REQUIRED')
+			prs = []
+		def reporting_prs():
+			# Reporting owns this observation deadline, independently of dispatch
+			# and delivery. Bound the actual child, including automatic pagination.
+			values, page = [], 1
+			for _ in range(MAX_PAGES):
+				path = _append_page('repos/' + github['repository'] + '/pulls?state=closed', page, gh_page_size)
+				response = _json_output(command(gh_executable,
+					['api', '--hostname', 'github.com', '--method', 'GET', '--paginate', '--slurp', path],
+					timeout_override=min(MAX_SECONDS, source_timeout())))
+				source_timeout()
+				if isinstance(response, list):
+					_require(len(response) <= MAX_PAGES and all(isinstance(part, list) for part in response),
+						'REPORT_SOURCE_PAGINATION_INVALID')
+					values.extend(item for part in response for item in part)
+					complete = True
+				else:
+					items, complete, next_page = _page_items(response, key='items', page_size=gh_page_size)
+					values.extend(items)
+					page = next_page or page + 1
+				_require(len(values) <= 10000, 'REPORT_SOURCE_ITEM_BOUND')
+				if complete:
+					return values
+			raise ValidationError('REPORT_SOURCE_PAGE_BOUND')
+		source_coverage = dict(status='VERIFIED')
+		try:
+			observed_prs = reporting_prs() if source is not None else []
+		except Exception:
+			# Preserve verified inventory while refusing incomplete PR totals.
+			# Never retain provider errors, partial counts or credential excerpts.
+			prs, observed_prs = None, []
+			source_coverage = dict(status='PARTIAL', reason='REPORT_SOURCE_INCOMPLETE_OR_DEADLINE')
+		for pr in observed_prs:
+			if pr.get('merged_at') and pr.get('number') in ids:
+				prs.append(dict(id=str(pr['id']), number=pr['number'], url=pr['html_url'],
+					merged_at=pr['merged_at'], merge_commit=pr.get('merge_commit_sha'), head=pr.get('head', {}).get('sha')))
+		records = dict(binding=deepcopy(request['binding']), created_at=request['observed_at'],
+			included=[t['key'] for t in tickets], excluded=[], tickets=tickets, prs=prs,
+			source_coverage=source_coverage,
+			summary='Current controller inventory; project history, estimates and Jira reconciliation unavailable',
+			sources=[dict(field='tickets', observed_at=inventory['observed_at'], stale=False,
+				source='controller-inventory:' + inventory['inventory_sha256'])])
+		body = dict(binding=deepcopy(request['binding']), observed_at=request['observed_at'], records=records, owner_actions=actions)
+		from agentic.reporting.safety import safe_report
+		body = safe_report(body, trusted_keys=True, secret_refs=reporting_secret_refs)
+		evidence_id, _digest = retain_planning_evidence('reporting', dict(kind='reporting', request=request, snapshot=body))
+		return dict(**deepcopy(body), authentication={'evidence_id': evidence_id})
+
+	def verify_reporting_sources(authentication, request):
+		reporting_request(request)
+		_require(isinstance(authentication, dict) and set(authentication) == {'evidence_id'}, 'REPORT_SOURCE_AUTHENTICATION_REQUIRED')
+		value = read_planning_evidence('reporting', authentication['evidence_id'])
+		_require(value.get('request') == request, 'REPORT_SOURCE_BINDING_MISMATCH')
+		return dict(status='VERIFIED', evidence_id=authentication['evidence_id'], snapshot=deepcopy(value['snapshot']))
+
+	def verify_reporting_link(url):
+		# Only canonical PR links read from this repository are admitted here.
+		return isinstance(url, str) and re.fullmatch(re.escape('https://github.com/' + github['repository'] + '/pull/') + r'[1-9][0-9]*', url) is not None
+
 	dispatch_ticket.configure_budgeting = configure_budgeting
-	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'observe_issue_policy': observe_issue_policy, 'observe_jira_operation_identity': observe_jira_operation_identity, 'read_assignment': read_assignment, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
+	# Preserve the legacy default-OFF factory interface. Reporting transport
+	# bindings opt into these additional executable ports; operating mode alone
+	# cannot register them. Missing providers are refused by production.
+	reporting_ports = dict(configure_reporting=configure_reporting, observe_reporting_sources=observe_reporting_sources,
+		verify_reporting_sources=verify_reporting_sources, verify_reporting_link=verify_reporting_link) if 'reporting' in config else {}
+	return {**reporting_ports, 'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'observe_issue_identity': observe_issue_identity, 'observe_issue_policy': observe_issue_policy, 'observe_jira_operation_identity': observe_jira_operation_identity, 'read_assignment': read_assignment, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation, 'observe_host_resources': observe_host_resources, 'verify_host_observation': verify_host_observation, 'observe_planning_backlog': observe_planning_backlog, 'verify_planning_backlog': verify_planning_backlog, 'observe_planning_events': observe_planning_events, 'verify_planning_events': verify_planning_events, 'verify_planning_owner': verify_planning_owner}
 
 def build_adapters(config):
 	return _build(config)

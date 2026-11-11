@@ -163,7 +163,7 @@
     "disposition": "PERMITTED",
     "control_generation": 1,
     "required_resources": [],
-    "operating_hash": "b9462d4f95d44a6dbdad9cbb9dd3704d6b16be1e19ed0c9482d5fcb6fa4b7228"
+    "operating_hash": "f8a2a7510e8d8d395226fed9d772a3678b2c3d2a7316cebde3a39230212bfc09"
   },
   "worker": {
     "schema_version": 3,

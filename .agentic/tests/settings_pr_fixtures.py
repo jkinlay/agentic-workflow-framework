@@ -8,7 +8,7 @@ from agentic.canonical import canonical
 from agentic.child_process import isolated_git_env
 
 
-def publish_fixture_settings(case, root, governance, value):
+def publish_fixture_settings(case, root, governance, value, *, preserve_checkout=False):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     def git(*args, check=True):

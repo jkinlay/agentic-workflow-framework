@@ -291,6 +291,9 @@ def prepare_report(config, request, *, operating=None, verify_inventory=None,
 
 def replay_report(record):
     """Replay the retained projection and verify its original input digest."""
+    if isinstance(record, dict) and record.get('format') == 'awf-status-report-record-2':
+        from .reporting.records import replay_snapshot
+        return replay_snapshot(record)
     _require(set(record) == {'format','record_id','created_at','trigger','project_id','source_mode',
                             'inputs','inputs_sha256','projection','values_json'}
              and record.get('format') == 'awf-status-report-record-1', 'Invalid report record format')
@@ -346,7 +349,9 @@ class ReportStore(Store):
         finally:
             db.close()
 
-    def append(self, record):
+    def append(self, record, *, credentials=()):
+        from .reporting.safety import safe_report
+        _require(safe_report(record, trusted_keys=True, credentials=credentials) == record, 'REPORT_CREDENTIAL_WITHHELD')
         raw = canonical(record)
         _require(len(raw) <= MAX_DOCUMENT_BYTES, 'Report record exceeds 8 MiB')
         record = loads(raw.decode('utf-8'))

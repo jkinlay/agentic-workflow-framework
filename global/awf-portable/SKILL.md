@@ -59,9 +59,7 @@ Limits enable neither switch; enforcement requires accounting; accounting OFF
 disables enforcement. Preserve upgrades; installed 1.9.5 stays unchanged/enabled.
 Recommend versioned preservation, never in-place integrity-managed bytes/receipts.
 
-For settings, run verified `workflow.py operating show`
-read-only, without approval. Present switches/limits/source (fresh defaults, default branch/commit, legacy retained), working differences and rules UNOBSERVED warnings; publication/adoption observe live rules.
-PR/merger optional/unobserved. No owner terminal commands.
+Read-only verified `workflow.py operating show` needs no approval. Present switches/limits/source/commit, working differences and rules UNOBSERVED warnings; publication/adoption observe live rules. PR/merger optional/unobserved. No owner terminal commands.
 
 Branch from fetched configured default. Edit requested
 `OPERATING_CONFIG.yaml` values, preserving text/comments; accounting OFF also
@@ -74,11 +72,9 @@ have no protected effect. Protected set explains the PR route.
 Keep Git metadata outside worker write authority. Host rules/owner govern merge;
 default-branch pushes/owner rights can bypass this. Offer the ruleset.
 `merge_gate.trusted_owner_ids` retains its merge-gate use.
-Calendar uses this same chat/PR route. Present effective timezone, continuous
-work mode, review days/opening/cutoff and EoD schedule from `operating show`.
-Defaults: 24/7; weekday review batching enabled 07:00-17:00 Europe/London; daily EoD 17:00. Validate proposed calendar values before preparing the PR.
-Working/PR-branch calendars cannot change batching; merged and fetched settings
-apply at the next load. Malformed accepted calendars refuse with a reason.
+Calendar shares this PR route: show timezone/work/review/EoD. Defaults: continuous 24/7; weekday review batching enabled 07:00-17:00 Europe/London; daily EoD 17:00. Validate proposals; merged/fetched calendars apply next load; malformed calendars refuse.
+
+Reporting defaults OFF; teams/slack/both need project/repository/scope/platform/destination/revision/secret_ref bindings. Validate offline; reachability UNOBSERVED. Re-admit before POST; prepare links/secrets outside transactions. Preserve suspension/receipts/withdrawal/corrections/two-send ceilings.
 
 Budgets cover explicitly enrolled AWF sub-agents/attributable tools/retries;
 exclude controller/independent/ULTRA agents. Preserve UNKNOWN/history/failures/
