@@ -223,10 +223,40 @@ class ReportingE2Regressions(unittest.TestCase):
         self.network.slow = True
         from agentic.reporting import runtime
         from agentic.reporting.bounded import DESTINATION_SECONDS, HTTP_TIMEOUT_SECONDS
+        from agentic.reporting import http_transport
+        from urllib.parse import unquote, urlsplit
+        pauses = []
+        original_init = http_transport.BaseTransport.__init__
+
+        def transport_init(transport, **kwargs):
+            original_init(transport, **kwargs)
+            original_pause = transport.pause
+            def pause(seconds):
+                pauses.append((transport.platform, seconds))
+                return original_pause(seconds)
+            transport.pause = pause
+
         timing = {}
         original_drain = runtime.drain
         original_http = ReportingNetwork.__call__
         original_finish = self.helper.store.finish_dispatch
+        teams_finished = threading.Event()
+        slack_delivered = threading.Event()
+        from agentic.reporting.delivery import DeliveryOutbox
+        original_advance = DeliveryOutbox.advance
+        original_wait = self.network.block.wait
+
+        def advance(outbox, delivery_id, provider, **kwargs):
+            state = original_advance(outbox, delivery_id, provider, **kwargs)
+            if provider.binding['platform'] == 'slack' and state['status'] == 'DELIVERED':
+                slack_delivered.set()
+            return state
+
+        def wait_for_slack(timeout=None):
+            # Keep this network request blocked until real durable delivery,
+            # then retain the fixture's existing five-second settle behavior.
+            timing['slack_completed_before_teams_settle'] = slack_delivered.wait(DESTINATION_SECONDS)
+            return original_wait(timeout)
 
         def finish_dispatch(*args, **kwargs):
             receipt = original_finish(*args, **kwargs)
@@ -241,22 +271,54 @@ class ReportingE2Regressions(unittest.TestCase):
             return original_drain(*args, **kwargs)
 
         def http(network, method, url, headers, payload):
-            response = original_http(network, method, url, headers, payload)
+            if 'slack.com' in url and method == 'POST':
+                # Order the fixture by request entry, independent of scheduling.
+                network.entered.wait(HTTP_TIMEOUT_SECONDS)
+            try:
+                response = original_http(network, method, url, headers, payload)
+            finally:
+                if 'graph.microsoft.com' in url and method == 'POST':
+                    timing['slack_delivered_while_blocked'] = (
+                        network.entered.is_set(), network.block.is_set(),
+                        {d['status'] for d in self.status()['deliveries']
+                         if d['platform'] == 'slack'})
+                    teams_finished.set()
             if 'slack.com' in url:
                 if method == 'POST' and 'Hourly progress' in str(payload):
-                    timing['slack_post'] = time.monotonic()
+                    timing['slack_post'] = (network.entered.is_set(), network.block.is_set(),
+                                            teams_finished.is_set())
                 if 'conversations.history' in url and 'slack_post' in timing:
-                    timing['slack_readback'] = time.monotonic()
+                    timing['slack_readback'] = (network.entered.is_set(), network.block.is_set(),
+                                                teams_finished.is_set())
             return response
 
         started = time.monotonic()
         with patch.object(self.helper.store, 'finish_dispatch', finish_dispatch), \
              patch.object(runtime, 'drain', drain), \
+             patch.object(DeliveryOutbox, 'advance', advance), \
+             patch.object(self.network.block, 'wait', wait_for_slack), \
+             patch.object(http_transport.BaseTransport, '__init__', transport_init), \
              patch.object(ReportingNetwork, '__call__', http):
             result = self.cycle('2026-11-07T18:00:00Z', [ticket('EX-2', 1, paths=['first.txt'])])
         self.assertEqual(len(result['dispatch_receipts']), 1)
+        self.assertTrue(timing['slack_completed_before_teams_settle'])
         for event in ('slack_post', 'slack_readback'):
-            self.assertLess(timing[event] - timing['delivery_start'], 1.5)
+            self.assertEqual((True, False, False), timing[event])
+        self.assertEqual((True, False, {'DELIVERED'}), timing['slack_delivered_while_blocked'])
+        self.assertEqual([('teams', 0.1), ('teams', 0.1)], pauses)
+        self.assertEqual(
+            {'slack': [('GET', 'auth.test'), ('GET', 'conversations.info'),
+                       ('POST', 'chat.postMessage'), ('GET', 'auth.test'),
+                       ('GET', 'conversations.info'), ('GET', 'conversations.history')],
+             'teams': [('GET', kind) for kind in
+                       ('me', 'organization', *TEAMS_DESTINATION.split('/'), 'members')]
+                      + [('POST', 'messages')] + [('GET', kind) for kind in
+                        ('me', 'organization', *TEAMS_DESTINATION.split('/'), 'members')]
+                      + [('GET', 'messages')] * 3},
+            {platform: [(method, unquote(urlsplit(url).path).rsplit('/', 1)[-1])
+                        for method, url in self.network.calls
+                        if ('slack.com' in url) == (platform == 'slack')]
+             for platform in ('slack', 'teams')})
         # Joined delivery may hold the next cycle, within the documented bound.
         self.assertGreaterEqual(time.monotonic() - timing['delivery_start'], 5)
         self.assertLess(time.monotonic() - started, DESTINATION_SECONDS + HTTP_TIMEOUT_SECONDS)
@@ -268,19 +330,7 @@ class ReportingE2Regressions(unittest.TestCase):
         self.assertEqual({d['status'] for d in self.status()['deliveries'] if d['platform'] == 'teams'}, {'UNKNOWN'})
         # Time the complete production cycle, including its Git admission.
         # The harness publishes/observes fixture inputs before entering it.
-        from agentic.reporting import http_transport
-        from urllib.parse import unquote, urlsplit
-        pauses = []
-        original_init = http_transport.BaseTransport.__init__
-
-        def transport_init(transport, **kwargs):
-            original_init(transport, **kwargs)
-            original_pause = transport.pause
-            def pause(seconds):
-                pauses.append((transport.platform, seconds))
-                return original_pause(seconds)
-            transport.pause = pause
-
+        pauses.clear()
         def before_controller():
             timing['next_cycle_start'] = time.monotonic()
             timing['next_cycle_calls'] = len(self.network.calls)

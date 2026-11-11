@@ -63,15 +63,38 @@ class ControllerTests(unittest.TestCase):
         self.helper.store = ContinuousControllerStore(self.helper.path, ['A', 'B', 'C'], cadence_seconds=3600)
 
     def test_retry_after_survives_restart_and_defers_without_spending_or_waiting(self):
+        from agentic.reporting import http_transport
+        from urllib.parse import unquote, urlsplit
+        pauses = []
+        original_init = http_transport.BaseTransport.__init__
+
+        def transport_init(transport, **kwargs):
+            original_init(transport, **kwargs)
+            original_pause = transport.pause
+            def pause(seconds):
+                pauses.append((transport.platform, seconds))
+                return original_pause(seconds)
+            transport.pause = pause
+
         self.network.throttled = {'slack', 'teams'}
-        started = time.monotonic()
-        self.assertEqual(self.cycle('2026-11-10T10:00:00Z')['errors'], [])
+        with patch.object(http_transport.BaseTransport, '__init__', transport_init):
+            self.assertEqual(self.cycle('2026-11-10T10:00:00Z')['errors'], [])
         states = self.status()['deliveries']
         self.assertEqual({d['status'] for d in states}, {'THROTTLED'})
         self.assertTrue(all(len(d['attempts']) == 1 for d in states))
         self.assertTrue(all(d['retry_not_before'] == '2026-11-10T10:01:00Z' for d in states))
         self.assertTrue(all(d['history'][-1]['kind'] == 'SEND_THROTTLED' for d in states))
-        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual([], pauses)
+        self.assertEqual(
+            {'slack': [('GET', 'auth.test'), ('GET', 'conversations.info'),
+                       ('POST', 'chat.postMessage')],
+             'teams': [('GET', kind) for kind in
+                       ('me', 'organization', TEAM_ID, CHANNEL_ID, 'members')]
+                      + [('POST', 'messages')]},
+            {platform: [(method, unquote(urlsplit(url).path).rsplit('/', 1)[-1])
+                        for method, url in self.network.calls
+                        if ('slack.com' in url) == (platform == 'slack')]
+             for platform in ('slack', 'teams')})
         calls = len(self.network.calls)
         self.restart()
         self.cycle('2026-11-10T10:00:59Z')
