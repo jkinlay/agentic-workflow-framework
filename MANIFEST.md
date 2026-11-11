@@ -533,11 +533,11 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_reporting_e15_regressions.py` | `bf9635f8f6f3ee0852d26156954b2bb77025bca33c0cb17a8bcfd25c8fc6cb07` |
 | `.agentic/tests/test_reporting_e16_regressions.py` | `bb9a2620053db55256583edd5d1aba408373fa3cc7787ef084abe10784af107d` |
 | `.agentic/tests/test_reporting_e17_regressions.py` | `f57e71f438f285a7ee732b92fbcf52f4ba2dd098a1fe15e647be3804ab73aeb1` |
-| `.agentic/tests/test_reporting_e2_regressions.py` | `062a5120ae783cece3dfe5c3373621610a1b9df31e351889f1a42129d8fc7a64` |
+| `.agentic/tests/test_reporting_e2_regressions.py` | `840e7712fec184c31327757eba153d965ea56e0b6b98aea19725df568778b2ad` |
 | `.agentic/tests/test_reporting_e3_regressions.py` | `2bc1548b45f0f7b411b92b834fbe57dc78b864842b73b4503e02307dc3c6a079` |
-| `.agentic/tests/test_reporting_e4_regressions.py` | `56caaacaaf8add18b96d6b09c0411468181b16b72dbc3b9aec0c7a2995709fca` |
+| `.agentic/tests/test_reporting_e4_regressions.py` | `f2f463dfb571039cfb44d4bb1c093ea3ac5dbe714b208882a127f1d953f7bf04` |
 | `.agentic/tests/test_reporting_e5_regressions.py` | `86dfe4e00d3c37b3067e23a69394b4f789425cdd82c61639e2e1ef749304eb8c` |
-| `.agentic/tests/test_reporting_e6_regressions.py` | `d79b13639ae5a580f3a9cd040e2678e3c973e9cfbf5a684c16026f5d4444278c` |
+| `.agentic/tests/test_reporting_e6_regressions.py` | `722554fa356bc0aaaaeb3decd7a551f97cad4eb9140a66743fe013ec4785dc9a` |
 | `.agentic/tests/test_reporting_e7_regressions.py` | `81e08a51d74dc275ff6dbb543b34f31755ad7c71a78e0a25942faa7273f14c16` |
 | `.agentic/tests/test_reporting_e8_regressions.py` | `f6ed5c8c7908c31d6bab5422a388c4c2af119cfbc0549d958809d119acb27c3c` |
 | `.agentic/tests/test_reporting_e9_regressions.py` | `3dac46024a366c071abb8de29b072f276ea98ab49761b130a1f9a784dc2ac090` |
@@ -554,7 +554,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_reporting_source_independence.py` | `0dafa5d0db7eb0a9b57d31cb25d19106b0e2edad2f2067565a3229d848dd400e` |
 | `.agentic/tests/test_reporting_stage2.py` | `152920db9bfa73ebdf3d7790c3a4d4be4e76a8091b4400bfbc81b3a8a349b771` |
 | `.agentic/tests/test_reporting_timing.py` | `5218f37e1d9dde77075ab8a98e7e3452056bad40ca8de0f3d45a24f45db44227` |
-| `.agentic/tests/test_reporting_wiring.py` | `beaafc031fff59b072dc15dc60e352ea3dd158c52800c4db9816278acca0215d` |
+| `.agentic/tests/test_reporting_wiring.py` | `1cdcc2eee1a11007da964593cc84edd96c4f86fb5542e140f609803fbef15eb1` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
 | `.agentic/tests/test_retry_authority.py` | `f70839c477e6ada7cf574bd9a324a4002adeadf454fce5645e9c5876ef976c3a` |
 | `.agentic/tests/test_review_completion.py` | `c20268b5ba4f0d6e0ab1c3191bcf72b5815a0ef445a8cbb1495b52ef7f9244ef` |
