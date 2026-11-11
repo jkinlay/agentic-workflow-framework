@@ -280,6 +280,26 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual('ACTIVE', result['project_state'], result)
         self.assertEqual(before, snapshot())
 
+    def test_retained_committed_cleanup_preserves_active_local_work_admission(self):
+        from agentic import installer
+        from agentic.activation import require_capabilities
+        from agentic.safeio import Tree
+        backup = self.root / '.agentic/.venv.backup-synthetic-retention'
+        backup.mkdir()
+        self.addCleanup(shutil.rmtree, backup)
+        evidence = self.root / installer.RETAINED_JOURNAL
+        self.addCleanup(evidence.unlink, missing_ok=True)
+        with Tree(self.root) as tree:
+            installer._record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
+        before = evidence.read_bytes()
+        result = self.observe()
+        self.assertEqual('ACTIVE', result['project_state'], result)
+        self.assertTrue(result['integrity_valid'])
+        require_capabilities(result['capabilities'], ['local_work'])
+        self.assertEqual([backup.relative_to(self.root).as_posix()],
+                         result['installation_recovery']['retained_directories'])
+        self.assertEqual(before, evidence.read_bytes())
+
     def test_accepted_default_checkout_and_merged_receipt_are_active(self):
         result = self.observe()
         from agentic.contracts import Contracts
@@ -298,11 +318,14 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual(result['line'], f'AWF {VERSION}: ACTIVE - streams 3/6')
         preflight_next = result['host_preflight']['next_action']
         rendered = status.render_status(result)
+        expected = (result['line'] + '\nBudgeting: LEGACY_RETAINED; legacy enforcement UNOBSERVED; '
+                    'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED; owner adoption prepares dormant OFF controls in '
+                    'OPERATING_CONFIG.yaml through an owner-merged PR; fetch the default branch to apply.')
         if preflight_next:
-            self.assertEqual(rendered, result['line'] + '\nNext: Host preflight WARN: ' + preflight_next +
-                             '\nNext command: python -B .agentic/scripts/workflow.py status --require-active')
-        else:
-            self.assertNotIn('Next:', rendered)
+            expected += '\nNext: Host preflight WARN: ' + preflight_next
+        interpreter = '.agentic/.venv/Scripts/python.exe' if os.name == 'nt' else '.agentic/.venv/bin/python'
+        expected += '\nNext command: ' + interpreter + ' -B -I .agentic/scripts/workflow.py status --require-active'
+        self.assertEqual(expected, rendered)
 
     @skip_unless_source_repo()
     def test_ac34_installed_host_skill_establishes_durable_trust_and_active(self):
@@ -1183,9 +1206,37 @@ class AdoptionStatusTests(unittest.TestCase):
         del provenance['installation']['install_id']
         (self.root / INSTALLED).write_bytes(json_bytes(receipt))
         (self.root / PROVENANCE).write_bytes(json_bytes(provenance))
-        result = self.observe()
-        self.assertEqual(result['project_state'], 'CONFIGURED')
-        self.assertIn('installation UUID', result['next_action'])
+        def inventory():
+            return {path.relative_to(self.root).as_posix(): (
+                path.read_bytes() if path.is_file() else None, path.stat().st_mode,
+                path.stat().st_mtime_ns, path.stat().st_ctime_ns,
+                getattr(path.stat(), 'st_file_attributes', None))
+                for path in [self.root, *self.root.rglob('*')]}
+        before = inventory()
+        from agentic import host_preflight
+        writable_row = host_preflight._repository_writable_row
+        probe_calls = []
+        def refuse_write_probe(root):
+            self.assertEqual(self.root.resolve(), root.resolve())
+            probe_calls.append(root.resolve())
+            return False
+        # This identity refusal observes a synthetic read-only host. Keep the
+        # real preflight and its warning without its create/delete write probe.
+        def observed_writability(root, probe=None):
+            self.assertIsNone(probe)
+            return writable_row(root, probe=refuse_write_probe)
+        with patch.object(host_preflight, '_repository_writable_row', side_effect=observed_writability):
+            result = self.observe()
+        self.assertEqual([self.root.resolve()], probe_calls)
+        self.assertIsNone(result['project_state'], result)
+        self.assertFalse(result['integrity_valid'])
+        self.assertFalse(result['execution_authority'])
+        check = next(item for item in result['checks'] if item['code'] == 'INSTALLATION_INTEGRITY')
+        self.assertEqual('INVALID', check['state'])
+        self.assertIn('install_id', check['evidence'])
+        self.assertIn('install_id', result['next_action'])
+        self.assertIn('verify-installation', result['next_action'])
+        self.assertEqual(before, inventory())
 
     def test_status_does_not_execute_product_clean_filters(self):
         marker = Path(self.temporary.name) / 'filter-executed.txt'

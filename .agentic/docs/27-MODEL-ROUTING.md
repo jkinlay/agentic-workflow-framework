@@ -9,11 +9,8 @@ and enforces limits.
 Fresh settings default accounting/enforcement OFF, with dormant 4,000,000-ticket
 and 1,000,000,000-lifetime-project token limits. Missing settings preserve legacy
 policy. [Budgeting](39-BUDGETING.md) defines host enrollment, owner admission,
-canonical usage history and preservation. Legacy daily/run/cost quotas apply only
-to legacy admissions. Accounting-only runs record attributable usage without
-quota warnings/refusal; enforcement uses atomic ticket/lifetime totals.
-OFF needs no budget reservation or usage telemetry, while operational history
-retains security, review independence, draining ownership and bounded recovery.
+history/import preservation. Legacy daily/run/cost quotas apply only to legacy admissions. Accounting-only records usage without quota warnings/refusal; enforcement uses atomic ticket/lifetime totals.
+OFF needs no reservation/telemetry; retain security, review independence, draining ownership and bounded recovery.
 Budget-only historical overruns do not block OFF; security mismatches quarantine.
 A no-ledger OFF result is only a proposal requiring independent host admission.
 
@@ -143,3 +140,5 @@ python .agentic/scripts/route_model.py reconcile --config PROJECT/.agentic/PROJE
 `--help` lists commands. Results/errors are JSON; blocked/unavailable/quarantined/
 invalid returns exit 2. Exit 0 is not launch evidence. JSON uses standard-library
 Python; YAML needs existing dependency.
+
+Upgrades require locked legacy-history proof validation before enabled admission; preserve sources, UNKNOWN usage and recovery ceilings. See [import](39-BUDGETING.md#upgrade-and-adoption).

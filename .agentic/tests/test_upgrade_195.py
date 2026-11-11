@@ -8,14 +8,16 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 import source_only
 sys.path.insert(0, str(ROOT / "scripts"))
-if source_only.AWF_SOURCE_REPOSITORY:
-    from publish_release import materialize_commit
+from upgrade_195_fixtures import PUBLISHED_COMMIT, PUBLISHED_PIN, materialize_published
 from agentic import VERSION, ValidationError
+from agentic import installer
+from retained_directory_expectations import assert_rollback_evidence
 from agentic.canonical import load
 from agentic.child_process import child_env
 from agentic.installer import install
@@ -23,8 +25,6 @@ from agentic.model_routing import RoutingLedger, policy_from_config, routing_con
 from agentic.upgrade import load_known_versions
 from agentic.safeio import run_bounded
 
-PUBLISHED_COMMIT = "8ad399943c8f5e4f17db72f3e321b9365ee27782"
-PUBLISHED_PIN = "1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7"
 
 
 @source_only.skip_unless_source_repo("requires the published historical Git source and real locked wheels", "scripts/publish_release.py")
@@ -40,7 +40,7 @@ class Published195UpgradeTests(unittest.TestCase):
         cls.base = Path(cls.temporary.name).resolve()
         cls.historical = cls.base / "published-source"
         # Missing historical objects are failures in full-source CI, not skips.
-        materialize_commit(ROOT, PUBLISHED_COMMIT, cls.historical)
+        materialize_published(ROOT, cls.historical)
         if hashlib.sha256((cls.historical / "MANIFEST.json").read_bytes()).hexdigest() != PUBLISHED_PIN:
             raise AssertionError("independently pinned published 1.9.5 identity mismatch")
         # Historical and current locks can declare different dependencies.
@@ -137,9 +137,18 @@ class Published195UpgradeTests(unittest.TestCase):
         receipt = self.project / ".agentic/installed-manifest.json"
         config = self.project / ".agentic/PROJECT_CONFIG.yaml"
         identity_before = {p: p.read_bytes() for p in (receipt, config)}
-        with self.assertRaisesRegex(OSError, "Injected installation failure"):
+        rollback_operation = installer.rollback
+        restored = {}
+
+        def capture_rollback(tree, journal):
+            result = rollback_operation(tree, journal)
+            restored.update(json.loads(installer.json_bytes(journal)))
+            return result
+
+        with patch.object(installer, 'rollback', capture_rollback), self.assertRaisesRegex(OSError, "Injected installation failure"):
             install(ROOT, self.project, self.target_pin, mode="upgrade", configure=True,
                     discover=False, fail_after=4)
+        assert_rollback_evidence(self, self.project, restored)
         for p, raw in identity_before.items():
             self.assertEqual(p.read_bytes(), raw)
         for p in preserved:
