@@ -578,8 +578,9 @@ def build_assets(source, output, epoch, mode_manifest):
 
 
 def default_validations(source, output, env):
+    from release_self_test import run_self_test
     report = output / "self-test.json"
-    run([sys.executable, "-B", str(source / "scripts/self_test.py"), "--report", str(report)], cwd=source, env=env)
+    aggregate = run_self_test(source, report, timeout=3600, env=env)
     hygiene = run([sys.executable, "-B", str(source / "scripts/release_hygiene.py")], cwd=source, env=env)
     suites = {}
     for label, directory in (("portable_core", source / "global/awf/tests"),
@@ -588,7 +589,9 @@ def default_validations(source, output, env):
         match = re.search(r"Ran ([0-9]+) tests?", result.stderr + result.stdout)
         suites[label] = int(match.group(1)) if match else None
     self_test = json.loads(report.read_text(encoding="utf-8"))
-    return {"self_test": self_test.get("tests", {}), "release_hygiene": json.loads(hygiene.stdout),
+    return {"self_test": self_test.get("tests", {}),
+            "self_test_aggregate_sha256": sha256(report), "self_test_shards": aggregate['shard_reports'],
+            "self_test_plan_sha256": aggregate['plan_sha256'], "release_hygiene": json.loads(hygiene.stdout),
             "portable_suites": suites}
 
 

@@ -660,7 +660,7 @@ class CliFailurePathTests(unittest.TestCase):
                 failure = subprocess.TimeoutExpired(['synthetic-self-test'], expected,
                                                     output=b'Synthetic partial stdout', stderr=b'Synthetic partial stderr')
                 with mock.patch.object(validate_archive,'review_source',return_value={'status':'PASS','synthetic':True}), \
-                        mock.patch.object(validate_archive.subprocess, 'run', side_effect=failure) as run, \
+                        mock.patch.object(validate_archive, 'run_self_test', side_effect=failure) as run, \
                         redirect_stdout(io.StringIO()) as stdout:
                     code = validate_archive.main(list(map(str,args)))
                 data = json.loads(report.read_bytes())
@@ -695,7 +695,7 @@ class CliFailurePathTests(unittest.TestCase):
         archive, pin = self.archive()
         failure = subprocess.TimeoutExpired(['synthetic-self-test'], 600, output=b'Partial output')
         with mock.patch.object(validate_archive,'review_source',return_value={'status':'PASS','synthetic':True}), \
-                mock.patch.object(validate_archive.subprocess, 'run', side_effect=failure), \
+                mock.patch.object(validate_archive, 'run_self_test', side_effect=failure), \
                 mock.patch.object(validate_archive, 'write_report', side_effect=PermissionError('synthetic write denial')), \
                 redirect_stdout(io.StringIO()) as stdout:
             code = validate_archive.main(list(map(str,self.archive_args(archive, pin))))
@@ -721,16 +721,18 @@ class CliFailurePathTests(unittest.TestCase):
         args=self.archive_args(archive,pin)
         args[args.index('--reviews')+1]=Path('relative-review.json')
         args += ['--review-required-paths','relative-scope.json','--expected-review-required-paths-sha256','1'*64]
-        def stages(command, **kwargs):
-            if '--reviews' in command:
-                raise subprocess.TimeoutExpired(command,600)
-            return self.synthetic_source_stage(command)
+        def stages(root, report, **kwargs):
+            arguments = kwargs.get('review_args', [])
+            if '--reviews' in arguments:
+                raise subprocess.TimeoutExpired(arguments, 600)
+            return self.synthetic_source_stage(['--report', str(report)])
         with mock.patch.object(validate_archive,'review_source',return_value={'status':'PASS','synthetic':True}) as review, \
-                mock.patch.object(validate_archive.subprocess,'run',side_effect=stages) as run, \
+                mock.patch.object(validate_archive,'run_self_test',side_effect=stages) as run, \
+                mock.patch.object(validate_archive.subprocess,'run',side_effect=lambda command, **kw: self.synthetic_source_stage(command)), \
                 redirect_stdout(io.StringIO()):
             code=validate_archive.main(list(map(str,args)))
         self.assertEqual(1,code)
-        command=run.call_args.args[0]
+        command=run.call_args.kwargs['review_args']
         for flag in ('--reviews','--review-required-paths'):
             self.assertTrue(Path(command[command.index(flag)+1]).is_absolute())
         self.assertTrue(review.call_args.args[2].is_absolute())

@@ -40,6 +40,31 @@ def encode(plan):
     return (json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=True) + '\n').encode('ascii')
 
 
+def build_release_plan(root=ROOT, installed_root=None):
+    """Complete release inventory using the existing CI owners and split halves.
+
+    The version-1 hosted selection above deliberately remains byte compatible.
+    Release selection includes CI's excluded installed-harness regression module.
+    """
+    from agentic.self_test_shards import installed_inventory, source_inventory
+    root = Path(root).resolve()
+    inventory = (installed_inventory(installed_root) if installed_root is not None
+                 else source_inventory(root))
+    allocation = source.allocate({'release': inventory})['release']
+    for path in sorted(set(inventory) & source.EXCLUDED_MODULES):
+        owner = source.HEAVY_MODULE_SHARDS.get(path)
+        if owner is None:
+            owner = int.from_bytes(hashlib.sha256(path.encode('utf-8')).digest(), 'big') % len(source.SHARDS)
+        allocation[owner].append(path)
+    return dict(format='awf-release-selection-1', scope='installed' if installed_root is not None else 'source',
+                shard_count=len(source.SHARDS), allocation_policy='windows-unittest-shards-9',
+                source_manifest_sha256=hashlib.sha256((root / 'MANIFEST.json').read_bytes()).hexdigest(),
+                inventory=inventory, shards={str(n): sorted(allocation[n]) for n in source.SHARDS},
+                split={p: {'shards': list(owners), 'first_half': sorted(names)}
+                       for p, (owners, names) in source.SPLIT_MODULES.items() if p in inventory},
+                zero_test_modules=sorted(source.ZERO_TEST_MODULES & set(inventory)))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT)
