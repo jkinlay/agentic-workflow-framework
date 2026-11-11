@@ -412,7 +412,12 @@ def _extract_locked_wheels(artifacts, target):
             try:
                 with destination.open("xb") as stream:
                     stream.write(raw)
-                os.chmod(destination, 0o600)
+                    stream.flush()
+                    if os.name == 'nt':
+                        from .safeio import _windows_set_mode
+                        _windows_set_mode(stream.fileno(), 0o600)
+                    else:
+                        os.fchmod(stream.fileno(), 0o600)
             except OSError as exc:
                 raise ValidationError("Canonical runtime dependency extraction failed: " + relative_text) from exc
             if _file_sha256(destination) != digest:

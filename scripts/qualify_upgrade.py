@@ -19,7 +19,8 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
@@ -35,6 +36,43 @@ from agentic.preservation_metadata import (FORMAT, EXCLUDED, inventory,
 
 REQUIRED_CHECKS = ('source_managed_membership', 'historical_state_continuity', 'named_streams')
 QUALIFICATION_LEDGER = '.agentic-state/routing/ledger.sqlite'
+_PERMISSION_PROBES = ContextVar('permission_probes', default=None)
+
+
+class _PermissionProbeRoots(list):
+    def __init__(self):
+        super().__init__()
+        self.created_paths = []
+
+    def append(self, root):
+        super().append(root)
+        self.remember(root)
+
+    def remember(self, path):
+        # Record successful creations while their descriptors are still owned.
+        # Replicated ACLs can later make pathname enumeration unavailable.
+        self.created_paths.append(str(path))
+
+
+def _remember_permission_probe(path):
+    roots = _PERMISSION_PROBES.get()
+    if roots is not None:
+        roots.remember(path)
+
+
+@contextmanager
+def _permission_probe_collection():
+    roots = _PermissionProbeRoots()
+    token = _PERMISSION_PROBES.set(roots)
+    try:
+        yield roots
+    finally:
+        _PERMISSION_PROBES.reset(token)
+
+
+def _retained_probe_report(roots):
+    return dict(retained_probe_roots=[str(root) for root in roots], retained_probes=list(roots.created_paths),
+        retained_probe_owner_action='Keep private wrappers intact; inspect under exclusive owner control, preserve required evidence, then arrange owner-controlled cleanup')
 
 
 def source_identity(source):
@@ -130,10 +168,22 @@ def _posix_probe_parent(parent):
     ownership/mode/xattrs (including default ACLs), or refuse. Never approximate
     inheritance or exempt retained probes from the project inventory.
     """
-    external = Path(tempfile.mkdtemp(prefix='awf-permission-probe-'))
+    wrapper = Path(tempfile.mkdtemp(prefix='awf-permission-probe-'))
+    roots = _PERMISSION_PROBES.get()
+    if roots is not None:
+        roots.append(wrapper)
+    external = wrapper / 'replica'
     with Tree(parent) as tree:
         source = tree._dirs[tree.root]
-        fd = os.open(external, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        # Never copy the project's mode, xattrs or default ACL onto the wrapper.
+        # Its unchanged 0700 mode protects the entire replicated inheritance tree.
+        with Tree(wrapper) as private:
+            wrapper_fd = private._dirs[private.root]
+            if stat.S_IMODE(os.fstat(wrapper_fd).st_mode) != 0o700:
+                raise ValueError('Permission probe wrapper is not private; retained externally')
+            os.mkdir('replica', 0o700, dir_fd=wrapper_fd)
+            _remember_permission_probe(external)
+            fd = os.open('replica', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=wrapper_fd)
         try:
             before = os.fstat(source)
             if os.fstat(fd).st_dev != before.st_dev:
@@ -268,6 +318,7 @@ def _creation_state(project, relative, *, directory=False, readonly=False):
                     # mkdir/open relative to pinned descriptors, never through
                     # a substituted POSIX ancestor. Retain the entire replica.
                     _, parent_handle, _ = probe_tree.parent('/'.join(components + ['.pin']), create=True)
+                    _remember_permission_probe(current)
         elif os.name != 'nt':
             parent_handle = probe_tree._dirs[probe_tree.root]
         if directory:
@@ -288,6 +339,7 @@ def _creation_state(project, relative, *, directory=False, readonly=False):
                 fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW,
                              0o600, dir_fd=parent_handle)
                 probe = current / name
+                _remember_permission_probe(probe)
                 pins.callback(os.close, fd)
             if readonly:
                 if os.name == 'nt':
@@ -534,6 +586,21 @@ def check_budget_import(baseline, sources, canonical):
 
 
 def prepare_upgrade(source, project, pin, before):
+    with _permission_probe_collection() as roots:
+        try:
+            result = _prepare_upgrade(source, project, pin, before)
+        except ValueError as error:
+            error.retained_probe_report = _retained_probe_report(roots)
+            raise
+        except OSError as error:
+            failure = ValueError('Permission preservation probe refused: ' + type(error).__name__)
+            failure.retained_probe_report = _retained_probe_report(roots)
+            raise failure from error
+        result.update(_retained_probe_report(roots))
+        return result
+
+
+def _prepare_upgrade(source, project, pin, before):
     """Derive a closed migration policy from verified release and baseline bytes.
 
     This is deliberately the 1.9.5 -> 1.9.6 policy. A future state/configuration
@@ -1279,10 +1346,12 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             report['before'] = inventory(project)
             try:
                 migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
-            except ValueError:
+            except ValueError as error:
                 report['failed_stage'] = 'migration_policy'
-                report['diagnostic'] = 'Preservation migration policy refused; upgrade not executed'
+                report['diagnostic'] = 'Preservation migration policy refused; upgrade not executed: ' + str(error)
+                report.update(getattr(error, 'retained_probe_report', {}))
                 return report
+            report.update({key: value for key, value in migration_policy.items() if key.startswith('retained_probe')})
         else:
             report['after'] = inventory(project)
             report['preservation'] = compare_upgrade(report['before'], report['after'],
@@ -1463,11 +1532,19 @@ def main(argv=None):
             report['preserved'] = False
             report['checks'] = {name: 'NOT_RUN' for name in REQUIRED_CHECKS}
         else:
-            policy = prepare_upgrade(args.source, args.baseline_project, args.expected_manifest_sha256, before)
-            # This post-hoc comparison proves preservation only. Its unchanged
-            # baseline predates the operation, but it cannot attest cohort time.
-            policy['started_at'] = 0
-            report = compare_upgrade(before, after, policy, args.project, allowed_delta=delta)
+            try:
+                policy = prepare_upgrade(args.source, args.baseline_project, args.expected_manifest_sha256, before)
+            except ValueError as error:
+                report = dict(format='awf-upgrade-comparison-1', preserved=False, changes={},
+                    violations=['Preservation migration policy refused: ' + str(error)],
+                    checks={name: 'NOT_RUN' for name in REQUIRED_CHECKS}, execution_authority=False,
+                    evidence_scope='PRESERVATION_COMPARISON_ONLY',
+                    **getattr(error, 'retained_probe_report', {}))
+            else:
+                # Post-hoc comparison proves preservation only, not cohort time.
+                policy['started_at'] = 0
+                report = compare_upgrade(before, after, policy, args.project, allowed_delta=delta)
+                report.update({key: value for key, value in policy.items() if key.startswith('retained_probe')})
     write_report(args.output, report, project=args.project, source=getattr(args, 'source', None))
     return 1 if report.get('preserved') is False else 0
 

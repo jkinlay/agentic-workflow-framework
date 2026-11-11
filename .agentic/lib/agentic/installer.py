@@ -2894,7 +2894,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         # Capture and prove metadata restoration for the entire change set
         # before creating the lock, journal, objects or any target payload.
         original_metadata = {}
-        if os.name == 'nt':
+        if os.name == 'nt' and not dry_run:
             for path, old in originals.items():
                 if old is not None and (path in deletions or old != planned.get(path)):
                     if path not in deletions and dst.inspect(path).st_file_attributes & 1:

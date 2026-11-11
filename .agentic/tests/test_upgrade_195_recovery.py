@@ -11,6 +11,7 @@ import os
 from copy import deepcopy
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -379,6 +380,17 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                     relative = leftovers[0].relative_to(project).as_posix()
                     expected['files'][relative] = inventory(project)['files'][relative]
                 journal, prepared = self.recovery_inventory_evidence(project)
+                if boundary == 'backup':
+                    rows = [row for row in journal['files']
+                            if row['path'].startswith('.agentic-backup/')]
+                    self.assertTrue(rows)
+                    self.assertTrue(all(row['new_mode'] is None for row in rows))
+                    # An early backup interruption has no recorded creation mode.
+                    # Step 5 must STOP; it cannot infer metadata from the live file.
+                    preserved = refusal_inventory(project)
+                    with self.assertRaisesRegex(AssertionError, 'absent|unrecorded'):
+                        self.authenticate_backup_rows(project, journal, {})
+                    self.assertEqual(preserved, refusal_inventory(project))
                 recovered = self.recover_cli(project)
                 self.assertEqual('NO_PENDING_INSTALL' if boundary == JOURNAL else 'ROLLED_BACK',
                                  recovered['status'])
@@ -612,18 +624,24 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                     self.assertEqual(b'owner bytes', (project / row['path'] / 'owner-note').read_bytes())
 
     def test_real_venv_staging_swap_and_commit_preserve_endpoints_after_process_exit(self):
-        # These are real stdlib venvs, deliberately without locked dependencies.
-        # Only the separate qualification runner can establish CONFIGURED.
+        # Real stdlib stages intentionally omit dependencies. On Windows the
+        # previous runtime has real fixture dependencies for owner step 8;
+        # these disposable checks are not release qualification.
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             baseline = base / 'baseline'
             shutil.copytree(self.baseline, baseline)
-            venv.EnvBuilder(with_pip=False).create(baseline / '.agentic/.venv')
+            if os.name == 'nt':
+                self.provision_fixture_runtime(baseline)
+            else:
+                venv.EnvBuilder(with_pip=False).create(baseline / '.agentic/.venv')
             for boundary in ('before_stage', 'partial_stage', 'staged', 'backup_swap',
                              'runtime_swap', 'commit_cleanup'):
                 with self.subTest(boundary=boundary):
                     project = base / boundary
                     shutil.copytree(baseline, project)
+                    originals = {path: (project / path).read_bytes()
+                                 for path in (INSTALLED, PROVENANCE, CONFIG, 'PROJECT_INSTRUCTIONS.md')}
                     result = install(self.target, project, self.pin, mode='upgrade',
                                      configure=True, discover=False, defer_runtime=True)
                     code = """
@@ -688,6 +706,15 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
                             installer.verify_installed(project)
                         self.assertEqual('Installation is incomplete; use bootstrap --recover before running tools',
                                          str(incomplete.exception))
+                        if os.name == 'nt' and boundary in ('backup_swap', 'runtime_swap'):
+                            self.finish_swapped_owner_recovery(project, journal, originals,
+                                                               base / (boundary + '-archive'))
+                        # Pending owner decision: POSIX Tree.unlink currently refuses.
+                        # Linux must retain the refusal checks above, then execute
+                        # this same owner procedure for BOTH swap boundaries with
+                        # a dependency-provisioned previous runtime, and
+                        # prove ROLLED_BACK -> NO_PENDING_INSTALL -> CONFIGURED
+                        # after the owner settles that policy. No path is skipped.
                         continue
                     observed = self.recover_fresh(project)
                     self.assertNotIn(observed['recovery']['status'], ('CONFIGURED', 'ACTIVE'))
@@ -729,6 +756,172 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
                                      observed['integrity'])
                     if boundary == 'partial_stage':
                         self.assertTrue(list((project / '_to_delete').iterdir()))
+
+    def owner_command(self, script, *arguments):
+        result = subprocess.run([sys.executable, '-B', str(self.target / 'scripts' / script),
+                                 *map(str, arguments)], capture_output=True, text=True,
+                                env=child_env(), timeout=60 if script == 'qualify_upgrade.py' else 120)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def finish_swapped_owner_recovery(self, project, journal, originals, archive):
+        runtime = journal['runtime']
+        # Steps 1-2: sole fixture writer; archive the refused endpoints, journal,
+        # evidence objects and metadata before any owner-controlled rename.
+        shutil.copytree(project, archive / 'refused-project', symlinks=True)
+        preserved = refusal_inventory(project)
+        (archive / 'preserved-inventory.json').write_bytes(json_bytes(inventory(project)))
+        new_path = runtime['path'] if (project / runtime['path']).exists() else runtime['stage']
+        for endpoint, digest in ((runtime['backup'], runtime['previous_sha256']),
+                                 (new_path, runtime['new_sha256'])):
+            checked = self.owner_command('qualify_upgrade.py', 'runtime-hash',
+                '--path', project / endpoint, '--expected-sha256', digest)
+            self.assertEqual(dict(format='awf-runtime-authentication-1', sha256=digest,
+                expected_sha256=digest, matches=True, execution_authority=False), checked)
+        self.assertEqual(preserved, refusal_inventory(project))
+        # Step 3: backup is authenticated; quarantine ONLY the new endpoint,
+        # preserving metadata with a same-filesystem rename, never copy/delete.
+        from agentic.preservation_metadata import runtime_inventory
+        new_inventory = runtime_inventory(project / new_path)
+        (project / new_path).rename(archive / 'quarantined-new-runtime')
+        self.assertEqual(new_inventory, runtime_inventory(archive / 'quarantined-new-runtime'))
+        self.assertFalse((project / runtime['path']).exists())
+        # Step 4: use the external journal-writing release, not the swapped tools.
+        recovered = self.owner_command('bootstrap_project.py', '--dest', project, '--recover')
+        self.assertEqual('ROLLED_BACK', recovered['status'])
+        for relative in (JOURNAL, MARKER):
+            self.assertFalse((project / relative).exists())
+        for relative, raw in originals.items():
+            self.assertEqual(raw, (project / relative).read_bytes())
+        self.assertEqual(runtime['previous_sha256'], installer._runtime_tree_sha256(project / runtime['path']))
+        # Steps 6-7: explicitly resolve every retained row, preserve references
+        # and resolutions, and move only the resolved diagnostic index externally.
+        status = installer.retained_directory_status(project)
+        self.assertTrue(status['retained_directories'])
+        resolutions = {relative: ('authenticated original runtime restored' if relative in (runtime['path'], runtime['backup'])
+            else 'authenticated new runtime quarantined' if relative == new_path
+            else 'deliberately retained directory') for relative in status['retained_directories']}
+        self.assertEqual(set(status['retained_directories']), set(resolutions))
+        shutil.copytree(project / '.agentic-install', archive / 'resolved-install-evidence', symlinks=True)
+        (archive / 'resolutions.json').write_bytes(json_bytes(resolutions))
+        (project / RETAINED_JOURNAL).rename(archive / 'resolved-retained-journal.json')
+        self.assertEqual({'status': 'NO_PENDING_INSTALL'}, self.owner_command(
+            'bootstrap_project.py', '--dest', project, '--recover'))
+        # Step 8: all commands execute with the RESTORED isolated interpreter.
+        self.assert_canonical_restored(project)
+        python = project / installer.RUNTIME / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        observed = subprocess.run([str(python), '-B', '-I', str(project / '.agentic/scripts/workflow.py'),
+            '--root', str(project), 'status'], capture_output=True, text=True, env=child_env(), timeout=60)
+        self.assertEqual(0, observed.returncode, observed.stdout + observed.stderr)
+        self.assertIn('CONFIGURED', observed.stdout)
+
+    def authenticate_backup_rows(self, project, journal, creation):
+        from agentic.preservation_metadata import _permissions, _named_streams
+        rows = [row for row in journal['files'] if row['path'].startswith('.agentic-backup/')]
+        self.assertTrue(rows, 'backup boundary must have journal rows')
+        actual = {path.relative_to(project).as_posix()
+                  for path in (project / '.agentic-backup').rglob('*') if path.is_file()}
+        self.assertEqual({row['path'] for row in rows}, actual, 'extra or absent backup file stops')
+        records = {}
+        for row in rows:
+            relative = row['path']
+            self.assertIsNotNone(row['new_sha256'], 'unrecorded backup digest stops')
+            self.assertIsNotNone(row['new_mode'], 'unrecorded backup mode stops')
+            checked = self.owner_command('qualify_upgrade.py', 'file-hash', '--path', project / relative,
+                                         '--expected-sha256', row['new_sha256'])
+            self.assertTrue(checked['matches'])
+            self.assertEqual(row['new_sha256'], checked['sha256'])
+            self.assertEqual(row['new_mode'], checked['mode'], 'backup mode differs; stop')
+            self.assertFalse(checked['execution_authority'])
+            self.assertIn(relative, creation, 'unrecorded copy creation metadata stops')
+            expected = creation[relative]
+            self.assertEqual(expected['permissions'], checked['permissions'])
+            self.assertEqual(expected['named_streams'], checked['named_streams'])
+            self.assertEqual((_permissions(project / relative), _named_streams(project / relative)),
+                             (checked['permissions'], checked['named_streams']))
+            if os.name != 'nt':
+                # Original ownership is not copy ownership. These values were
+                # observed before creation while this sole writer held the tree.
+                self.assertNotIn(relative, journal.get('posix_ownership', {}))
+                info = (project / relative).stat()
+                expected_gid = (expected['parent_gid'] if expected['parent_mode'] & stat.S_ISGID
+                                else expected['effective_gid'])
+                self.assertEqual((expected['effective_uid'], expected_gid), (info.st_uid, info.st_gid))
+            records[relative] = checked
+        self.assertEqual(set(actual), set(records))
+        return records
+
+    def test_backup_owner_authentication_requires_every_row_and_rejects_extras_and_modes(self):
+        # Early 'backup' interruption (including POSIX) is covered above and
+        # must stop for absent/unrecorded metadata. The fully journaled endpoint
+        # below needs deletion during upgrade. Pending Tree.unlink decision:
+        # Linux must run the full positive/extra/mode path once policy permits
+        # it, checking copy UID=installing effective UID and BOTH GID cases:
+        # setgid-parent inheritance and installing effective GID otherwise.
+        # The early-boundary assertions remain executable without that decision.
+        if os.name != 'nt':
+            # Execute the reachable refusal path rather than reporting an
+            # unexecuted positive path as a skip. Full-path Linux work is above.
+            with tempfile.TemporaryDirectory() as temporary:
+                project = Path(temporary) / 'backup-project'
+                shutil.copytree(self.baseline, project)
+                self.interrupt_temporary(project, 'backup')
+                journal = json.loads((project / JOURNAL).read_bytes())
+                preserved = refusal_inventory(project)
+                with self.assertRaisesRegex(AssertionError, 'absent|unrecorded'):
+                    self.authenticate_backup_rows(project, journal, {})
+                self.assertEqual(preserved, refusal_inventory(project))
+            return
+        from agentic.preservation_metadata import _permissions, _named_streams
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / 'backup-project'
+            shutil.copytree(self.baseline, project)
+            creation = {}
+            original = Tree.write
+            def write(tree, relative, data, **kwargs):
+                evidence = None
+                if relative.startswith('.agentic-backup/'):
+                    parent = (project / relative).parent.stat()
+                    evidence = dict(parent_mode=stat.S_IMODE(parent.st_mode), parent_gid=parent.st_gid)
+                    if os.name != 'nt':
+                        evidence.update(effective_uid=os.geteuid(), effective_gid=os.getegid())
+                result = original(tree, relative, data, **kwargs)
+                if evidence is not None:
+                    # Contemporaneous accepted creation baseline; this is not
+                    # original-file ownership copied out of posix_ownership.
+                    evidence.update(permissions=_permissions(project / relative),
+                                    named_streams=_named_streams(project / relative))
+                    creation[relative] = evidence
+                return result
+            with patch.object(Tree, 'write', write):
+                install(self.target, project, self.pin, mode='upgrade', conflict='backup',
+                        configure=True, discover=False, defer_runtime=True)
+            journal = json.loads((project / JOURNAL).read_bytes())
+            preserved = refusal_inventory(project)
+            records = self.authenticate_backup_rows(project, journal, creation)
+            self.assertGreater(len(records), 1)
+            self.assertEqual(set(creation), set(records))
+            self.assertEqual(preserved, refusal_inventory(project))
+            extra = project / '.agentic-backup' / journal['transaction_id'] / 'owner-extra.txt'
+            extra.write_bytes(b'synthetic owner extra; must stop quarantine')
+            extra_inventory = refusal_inventory(project)
+            with self.assertRaisesRegex(AssertionError, 'extra or absent'):
+                self.authenticate_backup_rows(project, journal, creation)
+            self.assertEqual(b'synthetic owner extra; must stop quarantine', extra.read_bytes())
+            self.assertEqual(extra_inventory, refusal_inventory(project))
+            extra.unlink()
+            first = project / next(iter(records))
+            mode = stat.S_IMODE(first.stat().st_mode)
+            try:
+                first.chmod(stat.S_IREAD if mode & stat.S_IWRITE else stat.S_IREAD | stat.S_IWRITE)
+                self.assertNotEqual(mode, stat.S_IMODE(first.stat().st_mode))
+                edited = refusal_inventory(project)
+                with self.assertRaisesRegex(AssertionError, 'backup mode differs'):
+                    self.authenticate_backup_rows(project, journal, creation)
+                self.assertEqual(edited, refusal_inventory(project))
+            finally:
+                first.chmod(mode)
+            self.assertEqual(preserved, refusal_inventory(project))
 
     def recover_refused(self, project, *, forbid_mutation=False):
         code = """

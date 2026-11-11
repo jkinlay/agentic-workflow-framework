@@ -69,7 +69,7 @@ class InstallerTests(unittest.TestCase):
             os.link(owner, sidecar)
             observed.update(stage=stage, sidecar=sidecar)
             raise original
-        with patch.object(installer.shutil, 'copytree', side_effect=fail):
+        with patch.object(installer, 'copy_stage', side_effect=fail):
             with self.assertRaisesRegex(OSError, 'synthetic staging failure') as raised:
                 self.run_install()
         self.assertIs(original, raised.exception)

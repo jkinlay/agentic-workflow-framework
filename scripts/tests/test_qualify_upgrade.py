@@ -582,7 +582,7 @@ class PreservationReportTests(unittest.TestCase):
                 patch('qualify_upgrade.verify_release'), \
                 patch.object(upgrade_195_fixtures, 'materialize_published', return_value=ROOT), \
                 patch('qualify_upgrade.run_bounded', side_effect=child), \
-                patch('qualify_upgrade.prepare_upgrade', return_value='unit policy') as prepare, \
+                patch('qualify_upgrade.prepare_upgrade', return_value={'unit_policy': True, 'retained_probe_paths': ['unit retained probe']}) as prepare, \
                 patch('qualify_upgrade.compare_upgrade', side_effect=comparison) as preservation, \
                 patch('qualify_upgrade._prepare_qualification_budget', return_value='unit budget baseline', create=True), \
                 patch('qualify_upgrade._seed_qualification_state'), \
@@ -591,7 +591,8 @@ class PreservationReportTests(unittest.TestCase):
             result = qualify(ROOT, work)
             prepare.assert_called_once()
             preservation.assert_called_once()
-            self.assertEqual('unit policy', preservation.call_args.args[2])
+            self.assertEqual({'unit_policy': True, 'retained_probe_paths': ['unit retained probe']}, preservation.call_args.args[2])
+            self.assertEqual(['unit retained probe'], result['retained_probe_paths'])
             return result
 
     def test_qualification_rejects_deleted_owner_instructions_after_valid_bootstrap(self):

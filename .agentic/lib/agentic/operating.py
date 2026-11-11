@@ -697,14 +697,11 @@ def _new(tree, name, raw):
         _publish_new(parent, handle, temp, leaf)
         if os.name != "nt":
             os.fsync(handle)
-    finally:
-        try:
-            if os.name == "nt":
-                os.unlink(parent / temp)
-            else:
-                os.unlink(temp, dir_fd=handle)
-        except FileNotFoundError:
-            pass
+    except BaseException as error:
+        # Publication frees the source name. A later lookup can name an owner
+        # replacement, so neither success nor failure grants pathname cleanup.
+        error.add_note('Operating temporary retained if present: ' + str(parent / temp))
+        raise
 
 
 def _prepare_commit(tree, governance, before, value, instruction, changed, applied_from, *, created_at=None):

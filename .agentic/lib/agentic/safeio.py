@@ -567,7 +567,7 @@ if os.name == "nt":
     def win_open(path, directory=False, lock=False, allow_hardlinks=False,
                  shared_write=False):
         access = 0x80 if directory else (0xC0000000 if lock else 0x80000000)
-        share = 3 if directory or lock or shared_write else 1
+        share = 7 if shared_write else (3 if directory or lock else 1)
         flags = 0x00200000 | (0x02000000 if directory else 0)
         handle = kernel.CreateFileW(str(path), access, share, None, 4 if lock else 3, flags, None)
         if handle == INVALID_HANDLE:
@@ -586,7 +586,7 @@ if os.name == "nt":
             raise ValidationError(f"Refusing link, reparse point, or wrong file type: {path}")
         return handle
 
-    def _win_metadata_temp(path):
+    def _win_metadata_temp(path, *, disposable=False):
         """Create an unpublished owner-only leaf with rights to restore metadata.
 
         A parent's inherited modify-only ACEs need not grant WRITE_OWNER. Use
@@ -603,8 +603,9 @@ if os.name == "nt":
             raise ctypes.WinError(ctypes.get_last_error())
         try:
             attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
-            raw = kernel.CreateFileW(str(path), 0xC0000000, 3, ctypes.byref(attributes),
-                                     1, 0x00200000, None)  # CREATE_NEW, no reparse following
+            raw = kernel.CreateFileW(str(path), 0xC0000000 | (0x10000 if disposable else 0),
+                                     3, ctypes.byref(attributes), 1,
+                                     0x00200000 | (0x04000000 if disposable else 0), None)
             if raw == INVALID_HANDLE:
                 raise ctypes.WinError(ctypes.get_last_error())
         finally:
@@ -642,14 +643,14 @@ if os.name == "nt":
         if bool(info.attributes & FILE_ATTRIBUTE_READONLY) != (not bool(mode & stat.S_IWRITE)):
             raise ValidationError('Replacement mode differs; original file retained')
 
-    def win_unlink(path):
+    def win_unlink(path, *, expected):
         """Validate and atomically mark one leaf for deletion through one handle."""
         delete = 0x00010000
         read_attributes = 0x80
-        # Omitting FILE_SHARE_DELETE prevents a concurrent rename or replacement
-        # from changing which object is mutated while this handle is held.
+        # Deny write/delete sharing: data writes and namespace replacement must
+        # not change the authenticated object while this handle is held.
         handle = kernel.CreateFileW(str(path), delete | read_attributes,
-                                    0x1 | 0x2, None, 3, 0x00200000, None)
+                                    0x1, None, 3, 0x00200000, None)
         if handle == INVALID_HANDLE:
             error = ctypes.get_last_error()
             if error in {2, 3}:
@@ -661,6 +662,8 @@ if os.name == "nt":
                 raise ctypes.WinError(ctypes.get_last_error())
             if info.attributes & 0x400 or info.attributes & 0x10 or info.links != 1:
                 raise ValidationError(f"Refusing link, reparse point, or wrong file type: {path}")
+            if _windows_leaf_identity(handle) != expected:
+                raise ValidationError('File identity changed before deletion; replacement retained')
             if info.attributes & FILE_ATTRIBUTE_READONLY:
                 # FileDispositionInfoEx applies the read-only override and delete
                 # disposition in one kernel operation. If the host does not support
@@ -734,6 +737,20 @@ def validate_windows_metadata(value):
     return value
 
 
+def _windows_stream(path, mode):
+    """Open an ADS while sharing the DELETE right of a pinned creating probe."""
+    handle = kernel.CreateFileW(str(path), 0x80000000 if mode == 'rb' else 0x40000000,
+        7, None, 3 if mode == 'rb' else 2, 0x00200000, None)
+    if handle == INVALID_HANDLE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        fd = msvcrt.open_osfhandle(handle, (os.O_RDONLY if mode == 'rb' else os.O_WRONLY) | os.O_BINARY)
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+    return os.fdopen(fd, mode)
+
+
 def _windows_metadata(path, *, shared_write=False):
     """Capture owner/group/DACL, creation time, supported attributes and all ADS.
 
@@ -768,7 +785,7 @@ def _windows_metadata(path, *, shared_write=False):
                     if data.name != '::$DATA':
                         if not 0 <= data.size <= WINDOWS_METADATA_MAX_BYTES - total:
                             raise ValidationError('Windows file metadata exceeds preservation cap; no files changed')
-                        with open(str(path) + data.name, 'rb') as stream:
+                        with _windows_stream(str(path) + data.name, 'rb') as stream:
                             raw = stream.read(data.size + 1)
                         if len(raw) != data.size:
                             raise ValidationError('Windows stream changed during preservation capture')
@@ -796,11 +813,11 @@ def _apply_windows_metadata(path, value):
     # Apply streams/time before the original ACL or read-only flag can restrict
     # access. The temporary leaf is not published until every operation succeeds.
     for name, encoded in value['streams'].items():
-        with open(str(path) + name, 'wb') as stream:
+        with _windows_stream(str(path) + name, 'wb') as stream:
             stream.write(base64.b64decode(encoded, validate=True))
             stream.flush()
             os.fsync(stream.fileno())
-    handle = kernel.CreateFileW(str(path), 0x100, 3, None, 3, 0x00200000, None)
+    handle = kernel.CreateFileW(str(path), 0x100, 7, None, 3, 0x00200000, None)
     if handle == INVALID_HANDLE:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -825,6 +842,70 @@ def _apply_windows_metadata(path, value):
 
 class _WatchedFileLimit(ValidationError):
     pass
+
+
+def win_create_directory(parent_handle, name):
+    """FILE_CREATE returns the directory's creating handle, never a reopened name.
+
+    This is the installer's existing atomic-create protocol, retaining the handle
+    rather than closing it after identity capture. It removes only empty probes.
+    """
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [('Length', wintypes.USHORT), ('MaximumLength', wintypes.USHORT),
+                    ('Buffer', wintypes.LPWSTR)]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [('Length', wintypes.ULONG), ('RootDirectory', wintypes.HANDLE),
+                    ('ObjectName', ctypes.POINTER(UnicodeString)), ('Attributes', wintypes.ULONG),
+                    ('SecurityDescriptor', ctypes.c_void_p), ('SecurityQualityOfService', ctypes.c_void_p)]
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [('StatusOrPointer', ctypes.c_void_p), ('Information', ctypes.c_size_t)]
+
+    create = ctypes.WinDLL('ntdll').NtCreateFile
+    create.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG,
+        ctypes.POINTER(ObjectAttributes), ctypes.POINTER(IoStatusBlock), ctypes.c_void_p,
+        wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
+    create.restype = wintypes.LONG
+    buffer = ctypes.create_unicode_buffer(name)
+    length = len(name.encode('utf-16-le'))
+    unicode_name = UnicodeString(length, length + 2, ctypes.cast(buffer, wintypes.LPWSTR))
+    attributes = ObjectAttributes(ctypes.sizeof(ObjectAttributes), parent_handle,
+                                 ctypes.pointer(unicode_name), 0x40, None, None)
+    owned, result = wintypes.HANDLE(), IoStatusBlock()
+    status = create(ctypes.byref(owned), 0x100000 | 0x10000 | 0x80, ctypes.byref(attributes),
+        ctypes.byref(result), None, 0x10, 3, 2, 0x1 | 0x20 | 0x00200000, None, 0)
+    if status < 0:
+        raise ValueError('Atomic permission probe creation failed; existing objects retained')
+    if result.Information != 2:  # FILE_CREATED; never claim FILE_OPENED.
+        kernel.CloseHandle(owned)
+        raise ValueError('Permission probe creation unproved; object retained')
+    return owned.value
+
+
+def win_dispose_created(handle):
+    """Dispose only an object continuously pinned by its creating handle."""
+    _win_set_file_information(handle, FILE_DISPOSITION_INFO_EX,
+        FileDispositionInformationEx(FILE_DISPOSITION_FLAG_DELETE |
+            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS |
+            FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE))
+
+
+def _windows_leaf_identity(handle):
+    """Full 128-bit file ID, volume, size and write/creation times on one handle."""
+    class FileIdInfo(ctypes.Structure):
+        _fields_ = [('volume', ctypes.c_ulonglong), ('file_id', ctypes.c_ubyte * 16)]
+    get_id = kernel.GetFileInformationByHandleEx
+    get_id.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    get_id.restype = wintypes.BOOL
+    identity, info = FileIdInfo(), FileInformation()
+    if (not get_id(handle, 18, ctypes.byref(identity), ctypes.sizeof(identity))
+            or not kernel.GetFileInformationByHandle(handle, ctypes.byref(info))):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return (identity.volume, bytes(identity.file_id), info.size_high, info.size_low,
+            info.created.dwHighDateTime, info.created.dwLowDateTime,
+            info.written.dwHighDateTime, info.written.dwLowDateTime)
 
 
 def windows_directory_identity(handle):
@@ -964,6 +1045,7 @@ class Tree:
     def __init__(self, root, create=False):
         self.root = Path(os.path.abspath(root))
         self._dirs = {}
+        self._authenticated = {}
         try:
             self._pin_absolute(self.root, create)
         except BaseException:
@@ -1008,6 +1090,14 @@ class Tree:
             return None
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or getattr(info, "st_file_attributes", 0) & 0x400:
             raise ValidationError(f"Refusing non-regular or linked file: {relative}")
+        if os.name == 'nt':
+            leaf = win_open(parent / name)
+            try:
+                self._authenticated.setdefault(relative, _windows_leaf_identity(leaf))
+            finally:
+                kernel.CloseHandle(leaf)
+        else:
+            self._authenticated.setdefault(relative, _file_identity(info))
         return info
 
     def read(self, relative, maximum=64 * 1024 * 1024, *, allow_hardlinks=False):
@@ -1060,6 +1150,8 @@ class Tree:
                                       value.st_mtime_ns, value.st_nlink)
             if identity(before) != identity(after) or after.st_size != len(data):
                 raise SnapshotChangedError("File changed during bounded read")
+            self._authenticated[relative] = (_windows_leaf_identity(msvcrt.get_osfhandle(stream.fileno()))
+                if os.name == 'nt' else _file_identity(after))
             return FileSnapshot(
                 data, len(data), hashlib.sha256(data).hexdigest(), identity(after))
 
@@ -1069,22 +1161,23 @@ class Tree:
         parent, _, name = self.parent(relative)
         value = _windows_metadata(parent / name)
         if preflight:
-            # Exercise restoration outside the target before its first write.
-            # Do not merely assume this token can restore another owner's ACL.
-            # Retain this external probe: TemporaryDirectory would recursively
-            # delete an unbound pathname on exit. Pin its ancestry and creating
-            # handle until restoration AND verification finish; deny-delete
-            # sharing prevents pathname metadata APIs reaching a replacement.
-            temporary = Path(tempfile.mkdtemp(prefix='awf-metadata-probe-'))
-            with Tree(temporary):
-                probe = temporary / 'probe'
-                fd = _win_metadata_temp(probe)
+            # A plan needs no restoration probe. Actual apply proves restoration
+            # here. One flat leaf needs no directory cleanup or retained index.
+            # DELETE_ON_CLOSE is set by CREATE_NEW, before any owner metadata is
+            # copied; even failed verification closes the same creating handle.
+            with Tree(Path(tempfile.gettempdir())) as temporary:
+                name = 'awf-metadata-probe-' + uuid.uuid4().hex
+                probe = temporary.root / name
+                fd = _win_metadata_temp(probe, disposable=True)
                 try:
                     _apply_windows_metadata(probe, value)
                     if _windows_metadata(probe, shared_write=True) != value:
                         raise ValidationError('Windows metadata restoration differs; no files changed')
                 finally:
-                    os.close(fd)
+                    try:
+                        win_dispose_created(msvcrt.get_osfhandle(fd))
+                    finally:
+                        os.close(fd)
         return value
 
     def write(self, relative, data, *, windows_metadata=None):
@@ -1121,55 +1214,47 @@ class Tree:
                   else os.open(parent / temp, flags, 0o600))
         else:
             fd = os.open(temp, flags, 0o600, dir_fd=handle)
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                if os.name != 'nt' and ownership is not None:
-                    uid, gid = ownership
-                    current = os.fstat(stream.fileno())
-                    if (current.st_uid, current.st_gid) != (uid, gid):
-                        os.fchown(stream.fileno(), -1 if current.st_uid == uid else uid,
-                                  -1 if current.st_gid == gid else gid)
-                if os.name != 'nt' and mode is not None:
-                    # Forward replacement and recovery publish bytes and mode
-                    # together. Failure here leaves the original leaf intact.
-                    os.fchmod(stream.fileno(), mode)
-                if os.name != 'nt' and (ownership is not None or mode is not None):
-                    current = os.fstat(stream.fileno())
-                    if ownership is not None and (current.st_uid, current.st_gid) != tuple(ownership):
-                        raise ValidationError('Replacement ownership differs; original file retained')
-                    if mode is not None and stat.S_IMODE(current.st_mode) != mode:
-                        raise ValidationError('Replacement mode differs; original file retained')
-                if os.name == 'nt' and mode is not None and windows_metadata is None:
-                    _windows_set_mode(stream.fileno(), mode)
-                os.fsync(stream.fileno())
-                if os.name == 'nt' and windows_metadata is not None:
-                    # The creating handle denies delete sharing continuously.
-                    # Do not close it before pathname ADS/descriptor operations
-                    # and their verification have completed.
-                    _apply_windows_metadata(parent / temp, windows_metadata)
-                    if _windows_metadata(parent / temp, shared_write=True) != windows_metadata:
-                        raise ValidationError('Windows replacement metadata differs; original file retained')
-            # os.replace replaces a leaf entry rather than following it; pinned
-            # directory parents prevent path redirection on Windows.
-            if os.name == "nt":
-                os.replace(parent / temp, parent / name)
-            else:
-                os.replace(temp, name, src_dir_fd=handle, dst_dir_fd=handle)
-                os.fsync(handle)
-        finally:
-            try:
-                if os.name == 'nt' and windows_metadata is not None:
-                    # A failed metadata replacement stays available for journal
-                    # recovery; never reopen its name to authorize deletion.
-                    pass
-                elif os.name == "nt":
-                    win_unlink(parent / temp)
-                else:
-                    os.unlink(temp, dir_fd=handle)
-            except FileNotFoundError:
-                pass
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            if os.name != 'nt' and ownership is not None:
+                uid, gid = ownership
+                current = os.fstat(stream.fileno())
+                if (current.st_uid, current.st_gid) != (uid, gid):
+                    os.fchown(stream.fileno(), -1 if current.st_uid == uid else uid,
+                              -1 if current.st_gid == gid else gid)
+            if os.name != 'nt' and mode is not None:
+                # Forward replacement and recovery publish bytes and mode
+                # together. Failure here leaves the original leaf intact.
+                os.fchmod(stream.fileno(), mode)
+            if os.name != 'nt' and (ownership is not None or mode is not None):
+                current = os.fstat(stream.fileno())
+                if ownership is not None and (current.st_uid, current.st_gid) != tuple(ownership):
+                    raise ValidationError('Replacement ownership differs; original file retained')
+                if mode is not None and stat.S_IMODE(current.st_mode) != mode:
+                    raise ValidationError('Replacement mode differs; original file retained')
+            if os.name == 'nt' and mode is not None and windows_metadata is None:
+                _windows_set_mode(stream.fileno(), mode)
+            os.fsync(stream.fileno())
+            if os.name == 'nt' and windows_metadata is not None:
+                # The creating handle denies delete sharing continuously.
+                # Do not close it before pathname ADS/descriptor operations
+                # and their verification have completed.
+                _apply_windows_metadata(parent / temp, windows_metadata)
+                if _windows_metadata(parent / temp, shared_write=True) != windows_metadata:
+                    raise ValidationError('Windows replacement metadata differs; original file retained')
+        # os.replace replaces a leaf entry rather than following it; pinned
+        # directory parents prevent path redirection on Windows.
+        if os.name == "nt":
+            os.replace(parent / temp, parent / name)
+        else:
+            os.replace(temp, name, src_dir_fd=handle, dst_dir_fd=handle)
+            os.fsync(handle)
+        # The temporary name is free after publication. Never reopen it for
+        # cleanup: it may already name an unrelated owner object. Failed writes
+        # retain the journal-declared temporary for recovery and diagnostics.
+        self._authenticated.pop(relative, None)
+
 
     def write_exclusive(self, relative, data):
         """Create one confined immutable leaf without a replacement temporary.
@@ -1197,12 +1282,17 @@ class Tree:
             # Upgrade archives are made read-only before the managed-after
             # journal update. Validate and delete through one handle which denies
             # replacement and atomically ignores the read-only attribute.
-            win_unlink(parent / name)
+            expected = self._authenticated.get(relative)
+            if expected is None:
+                if self.inspect(relative) is None:
+                    return
+                expected = self._authenticated[relative]
+            win_unlink(parent / name, expected=expected)
         else:
             if self.inspect(relative) is None:
                 return
-            os.unlink(name, dir_fd=handle)
-            os.fsync(handle)
+            raise ValidationError('Pathname deletion refused; retained file: ' + relative)
+        self._authenticated.pop(relative, None)
 
     def file_list(self, *, exclude_root_git=False, reject_root_git=False, exclude_prefixes=(), subtree=None):
         if exclude_root_git and reject_root_git:

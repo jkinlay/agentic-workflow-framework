@@ -12,14 +12,14 @@ Assets/tags/pins/receipts immutable; Git proves no publication.
 
 ## Preservation
 
-Require accepted baselines/exclusive ownership/quiescence/authorization; record repository/ID/default-branch/releases/permissions,
+Require accepted baselines/exclusive ownership/quiescence/authorization; inventory repository/ID/default-branch/releases/permissions,
 owner-files/settings/instructions/CODEOWNERS, routes/pins/opt-outs/Jira scope/budgets,
 ledgers/sidecars/reservations/operating history/archives/receipts. Defaults stay OFF.
 
 `scripts/qualify_upgrade.py` provides:
 
 - `snapshot --project DISPOSABLE --output BEFORE`: bind bytes/sizes/modes/ownership/access/streams/directories/root, canonical runtime and exact transaction backups.
-  Exclude root `.git`/unrelated product trees; retain root files/nested archives.
+  Exclude root `.git`/unrelated product trees; retain root-files/nested-archives.
   Refuse managed/state links/incomplete identity/unreadable enumeration; snapshot pre-apply.
 - `plan --source RELEASE --project DISPOSABLE --expected-manifest-sha256 PIN
   --github-repo OWNER/REPO --repository-id ID --default-branch BRANCH
@@ -45,25 +45,21 @@ Digest-only reports exclude contents/SIDs; unverified permissions/streams fail.
 
 - Exact managed hashes/sizes; removals require authenticated old-membership/target-absence. Outside-membership content stays owner-owned; refuse collisions, including identical-byte/preinstallation removals. **AGENTS.md is managed**; preserve other owner paths.
 - PROJECT_CONFIG changes only `template.expected_workflow_version`; preserve other values/types/permissions.
-- Only recorded schema migrations change state; prederive bytes/source-target-hashes/actions.
+- Only recorded schema-migrations change state; prederive bytes/source-target-hashes/actions.
   `state_archive_plan` binds named `upgrade-to-<target>` read-only copies/manifest
   to exact contents/sources. Preserve prior archives; prefixes authorize nothing.
 - Independently snapshot pre-migration state; query-only in-memory SQLite invokes no migration/initializer/upgrade validator. Preserve all historical tables/columns/rowids/typed values/duplicates/reservations/settlements/unknown charges/audits. **Existing-field exceptions: none.** Check exact new-column/table schema/migrations separately. Non-SQL state/reservations/audits/sidecars/unknown records remain byte-identical; missing continuity refuses.
   Migrations cannot authorize loss.
 - Reconstruct receipt membership/hashes/embedded manifest/install-project IDs/mutable
   paths/configuration hash. Require exact provenance target/schema/manifest/retained
-  ID/upgrade/manual profile/canonical cohort time; reject extras. No recovery objects/journal/marker/lock; retain only empty named object-store.
+  ID/upgrade/manual profile/canonical cohort time; reject extras. No recovery-objects/journal/marker/lock; retain only empty named object-store.
 - Authenticate complete journals/files/directories/metadata/fresh transaction namespaces. Backups match exact replaced/deleted originals/metadata; no prefix waiver.
-- Exact output directories; preserve permissions/streams. Windows probes dispose pinned handles; POSIX retains external inheritance replicas; unsupported metadata refuses. Windows metadata preflights retain external probes.
+- Exact output directories/permissions/streams; unsupported metadata refuses. Windows probes dispose pinned handles; POSIX replicas remain external.
   Managed removals preserve streams.
 
-External deltas never waive preservation; absent controls stay LEGACY_RETAINED.
-Owner-requested OFF adoption preserves comments; owner merge/fetch applies.
-Non-OFF changes need another PR. Published audits remain readable; unsupported
-pre-release confirmations refuse/remain retained. `import_budget_history` merges
-pinned state-store/per-host history. Independent `prepare_budget_import`/`check_budget_import` verify sources/charges/UNKNOWN/deduplication. Qualification
-requires published-API history, lost-row injection, import/check/replay/interruption/
-concurrency. See `MIGRATION-v1.9.5-to-v1.9.6.md`.
+POSIX qualification requires TMPDIR outside PROJECT on its filesystem; select external same-filesystem storage. Private 0700 wrappers retain inheritance replicas; qualify JSON lists exact paths. Preserve wrappers; owner-controlled cleanup only. Windows metadata preflights dispose creating handles; dry runs skip them.
+
+Require verified RELEASE's `docs/runbook/19-runbook-journal-recovery.md` ?Migration budget controls.
 
 ## AWF-258 successor
 
@@ -90,16 +86,12 @@ stages use sibling cleanup-pending.json. Archives stay nonrecursive.
 Quarantine: owner-controlled same-filesystem rename outside PROJECT; preserve links/modes/ownership; no copy/delete fallback.
 
 1. No exclusivity-proof CLI: owner stops/checks every host's installers/agents/editors/schedulers/processes/leases. Lock presence proves nothing.
-2. Preserve journal/objects/endpoints/metadata. `PYTHON -B RELEASE/scripts/qualify_upgrade.py runtime-hash --path ENDPOINT --expected-sha256 DIGEST` requires 0/`matches:true`; stop for 1=mismatch or 2=malformed/refused. PYTHON=external bootstrap interpreter; RELEASE=verified journal-writing release; PROJECT=absolute project. Backup=recorded-path/`runtime.previous_sha256`.
-3. No backup/canonical `.agentic/.venv`=previous hash: quarantine stage only. Otherwise authenticate canonical/stage=`runtime.new_sha256`; quarantine authenticated runtimes, leaving canonical absent. Absent stage: canonical=new when swapped, previous when unswapped. Existing stage/null new_sha256: unauthenticated; retain diagnostics. Quarantine needs independent owner-verified creation evidence; otherwise stop.
+2. Preserve journal copy/objects/endpoints/metadata. `PYTHON -B RELEASE/scripts/qualify_upgrade.py runtime-hash --path ENDPOINT --expected-sha256 DIGEST` requires 0/`matches:true`; stop for 1=mismatch or 2=malformed/refused. PYTHON=external bootstrap interpreter; RELEASE=verified journal-writing release; PROJECT=absolute project. Backup=recorded-path/`runtime.previous_sha256`.
+3. No backup/canonical `.agentic/.venv`=previous hash: quarantine stage only. Otherwise authenticate canonical/stage=`runtime.new_sha256`; quarantine authenticated runtimes, leaving canonical absent. Absent stage: canonical=swapped:new/unswapped:previous. Existing stage/null new_sha256: unauthenticated; retain diagnostics. Quarantine needs independent owner-verified creation evidence; otherwise stop. Meaning: contemporaneous trusted evidence binding stage creation/identity to this transaction.
 4. `PYTHON -B RELEASE/scripts/bootstrap_project.py --dest PROJECT --recover` restores provable managed files/receipt/provenance/backup.
-5. Legacy `.agentic-backup/<txid>`: authenticate existing journal-listed FILEs: `PYTHON -B RELEASE/scripts/qualify_upgrade.py file-hash --path FILE --expected-sha256 DIGEST` (new_sha256). Require reported modes/permissions/streams=journal/accepted baseline; unrecorded/unprovable metadata stops. Reject extras; quarantine exact directory/rerun recovery. Never edit journal/marker.
+5. Legacy `.agentic-backup/<txid>`: use step-2 journal copy; authenticate existing journal-listed FILEs: `PYTHON -B RELEASE/scripts/qualify_upgrade.py file-hash --path FILE --expected-sha256 DIGEST` (new_sha256). Require new_sha256/new_mode. POSIX `posix_ownership` records ORIGINALS only; copy UID=installing effective UID (preserved); GID=parent's group if setgid, otherwise installing effective GID (preserved parent-inheritance evidence). Windows modes/ACLs/streams=journal/accepted baseline. Unknown/differing/unrecorded/unprovable metadata stops. Reject extras; quarantine exact directory/rerun recovery. Never edit journal/marker.
 6. Resolve rows: authenticated restoration/quarantine or deliberate retention. Canonical RECOVERY_REFUSED names restored runtime, never automatically adopted; use step 7. Never discard runtime/remove marker.
 7. Archive index/references/path-by-path resolutions; move only resolved `retained-journal.json` externally. No retirement CLI; preserve evidence objects/adoption audit.
 8. Previous installation: `RUNTIME -B -I WORKFLOW --root PROJECT`: `verify-installation`, `validate-config`, `status`. Absolute restored paths: RUNTIME=`.agentic/.venv/bin/python` (Windows: `.agentic/.venv/Scripts/python.exe`); WORKFLOW=`.agentic/scripts/workflow.py`. Restored 1.9.5 prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE. Fresh-install rollback: confirm runtime/workflow/receipt absent; archive evidence/report uninstalled; checks unavailable. Retry requires recovery/resolution/owner authorization.
 
-Bind candidate/artifact/review/trust/publication, one-reservation/host/exactly-once allocation/limits; record commands/platform/interpreter/timings/counts/skips/failures/receipt hashes.
-
-Require zero exits/integrity true/ACCEPTED configuration/bound hashes. CONFIGURED proves consistency, not execution history. Require independent/specialist review, hosted checks/trust/publication-scan/review-barrier/owner-acceptance. Authorized rollout needs
-disposable proof. ACTIVE requires independent trust/observed receipt-changing adoption
-merge/accepted raw default-branch bytes; enables no adapters.
+Require verified RELEASE's `docs/runbook/19-runbook-journal-recovery.md` ?Qualification gates.

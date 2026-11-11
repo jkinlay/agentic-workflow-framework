@@ -54,8 +54,8 @@ class WindowsProbeTests(unittest.TestCase):
 
         def captured(path, **kwargs):
             result = original(path, **kwargs)
-            if path.name == 'probe':
-                parent = path.parent
+            if path.name.startswith('awf-metadata-probe-'):
+                parent = path
                 try:
                     parent.rename(parent.with_name(parent.name + '-original'))
                     parent.mkdir()

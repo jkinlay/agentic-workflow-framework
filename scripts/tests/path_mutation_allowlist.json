@@ -1,0 +1,842 @@
+[
+  {
+    "path": ".agentic/lib/agentic/adoption_config.py",
+    "line": 579,
+    "call": "os.replace(runtime_root, backup)",
+    "fingerprint": "986303ed5bf236c094d6e298f3fb37cbeb77aed4c23ef263774d5daf2cadaf28",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": ".agentic/lib/agentic/adoption_config.py",
+    "line": 581,
+    "call": "os.replace(stage, runtime_root)",
+    "fingerprint": "1bb7aa932cac4be154d2baae311520070f7c0ebf15e2ee477c8be3d93a2d45ac",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": ".agentic/lib/agentic/closeout.py",
+    "line": 100,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-closeout-probe-')",
+    "fingerprint": "571f349b17c1dadbb0dc77e1d82e060c4cbcce7189b608c0e0a3f39410b69c2a",
+    "object": "created by validation harness",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled closeout qualification scratch/report storage; not an installation or recovery writer."
+  },
+  {
+    "path": ".agentic/lib/agentic/closeout.py",
+    "line": 367,
+    "call": "os.replace(temporary, path)",
+    "fingerprint": "c60db1c386bc332500e881af34ff6ef56793ce64de01b05227a9a0af322c73f7",
+    "object": "created by validation harness",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled closeout qualification scratch/report storage; not an installation or recovery writer."
+  },
+  {
+    "path": ".agentic/lib/agentic/controller_state.py",
+    "line": 76,
+    "call": "os.chmod(path, mode)",
+    "fingerprint": "2415eb01d347fa55a86d4f250ca05c539a20d0f1a9e1db2f12ff71991323b632",
+    "object": "controller-created protected ledger/SQLite sidecars",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Protected controller state is outside all worker/project roots and controlled by its owner; no adopter stage mutation."
+  },
+  {
+    "path": ".agentic/lib/agentic/controller_state.py",
+    "line": 81,
+    "call": "os.chmod(item, mode)",
+    "fingerprint": "f2b2faecdd7ec178b32e49c414ca4201d075b56fc198630172be665e3c2b1c4d",
+    "object": "controller-created protected ledger/SQLite sidecars",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Protected controller state is outside all worker/project roots and controlled by its owner; no adopter stage mutation."
+  },
+  {
+    "path": ".agentic/lib/agentic/git_isolation.py",
+    "line": 275,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-git-read-')",
+    "fingerprint": "847dd63f0e084be4d1b1c1e421990e1da82901b034de2be3f90f81ff0a01bc95",
+    "object": "private Git read sandbox",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Read-only Git inspection sandbox under host-owner temporary storage; outside install/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/git_isolation.py",
+    "line": 303,
+    "call": "shutil.copyfile(shared_index, metadata / shared_index.name)",
+    "fingerprint": "bce2130eb5efdb4828f8af1af8561b1749ce60c8d892fd862b6da38057eb15c5",
+    "object": "private Git read sandbox",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Read-only Git inspection sandbox under host-owner temporary storage; outside install/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/git_isolation.py",
+    "line": 305,
+    "call": "shutil.copyfile(index, metadata / 'index')",
+    "fingerprint": "8c386cb6ac02f1970a0dbb92124e01881eaaa020e14fedea055a92c8efff33db",
+    "object": "private Git read sandbox",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Read-only Git inspection sandbox under host-owner temporary storage; outside install/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/git_isolation.py",
+    "line": 313,
+    "call": "shutil.copyfile(exclude, metadata / 'info/exclude')",
+    "fingerprint": "71591013e78b437495810d9f979efcab31bc5717e1dc13046c99022bdff37ecb",
+    "object": "private Git read sandbox",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Read-only Git inspection sandbox under host-owner temporary storage; outside install/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation.py",
+    "line": 355,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-heavy-executable-')",
+    "fingerprint": "455ce1791836aaba922c3282cf15e55722992c51ea16ed98251fc62d38de3d51",
+    "object": "validation executable probe",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled heavy-validation qualification scratch, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation.py",
+    "line": 357,
+    "call": "directory.chmod(448)",
+    "fingerprint": "0bcd3f93c269ab6896f19d3513a7a4fb3a5803d8eeb1cc0d3197a2a36689f9f7",
+    "object": "validation executable probe",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled heavy-validation qualification scratch, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation.py",
+    "line": 377,
+    "call": "os.unlink(staged)",
+    "fingerprint": "0849d00610b475d7bdfa340c69a9c43000f95a4396d7daebee12fcf8bd221969",
+    "object": "validation executable probe",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled heavy-validation qualification scratch, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 334,
+    "call": "path.chmod(mode & ~146)",
+    "fingerprint": "8aaec505a3b6141b60f17ee502053590df415a512926f790454ced566a52e7f3",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 336,
+    "call": "path.chmod(mode & ~146)",
+    "fingerprint": "8aaec505a3b6141b60f17ee502053590df415a512926f790454ced566a52e7f3",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 337,
+    "call": "destination.chmod(destination.stat().st_mode & ~146)",
+    "fingerprint": "1c9c69633d7f7c5d2856a3962cad360a854e7f39ce35d8adbb986a497127b744",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 342,
+    "call": "destination.chmod(destination.stat().st_mode | 448)",
+    "fingerprint": "7bb31be8343fa45608f73c99724c4755f8af27714237eac8d3d969f3674ee444",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 345,
+    "call": "path.chmod(path.stat().st_mode | (448 if path.is_dir() else 384))",
+    "fingerprint": "23234ee7fe9a945d3841c4a1660f60b0c2d47650047419b6d22421feb5405f9e",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 442,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-heavy-snapshot-')",
+    "fingerprint": "95c1f2859f2a1101ca3aad27a11b5834d122e74f0eb6a5037aa069d90b0b463d",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 688,
+    "call": "os.replace(temporary, self.path)",
+    "fingerprint": "e348640ca4cd873969d0b3fd3dbce45cce18790b1d6bd6502e615bb4b0f3a5b7",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 692,
+    "call": "temporary.unlink()",
+    "fingerprint": "10266c348b4074f537ab6c5fed62f1338e3361500711cf786da9678fc0144552",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 967,
+    "call": "target.unlink()",
+    "fingerprint": "605d476c87030b68332db5a5c2badea4df77f0e5150b12c4471e6ebb5fc08840",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
+    "line": 996,
+    "call": "log_target.unlink()",
+    "fingerprint": "1121546aa286861e4db64b2909bdc15460007a68524ad53986ad60a0b70a3892",
+    "object": "owner-selected validation snapshots/reports",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled frozen validation workspace and ledger, outside installer/upgrade/recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/host_preflight.py",
+    "line": 489,
+    "call": "tempfile.mkdtemp(prefix='awf-symlink-probe-')",
+    "fingerprint": "4f455f26d25637cfbb93b62094ac199b1fd0b9d777c87d269f667b4288a5b694",
+    "object": "new private retained write/symlink probe",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "FIXED",
+    "justification": "No pathname cleanup; exact retained probe path and owner action are returned in the preflight row."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 603,
+    "call": "tree.unlink(path)",
+    "fingerprint": "ac8ca5250613ec48cd5aa5b66ac06a62dc1c4fd38fc455b27776ba99c984764c",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 831,
+    "call": "tree.unlink(_recovery_object_path(digest))",
+    "fingerprint": "3bc2358e3e7f535959c41332946a40152d6c731f576bd984e3b924e20ecdbc4e",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 888,
+    "call": "tree.unlink(MARKER)",
+    "fingerprint": "c7b2509a7b680db1c8f95a30dd5ead1015941319b776b8584fc36937060802c2",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 889,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 1301,
+    "call": "tree.unlink(RETAINED_JOURNAL)",
+    "fingerprint": "6b87a02f539f1c2b3ba167b9d5fe32c09f160da56761e26520e162df8b607f5b",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2016,
+    "call": "os.replace(backup, canonical)",
+    "fingerprint": "2977c953efda20baa3eada3c090f2b8875543fde1d82b0ae50c881baa928d17c",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2135,
+    "call": "tree.unlink(item['path'])",
+    "fingerprint": "9ef9e227851b2615574568f61efa77997b9bce0748f870457ded68d6263bbcba",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2154,
+    "call": "tree.unlink(MARKER)",
+    "fingerprint": "c7b2509a7b680db1c8f95a30dd5ead1015941319b776b8584fc36937060802c2",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2155,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2275,
+    "call": "os.rename(stage, retained)",
+    "fingerprint": "bc1c3eec21b2ca4acd98375af2524314f6b0657d7c28aa6a119de4222dfd7de2",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Journal-authenticated runtime/stage namespace under exclusive transaction custody; target absence and runtime identity are preflighted."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2277,
+    "call": "os.rename(stage_name, name, src_dir_fd=stage_handle, dst_dir_fd=handle)",
+    "fingerprint": "eaa9e6c7993ac0e73fa15cdb703541b1dd59135430211bedb809bab4bf183c65",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2364,
+    "call": "tree.unlink(MARKER)",
+    "fingerprint": "c7b2509a7b680db1c8f95a30dd5ead1015941319b776b8584fc36937060802c2",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2365,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 2393,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "line": 3011,
+    "call": "dst.unlink(path)",
+    "fingerprint": "957b1cd7a468579f7753aaf89e00bdf1e3fa6db886e5e34276acab9b269835d6",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "Delegates to Tree.unlink: Windows compares full authenticated identity on the disposition handle; POSIX refuses and retains."
+  },
+  {
+    "path": ".agentic/lib/agentic/merge_train.py",
+    "line": 1035,
+    "call": "os.replace(temporary, path)",
+    "fingerprint": "c60db1c386bc332500e881af34ff6ef56793ce64de01b05227a9a0af322c73f7",
+    "object": "controller manifest",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled merge-train ledger outside adoption/upgrade/recovery paths."
+  },
+  {
+    "path": ".agentic/lib/agentic/operating.py",
+    "line": 664,
+    "call": "os.rename(parent / temp, parent / leaf)",
+    "fingerprint": "b3701dcde65f6f0190c32253c035c91e314e7abe94586dfb3e159efe715c5128",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "SAFE",
+    "justification": "Atomic no-replace publication of an exclusively created operating record; existing final names refuse."
+  },
+  {
+    "path": ".agentic/lib/agentic/operating.py",
+    "line": 679,
+    "call": "rename(handle, os.fsencode(temp), handle, os.fsencode(leaf), flag)",
+    "fingerprint": "04db1a0b37703b255e6c73eea976ba5885e486a9bdb08dbb5b489664ff863b5f",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "SAFE",
+    "justification": "Atomic no-replace publication of an exclusively created operating record; existing final names refuse."
+  },
+  {
+    "path": ".agentic/lib/agentic/operating.py",
+    "line": 762,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "SAFE",
+    "justification": "Delegates to identity-bound Windows disposition or explicit POSIX refusal/retention in Tree.unlink."
+  },
+  {
+    "path": ".agentic/lib/agentic/operating.py",
+    "line": 881,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "SAFE",
+    "justification": "Delegates to identity-bound Windows disposition or explicit POSIX refusal/retention in Tree.unlink."
+  },
+  {
+    "path": ".agentic/lib/agentic/protected_settings.py",
+    "line": 379,
+    "call": "path.unlink()",
+    "fingerprint": "d1be48384f6b878b78c26c20d263b4aac4c6efea3788dd6d0a68da3ce5902484",
+    "object": "controller default-policy lock",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Explicitly protected by this task: unchanged controller-only refresh lock, not an installation cleanup path."
+  },
+  {
+    "path": ".agentic/lib/agentic/provenance.py",
+    "line": 1477,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-provenance-objects-')",
+    "fingerprint": "93e3045e24e73a9a1aa5ee33e1b781f9d8e12e4863a74e8092d87dbeeb783394",
+    "object": "Git merge reproduction object store",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled commit-provenance qualification object database; not an installation or recovery writer."
+  },
+  {
+    "path": ".agentic/lib/agentic/providers/github_review_host.py",
+    "line": 1066,
+    "call": "temporary.unlink()",
+    "fingerprint": "10266c348b4074f537ab6c5fed62f1338e3361500711cf786da9678fc0144552",
+    "object": "host credential probe input",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled enrolled review-host temporary input; live review host is outside this install/recovery change."
+  },
+  {
+    "path": ".agentic/lib/agentic/publication.py",
+    "line": 1930,
+    "call": "self.path.unlink()",
+    "fingerprint": "43f225d591630075cea5936de3ed0a36454310cb59f02d58caec2c978b9bb6ea",
+    "object": "owner-controlled Git publication objects/lock",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Publication-only host-owned Git metadata/scratch; no installation or runtime recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/publication.py",
+    "line": 2401,
+    "call": "temporary.unlink(missing_ok=True)",
+    "fingerprint": "89264f836cef458860d8017bffabf55f2252d55d21b89f7cb12f9873ebc73ea7",
+    "object": "owner-controlled Git publication objects/lock",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Publication-only host-owned Git metadata/scratch; no installation or runtime recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/publication.py",
+    "line": 2404,
+    "call": "path.chmod(stat.S_IREAD)",
+    "fingerprint": "e83313e45472dc795547b491c49933210700b0cd5acd4320346d4dcab6f57997",
+    "object": "owner-controlled Git publication objects/lock",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Publication-only host-owned Git metadata/scratch; no installation or runtime recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/publication.py",
+    "line": 2840,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-publication-rewrite-')",
+    "fingerprint": "4d801cd13f5900108f9f63b31d184694079c3ca8fbc404954b3705c0e2aef1ae",
+    "object": "owner-controlled Git publication objects/lock",
+    "created_by_us": "no (owner/controller state may pre-exist)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Publication-only host-owned Git metadata/scratch; no installation or runtime recovery dispatch."
+  },
+  {
+    "path": ".agentic/lib/agentic/review_qualification.py",
+    "line": 502,
+    "call": "path.unlink()",
+    "fingerprint": "d1be48384f6b878b78c26c20d263b4aac4c6efea3788dd6d0a68da3ce5902484",
+    "object": "synthetic qualification attack markers",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Qualification-test-only synthetic markers in an owner-controlled disposable checkout."
+  },
+  {
+    "path": ".agentic/lib/agentic/safeio.py",
+    "line": 837,
+    "call": "advapi.SetFileSecurityW(str(path), 7 | protection, descriptor)",
+    "fingerprint": "dfdec7e1d190c068ca86d0ba439b4cfeed059d834099f8092102d9a8a082d1b0",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (unpublished CREATE_NEW leaf)",
+    "disposition": "SAFE",
+    "justification": "Metadata applies only to an unpublished CREATE_NEW leaf while its creating handle denies delete sharing and its ancestry remains pinned."
+  },
+  {
+    "path": ".agentic/lib/agentic/safeio.py",
+    "line": 839,
+    "call": "kernel.SetFileAttributesW(str(path), value['attributes'])",
+    "fingerprint": "34011100a22119e529f0ffd31a31e4d85e1b3f9927aed3a8d6c2f53775b8324d",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (unpublished CREATE_NEW leaf)",
+    "disposition": "SAFE",
+    "justification": "Metadata applies only to an unpublished CREATE_NEW leaf while its creating handle denies delete sharing and its ancestry remains pinned."
+  },
+  {
+    "path": ".agentic/lib/agentic/safeio.py",
+    "line": 1249,
+    "call": "os.replace(parent / temp, parent / name)",
+    "fingerprint": "e3ebc9b136e493c3496b8d0935a24f191a89edff8ffe11179199098575a4ac49",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": ".agentic/lib/agentic/safeio.py",
+    "line": 1251,
+    "call": "os.replace(temp, name, src_dir_fd=handle, dst_dir_fd=handle)",
+    "fingerprint": "c59bdbd4040d053b6315dc3ab320f496f8f66ca7527cf4722d35d22cfcfbdfdc",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": ".agentic/lib/agentic/streams.py",
+    "line": 1379,
+    "call": "tree.unlink(name)",
+    "fingerprint": "a19fc8b070ab62f323e605a8d36047761b72c89d90463616a455b90e27878cf6",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "SAFE",
+    "justification": "Delegates to identity-bound Windows disposition or explicit POSIX refusal/retention in Tree.unlink."
+  },
+  {
+    "path": ".agentic/lib/agentic/streams.py",
+    "line": 1382,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "SAFE",
+    "justification": "Delegates to identity-bound Windows disposition or explicit POSIX refusal/retention in Tree.unlink."
+  },
+  {
+    "path": ".agentic/lib/agentic/streams.py",
+    "line": 1436,
+    "call": "tree.unlink(JOURNAL)",
+    "fingerprint": "f776b854173eb671226f82080a1a375a8f11a77ed1f43ea9b756d325c4e97169",
+    "object": "authenticated transaction object",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "SAFE",
+    "justification": "Delegates to identity-bound Windows disposition or explicit POSIX refusal/retention in Tree.unlink."
+  },
+  {
+    "path": "scripts/ac42_e2e.py",
+    "line": 535,
+    "call": "tempfile.mkdtemp(prefix='awf-ac42-')",
+    "fingerprint": "b7bc7e0b244ff5ebcc0b9dba1a813dffa6a0a58351b5252b7b8ecc64a2aacab0",
+    "object": "synthetic disposable project",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Test-only end-to-end acceptance harness; never operates an adopter project."
+  },
+  {
+    "path": "scripts/ac42_e2e.py",
+    "line": 632,
+    "call": "shutil.copytree(ROOT, release, ignore=shutil.ignore_patterns('.git', '.tmp-tests', '__pycache__', '*.pyc'))",
+    "fingerprint": "65fd0bd892623dd9ada5bd8f8f977c067973089979d87a3fc2e28041574d77e4",
+    "object": "synthetic disposable project",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Test-only end-to-end acceptance harness; never operates an adopter project."
+  },
+  {
+    "path": "scripts/ac42_e2e.py",
+    "line": 669,
+    "call": "(project / 'notes-ac43.md').unlink()",
+    "fingerprint": "d34bb3cccf5235560bc80dad68e72e95cae17d3c536027323ecddf72bb768d67",
+    "object": "synthetic disposable project",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Test-only end-to-end acceptance harness; never operates an adopter project."
+  },
+  {
+    "path": "scripts/bootstrap_project.py",
+    "line": 53,
+    "call": "os.unlink(probe)",
+    "fingerprint": "e9ca7f3c0105db2a478e1ece40166ce172cb23d3c30d915aaa9cf44e26458cce",
+    "object": "explicit external assignment-state file",
+    "created_by_us": "yes temp/probe; no existing assignment state",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Controller-owner assignment state must be outside the adopted repository/worktree; separate owner-controlled state path."
+  },
+  {
+    "path": "scripts/bootstrap_project.py",
+    "line": 66,
+    "call": "os.replace(temporary, path)",
+    "fingerprint": "c60db1c386bc332500e881af34ff6ef56793ce64de01b05227a9a0af322c73f7",
+    "object": "explicit external assignment-state file",
+    "created_by_us": "yes temp/probe; no existing assignment state",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Controller-owner assignment state must be outside the adopted repository/worktree; separate owner-controlled state path."
+  },
+  {
+    "path": "scripts/bootstrap_project.py",
+    "line": 69,
+    "call": "os.unlink(temporary)",
+    "fingerprint": "bca71d02e3115ad81626ee063de00340894bf6ffb96486e47d4856cc59bd2982",
+    "object": "explicit external assignment-state file",
+    "created_by_us": "yes temp/probe; no existing assignment state",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Controller-owner assignment state must be outside the adopted repository/worktree; separate owner-controlled state path."
+  },
+  {
+    "path": "scripts/build_skill_distribution.py",
+    "line": 135,
+    "call": "shutil.copytree(skill, packaged_skill, ignore=shutil.ignore_patterns('agentic-workflow-template-v*.zip', 'release.json'))",
+    "fingerprint": "548e1e635dc1fc89305813304152d5138be37e4e3a6a23b44b9df21b8fe165a5",
+    "object": "new owner-selected release distribution",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled release packaging output, not the portable installation stage."
+  },
+  {
+    "path": "scripts/build_skill_distribution.py",
+    "line": 146,
+    "call": "shutil.copyfile(ROOT / legal_name, distribution / legal_name)",
+    "fingerprint": "c448dcd1a54391ab8cf9e95abf06de655b4109008ade637e2d87f960af80864c",
+    "object": "new owner-selected release distribution",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled release packaging output, not the portable installation stage."
+  },
+  {
+    "path": "scripts/build_skill_distribution.py",
+    "line": 147,
+    "call": "shutil.copyfile(release_zip, assets / release_zip.name)",
+    "fingerprint": "98fffe9fc985d821c015ff6da9c64139cb32f82277def7291f912d270cef7ae2",
+    "object": "new owner-selected release distribution",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled release packaging output, not the portable installation stage."
+  },
+  {
+    "path": "scripts/generate_examples.py",
+    "line": 539,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-generate-examples-')",
+    "fingerprint": "663aa8c5c38800feac92b4126384e10f8419e5e0e51a8994816a107a218ac2b0",
+    "object": "synthetic example build workspace",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Test-only fixture generation scratch; no adopter install/upgrade or recovery target."
+  },
+  {
+    "path": "scripts/installed_self_test_capture.py",
+    "line": 541,
+    "call": "os.replace(temporary, run / name)",
+    "fingerprint": "24a7a9d1f52e08774d111159a32721eab358ca5923adc57c8c23fb0b3cae4376",
+    "object": "new self-test capture report",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled qualification capture directory, no managed-project mutation."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "line": 542,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-release-inspect-')",
+    "fingerprint": "4fcfc427193b2fee2d73bcb614920cdc21be3591b5d2211db48130ff0b169812",
+    "object": "release publication scratch",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled release publication inspection scratch, outside adoption/upgrade/recovery dispatch."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "line": 701,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-release-publish-')",
+    "fingerprint": "3c7da848293c19b3e897165eded998ba29600a4d965e54468d089760ffb7af2c",
+    "object": "release publication scratch",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled release publication inspection scratch, outside adoption/upgrade/recovery dispatch."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "line": 767,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-release-verify-')",
+    "fingerprint": "dcc4ee28fcd93a1da85f10a152659eb0729ca45eaa7bb8305164e438ce612874",
+    "object": "release publication scratch",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Owner-controlled release publication inspection scratch, outside adoption/upgrade/recovery dispatch."
+  },
+  {
+    "path": "scripts/qualify_upgrade.py",
+    "line": 171,
+    "call": "tempfile.mkdtemp(prefix='awf-permission-probe-')",
+    "fingerprint": "253eb6cead281214e1ffbded96a30560a5150b1c6a0703b472d700f40051d65b",
+    "object": "new private retained permission wrapper",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "FIXED",
+    "justification": "Unchanged 0700 wrapper encloses the inheritance replica; operation JSON inventories every retained path; no pathname cleanup."
+  },
+  {
+    "path": "scripts/qualify_upgrade.py",
+    "line": 197,
+    "call": "os.removexattr(fd, name)",
+    "fingerprint": "0c356b4ab5a22fe2add1da1f2cf2cc42a67e7a62c0f8dcf112cc3db98c763011",
+    "object": "new private retained permission wrapper",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "FIXED",
+    "justification": "The first metadata argument is the open replica descriptor inside an unchanged private 0700 wrapper, never a substituted pathname."
+  },
+  {
+    "path": "scripts/qualify_upgrade.py",
+    "line": 199,
+    "call": "os.setxattr(fd, name, value)",
+    "fingerprint": "7f5d5682098ac763f14b1e0b4ee7aa03f65801c2f892195e6da0f35be5d45db1",
+    "object": "new private retained permission wrapper",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "FIXED",
+    "justification": "The first metadata argument is the open replica descriptor inside an unchanged private 0700 wrapper, never a substituted pathname."
+  },
+  {
+    "path": "scripts/validate_archive.py",
+    "line": 55,
+    "call": "os.replace(temporary, output)",
+    "fingerprint": "f8260b8e70acad0ae4d96844027c57cd4cf1fa1549bca569bba39add370cbaaa",
+    "object": "owner-controlled archive qualification workspace",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Test-only closed-archive acceptance harness in explicit disposable work storage; never an adopter installation."
+  },
+  {
+    "path": "scripts/validate_archive.py",
+    "line": 251,
+    "call": "os.rename(candidate, retained)",
+    "fingerprint": "e1bfa668a923d69a45b1b287a8e6984bcbc84dc910f9803306de6a6154032a1a",
+    "object": "owner-controlled archive qualification workspace",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Test-only closed-archive acceptance harness in explicit disposable work storage; never an adopter installation."
+  },
+  {
+    "path": "scripts/validate_archive.py",
+    "line": 359,
+    "call": "target.chmod(int(rebuild_modes['files'][entry.filename[len(PREFIX):]], 8) & 511)",
+    "fingerprint": "ee5bc0566cdfc2406a90066754a207dbff3751698d271bbfcaebb03bd9cab318",
+    "object": "owner-controlled archive qualification workspace",
+    "created_by_us": "yes (scratch or transaction-created)",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Test-only closed-archive acceptance harness in explicit disposable work storage; never an adopter installation."
+  },
+  {
+    "path": "global/awf-portable/scripts/install_skill.py",
+    "line": 344,
+    "call": "os.utime(stream.fileno(), ns=(metadata['atime_ns'], metadata['mtime_ns']))",
+    "fingerprint": "381e2f09912f16d3c6af9f88297ce1aa5aa4ad4e0b62b2c58fb4b2a0eab3a881",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "The first metadata argument is the still-open exclusive creating descriptor, never a pathname."
+  },
+  {
+    "path": "global/awf-portable/scripts/install_skill.py",
+    "line": 346,
+    "call": "os.setxattr(stream.fileno(), name, value)",
+    "fingerprint": "3cae1633c6869564528b09e65dc385f2c9078709e041d770da906c8334813ee1",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "SAFE",
+    "justification": "The first metadata argument is the still-open exclusive creating descriptor, never a pathname."
+  },
+  {
+    "path": "global/awf-portable/scripts/install_skill.py",
+    "line": 559,
+    "call": "os.replace(dest, backup)",
+    "fingerprint": "52fe88d93bdd535fad10e4819a9d847fc7476f368afda24eee21db959b256437",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": "global/awf-portable/scripts/install_skill.py",
+    "line": 562,
+    "call": "os.replace(stage, dest)",
+    "fingerprint": "85a67fdea2d48a7ce358cb1b17cfaf9e96bfc1d1db3368394dfb4574ce881a5c",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  },
+  {
+    "path": "global/awf-portable/scripts/install_skill.py",
+    "line": 565,
+    "call": "os.replace(backup, dest)",
+    "fingerprint": "f4698154752daba621be6178e6804a4e8df077a9ce50820276c999a2be584ec4",
+    "object": "authenticated transaction object",
+    "created_by_us": "mixed: new stage/temp; pre-existing managed destination/runtime",
+    "disposition": "BLOCKED",
+    "justification": "Identity/absence preflight and pinned parents do not bind a later pathname replacement to its checked leaf; no object-bound publication proof is supplied by this pass."
+  }
+]

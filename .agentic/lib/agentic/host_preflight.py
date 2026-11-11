@@ -482,16 +482,20 @@ def gitattributes_coverage(root):
 
 
 def symlink_privilege():
+    # POSIX cannot remove a symlink conditionally on its creating identity.
+    # Retain the small private probe and report its exact owner cleanup path.
+    folder = None
     try:
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "target.txt"
-            target.write_text("x", encoding="utf-8")
-            (Path(folder) / "link").symlink_to(target)
-        return "PASS", "symbolic links can be created", ""
+        folder = Path(tempfile.mkdtemp(prefix='awf-symlink-probe-'))
+        target = folder / "target.txt"
+        with target.open('xb') as stream:
+            stream.write(b'x')
+        (folder / "link").symlink_to(target)
+        return "PASS", "symbolic links can be created; retained probe: " + str(folder), "Inspect retained probe under exclusive owner control."
     except OSError as exc:
         if getattr(exc, "winerror", None) == 1314 or "1314" in str(exc):
-            return "SKIP", "Windows symlink creation privilege unavailable (WinError 1314).", "Enable Developer Mode or grant SeCreateSymbolicLinkPrivilege; tests needing links are declared skips (PLATFORM_PRIVILEGE)."
-        return "WARN", f"symlink probe failed: {type(exc).__name__}", "Inspect filesystem permissions."
+            return "SKIP", "Windows symlink creation privilege unavailable (WinError 1314). Retained probe: " + str(folder), "Enable Developer Mode or grant SeCreateSymbolicLinkPrivilege; tests needing links are declared skips (PLATFORM_PRIVILEGE). Inspect retained probe under exclusive owner control."
+        return "WARN", f"symlink probe failed: {type(exc).__name__}; retained probe: {folder}", "Inspect filesystem permissions and retained probe."
 
 
 def _excludes_agentic(value):
@@ -714,19 +718,43 @@ def _process_launch_row(root):
 
 
 def _repository_writable_row(root, probe=None):
+    probe_path = None
     try:
         if probe is not None:
             writable = bool(probe(Path(root)))
         else:
-            with tempfile.TemporaryDirectory(prefix=".awf-write-probe-", dir=root):
-                writable = True
+            from . import safeio
+            import uuid
+            if os.name == 'nt':
+                with safeio.Tree(root) as tree:
+                    probe_name = '.awf-write-probe-' + uuid.uuid4().hex
+                    probe_path = str(tree.root / probe_name)
+                    handle = safeio.win_create_directory(tree._dirs[tree.root], probe_name)
+                    try:
+                        safeio.win_dispose_created(handle)
+                    finally:
+                        safeio.kernel.CloseHandle(handle)
+                    probe_path = None
+            else:
+                anonymous = getattr(os, 'O_TMPFILE', None)
+                if anonymous is None:
+                    return row('repository_writable', 'WARN',
+                               'UNOBSERVED: host has no anonymous write-probe primitive',
+                               'Confirm repository write access under exclusive owner control; no named probe was created.')
+                # The kernel returns a newly created, unlinked inode. Closing
+                # its creating descriptor releases it without any pathname
+                # deletion or unaccounted directory in the project inventory.
+                descriptor = os.open(root, anonymous | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+                os.close(descriptor)
+            writable = True
         if writable:
             return row("repository_writable", "PASS", "repository write probe succeeded", "")
         return row("repository_writable", "WARN", "repository write probe was refused",
                    "Grant the worker write access to the single repository root before normal work begins.")
-    except (OSError, PermissionError) as exc:
-        return row("repository_writable", "WARN", type(exc).__name__ + ": repository write probe failed",
-                   "Grant the worker write access to the single repository root before normal work begins.")
+    except (OSError, ValueError) as exc:
+        retained = ('; inspect probe path if present: ' + probe_path) if probe_path else ''
+        return row("repository_writable", "WARN", type(exc).__name__ + ": repository write probe failed" + retained,
+                   "Confirm repository write access and inspect any reported probe under exclusive owner control before normal work begins.")
 
 
 def external_resource_rows(registry, mappings, *, execute=None, now=None):
