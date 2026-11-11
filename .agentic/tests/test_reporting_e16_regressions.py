@@ -1,5 +1,6 @@
 """Pre-E14: admitted controller/CLI observations, fake HTTP and disk restart."""
 from copy import deepcopy
+from test_reporting_timing import _logical_slow_calls
 from pathlib import Path
 import json
 import unittest
@@ -384,3 +385,7 @@ def install_tests():
 
 
 install_tests()
+# The generated CLI tests inherit e3's per-call network latency.
+for _name, _test in tuple(vars(CliTests).items()):
+    if _name.startswith('test_'):
+        setattr(CliTests, _name, _logical_slow_calls(_test))

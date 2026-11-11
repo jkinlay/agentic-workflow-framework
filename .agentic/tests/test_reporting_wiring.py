@@ -109,6 +109,102 @@ class ReportingSettingsTests(unittest.TestCase):
         self.assertEqual(controller.path.read_bytes(), before)
 
 
+class OperatingDiagnosticMatrixTests(unittest.TestCase):
+    def test_budgeting_and_reporting_survive_both_diagnostic_paths(self):
+        from agentic.budgeting import fresh_settings, resolve_settings
+        from agentic.canonical import canonical, load
+        from agentic.operating import _budgeting_projection
+        from agentic.operating_status import with_operating
+        from agentic.policy import policy_hash
+        from agentic.reporting.settings import effective_reporting
+        from settings_pr_fixtures import publish_fixture_settings
+
+        gov = governance()
+        gov['github']['repository_id'] = 101
+        workflow = load(Path(__file__).resolve().parents[1] / 'workflow.yaml')
+        governance_before = canonical(gov)
+        policy_before = policy_hash(gov, workflow)
+        governance_hash = fingerprint('operating-governance', gov)
+        seen_operating = {}
+        cells = (
+            ('W1', 'with_operating', 'source', False, 'off'),
+            ('W2', 'with_operating', 'source', True, 'both'),
+            ('W3', 'with_operating', 'installed', False, 'both'),
+            ('W4', 'with_operating', 'installed', True, 'off'),
+            ('I1', 'inspect_operating', 'source', False, 'both'),
+            ('I2', 'inspect_operating', 'source', True, 'off'),
+            ('I3', 'inspect_operating', 'installed', False, 'off'),
+            ('I4', 'inspect_operating', 'installed', True, 'both'),
+        )
+        for cell, function, mode, explicit, reporting in cells:
+            with self.subTest(cell=cell, function=function, mode=mode,
+                              budgeting='explicit' if explicit else 'absent', reporting=reporting):
+                with tempfile.TemporaryDirectory() as raw:
+                    root = Path(raw)
+                    if mode == 'source':
+                        source_only.write_awf_source_fixture(root)
+                    config = op.default_operating(gov['execution']['model_routing'])
+                    if explicit:
+                        config['budgeting'] = fresh_settings()
+                    else:
+                        config.pop('budgeting')
+                    config['reporting'] = dict(mode=reporting, bindings=(
+                        [binding(p, gov['project']['id'], str(gov['github']['repository_id']))
+                         for p in ('teams', 'slack')] if reporting == 'both' else []))
+                    publish_fixture_settings(self, root, gov, config)
+                    if mode == 'source':
+                        manifest = json.loads((root / 'MANIFEST.json').read_bytes())
+                        manifest['files'][op.CONFIG] = sha256((root / op.CONFIG).read_bytes())
+                        (root / 'MANIFEST.json').write_bytes(op._json(manifest))
+                    else:
+                        # Receipt presence selects diagnostics, not installation acceptance.
+                        (root / op.INSTALLED).write_bytes(b'{}\n')
+                    self.assertEqual(mode == 'source', source_only.is_awf_source_repository(root))
+                    operating_before = (root / op.CONFIG).read_bytes()
+                    baseline = op.validate_operating(config, gov)
+                    report = dict(status='ACCEPTED', unresolved=[], policy_sha256=policy_before)
+                    if function == 'with_operating':
+                        combined = with_operating(root, gov, report)
+                        self.assertEqual('ACCEPTED', combined['status'])
+                        self.assertEqual(policy_before, combined['policy_sha256'])
+                        self.assertEqual(mode == 'source',
+                                         combined['operating'].get('provenance') == 'source_template')
+                        result = combined['operating']
+                    else:
+                        result = op.inspect_operating(root, gov)
+                    self.assertEqual('ACCEPTED', result['status'], result)
+                    self.assertIn('budgeting', result)
+                    self.assertIn('reporting', result)
+                    budget = result['budgeting']
+                    self.assertEqual(_budgeting_projection(config), budget)
+                    if explicit:
+                        self.assertNotIn('diagnostic_fallback', budget)
+                        self.assertEqual(config['budgeting'], budget)
+                    else:
+                        self.assertEqual('LEGACY_RETAINED', budget['disposition'])
+                        self.assertFalse(budget['settings_persisted'])
+                        self.assertEqual(resolve_settings(config), budget['diagnostic_fallback'])
+                        for key in resolve_settings(config):
+                            self.assertNotIn(key, budget)
+                    self.assertEqual(effective_reporting(config), result['reporting'])
+                    self.assertEqual(reporting, result['reporting']['mode'])
+                    # Diagnostics expose operating identity as hash; only the
+                    # combined report carries the input policy_sha256.
+                    after = op.read_operating(root, gov)
+                    self.assertEqual(operating_before, (root / op.CONFIG).read_bytes())
+                    self.assertEqual(config, after.config)
+                    self.assertEqual(baseline.operating_hash, result['hash'])
+                    self.assertEqual(baseline.operating_hash, after.operating_hash)
+                    self.assertEqual(governance_hash, baseline.governance_hash)
+                    self.assertEqual(baseline.governance_hash, after.governance_hash)
+                    self.assertEqual(governance_before, canonical(gov))
+                    self.assertEqual(policy_before, policy_hash(gov, workflow))
+                    self.assertEqual(dict(status='ACCEPTED', unresolved=[], policy_sha256=policy_before), report)
+                    variant = (explicit, reporting)
+                    self.assertEqual(seen_operating.setdefault(variant, result['hash']), result['hash'])
+        self.assertEqual(4, len(set(seen_operating.values())))
+
+
 class ReportingRuntimeTests(unittest.TestCase):
     def setUp(self):
         secrets = patch.dict(os.environ, REPORT_TOKEN='synthetic-report-token')

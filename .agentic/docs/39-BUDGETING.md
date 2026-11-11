@@ -14,9 +14,9 @@ Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enable
 Limits: integers 1..9007199254740991; switches: booleans. No Epic overrides.
 Run `operating validate --file PROPOSED`; invalid combinations refuse before PR preparation.
 
-Branch from fetched default; preserve text/comments. Show before/after under publication authority. Restricted pushes: branch/body for owner publication. Owners merge.
+Branch from fetched default; preserve text/comments. Show before/after under publication authority; change requested values. Restricted pushes: branch/body for owner publication. Owners merge; agents never merge.
 No owner terminal commands. Git/PR history audits protected changes;
-protected `operating set` refuses without writes. Calendar uses the same PR route,
+protected `operating set` refuses without writes. Calendar uses this PR route,
 effective source and validation; see [calendar](operating-calendar.md).
 Reporting defaults OFF; Teams/Slack/both share this PR route with project-bound destinations; preserve delivery state.
 
@@ -34,12 +34,12 @@ tracking refs or nondefault working values refuse budget work even if enforcemen
 says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
 before planning/dispatch on that refusal; other commands remain available.
 Next cycle or `git remote set-head origin --auto` establishes identity.
-With no origin configured there is no remote policy refresh. Empty,
+Without configured origin, remote policy never refreshes. Empty,
 malformed, invalid or unavailable policy blobs refuse. Non-repositories run no Git/gh.
 OFF needs no ledger/telemetry/reservations. Preserve upgrade choices/history; never invent usage.
 
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
-ref, never evidence of policy refresh. New merges remain invisible until fetched.
+ref, never evidence of policy refresh. Merges remain invisible until fetched.
 The controller's own checkout requires repository-local remote.origin.url;
 relative/inside-checkout paths refuse. Use Git 2.29+ ([notes](https://git-scm.com/docs/RelNotes/2.29.0)); older-binary execution remains unproven. Lock before 30-second discovery/fetch,
 advertised-commit checking and publication. Mismatches retry next cycle.
@@ -83,7 +83,7 @@ duplicate reservations. Preserve legacy identities; never relaunch replays.
 OFF requires no budget database, telemetry, reservations/events, warnings or
 overrun quarantine. Retain security/permissions/ownership/review/merge/host-capacity
 and bounded recovery controls; security/context/review mismatches quarantine.
-Existing recovery limits and owner authorization to raise them bind in every mode.
+Recovery limits and owner authorization to raise them bind in every mode.
 Historical budget overruns do not block OFF/accounting-only work.
 Ledger-free routing proposals never admit/launch; operational admission remains required.
 Accounting-only records usage without quota refusal/warnings/quarantine. Unknown

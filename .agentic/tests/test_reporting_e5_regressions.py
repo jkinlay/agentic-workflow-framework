@@ -1,4 +1,5 @@
 from test_reporting_fixtures import reporting_policy_snapshot
+from test_reporting_timing import _logical_slow_calls
 """Pre-E5 regressions: real controller, CLI, outbox and platform transports."""
 from copy import deepcopy
 from contextlib import redirect_stdout
@@ -122,6 +123,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.cycle('2026-11-10T10:03:00Z')['errors'], [])
         self.assertEqual(len(self.network.posts), 6)
 
+    @_logical_slow_calls
     def test_delivered_review_withdrawal_then_head_change_corrects_each_thread_once(self):
         self.network.__class__ = ThreadNetwork
         ThreadNetwork.__init__(self.network)

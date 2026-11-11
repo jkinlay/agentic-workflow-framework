@@ -1,4 +1,5 @@
 """Owner-readability regressions through reporting, controller and CLI ports."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 from pathlib import Path
 from contextlib import redirect_stdout
@@ -345,6 +346,7 @@ class ControllerTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    @_logical_slow_calls
     def test_cli_owner_readability_and_large_alert_delivery(self):
         def inspect(case, result, output):
             case.helper.listed = []
@@ -352,6 +354,7 @@ class CliTests(unittest.TestCase):
             presentation_probe(self, case, lambda now: e12.E12CliTests.cycle(self, case, now))
         e6.CliTests.probe(self, lambda case, net: None, inspect)
 
+    @_logical_slow_calls
     def test_cli_invalid_figures_still_land_both_reports(self):
         def inspect(case, result, output):
             case.helper.listed = []
@@ -364,6 +367,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual({d['status'] for d in case.status()['deliveries'] if d['delivery_id'] in ids}, {'DELIVERED'})
         e6.CliTests.probe(self, lambda case, net: None, inspect)
 
+    @_logical_slow_calls
     def test_cli_reads_enabled_canonical_ledger_without_enabling_or_writing_it(self):
         from agentic.budgeting import BudgetLedger, fresh_settings
         from agentic.budget_enrollment import EnrollmentRegistry

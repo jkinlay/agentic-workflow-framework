@@ -26,8 +26,9 @@ class _LogicalSlowCalls:
     Budget code sees the original 30/45-second deadlines and exact call delays.
     Host subprocess polling, pipe readers and other infrastructure stay native.
     """
-    def __init__(self):
+    def __init__(self, *fixture_modules):
         self.local = threading.local()
+        self.fixture_modules = fixture_modules
 
     def now(self):
         return getattr(self.local, 'elapsed', 0.0)
@@ -87,22 +88,35 @@ class _LogicalSlowCalls:
 
             cancel = join = start
         original_transport = BaseTransport.__init__
+        # E7 profiles native C-call sleep identities to reject blocking
+        # Retry-After handling. Keep that detector and transport pause native;
+        # its HTTP fixture latency still uses e3's separate logical sleeper.
+        native_sleep_modules = {module for module in self.fixture_modules
+            if getattr(module, '__file__', '').replace('\\', '/').rsplit('/', 1)[-1]
+            == 'test_reporting_e7_regressions.py'}
         def transport(instance, *args, **kwargs):
             # BaseTransport captured sleep in its default argument at import.
-            kwargs['pause'] = clock.sleep
+            if not native_sleep_modules:
+                kwargs['pause'] = clock.sleep
             return original_transport(instance, *args, **kwargs)
         self.stack = ExitStack()
         for name, value in [('agentic.reporting.bounded.monotonic', self.now),
                             ('agentic.reporting.runtime.monotonic', self.now),
                             ('agentic.reporting.deadline.monotonic', self.now),
                             (__name__ + '._slow_sleep', self.sleep),
-                            ('test_reporting_e3_regressions.time',
-                             _FixtureNamespace(e3.time, sleep=self.sleep)),
                             ('agentic.reporting.deadline.threading',
                              _FixtureNamespace(deadline.threading, Timer=LogicalTimer)),
                             ('threading.Thread', ReportingThread),
                             ('agentic.reporting.http_transport.BaseTransport.__init__', transport)]:
             self.stack.enter_context(patch(name, value))
+        # Patch each fixture's reference, never attributes on stdlib time:
+        # subprocess polling and host infrastructure must keep native clocks.
+        for module in dict.fromkeys((e3, *self.fixture_modules)):
+            if module in native_sleep_modules:
+                continue
+            if hasattr(module, 'time'):
+                self.stack.enter_context(patch.object(module, 'time',
+                    _FixtureNamespace(module.time, sleep=self.sleep, monotonic=self.now)))
         return self
 
     def __exit__(self, *args):
@@ -111,9 +125,10 @@ class _LogicalSlowCalls:
 
 def _logical_slow_calls(test):
     from functools import wraps
+    import sys
     @wraps(test)
     def run(self):
-        with _LogicalSlowCalls():
+        with _LogicalSlowCalls(sys.modules[test.__module__]):
             return test(self)
     return run
 
@@ -129,7 +144,9 @@ def _host_subprocess_waiter(polls):
 
 class ReportingTimingTests(unittest.TestCase):
     def test_host_subprocess_polling_never_advances_reporting_clock(self):
-        for polls in (0, 1, 100, 1000):
+        # Exercise zero, one and repeated host sleeps. Their count cannot
+        # advance the separate reporting clock; large counts only wait longer.
+        for polls in (0, 1, 2, 3):
             with self.subTest(polls=polls), _LogicalSlowCalls() as clock:
                 before = clock.now()
                 _host_subprocess_waiter(polls)

@@ -1,4 +1,5 @@
 """Pre-E11: real controller/CLI, restarted outbox and strict HTTP threads."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 import threading
 import time
@@ -234,21 +235,27 @@ class E11Tests(unittest.TestCase):
     def test_restorations_share_concurrent_destination_delivery(self):
         self.concurrent_probe(self, self.cycle)
 
+    @_logical_slow_calls
     def test_unknown_restoration_reconciles_after_withdrawal(self):
         self.uncertain_probe(self, self.cycle)
 
+    @_logical_slow_calls
     def test_unknown_restoration_reconciles_after_evening_cutoff_and_withdrawal(self):
         self.uncertain_probe(self, self.cycle, cutoff=True)
 
+    @_logical_slow_calls
     def test_unknown_restoration_reconciles_after_cutoff_while_still_ready(self):
         self.uncertain_probe(self, self.cycle, cutoff=True, withdrawn=False)
 
+    @_logical_slow_calls
     def test_ready_withdrawn_ready_withdrawn_keeps_both_original_roots(self):
         self.chain_probe(self, self.cycle)
 
+    @_logical_slow_calls
     def test_restoration_rechecks_readiness_after_destination_verification(self):
         self.guard_probe(self, self.cycle)
 
+    @_logical_slow_calls
     def test_restoration_rechecks_calendar_after_destination_verification(self):
         self.guard_probe(self, self.cycle, cutoff=True)
 
@@ -262,21 +269,27 @@ class E11CliTests(unittest.TestCase):
     def test_cli_restorations_share_concurrent_destination_delivery(self):
         self.probe(E11Tests.concurrent_probe)
 
+    @_logical_slow_calls
     def test_cli_unknown_restoration_reconciles_after_withdrawal(self):
         self.probe(E11Tests.uncertain_probe)
 
+    @_logical_slow_calls
     def test_cli_unknown_restoration_reconciles_after_evening_cutoff_and_withdrawal(self):
         self.probe(E11Tests.uncertain_probe, cutoff=True)
 
+    @_logical_slow_calls
     def test_cli_unknown_restoration_reconciles_after_cutoff_while_still_ready(self):
         self.probe(E11Tests.uncertain_probe, cutoff=True, withdrawn=False)
 
+    @_logical_slow_calls
     def test_cli_ready_withdrawn_ready_withdrawn_keeps_both_original_roots(self):
         self.probe(E11Tests.chain_probe)
 
+    @_logical_slow_calls
     def test_cli_restoration_rechecks_readiness_after_destination_verification(self):
         self.probe(E11Tests.guard_probe)
 
+    @_logical_slow_calls
     def test_cli_restoration_rechecks_calendar_after_destination_verification(self):
         self.probe(E11Tests.guard_probe, cutoff=True)
 
