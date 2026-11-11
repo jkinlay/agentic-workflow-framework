@@ -17,6 +17,7 @@ from . import ValidationError
 from .child_process import child_env
 from .canonical import MAX_DOCUMENT_BYTES, _pairs, canonical, loads, now_text, timestamp, validate_value
 from .controller_state import STATE_SCHEMA_VERSION, configure_database, protected_state_path, restrict_state_permissions
+from .reporting.policy import policy_cycle
 STREAM_STATES = {'WORKING', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 TICKET_STATES = {'ELIGIBLE', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 LIFECYCLE_ROLES = {'implementation': 'writer', 'independent_review': 'critic', 'amendment': 'writer'}
@@ -899,6 +900,8 @@ class ContinuousControllerStore:
 						db.execute(statement)
 				for statement in BATCH_AUDIT_DDL:
 					db.execute(statement)
+				from .reporting.delivery import install_delivery_schema
+				install_delivery_schema(db)
 				self._migrate_dispatch_rows(db)
 				configured = canonical(sorted(stream_ids)).decode()
 				old = db.execute("SELECT value FROM controller_meta WHERE key='streams'").fetchone()
@@ -1544,7 +1547,7 @@ class ContinuousControllerStore:
 	def digest(self, now, *, calendar=None):
 		current = timestamp(now)
 		with self.transaction() as db:
-			pending = db.execute('SELECT payload_json FROM controller_outbox WHERE acknowledged_at IS NULL ORDER BY rowid LIMIT 1').fetchone()
+			pending = db.execute("SELECT payload_json FROM controller_outbox WHERE acknowledged_at IS NULL AND kind<>'REPORT' ORDER BY rowid LIMIT 1").fetchone()
 			if pending is not None:
 				return loads(pending['payload_json'])
 			revision = int(self._meta(db, 'revision'))
@@ -3308,7 +3311,7 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 def production_review_batching_cycle(store, *, calendar, repository_root, config, operating_snapshot,
         binding, clock, load_calendar=None,
         observe_owner_ready=None, observe_review_candidate=None,
-        deliver_review_batch=None, observe_review_delivery=None):
+        deliver_review_batch=None, observe_review_delivery=None, candidate_limit=None):
 	"""Routine presentation only, through trusted injected ports; never transport.
 
 	Discovery returns {binding, observed_at, candidates}; candidates are locators.
@@ -3327,7 +3330,10 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 	from .budgeting import policy_repository_root
 	# Supplied snapshots and calendar values are data, never accepted policy.
 	repository_root = policy_repository_root(repository_root, operating_snapshot)
-	accepted = effective_snapshot(repository_root, config, operating_snapshot)
+	from .reporting.policy import prepared_snapshot
+	accepted = prepared_snapshot(repository_root, config, operating_snapshot)
+	if accepted is None:
+		accepted = effective_snapshot(repository_root, config, operating_snapshot)
 	require_budget_policy(accepted)
 	calendar = effective_calendar(accepted.config)
 	batch_store = ReviewBatchStore(store)
@@ -3337,7 +3343,10 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 	def finish():
 		result['status'] = batch_store.view(clock(), calendar)
 		result['owner_alerts'] = result['status']['owner_alerts']
+		reporting_failures = batch_store.reporting_failure_intents()
 		for alert in result['owner_alerts']:
+			if alert.get('intent_id') in reporting_failures:
+				continue  # Reporting retains FAILED and owns its durable alerts.
 			result['errors'].append({'operation': 'review_owner_attention', **deepcopy(alert)})
 		return result
 
@@ -3357,7 +3366,10 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 				and isinstance(ready['candidates'], list), 'Owner-ready discovery is foreign, stale or malformed')
 			canonical(ready)
 			result['state'] = 'PENDING'
-			for candidate in ready['candidates']:
+			candidates = ready['candidates']
+			if candidate_limit is not None:
+				candidates, result['deferred'] = batch_store.discovery_candidates(candidates, candidate_limit)
+			for candidate in candidates:
 				try:
 					_require(isinstance(candidate, dict) and str(candidate.get('repository_id')) == binding['repository_id'],
 						'Review candidate repository differs from the controller binding')
@@ -3370,9 +3382,15 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 					else:
 						result['unqualified'] += 1
 				except Exception as exc:
+					if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+						result.update(state='DEFERRED', reason=str(exc))
+						break
 					failed('review_enqueue', exc)
 		except Exception as exc:
-			failed('review_discovery', exc)
+			if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+				result.update(state='DEFERRED', reason=str(exc))
+			else:
+				failed('review_discovery', exc)
 	# No delivery port means durable collection only, including during the lane E
 	# handoff. An absent port consumes no attempt; lane E owns reporting OFF.
 	if deliver_review_batch is None and observe_review_delivery is None:
@@ -3392,7 +3410,7 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 
 		# Restart never resends unresolved identities. Only verified terminal
 		# readback may complete them or admit the store's one remaining retry.
-		for pending in batch_store.pending_batches():
+		for pending in batch_store.pending_batches(limit=1 if candidate_limit is not None else None):
 			if batch_store.release_unsent(pending['batch_id'], clock(), calendar,
 					reason='Restart recovered durable preparation with no send started'):
 				continue
@@ -3406,7 +3424,7 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 		while True:
 			now = clock()
 			batch = batch_store.claim(now, calendar,
-				lambda candidate: observe_review_candidate(candidate, now), exclude=excluded)
+				lambda candidate: observe_review_candidate(candidate, now), exclude=excluded, max_members=candidate_limit)
 			if batch is None:
 				break
 			now = clock()
@@ -3430,12 +3448,19 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 				# freshly invalid members; retry survivors in a new immutable batch.
 				batch_store.release_unsent(batch['batch_id'], now, calendar, checked,
 					reason='Pre-send check refused: ' + type(exc).__name__)
-				failed('review_recheck', exc)
+				if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+					result.update(state='DEFERRED', reason=str(exc))
+				else:
+					failed('review_recheck', exc)
 				from .review_batching import _observation_valid
 				blocked = {identity for identity, value in checked.items()
 					if not _observation_valid(value, next(m['candidate'] for m in batch['members']
 						if m['intent_id'] == identity), utc_instant(now))}
 				excluded.update(blocked or (m['intent_id'] for m in batch['members']))
+				if candidate_limit is not None:
+					# Reporting shares a bounded destination deadline. Its durable
+					# cursor admits the next candidate on a subsequent cycle.
+					break
 				continue
 			transport_payload = deepcopy(payload)
 			cancel_uninvoked = batch_store.begin_delivery(batch['batch_id'], send_at)
@@ -3459,10 +3484,21 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 				cancel_uninvoked(send_at, calendar)
 				excluded.update(m['intent_id'] for m in batch['members'])
 				failed('review_recheck', exc)
+				if candidate_limit is not None:
+					# Same bounded destination deadline as the failure path above.
+					break
 				continue
 			# An unavoidable small gap remains from this last calendar/clock check to provider
 			# receipt (later policy merges, scheduling/transport latency); no atomic remote clock.
-			receipt = deliver_review_batch(transport_payload)
+			try:
+				receipt = deliver_review_batch(transport_payload)
+			except ValidationError as exc:
+				# Only the live reporting port can attest that its side-effect-free
+				# retention failed before invoking any transport. Restart cannot.
+				from .reporting.runtime import UninvokedReviewBudget
+				if isinstance(exc, UninvokedReviewBudget):
+					cancel_uninvoked(clock(), calendar)
+				raise
 			if receipt is not None:
 				reconcile(payload, receipt)
 			else:
@@ -3472,12 +3508,19 @@ def production_review_batching_cycle(store, *, calendar, repository_root, config
 		if batch_store.pending_batches():
 			result['state'] = 'UNKNOWN'
 	except Exception as exc:
-		result['state'] = 'UNKNOWN'
-		failed('review_presentation', exc)
+		if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+			# Reporting durably retains per-destination deferrals. Expiring the
+			# shared allowance is ordinary scheduling, just as at the outer
+			# controller seam; unresolved untracked claims still alert in finish.
+			result.update(state='DEFERRED', reason=str(exc))
+		else:
+			result['state'] = 'UNKNOWN'
+			failed('review_presentation', exc)
 	return finish()
 
 
-def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None, observe_owner_ready=None, observe_review_candidate=None, deliver_review_batch=None, observe_review_delivery=None):
+@policy_cycle
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None, planning_state_store=None, planning_config=None, planning_operating_snapshot=None, planning_provider=None, observe_planning_backlog=None, verify_planning_backlog=None, observe_planning_events=None, verify_planning_events=None, verify_planning_owner=None, configure_budgeting=None, budget_ledger_path=None, observe_owner_ready=None, observe_review_candidate=None, deliver_review_batch=None, observe_review_delivery=None, reporting_providers=None, configure_reporting=None, observe_reporting_sources=None, verify_reporting_sources=None, verify_reporting_link=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')
 	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
@@ -3502,6 +3545,24 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(callable(observe_host_resources) and callable(verify_host_observation),
 		'Production requires an authenticated planning resource observation')
 	from .planning import produce_planning_resource_observation
+	from .store import Store
+	from .planning import tickets_from_provider_snapshot
+	from .operating import validate_snapshot
+	from .canonical import fingerprint
+	_require(isinstance(planning_state_store, Store) and isinstance(planning_config, dict), 'Production requires authenticated planning inputs and a durable planning store')
+	_require(all(callable(callback) for callback in (observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events)), 'Production requires authenticated planning backlog and event callbacks')
+	validate_snapshot(planning_operating_snapshot, planning_config)
+	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
+	from .operating_calendar import effective_calendar
+	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots
+	# All protected domains use the independently selected repository and refusal.
+	policy_root = Path(repository_root).resolve(strict=True)
+	from .reporting.policy import ReportingPolicy
+	report_policy = ReportingPolicy(policy_root, planning_config, planning_operating_snapshot)
+	accepted_operating = report_policy.snapshot
+	planning_operating_snapshot = accepted_operating
+	calendar = effective_calendar(accepted_operating.config)
+	operating_config_sha256 = accepted_operating.operating_hash
 	resource_binding = {**inventory_binding, 'repository_head_sha': repository_head_sha,
 		'repository_tree_sha': repository_tree_sha, 'project_config_sha256': project_config_sha256,
 		'operating_config_sha256': operating_config_sha256}
@@ -3513,20 +3574,6 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	_require(host_capacity is None or (type(host_capacity) is int and host_capacity == resources['host_capacity']),
 		'Operator capacity differs from authenticated host capacity')
 	host_capacity = min(resources['host_capacity'], *(item['capacity'] for item in resources['resources']))
-	from .store import Store
-	from .planning import tickets_from_provider_snapshot
-	from .operating import validate_snapshot
-	from .canonical import fingerprint
-	_require(isinstance(planning_state_store, Store) and isinstance(planning_config, dict), 'Production requires authenticated planning inputs and a durable planning store')
-	_require(all(callable(callback) for callback in (observe_planning_backlog, verify_planning_backlog, observe_planning_events, verify_planning_events)), 'Production requires authenticated planning backlog and event callbacks')
-	validate_snapshot(planning_operating_snapshot, planning_config)
-	_require(project_config_sha256 == fingerprint('accepted-project-config', planning_config) and operating_config_sha256 == planning_operating_snapshot.operating_hash, 'Planning configuration differs from accepted cycle bindings')
-	from .operating_calendar import effective_calendar
-	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots, accepted_budget_snapshot
-	# Budget and calendar share the same accepted snapshot and root refusal.
-	policy_root = Path(repository_root).resolve(strict=True)
-	accepted_operating = accepted_budget_snapshot(policy_root, planning_config, planning_operating_snapshot)
-	calendar = effective_calendar(accepted_operating.config)
 	state_roots = protected_state_roots(*store.worktree_roots, policy_root)
 	budget_settings = resolve_settings(accepted_operating.config)
 	if configure_budgeting is None:
@@ -3882,40 +3929,250 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	if digest is not None:
 		try:
 			receipt = deliver_status(digest)
-			_require(isinstance(receipt, dict) and set(receipt) == {'delivery_id', 'status', 'observed_at'} and (receipt['delivery_id'] == digest['delivery_id']) and (receipt['status'] == 'DELIVERED'), 'Status delivery readback is missing or mismatched')
+			_require(isinstance(receipt, dict) and {'delivery_id', 'status', 'observed_at'} <= set(receipt)
+				and set(receipt) <= {'delivery_id', 'status', 'observed_at', 'evidence_kind', 'channel_delivery'}
+				and receipt['delivery_id'] == digest['delivery_id'] and receipt['status'] == 'DELIVERED',
+				'Status delivery readback is missing or mismatched')
+			if receipt.get('evidence_kind') == 'LOCAL_RECEIPT':
+				_require(receipt.get('channel_delivery') is False, 'Local receipt cannot assert channel delivery')
 			timestamp(receipt['observed_at'])
 			store.acknowledge_digest(digest['delivery_id'], receipt['observed_at'])
 			delivery = receipt
 		except Exception as exc:
 			errors.append({'operation': 'status_delivery', 'delivery_id': digest['delivery_id'], 'state': 'PENDING', 'reason': type(exc).__name__})
 	streams = store.snapshot()
-	# Calendar waits and uncertain review sends never gate dispatch, independent
-	# review, amendments, or the separate immediate status/action channel above.
+	from .reporting.settings import effective_reporting
+	from .reporting.runtime import reporting_cycle, ReviewReportingPort, _readmit_reporting
+	from .reporting.bounded import DeliveryBudget, SourceBudget, BoundedObserver, MAX_REVIEW_CANDIDATES
+	from .reporting.observations import attributed_accounting, collect_sources, collect_review_corrections
+	report_binding = dict(project=inventory_binding['project_id'], repository=inventory_binding['repository_id'],
+		scope_revision=inventory_binding['scope_sha256'])
+	operating_root = planning_operating_snapshot.config
+	port = None
+	review_retry_first = False
+	defer_periodic_reporting = False
+	reporting = {'state': 'UNAVAILABLE', 'coverage': {'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE'}}
 	try:
-		review_batching = production_review_batching_cycle(store, calendar=calendar,
-			repository_root=policy_root, config=planning_config, operating_snapshot=accepted_operating,
-			binding=inventory_binding, clock=post_provider_time,
-			observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
-			deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery)
-		errors.extend(review_batching['errors'])
+		report_settings = effective_reporting(operating_root, binding=report_binding)
+		context = dict(streams=streams, capacity=resources,
+			graph=deepcopy(plan['inputs']) if plan is not None else None,
+			gates=[{'stream': s['stream'], 'observed_at': s.get('updated_at'),
+				'gate': s.get('verification_gate'), 'current': s.get('updated_at') == now} for s in streams],
+			coverage={'sources': 'UNAVAILABLE', 'accounting': 'UNAVAILABLE', 'capacity': 'OBSERVED',
+				'graph': 'OBSERVED' if plan is not None else 'UNAVAILABLE', 'gates': 'RETAINED; current provider gates unavailable'})
+		if report_settings['mode'] != 'off':
+			# One observer spans both stages. Source collection has its own
+			# bounded allowance; presentation switches to the shared send budget.
+			source_review_budget = DeliveryBudget()
+			if callable(observe_review_candidate):
+				observe_review_candidate = BoundedObserver(observe_review_candidate, source_review_budget)
+			if callable(observe_owner_ready):
+				observe_owner_ready = source_review_budget.observer(observe_owner_ready)
+			if callable(configure_reporting):
+				reporting_providers = configure_reporting(planning_operating_snapshot, report_binding, repository_root=policy_root)
+			selected = {'teams', 'slack'} if report_settings['mode'] == 'both' else {report_settings['mode']}
+			_require(isinstance(reporting_providers, dict) and selected <= reporting_providers.keys(), 'REPORT_PROVIDERS_REQUIRED')
+			with SourceBudget():
+				# Demand is a scheduling hint only; production discovery still
+				# validates freshness, scope and every gate before admission.
+				context['review_demand'] = callable(observe_owner_ready)
+				if callable(observe_owner_ready):
+					try:
+						demand = observe_owner_ready({'binding': deepcopy(inventory_binding), 'observed_at': post_provider_time()})
+						context['review_demand'] = bool(demand.get('candidates')) if isinstance(demand, dict) else True
+					except Exception:
+						context['coverage']['review_demand'] = 'UNAVAILABLE'
+				try:
+					context['review_corrections'] = collect_review_corrections(store, report_binding, now, observe_review_candidate)
+					context['coverage']['review_corrections'] = 'OBSERVED'
+				except Exception as exc:
+					context['coverage']['review_corrections'] = 'UNAVAILABLE'
+					errors.append({'operation': 'reporting_corrections', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+				try:
+					context.update(collect_sources(report_binding, now, observe_reporting_sources, verify_reporting_sources))
+					if context.get('records') is not None:
+						context['coverage']['sources'] = context.get('source_coverage', {}).get('status', 'VERIFIED')
+					if context.get('source_coverage', {}).get('reason'):
+						context['coverage']['source_reason'] = context['source_coverage']['reason']
+					context['verify_link'] = verify_reporting_link
+				except Exception as exc:
+					context['coverage']['sources'] = 'STALE_OR_UNAVAILABLE'
+					errors.append({'operation': 'reporting_sources', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+			context['accounting_summary'] = attributed_accounting(budget_ledger_path, operating_root,
+				report_binding['project'], worktree_roots=store.worktree_roots)
+			context['coverage']['accounting'] = context['accounting_summary']['status']
+		# Reporting does not admit source-supplied usage: the canonical read-only
+		# ledger is the accounting boundary; missing token components stay unknown.
+		summary = context.get('accounting_summary', {})
+		context['accounting'] = dict(mode='on' if budget_settings['accounting_enabled'] else 'off',
+			observations=deepcopy(summary.get('observations', [])), enrolled=summary.get('enrolled', []),
+			complete_tickets=summary.get('complete_tickets', []))
+		# Forecasts may cite canonical observation IDs; source usage/enrollment
+		# never enters the ledger projection or turns accounting on.
+		source_accounting = (context.get('records') or {}).get('accounting', {})
+		if 'forecasts' in source_accounting:
+			context['accounting']['forecasts'] = deepcopy(source_accounting['forecasts'])
+		# Source observation cannot spend the shared delivery/review allowance.
+		report_delivery_budget = DeliveryBudget()
+		if report_settings['mode'] != 'off':
+			if callable(observe_review_candidate):
+				observe_review_candidate.budget = report_delivery_budget
+			if callable(observe_owner_ready):
+				observe_owner_ready.budget = report_delivery_budget
+		reporting = reporting_cycle(store, operating=operating_root, binding=report_binding, now=now,
+			providers=reporting_providers, context=context, delivery_budget=report_delivery_budget, defer_delivery=True)
+		if reporting_providers is not None:
+			# Explicit reporting ownership replaces legacy review delivery ports.
+			# OFF collects without claiming/sending; it resolves no credentials.
+			deliver_review_batch = observe_review_delivery = None
+			if report_settings['mode'] != 'off':
+				port = ReviewReportingPort(store, operating_root, report_binding, reporting_providers, post_provider_time,
+					observe_candidate=observe_review_candidate, delivery_budget=report_delivery_budget,
+					load_operating=report_policy)
+				deliver_review_batch, observe_review_delivery = port.deliver_review_batch, port.observe_review_delivery
 	except Exception as exc:
-		review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
-		errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
-	# Newly stuck/exhausted reviews alert through the existing immediate status
-	# port, even with periodic reports OFF. They never block work or reporting.
-	if review_batching.get('owner_alerts'):
-		alert = store.digest(post_provider_time(), calendar=calendar)
-		if alert is not None:
+		# Invalid bindings and generation failure cannot fall back to a different
+		# destination or delay already-authorized dispatch.
+		if reporting_providers is not None or configure_reporting is not None or operating_root.get('reporting', {}).get('mode', 'off') != 'off':
+			deliver_review_batch = observe_review_delivery = None
+		reporting.update(state='REFUSED', reason=str(exc) if re.fullmatch(r'REPORT_[A-Z_]+', str(exc))
+			else 'REPORT_CONFIGURATION_OR_PROVIDER_UNAVAILABLE')
+		errors.append({'operation': 'reporting', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+	if port is not None:
+		# Alternate new admissions and historical retry/readback priority.
+		# The sole reconciliation slot must rotate along with send admission.
+		with store.transaction() as db:
+			key = 'report-review-work-turn'
+			row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+			review_retry_first = row is not None and row[0] == 'RETRY'
+			db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+				(key, 'NEW' if review_retry_first else 'RETRY'))
+	if reporting.get('state') == 'ENABLED':
+		try:
+			from .reporting.runtime import drain
+			from .review_batching import ReviewBatchStore
+			review_waiting = context.get('review_demand', False) or bool(ReviewBatchStore(store).pending_batches())
+			with store.connection() as db:
+				review_waiting = review_waiting or bool(db.execute("""SELECT 1 FROM controller_reports r
+					JOIN controller_report_delivery d ON json_extract(d.intent_json,'$.report_id')=r.report_id
+					WHERE r.kind='final-human-review' AND json_extract(d.state_json,'$.status') NOT IN ('DELIVERED','FAILED')
+					LIMIT 1""").fetchone())
+			# Preserve alert-first admission and review's historical retry turn.
+			# Periodic work overlaps new-candidate observations below; serial
+			# periodic-first work can consume the review handoff's entire budget.
+			defer_periodic_reporting = review_waiting and port is not None
+			with store.connection() as db:
+				priority_ids = {r[0] for r in db.execute("SELECT report_id FROM controller_reports WHERE kind='owner-action'")}
+			reporting['deliveries'] = drain(store, operating_root, report_binding, reporting_providers or {},
+				report_ids=priority_ids if defer_periodic_reporting else None,
+				owner_action_turn=defer_periodic_reporting,
+				budget=report_delivery_budget.reporting_slice() if review_waiting and review_retry_first else report_delivery_budget,
+				reserve_review=port is not None, reserve_reconciliation=review_retry_first and review_waiting,
+				before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy))
+		except Exception as exc:
+			errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+	if port is not None:
+		from .review_batching import ReviewBatchStore
+		resume_batch_ids = {p['batch_id'] for p in ReviewBatchStore(store).pending_batches()}
+	def resume_reporting_reviews():
+		if port is not None and callable(observe_review_candidate):
 			try:
-				receipt = deliver_status(alert)
-				_require(isinstance(receipt, dict) and set(receipt) == {'delivery_id', 'status', 'observed_at'}
-					and receipt['delivery_id'] == alert['delivery_id'] and receipt['status'] == 'DELIVERED',
-					'Status delivery readback is missing or mismatched')
-				store.acknowledge_digest(alert['delivery_id'], receipt['observed_at'])
-				delivery = receipt
+				port.resume(calendar, observe_review_candidate, batch_ids=resume_batch_ids)
 			except Exception as exc:
-				errors.append({'operation': 'review_owner_alert', 'state': 'PENDING', 'reason': type(exc).__name__})
-	return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'operating_calendar': calendar, 'review_batching': review_batching, 'errors': errors, 'execution_authority': False}
+				errors.append({'operation': 'reporting_review_resume', 'state': 'UNKNOWN', 'reason': type(exc).__name__})
+	periodic_retry_first = False
+	if review_retry_first and defer_periodic_reporting:
+		# Alternate the sole historical readback between review and periodic
+		# work on retry turns. NEW retains review's original full opportunity.
+		with store.transaction() as db:
+			key = 'report-periodic-reconciliation-turn'
+			row = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+			periodic_retry_first = row is not None and row[0] == 'PERIODIC'
+			db.execute('INSERT INTO controller_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+				(key, 'REVIEW' if periodic_retry_first else 'PERIODIC'))
+	if review_retry_first and not periodic_retry_first:
+		resume_reporting_reviews()
+	periodic_worker, periodic_results, periodic_failures = None, [], []
+	def finish_periodic_observations():
+		nonlocal periodic_worker
+		if periodic_worker is not None:
+			# drain owns cancellation and the original bounded worker joins.
+			# Join before the retention snapshot; no callback holds a DB lock.
+			periodic_worker.join()
+			periodic_worker = None
+			reporting['deliveries'].extend(periodic_results)
+			if periodic_failures:
+				errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE',
+					'reason': type(periodic_failures[0]).__name__})
+	if defer_periodic_reporting and review_retry_first:
+		from threading import Thread
+		periodic_budget = report_delivery_budget
+		def periodic_observations():
+			try:
+				periodic_results.extend(drain(store, operating_root, report_binding, reporting_providers or {},
+					budget=periodic_budget, after_review=True,
+					periodic_turn='history' if periodic_retry_first else 'fresh',
+					reserve_review=True, reserve_reconciliation=not periodic_retry_first,
+					before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy)))
+			except BaseException as exc:
+				periodic_failures.append(exc)
+		periodic_worker = Thread(target=periodic_observations, name='awf-report-periodic', daemon=False)
+		port.before_retention = finish_periodic_observations
+		periodic_worker.start()
+	try:
+		# Calendar waits and uncertain review sends never gate dispatch, independent
+		# review, amendments, or the separate immediate status/action channel above.
+		try:
+			if port is not None:
+				report_delivery_budget.remaining()
+			review_batching = production_review_batching_cycle(store, calendar=calendar,
+				repository_root=policy_root, config=planning_config, operating_snapshot=accepted_operating,
+				binding=inventory_binding, clock=post_provider_time,
+				observe_owner_ready=observe_owner_ready, observe_review_candidate=observe_review_candidate,
+				deliver_review_batch=deliver_review_batch, observe_review_delivery=observe_review_delivery,
+				candidate_limit=MAX_REVIEW_CANDIDATES if report_settings['mode'] != 'off' else None)
+			errors.extend(review_batching['errors'])
+		except Exception as exc:
+			if isinstance(exc, ValidationError) and str(exc) == 'REPORT_DESTINATION_BUDGET':
+				review_batching = {'state': 'DEFERRED', 'reason': str(exc), 'merge_authorized': False}
+			else:
+				review_batching = {'state': 'UNAVAILABLE', 'merge_authorized': False}
+				errors.append({'operation': 'review_batching', 'state': 'PENDING', 'reason': type(exc).__name__})
+		# Newly stuck/exhausted reviews alert through the existing immediate status
+		# port, even with periodic reports OFF. They never block work or reporting.
+		if review_batching.get('owner_alerts'):
+			alert = store.digest(post_provider_time(), calendar=calendar)
+			if alert is not None:
+				try:
+					receipt = deliver_status(alert)
+					_require(isinstance(receipt, dict) and {'delivery_id', 'status', 'observed_at'} <= set(receipt)
+						and set(receipt) <= {'delivery_id', 'status', 'observed_at', 'evidence_kind', 'channel_delivery'}
+						and receipt['delivery_id'] == alert['delivery_id'] and receipt['status'] == 'DELIVERED',
+						'Status delivery readback is missing or mismatched')
+					if receipt.get('evidence_kind') == 'LOCAL_RECEIPT':
+						_require(receipt.get('channel_delivery') is False, 'Local receipt cannot assert channel delivery')
+					timestamp(receipt['observed_at'])
+					store.acknowledge_digest(alert['delivery_id'], receipt['observed_at'])
+					delivery = receipt
+				except Exception as exc:
+					errors.append({'operation': 'review_owner_alert', 'state': 'PENDING', 'reason': type(exc).__name__})
+		if not review_retry_first or periodic_retry_first:
+			resume_reporting_reviews()
+		finish_periodic_observations()
+		if defer_periodic_reporting:
+			try:
+				# Reuse the original deadline, counts and reconciliation allowance.
+				# Already delivered alerts/reviews are ineligible; remaining classes
+				# retain their durable rotation when the shared allowance expires.
+				reporting['deliveries'].extend(drain(store, operating_root, report_binding, reporting_providers or {},
+					budget=report_delivery_budget, after_review=True,
+					before_send=lambda: _readmit_reporting(operating_root, report_binding, report_policy)))
+			except Exception as exc:
+				errors.append({'operation': 'reporting_delivery', 'state': 'UNAVAILABLE', 'reason': type(exc).__name__})
+		return {'schema_version': 3, 'observed_at': now, 'streams': streams, 'dispatch_receipts': dispatches, 'status_delivery': delivery, 'publication_readiness': publication_reports, 'overlap_allowances': allowance_audit, 'operating_calendar': calendar, 'reporting': reporting, 'review_batching': review_batching, 'errors': errors, 'execution_authority': False}
+	finally:
+		finish_periodic_observations()
+
 
 def _observe_jira_write_policy(config, issue, observer, now):
 	"""Obtain fresh canonical scope evidence from the reviewed adapter."""

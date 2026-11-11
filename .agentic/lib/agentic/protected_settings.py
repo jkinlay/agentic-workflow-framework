@@ -12,10 +12,12 @@ from . import ValidationError
 from .budgeting import fresh_settings, validate_settings
 from .operating_calendar import fresh_calendar, validate_calendar
 from .canonical import canonical, load_yaml
+from .reporting.settings import effective_reporting
 
 PROTECTED_DOMAINS = (
     ('budgeting', fresh_settings, validate_settings),
     ('operating_calendar', fresh_calendar, validate_calendar),
+    ('reporting', lambda: effective_reporting({}), lambda value: effective_reporting({'reporting': value})),
 )
 MAX_BYTES = 1024 * 1024
 

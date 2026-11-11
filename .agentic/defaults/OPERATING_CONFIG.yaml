@@ -126,5 +126,9 @@
     "enabled": true,
     "model": "gpt-6-luna",
     "reasoning_effort": "high"
+  },
+  "reporting": {
+    "mode": "off",
+    "bindings": []
   }
 }

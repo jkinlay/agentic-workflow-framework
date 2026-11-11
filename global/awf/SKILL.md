@@ -59,4 +59,5 @@ suspected external conflict, and never retries. Post validated digests.
 
 Declare each contract's risk tier and closure standard before review; block only on an acceptance criterion or a mandatory boundary; at the amendment cap record one owner disposition (merge with notes, park, rescope, bounded extension). Read the located review-tiers runbook.
 
-Legacy upgrades retain absent budgeting/history. Owner-requested `operating set --adopt-budgeting` prepares dormant OFF controls by PR; owner merge/fetch applies. Enabling requires another settings PR/verified shared-ledger history import.
+Absent budgeting/history stays legacy. Owner-requested `operating set --adopt-budgeting` prepares OFF controls by PR; owner merge/fetch applies. Enabling needs another PR/verified shared-ledger import.
+Reporting defaults OFF; settings/bindings share this PR route. Validation offline; reachability UNOBSERVED. Preserve delivery state.
