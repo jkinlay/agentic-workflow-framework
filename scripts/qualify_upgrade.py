@@ -1394,9 +1394,9 @@ def exercised_ledger_migration(preservation):
 def _seed_qualification_state(historical, project, budget_baseline):
     from upgrade_195_fixtures import seed_legacy_accounting
     seed_legacy_accounting(historical, project)
-    host = project / '.agentic-state/routing/published-host.sqlite'
+    host_relative = '.agentic-state/routing/published-host.sqlite'
     with Tree(project, mutation_authority='transaction') as tree:
-        tree.write_exclusive(host.relative_to(project).as_posix(), budget_baseline['sources']['host']['path'].read_bytes())
+        tree.write_exclusive(host_relative, budget_baseline['sources']['host']['path'].read_bytes())
 
 
 def _prepare_qualification_budget(historical, project, work_dir):

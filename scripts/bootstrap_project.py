@@ -44,7 +44,9 @@ def _load_json(path, description):
 def _prepare_assignment_state_path(path, dest, *, tree=None):
     path = Path(os.path.abspath(Path(path).expanduser()))
     dest = Path(dest).expanduser().resolve()
-    if path == dest or path.is_relative_to(dest):
+    # Compare canonical spellings, retaining the supplied pathname for Tree's
+    # no-follow checks. abspath alone preserves Windows 8.3 ancestor aliases.
+    if path.resolve().is_relative_to(dest):
         raise ValidationError("Assignment state must remain outside the adopted repository/worktree")
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.parent.is_dir():

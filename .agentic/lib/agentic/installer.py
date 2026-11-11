@@ -97,6 +97,23 @@ class Tree(_Tree):
         super().__init__(root, create, mutation_authority='transaction')
 
 
+def _relative_path(tree, path):
+    """Map a named leaf to a pinned Tree without following the leaf.
+
+    Pin the supplied parent before resolving either spelling. This accepts
+    Windows short/long ancestor aliases, but never a symlink/reparse ancestor
+    or an outside parent. The existing entry checks still bind each mutation.
+    Both base safeio Trees and installer transaction Trees retain this custody.
+    """
+    path = Path(os.path.abspath(path))
+    tree._pin_absolute(path.parent)
+    tree.check_parents()
+    relative = (path.parent.resolve(strict=True) / path.name).relative_to(
+        tree.root.resolve(strict=True)).as_posix()
+    relative_parts(relative)
+    return relative
+
+
 def json_bytes(value):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
@@ -1330,7 +1347,7 @@ def _record_cleanup_pending(tree, paths, *, status, journal=None):
     """Diagnostic inventory only; size observations grant no deletion authority."""
     rows = {}
     for path in paths:
-        relative = Path(path).relative_to(tree.root).as_posix()
+        relative = _relative_path(tree, path)
         relative_parts(relative)
         size = 0
         try:
@@ -2709,9 +2726,11 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
     if not expected_digest or len(expected_digest) != 64:
         raise ValidationError("Provide the externally approved manifest SHA-256")
     source, destination = Path(source).absolute(), Path(destination).absolute()
-    overlap = source == destination or source.is_relative_to(destination) or destination.is_relative_to(source)
-    test_scratch = source / ".tmp-tests"
-    if overlap and not destination.is_relative_to(test_scratch):
+    canonical_source, canonical_destination = source.resolve(), destination.resolve()
+    overlap = (canonical_source.is_relative_to(canonical_destination) or
+               canonical_destination.is_relative_to(canonical_source))
+    test_scratch = canonical_source / ".tmp-tests"
+    if overlap and not canonical_destination.is_relative_to(test_scratch):
         raise ValidationError("Source and destination trees must not overlap")
     with Tree(source) as src:
         # Installing from a pinned source checkout: root .git is excluded, never copied.

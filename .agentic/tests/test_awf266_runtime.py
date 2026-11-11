@@ -9,7 +9,82 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from agentic import adoption_config as adoption, installer, ValidationError
+from agentic import adoption_config as adoption, installer, safeio, ValidationError
+
+
+@unittest.skipUnless(os.name == 'nt', 'WIN32_83_TEMP: real Windows short-name aliases required')
+class ShortTempPathTests(unittest.TestCase):
+    def setUp(self):
+        import ctypes
+        self.temporary = tempfile.TemporaryDirectory(prefix='awf266-long-temp-directory-')
+        self.addCleanup(self.temporary.cleanup)
+        self.long = Path(self.temporary.name).resolve()
+        get_short = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+        get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        get_short.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short(str(self.long), buffer, len(buffer))
+        self.assertTrue(0 < length < len(buffer), 'Real 8.3 TEMP alias must be available on Windows')
+        self.short = Path(buffer.value)
+        self.assertNotEqual(self.long, self.short, 'Windows short-path coverage must exercise a real alias')
+        self.assertTrue(os.path.samefile(self.long, self.short))
+        self.environment = patch.dict(os.environ, TEMP=str(self.short), TMP=str(self.short))
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.tempdir = patch.object(tempfile, 'tempdir', str(self.short))
+        self.tempdir.start()
+        self.addCleanup(self.tempdir.stop)
+
+    def test_cleanup_evidence_accepts_both_alias_directions(self):
+        for tree_type in (safeio.Tree, installer.Tree):
+            for root, child_root in ((self.short, self.long), (self.long, self.short)):
+                with self.subTest(tree_type=tree_type, root=root), tempfile.TemporaryDirectory() as temporary:
+                    # The retained endpoint's spelling deliberately differs from Tree.root.
+                    name = Path(temporary).name
+                    (child_root / name / 'retained').mkdir()
+                    options = {'mutation_authority': 'transaction'} if tree_type is safeio.Tree else {}
+                    with tree_type(root / name, **options) as tree:
+                        rows = installer._record_cleanup_pending(tree, [child_root / name / 'retained'],
+                            status='RECOVERY_REFUSED')
+                    self.assertEqual(['retained'], [row['path'] for row in rows])
+
+    def test_overlapping_install_aliases_refuse_before_source_access(self):
+        for source, destination in ((self.short, self.long / 'child'),
+                                    (self.long, self.short / 'child')):
+            with self.subTest(source=source), patch.object(installer, 'verify_release') as verify:
+                with self.assertRaisesRegex(ValidationError, 'must not overlap'):
+                    installer.install(source, destination, 'a' * 64, dry_run=True)
+                verify.assert_not_called()
+
+    def test_runtime_stage_and_backup_accept_both_alias_directions(self):
+        for root, child_root in ((self.short, self.long), (self.long, self.short)):
+            with self.subTest(root=root), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                name = Path(temporary).name
+                project = root / name
+                (project / '.agentic/scripts').mkdir(parents=True)
+                (project / '.agentic/scripts/workflow.py').write_bytes(b'# fixture\n')
+                stage = child_root / name / '.agentic/.venv.staging-fixture'
+                backup = child_root / name / '.agentic/.venv.backup-fixture'
+                (project / '.agentic/.venv').mkdir()
+                (project / '.agentic/.venv/previous').write_bytes(b'previous')
+                def create(builder, path):
+                    interpreter = adoption._runtime_interpreter(Path(path))
+                    interpreter.parent.mkdir(exist_ok=True)
+                    interpreter.write_bytes(b'fixture interpreter')
+                dependencies = {key: {'name': key, 'version': 'fixture'} for key in adoption._RUNTIME_IMPORTS}
+                stack.enter_context(patch.object(adoption, '_locked_dependencies', return_value=(dependencies, 'fixture')))
+                stack.enter_context(patch.object(adoption, '_load_locked_wheels', return_value={}))
+                stack.enter_context(patch.object(adoption, '_transaction_sibling',
+                    side_effect=lambda runtime, kind: stage if kind == 'staging' else backup))
+                stack.enter_context(patch.object(adoption.venv.EnvBuilder, 'create', create))
+                stack.enter_context(patch.object(adoption, '_runtime_site_packages',
+                    side_effect=lambda exe, project, runtime: Path(runtime) / 'site-packages'))
+                stack.enter_context(patch.object(adoption, '_extract_locked_wheels', return_value={}))
+                stack.enter_context(patch.object(adoption, '_validate_runtime'))
+                result = adoption.ensure_installed_runtime(project)
+                self.assertEqual('COMMITTED_CLEANUP_PENDING', result['transaction_cleanup'])
+                self.assertEqual(b'previous', (backup / 'previous').read_bytes())
+                self.assertTrue(adoption._runtime_interpreter(project / '.agentic/.venv').is_file())
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
@@ -29,6 +104,22 @@ class RuntimeBoundaryTests(unittest.TestCase):
         stack.enter_context(patch.object(adoption, '_locked_dependencies', return_value=(dependencies, 'fixture')))
         stack.enter_context(patch.object(adoption, '_load_locked_wheels', return_value={}))
         stack.enter_context(patch.object(adoption, '_transaction_sibling', side_effect=lambda root, kind: self.stage if kind == 'staging' else self.backup))
+
+    def test_runtime_stage_outside_root_is_refused_before_creation(self):
+        with tempfile.TemporaryDirectory() as outside, ExitStack() as stack:
+            self.stage = Path(outside) / 'foreign-stage'
+            self.inputs(stack)
+            create = stack.enter_context(patch.object(adoption.venv.EnvBuilder, 'create'))
+            with self.assertRaises((ValidationError, ValueError)):
+                adoption.ensure_installed_runtime(self.root)
+            create.assert_not_called()
+            self.assertFalse(self.stage.exists())
+
+    def test_cleanup_evidence_outside_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as outside, installer.Tree(self.root) as tree:
+            with self.assertRaises((ValidationError, ValueError)):
+                installer._record_cleanup_pending(tree, [Path(outside)], status='RECOVERY_REFUSED')
+            self.assertFalse((self.root / installer.RETAINED_JOURNAL).exists())
 
     def test_configuration_creation_never_overwrites_injected_owner_hardlink(self):
         # pre-allow/reproduce_builder.py, injected at the real creating seam.

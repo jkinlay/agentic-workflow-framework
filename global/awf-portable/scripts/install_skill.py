@@ -506,7 +506,7 @@ def copy_stage(source, stage):
     finally:
         publication.close()
     for parent, directories, files in os.walk(source, followlinks=False):
-        relative = Path(parent).relative_to(source)
+        relative = Path(parent).resolve().relative_to(Path(source).resolve())
         for name in directories:
             safe_path(Path(parent) / name)
             create_stage_directory(Path(parent) / name, stage / relative / name)

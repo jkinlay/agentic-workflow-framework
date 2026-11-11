@@ -586,7 +586,7 @@ class _RuntimeBuilder(venv.EnvBuilder):
     def install_scripts(self, context, path):
         self._check_stage()
         for directory, _subdirectories, files in os.walk(path):
-            relative = Path(directory).relative_to(path)
+            relative = Path(directory).resolve().relative_to(Path(path).resolve())
             if not relative.parts or relative.parts[0] not in {'common', os.name}:
                 continue
             for name in files:
@@ -595,7 +595,7 @@ class _RuntimeBuilder(venv.EnvBuilder):
                 source = Path(directory) / name
                 target = Path(context.bin_path).joinpath(*relative.parts[1:], name)
                 with Tree(context.env_dir) as stage:
-                    stage.parent(target.relative_to(context.env_dir).as_posix(), create=True)
+                    stage.parent(target.resolve().relative_to(Path(context.env_dir).resolve()).as_posix(), create=True)
                 context.script_path = str(source)
                 raw = self.replace_variables(source.read_text(encoding='utf-8'), context).encode('utf-8')
                 self._publish(target, raw, stat.S_IMODE(source.stat().st_mode))
@@ -625,7 +625,7 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
     """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
-    from .installer import _retained_directory_result, _record_cleanup_pending
+    from .installer import _retained_directory_result, _record_cleanup_pending, _relative_path
     _retained_directory_result(tree)
     runtime_root = root / ".agentic" / ".venv"
     previous_identity = (transaction.previous_identity if transaction is not None else
@@ -666,8 +666,8 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
         had_previous = transaction.had_previous
     runtime_swap_started = False
     try:
-        stage_relative = stage.relative_to(root).as_posix()
-        backup_relative = backup.relative_to(root).as_posix()
+        stage_relative = _relative_path(tree, stage)
+        backup_relative = _relative_path(tree, backup)
         stage_parent, stage_fd, stage_name = tree.parent(stage_relative, create=True)
         if os.name == 'nt':
             from .installer import _windows_create_directory
