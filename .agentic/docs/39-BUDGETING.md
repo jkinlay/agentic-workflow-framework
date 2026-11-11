@@ -7,18 +7,14 @@ Missing fields preserve legacy budgeting/reviewed limits.
 
 ## Settings in chat and PRs
 
-In AWF Codex chat, read-only `workflow.py operating show` needs no approval.
-Present switches/limits, source/commit, differences; last PR/merger
-is optional and may be unobserved.
+Read-only chat `workflow.py operating show` needs no approval. Present switches/limits/source/commit/differences; PR/merger optional/unobserved.
 
 Chat changes cover `budgeting.accounting_enabled`, `budgeting.enforcement_enabled`,
 `budgeting.max_tokens_per_ticket`, `budgeting.max_tokens_per_project`.
 Limits: integers 1..9007199254740991; switches: booleans. No Epic overrides.
 Run `operating validate --file PROPOSED`; invalid combinations refuse before PR preparation.
 
-Branch from the fetched default, change requested values preserving text/comments,
-and show before/after under existing publication authority. Restricted pushes
-prepare branch/body for owner publication. The owner merges; agents never merge.
+Branch from fetched default; change requested values preserving text/comments. Show before/after under existing publication authority. Restricted pushes prepare owner publication. Only owners merge.
 No owner terminal commands. Git/PR history audits protected changes;
 protected `operating set` refuses without writes. Calendar uses the same PR route,
 effective source and validation; see [calendar](operating-calendar.md).
@@ -31,8 +27,7 @@ recovery, controller or routing, including disabling enforcement. Only merged
 and fetched changes take effect. Older checkouts read the same policy; differences
 mean update the checkout when behind, otherwise propose a PR.
 
-An absent file means no accepted policy: fresh OFF or legacy
-retained. With configured origin but no origin/HEAD, the default is unverified.
+An absent default-branch file is accepted: fresh defaults or legacy retained. With configured origin but no origin/HEAD, the default is unverified.
 Show/validation/installation retain the warning; working values are provisional. Admission tries refresh first. If still unverified,
 tracking refs or nondefault working values refuse budget work even if enforcement
 says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
@@ -40,8 +35,7 @@ before planning/dispatch on that refusal; other commands remain available.
 The next controller cycle or `git remote set-head origin --auto` establishes identity.
 With no origin configured there is no remote policy refresh. Present but empty,
 malformed, invalid or unavailable policy blobs refuse. Non-repositories run no Git/gh.
-OFF needs no ledger, telemetry or reservations. Preserve upgrade choices/history;
-legacy policy stays until versioned adoption. No retrospective zero usage.
+OFF needs no ledger/telemetry/reservations. Preserve upgrade choices/history; no retrospective zero usage.
 
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
 ref, never evidence of policy refresh. New merges remain invisible until fetched.
@@ -100,8 +94,8 @@ OFF applies only to subsequent work, never deletes/refunds history, reservations
 failures or unknowns; known overruns stay charged. Reconciliation closes
 incidents without refund. Count only attributable tools/retries; enroll retries.
 
-Use versioned 1.9.6 preservation, not in-place backport. Installed CMC Quant Foundry
-1.9.5 stays unchanged/enabled. Owner may retain it or authorize qualified preservation
-with explicit budget disposition. Never edit integrity-managed bytes/pins/receipts,
-or initialize fresh OFF over upgrades. Hosts share ledgers; migration preserves
-history/reservations. Live integration requires qualification; release owns manifests.
+Use versioned preservation; installed CMC Quant Foundry 1.9.5 stays unchanged/enabled. Only owners authorize qualified preservation/budget disposition. Never edit integrity-managed bytes/pins/receipts or initialize OFF over upgrades. Live integration requires qualification; release owns manifests.
+
+## Upgrade and adoption
+
+Absent budgeting remains LEGACY_RETAINED. Owner-requested `operating set --adopt-budgeting` prepares dormant OFF controls by PR; owner merge/fetch applies. Enabling needs another settings PR/locked shared-ledger import proofs. Quiesce writers; independently verify `prepare_budget_import`/`check_budget_import`, retained sources, reservations, UNKNOWN usage and recovery history. See `MIGRATION-v1.9.5-to-v1.9.6.md`.

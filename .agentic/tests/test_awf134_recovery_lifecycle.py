@@ -63,7 +63,7 @@ class SideStoreLifecycleTests(unittest.TestCase):
         self.assertTrue((destination / installer.JOURNAL).exists())
         self.assertTrue((destination / installer.MARKER).exists())
 
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
         self.assertFalse(self.recovery_object_files(destination))
 
@@ -79,7 +79,7 @@ class SideStoreLifecycleTests(unittest.TestCase):
         self.assertTrue((destination / installer.JOURNAL).exists())
         self.assertTrue((destination / installer.MARKER).exists())
 
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
         self.assertFalse(self.recovery_object_files(destination))
 
@@ -114,7 +114,7 @@ class SideStoreLifecycleTests(unittest.TestCase):
         self.assertIsNotNone(marker["pending_journal_sha256"])
         self.assertEqual("rollback_cleanup", marker["pending_update_kind"])
 
-        self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
+        self.assertEqual(journal_tests.expected_rollback_result(destination), installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
         self.assertFalse(self.recovery_object_files(destination))
 

@@ -1,6 +1,9 @@
 ### Upgrade commands
 
-**[Unmerged d2-006d branch for the registered 1.9.4 predecessor; 1.9.5 publication UNVERIFIED.]**
+For the verified 1.9.6 candidate, rehearse on disposable copies of authentic
+published 1.9.5. Live rollout requires separate target authorization. Retain an
+untouched baseline; snapshot before apply and retain external preservation reports; see the
+[migration guide](../../MIGRATION-v1.9.5-to-v1.9.6.md).
 
 Windows:
 
@@ -16,13 +19,40 @@ macOS/Linux:
 '<install-dir>/bootstrap-venv/bin/python' -B '<install-dir>/release-cache/source/scripts/bootstrap_project.py' --dest '<repo-path>' --expected-manifest-sha256 '<release-manifest-sha256>' --runtime-wheelhouse '<install-dir>/wheelhouse' --mode upgrade --on-conflict backup
 ```
 
-Command interface: `7fcaeece:scripts/bootstrap_project.py:141`. Historical upgrade planning: `7fcaeece:.agentic/lib/agentic/installer.py:1738`.
+Add `--github-repo OWNER/REPO --repository-id ID --default-branch BRANCH` with the
+established identity to both commands. Wheels must match the target lock. Backups
+require `--on-conflict backup`; the default creates none.
 
-**Preview acceptance:** inspect `detected_version`, `target_version`, each migration step, total configuration diff, added/changed/removed managed files, state actions, and new required settings. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1803`.
+**Preview acceptance:** inspect detected/target versions, steps, complete configuration
+diff, managed additions/changes/removals, state actions and required settings.
+Unresolved validation commands refuse. Incomplete enabled Jira identity can change
+from REJECTED to accepted configuration with JIRA_IDENTITY_UNBOUND; the plan
+reports this explicitly. Settings remain unchanged and Jira writes stay refused
+until identity adoption. Other rejected settings await review. No test commands are invented. Accepted YAML
+retains its comments/format. Unexpected import files must be preserved and moved
+outside `.agentic/lib`/`.agentic/scripts`. Unsafe retained state names its path:
+preserve it externally and reconcile references before repeating the plan. Product
+directories outside upgrade inputs are not traversed. Managed containment remains
+mandatory. Preserve unsafe targets externally and restore contained regular unlinked
+content before repeating the plan. Comparison proves preservation only since BEFORE.
 
-**Application acceptance:** CONFIGURED requires the same actual installed subprocess evidence and digest matches as fresh installation. `UPGRADED` alone is only the underlying transaction result. Sources: `7fcaeece:.agentic/lib/agentic/installer.py:1971`; `7fcaeece:.agentic/lib/agentic/adoption_config.py:893`.
+**Application acceptance:** CONFIGURED requires actual isolated installed subprocess
+checks and matching digests. `UPGRADED` alone is only the transaction result.
 
-**Failure:** retain diagnostics, original state, and recovery material. An immutable-file mismatch reports expected/actual hashes and refuses the historical upgrade. Do not rehash modified files into an apparently valid receipt. Sources: `7fcaeece:.agentic/lib/agentic/upgrade.py:198`; `9f44c2a1:.agentic/tests/test_upgrade_195_path.py:270`.
+**Budgeting:** an upgraded 1.9.5 project keeps the block absent and reports
+LEGACY_RETAINED; original accounting/limits continue. Upgrade enables nothing.
+If requested in chat, prepare the dormant block on the upgrade adoption PR branch
+with accounting/enforcement false and limits 4,000,000/ticket, 1,000,000,000/project
+lifetime, keeping text/comments. The optional agent helper `operating set
+--adopt-budgeting --instruction WORDS` prepares only that file change, without
+--set choices. Owner merge and fetch apply it; later non-OFF values need another
+settings PR and verified legacy history import. Working edits have no effect.
+No owner terminal commands or confirmation step. Supported 1.9.5 audit records
+remain valid; unsupported pre-release confirmation records refuse plainly and
+must be retained while restoring a supported baseline.
+
+**Failure:** retain diagnostics, original state and recovery material. Immutable-file
+mismatches refuse; never rehash modified files into a valid-looking receipt.
 
 **Related guidance:** [Starting-installation checks](15-runbook-supported-starting-installations.md); [migration behavior](18-runbook-migration-behavior.md); [journal recovery](19-runbook-journal-recovery.md); [post-upgrade verification](20-runbook-post-upgrade-verification-and-reactivation.md).
 

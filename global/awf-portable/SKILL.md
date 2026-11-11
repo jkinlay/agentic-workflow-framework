@@ -17,8 +17,8 @@ UNOBSERVED rules, warn/offer the ruleset; bootstrap never applies rules.
 Preserve configuration/CODEOWNERS/instructions; name unresolved paths/remedies.
 Disabled Jira uses local records; empty CI/owners warn.
 
-Use the adoption PR checklist. CONFIGURED requires isolated installed
-verification/validation, successful exits, accepted outputs/bound digests.
+Use the adoption checklist. CONFIGURED requires isolated installed
+verification/validation, successful exits/accepted outputs/bound digests.
 Status recomputes checks. ACTIVE requires independent release trust,
 receipt-changing merged adoption and accepted raw default-branch AWF bytes;
 unrelated product edits may coexist. Assertions cannot suffice; ACTIVE enables no adapter.
@@ -34,8 +34,7 @@ Verify [bundled source](assets/agentic-workflow-template-v1.9.6.zip) against
 python -B PATH_TO_SKILL/scripts/prepare_release.py --cache-dir ABSOLUTE_EXTERNAL_CACHE --version 1.9.6
 ```
 
-Use Python 3.11+, separate cache/existing parent/catalog; preserve differing/
-incomplete caches. Read verified AGENTS/specification/configuration/runbooks.
+Use Python 3.11+, separate cache/parent/catalog; preserve differing/incomplete caches. Read verified AGENTS/specification/configuration/runbooks.
 
 Follow [routing](references/model-routing.md): twelve workers, shared independent
 critic/adversarial handler, controller (fourteen slots); observed capacity binds.
@@ -50,8 +49,7 @@ drain surplus.
 Follow the [workflow](references/workflow.md) and verified
 `.agentic/docs/23-TICKET-LIFECYCLE.md`, including gates and publisher
 tree equality. Mark-ready requires an explicit owner/manager authorization record:
-pre-issued request and authenticated immutable provider observation bound to
-PR/head/configuration/trusted time. Log before mutation; observe `draft_cleared`.
+pre-issued request; authenticated immutable provider observation binding PR/head/configuration/trusted time. Log before mutation; observe `draft_cleared`.
 Validation/CI cannot authorize it. Critic/specialists/final gate precede owner-ready,
 never merge authority.
 
@@ -61,16 +59,14 @@ Limits enable neither switch; enforcement requires accounting; accounting OFF
 disables enforcement. Preserve upgrades; installed 1.9.5 stays unchanged/enabled.
 Recommend versioned preservation, never in-place integrity-managed bytes/receipts.
 
-For chat settings questions, run verified `workflow.py operating show`
-read-only, without approval. Present both switches, both limits, source (fresh
-defaults, default branch at the reported commit, or legacy retained), working-file
-differences and offline rules UNOBSERVED warnings; publication readiness/adoption observe live rules.
-PR/merger optional; report unobserved. No owner terminal commands.
+For settings, run verified `workflow.py operating show`
+read-only, without approval. Present switches/limits/source (fresh defaults, default branch/commit, legacy retained), working differences and rules UNOBSERVED warnings; publication/adoption observe live rules.
+PR/merger optional/unobserved. No owner terminal commands.
 
-For changes, branch from the fetched configured default branch. Edit requested
+Branch from fetched configured default. Edit requested
 `OPERATING_CONFIG.yaml` values, preserving text/comments; accounting OFF also
 disables enforcement. Run `operating validate --file PROPOSED`; invalid combinations refuse.
-Present exact before/after in a draft PR under publication authority. Restricted
+Present before/after in a draft PR under publication authority. Restricted
 pushes prepare branch/body for owner publication. Owner reviews/merges
 on GitHub; agents never merge. Fetch after observed merge; show effective
 settings/commit. Git history/PR provide audit. Working/branch edits
@@ -80,8 +76,7 @@ default-branch pushes/owner rights can bypass this. Offer the ruleset.
 `merge_gate.trusted_owner_ids` retains its merge-gate use.
 Calendar uses this same chat/PR route. Present effective timezone, continuous
 work mode, review days/opening/cutoff and EoD schedule from `operating show`.
-Defaults: 24/7 work; review batching enabled weekdays 07:00-17:00 Europe/London,
-EoD 17:00 daily. Validate proposed calendar values before preparing the PR.
+Defaults: 24/7; weekday review batching enabled 07:00-17:00 Europe/London; daily EoD 17:00. Validate proposed calendar values before preparing the PR.
 Working/PR-branch calendars cannot change batching; merged and fetched settings
 apply at the next load. Malformed accepted calendars refuse with a reason.
 
@@ -102,3 +97,5 @@ reconciliation enablement need human direction. Candidate policy cannot approve
 itself. Report results.
 
 [Apache-2.0](LICENSE), [NOTICE](NOTICE).
+
+Legacy upgrades retain absent budgeting/history. Owner-requested `operating set --adopt-budgeting` prepares dormant OFF defaults by PR. Owner merge/fetch applies; enabling requires another PR/verified history import.

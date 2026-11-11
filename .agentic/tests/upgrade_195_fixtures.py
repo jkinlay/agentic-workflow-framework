@@ -1,0 +1,184 @@
+"""Published Git bytes and installer-generated receipts, without a second blob corpus.
+
+Local Git-byte verification is not authenticated hosted-release provenance.
+Baseline installations here have no runtime and are never CONFIGURED/ACTIVE.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import sys
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from agentic.child_process import child_env
+from agentic.safeio import run_bounded
+
+PUBLISHED_COMMIT = '8ad399943c8f5e4f17db72f3e321b9365ee27782'
+PUBLISHED_PIN = '1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7'
+
+
+def materialize_published(repository, destination, *, commit=PUBLISHED_COMMIT):
+    import publish_release
+    # Sandboxed fixture readers can have a different SID from the checkout
+    # owner. Trust only this explicit repository for these read-only commands;
+    # never change global/repository config or accept wildcard safe directories.
+    arguments = (*publish_release.RAW_GIT_ARGUMENTS, '-c',
+                 'safe.directory=' + Path(repository).resolve().as_posix())
+    with patch.object(publish_release, 'RAW_GIT_ARGUMENTS', arguments):
+        if commit != PUBLISHED_COMMIT or publish_release.git(repository, 'rev-parse', 'v1.9.5^{commit}').strip() != PUBLISHED_COMMIT:
+            raise ValueError('Expected authentic published commit for v1.9.5')
+        source = publish_release.materialize_commit(repository, PUBLISHED_COMMIT, destination)
+    verify_published(source)
+    return source
+
+
+def materialize_candidate(repository, destination):
+    """Project current source; generate manifests only inside the disposable copy.
+
+    Historical bytes/pins and the checkout's generated artifacts stay immutable.
+    This development source identity is not final release acceptance.
+    """
+    import build_release
+    from agentic.safeio import Tree
+    destination = Path(destination)
+    destination.mkdir()
+    with Tree(repository) as tree:
+        for relative in build_release.release_paths(tree):
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(build_release.release_bytes(tree, relative))
+        for relative in build_release.SOURCE_CONFIGS.values():
+            template = destination / relative
+            template.parent.mkdir(parents=True, exist_ok=True)
+            template.write_bytes(tree.read(relative))
+    result = run_bounded([sys.executable, '-B', str(destination / 'scripts/build_release.py'),
+                          '--manifest-only'], cwd=destination, env=child_env(), timeout=120,
+                         stdout_limit=4 * 1024 * 1024, stderr_limit=1024 * 1024)
+    if result.returncode:
+        raise AssertionError('Disposable candidate generation failed: ' + result.stderr.decode('utf-8'))
+    return destination
+
+
+def verify_published(source):
+    source = Path(source)
+    raw = (source / 'MANIFEST.json').read_bytes()
+    if hashlib.sha256(raw).hexdigest() != PUBLISHED_PIN:
+        raise ValueError('Published 1.9.5 manifest pin mismatch')
+    # The published verifier enforces membership and every declared file hash.
+    published_call(source, """
+from agentic.installer import verify_release
+from agentic.safeio import Tree
+with Tree(source) as tree:
+    verify_release(tree, pin)
+print('{}')
+""")
+    return json.loads(raw)
+
+
+def published_call(source, code, *arguments):
+    prelude = """
+import json, sys
+from pathlib import Path
+source = Path(sys.argv[1])
+pin = sys.argv[2]
+sys.path.insert(0, str(source / '.agentic/lib'))
+"""
+    result = run_bounded([sys.executable, '-B', '-c', prelude + code,
+                          str(source), PUBLISHED_PIN, *map(str, arguments)],
+                         cwd=source, env=child_env(), timeout=120,
+                         stdout_limit=4 * 1024 * 1024, stderr_limit=1024 * 1024)
+    if result.returncode:
+        raise AssertionError('Published installer/verifier failed: ' + result.stderr.decode('utf-8'))
+    return json.loads(result.stdout)
+
+
+def install_baseline(source, project, *, branch='main'):
+    verify_published(source)
+    return published_call(source, """
+from agentic.installer import install, verify_installed
+project = Path(sys.argv[3])
+result = install(source, project, pin, configure=True, discover=False,
+    codeowner='@fixture-owner', overrides={
+        'repository': 'example-org/example-repo', 'repository_id': 101,
+        'base_branch': sys.argv[4], 'test_command': 'python -m unittest'})
+verify_installed(project)
+print(json.dumps(result))
+""", project, branch)
+
+
+def customize_preservation_project(project):
+    """Explicit synthetic owner data, never a replacement published receipt."""
+    files = {
+        'PROJECT_INSTRUCTIONS.md': b'Synthetic owner instructions; not adopter evidence.\n',
+        'owner.txt': b'Synthetic project data.\n',
+        '.agentic-state/owner-note.txt': b'Synthetic retained unknown state.\n',
+        '.agentic-state/archive/prior/receipt.json': b'Synthetic prior archive.\n',
+    }
+    for relative, raw in files.items():
+        path = Path(project) / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+
+def seed_legacy_accounting(source, project):
+    """Synthetic rows in the authentic published initializer's legacy schema."""
+    published_call(source, """
+import sqlite3
+from agentic.model_routing import initialize_routing_ledger
+project = Path(sys.argv[3])
+path = project / '.agentic-state/routing/ledger.sqlite'
+path.parent.mkdir(parents=True, exist_ok=True)
+connection = sqlite3.connect(path)
+try:
+    initialize_routing_ledger(connection, legacy_only=True)
+    for run_id, status, tokens, outcome in (
+        ('synthetic-settled', 'settled', 20, '{"settled_at":"2026-10-01T00:00:00Z"}'),
+        ('synthetic-unknown', 'unknown', None, None)):
+        connection.execute('INSERT INTO model_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (run_id, 'synthetic-project', 'EX-195', 'worker', 'fixture-worker',
+             'implementation', '2026-10-01T00:00:00Z', '2026-10-01', 'a' * 64,
+             status, 100, None, tokens, None, 0, '{}', '{}', outcome))
+    connection.commit()
+finally:
+    connection.close()
+print('{}')
+""", project)
+
+
+def generate_budget_history(source, destination, project_id):
+    """Generate history through published 1.9.5 APIs, with no direct SQL writes.
+
+    Synthetic runs are not adopter evidence. NULL usage is produced by leaving
+    a published reservation outstanding, never by fabricating a settlement.
+    """
+    return published_call(source, """
+from agentic.store import Store
+from agentic.model_routing import RoutingLedger, default_policy
+destination = Path(sys.argv[3])
+project_id = sys.argv[4]
+destination.mkdir(parents=True)
+store = Store(destination / 'state.sqlite', project_id)
+store.control('RUNNING', 'Synthetic disposable fixture reconciliation', reconciled=True)
+limits = dict(runs=20, tokens=10000, cost=10000, daily_cost=10000)
+for run_id in ('22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'):
+    store.reserve_budget(run_id, 'EX-195', '2026-10-01T00:00:00Z', 100, 10, limits)
+store.settle_budget('33333333-3333-4333-8333-333333333333', 20, 2)
+store.control('PAUSED', 'Synthetic disposable fixture complete')
+overrun = Store(destination / 'overrun.sqlite', project_id)
+overrun.control('RUNNING', 'Synthetic disposable reconciliation', reconciled=True)
+overrun.reserve_budget('44444444-4444-4444-8444-444444444444', 'EX-195',
+    '2026-10-01T00:00:00Z', 100, 10, limits)
+overrun.settle_budget('44444444-4444-4444-8444-444444444444', 120, 12)
+ledger = RoutingLedger(destination / 'host.sqlite')
+policy = default_policy()
+request = dict(ticket_id='EX-195', role='worker', agent_id='fixture-worker',
+    context_id='fixture-context', phase='implementation', task_class='unit-fix',
+    complexity='medium', risk='low', uncertainty='low', verification='strong',
+    risk_flags=[], reservation_tokens=100, reservation_cost_microusd=None)
+capabilities = {'models': {m: v['reasoning_efforts'] for m, v in policy['models'].items()}}
+route = ledger.reserve(project_id, policy, request, capabilities)
+print(json.dumps({'routing_run_id': route['run_id']}))
+""", destination, project_id)

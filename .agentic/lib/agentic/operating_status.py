@@ -6,7 +6,7 @@ from copy import deepcopy
 from . import ValidationError
 from .protected_settings import load_operating_yaml as load_yaml
 from .operating import (inspect_operating, is_awf_source_repository,
-                        operating_ceiling, tree_reader, validate_operating, refusal)
+                        operating_ceiling, tree_reader, validate_operating, refusal, _budgeting_projection)
 from .safeio import Tree
 from .budgeting import resolve_settings
 
@@ -28,7 +28,7 @@ def with_operating(root, governance, report):
                 effective, protected = resolve_protected(root, governance, value.config)
                 value = validate_operating(effective, governance)
                 operating = {'status': 'ACCEPTED', 'protected_settings': protected, 'hash': value.operating_hash, 'source': value.source,
-                             'budgeting': resolve_settings(value.config),
+                             'budgeting': _budgeting_projection(value.config),
                              'streams': value.count, 'last_change_id': None, 'refusals': [],
                              'provenance': 'source_template', **operating_ceiling(governance)}
             except (ValidationError, OSError, ValueError) as exc:
