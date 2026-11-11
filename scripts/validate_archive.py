@@ -23,6 +23,7 @@ from agentic.safeio import Tree
 from agentic.runtime_commands import installed_paths
 from release_review import add_review_arguments, review_arguments, review_source
 from release_modes import FORMAT as RAW_MODES_FORMAT, REGULAR_MODES
+from release_self_test import run_self_test, ShardFailure, reconcile_installed_acceptance
 RELEASE_LINE = VERSION.removesuffix('.0')
 PREFIX = f'agentic-workflow-template-v{RELEASE_LINE}/'
 
@@ -337,7 +338,7 @@ def validate(argv=None):
                         help='Verified offline wheel directory required by installed-runtime acceptance stages')
     add_review_arguments(parser)
     parser.add_argument('--self-test-timeout-seconds', type=self_test_timeout, default=600,
-                        help='Deadline for each full source/installed self-test only: 60..3600 seconds (default: 600). Other acceptance-stage deadlines remain unchanged; timed-out runs retain a FAILED partial report and fixture directory.')
+                        help='Deadline for each sequential source/installed self-test shard: 60..3600 seconds (default: 600). Other acceptance-stage deadlines remain unchanged; timed-out runs retain a FAILED partial report and fixture directory.')
     args = parser.parse_args(argv)
     args.reviews = args.reviews.resolve()
     if args.review_required_paths is not None:
@@ -441,8 +442,41 @@ def validate(argv=None):
 
     selected_self_test_timeout = args.self_test_timeout_seconds
     args_archive_pin = args.expected_zip_sha256
-    command(['scripts/self_test.py','--report',RUN/'default-self-test.json'],
-            name='Fresh ZIP default self-test runs without review pins',timeout=selected_self_test_timeout)
+    def sequential_self_test(path, label, **kwargs):
+        try:
+            result = run_self_test(SOURCE, path, timeout=selected_self_test_timeout, env=env, **kwargs)
+        except (ShardFailure, subprocess.TimeoutExpired) as exc:
+            timeout = isinstance(exc, subprocess.TimeoutExpired) or isinstance(exc.__cause__, subprocess.TimeoutExpired)
+            cause = exc.__cause__ or exc
+            def encoded(value):
+                return value if isinstance(value, bytes) else (value or '').encode('utf-8')
+            log = RUN / 'failure.log'
+            log_error = None
+            try:
+                output = encoded(getattr(cause, 'stdout', None))
+                stderr = encoded(getattr(cause, 'stderr', None))
+                with log.open('xb') as stream:
+                    stream.write(output + (b'\n' + stderr if stderr else b''))
+            except OSError as error:
+                log_error = type(error).__name__
+            partial = {'template_version':VERSION, 'status':'FAILED', 'validation_complete':False,
+                       'archive':ARCHIVE.name, 'archive_sha256':args_archive_pin, 'manifest_sha256':MANIFEST,
+                       'checks':checks + [{'check':label, 'status':'FAILED'}], 'stage':label,
+                       'error':str(exc), 'failure_kind':'TIMEOUT' if timeout else 'SHARD_FAILURE',
+                       'timeout_seconds':selected_self_test_timeout,
+                       'self_test_timeout_seconds':selected_self_test_timeout, 'run_directory':str(RUN),
+                       'partial_log':str(log) if log_error is None else None, 'log_write_error':log_error,
+                       'failing_shard_log':getattr(exc, 'shard_log', None),
+                       'shard_aggregate':str(path), 'report':str(OUTPUT), 'report_written':True}
+            try:
+                write_report(OUTPUT, partial)
+            except OSError as error:
+                partial.update(report_written=False, report_write_error=type(error).__name__)
+            raise ValidationStageFailure(partial) from exc
+        checks.append({'check':label, 'status':'PASS'})
+        return result
+
+    sequential_self_test(RUN/'default-self-test.json', 'Fresh ZIP default self-test runs without review pins')
     default_checks = json.loads((RUN/'default-self-test.json').read_text(encoding='utf-8'))
     assert default_checks['status']=='PASS' and default_checks['release_qualified'] is False
     assert default_checks['review']=='NOT_PROVIDED' and default_checks['current_review']=={'status':'NOT_PROVIDED'}
@@ -453,8 +487,8 @@ def validate(argv=None):
              '--runtime-wheelhouse',runtime_wheelhouse],code=2,
             name='Archive acceptance still refuses missing review pins')
     assert not (RUN/'missing-pins-report.json').exists()
-    command(['scripts/self_test.py','--release','--report',RUN/'extracted-self-test.json',
-             '--expected-manifest-sha256',MANIFEST,*review_cli], name='Fresh ZIP extraction self-test', timeout=selected_self_test_timeout)
+    sequential_self_test(RUN/'extracted-self-test.json', 'Fresh ZIP extraction self-test',
+                  review_args=['--expected-manifest-sha256', MANIFEST, *review_cli])
     workflow = '.agentic/scripts/workflow.py'
     capabilities = json.loads(command([workflow,'capabilities'],name='Capabilities CLI'))
     assert all(capabilities[k] is False for k in ['live_dispatch','live_jira_mutations','live_merge'])
@@ -619,7 +653,8 @@ def validate(argv=None):
     # for the separate configuration/ownership/stream preservation upgrade.
     initialize_unborn_fixture(ADOPTION, env)
     checks.append({'check': 'Configured installed acceptance fixture has a verified unborn Git HEAD', 'status': 'PASS'})
-    installed_command(['.agentic/scripts/self_test.py','--report',RUN/'installed-self-test.json'],cwd=ADOPTION,name='Complete configured installed self-test',timeout=selected_self_test_timeout)
+    sequential_self_test(RUN/'installed-self-test.json', 'Complete configured installed self-test',
+                  installed_root=ADOPTION, interpreter=installed_stage_python(ADOPTION))
     installed_command([status_cli,'report','.agentic/examples/project-status.json'],cwd=DEST,name='Installed project status Markdown CLI')
     cycle_markdown = installed_command([status_cli,'cycle','.agentic/examples/project-cycle.json','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed whole-project continuation and authorization presentation')
     assert 'State: RUNNING' in cycle_markdown and 'Required decision:' in cycle_markdown and '\u2014' in cycle_markdown
@@ -697,8 +732,11 @@ def validate(argv=None):
     assert git_checkout['status']=='PASS'
     extracted_tests = json.loads((RUN/'extracted-self-test.json').read_text())
     installed_tests = json.loads((RUN/'installed-self-test.json').read_text())
+    coverage = reconcile_installed_acceptance(extracted_tests, installed_tests)
+    default_coverage = reconcile_installed_acceptance(default_checks, installed_tests)
     report = {'template_version':VERSION,'status':'PASS','archive':ARCHIVE.name,
      'current_review':current_review,
+     'coverage_reconciliation':coverage, 'default_coverage_reconciliation':default_coverage,
      'self_test_timeout_seconds':selected_self_test_timeout,
      'archive_sha256':hashlib.sha256(ARCHIVE.read_bytes()).hexdigest(),'manifest_sha256':MANIFEST,
      'checks':checks,'git_checkout':git_checkout,'extracted_tests':extracted_tests,

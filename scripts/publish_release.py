@@ -35,6 +35,7 @@ from agentic.contracts import Contracts
 from agentic.safeio import relative_parts
 import safe_materialize
 from release_modes import write_mode_manifest
+from release_self_test import ShardFailure
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
 RAW_GIT_ARGUMENTS = ("--no-replace-objects", "-c", "core.useReplaceRefs=false")
 RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
@@ -419,8 +420,10 @@ def materialize_commit(repository, commit, destination, *, mode_manifest=None):
 def validation_checkout(repository, commit, destination):
     """Yield a temporary detached Git worktree of exactly ``commit`` for validation.
 
-    Self-test cases inspect Git (HEAD, attributes, the raw tree), so they cannot
-    run in the Git-less release projection.  The worktree shares the release
+    Archive validation also runs default and review-pinned self-test shards in
+    the Git-less release projection; cases requiring source Git metadata skip
+    there. This checkout exercises those cases (HEAD, attributes, the raw tree).
+    The worktree shares the release
     repository's objects, must match the raw tree byte for byte with a clean
     status, and is always removed afterwards.  Windows and POSIX use the same
     command-scoped ``core.autocrlf=false`` checkout; this does not write the
@@ -578,8 +581,21 @@ def build_assets(source, output, epoch, mode_manifest):
 
 
 def default_validations(source, output, env):
+    from release_self_test import run_self_test, reconcile_installed_acceptance
+    from installed_self_test_fixture import prepare_project, assert_unborn_head
     report = output / "self-test.json"
-    run([sys.executable, "-B", str(source / "scripts/self_test.py"), "--report", str(report)], cwd=source, env=env)
+    aggregate = run_self_test(source, report, timeout=3600, env=env)
+    # The source plan defers the installed harness to this manifest-only run.
+    # Installation/setup keep their existing fixture budgets; each self-test
+    # child gets the same 3600 seconds as a source child, never a whole-suite cap.
+    installed_report = output / "installed-self-test.json"
+    with tempfile.TemporaryDirectory(prefix="awf-release-installed-") as raw:
+        project = Path(raw) / 'project'
+        interpreter = prepare_project(source, project, run=subprocess.run, env=child_env(env))
+        assert_unborn_head(project, run=subprocess.run, env=child_env(env))
+        installed = run_self_test(source, installed_report, timeout=3600, env=env,
+                                  installed_root=project, interpreter=interpreter)
+    coverage = reconcile_installed_acceptance(aggregate, installed)
     hygiene = run([sys.executable, "-B", str(source / "scripts/release_hygiene.py")], cwd=source, env=env)
     suites = {}
     for label, directory in (("portable_core", source / "global/awf/tests"),
@@ -588,7 +604,12 @@ def default_validations(source, output, env):
         match = re.search(r"Ran ([0-9]+) tests?", result.stderr + result.stdout)
         suites[label] = int(match.group(1)) if match else None
     self_test = json.loads(report.read_text(encoding="utf-8"))
-    return {"self_test": self_test.get("tests", {}), "release_hygiene": json.loads(hygiene.stdout),
+    return {"self_test": self_test.get("tests", {}),
+            "self_test_aggregate_sha256": sha256(report), "self_test_shards": aggregate['shard_reports'],
+            "installed_self_test_aggregate_sha256": sha256(installed_report),
+            "installed_self_test_shards": installed['shard_reports'],
+            "coverage_reconciliation": coverage,
+            "self_test_plan_sha256": aggregate['plan_sha256'], "release_hygiene": json.loads(hygiene.stdout),
             "portable_suites": suites}
 
 
@@ -815,7 +836,7 @@ def main(argv=None):
                              args.expected_clean_windows_check_sha256, dry_run=args.dry_run, gh=args.gh)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
-    except (ReleaseError, OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+    except (ReleaseError, ShardFailure, OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         print(json.dumps({"status": "REJECTED", "reason": str(exc)}, indent=2), file=sys.stderr)
         return 2
 

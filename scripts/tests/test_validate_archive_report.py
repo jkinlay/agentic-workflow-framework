@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / '.agentic/lib'))
+from release_self_test import reconcile_installed_acceptance
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/validate_archive.py'
@@ -34,18 +39,55 @@ class ArchiveReportTests(unittest.TestCase):
             (run / 'git-checkout.json').write_text('{"status":"PASS"}', encoding='utf-8')
             for name, tests in [('extracted', source_tests), ('installed', installed_tests)]:
                 (run / f'{name}-self-test.json').write_text(json.dumps({
-                    'status': 'PASS', 'tests': tests, 'test_log': 'transient log',
+                    **self.aggregate(name == 'installed'), 'tests': tests, 'test_log': 'transient log',
                 }), encoding='utf-8')
             namespace = dict(
                 json=json, hashlib=hashlib, RUN=run, ARCHIVE=archive,
                 VERSION='1.9.4', MANIFEST='a' * 64, current_review={'status': 'PASS'},
                 selected_self_test_timeout=600, checks=[], git_checkout={'status': 'PASS'},
-                default_checks={'tests': {'skipped': []}, 'test_log': 'transient log'},
+                default_checks={**self.aggregate(False), 'tests': {'skipped': []}, 'test_log': 'transient log'},
+                reconcile_installed_acceptance=reconcile_installed_acceptance,
                 first={}, adopted={}, second={}, unconfigured_status={},
                 configured_status={}, ci_enablement_refusal={}, missing_rules={'decision_codes': []},
             )
             exec(compile(stage, str(SCRIPT), 'exec'), namespace)
             return namespace['report']
+
+    def aggregate(self, installed):
+        return dict(status='PASS', scope='installed-suite' if installed else 'source-suite',
+                    source_manifest_sha256='a' * 64, plan_sha256=('b' if installed else 'c') * 64,
+                    suite_complete=installed, release_qualified=False, shard_count=9,
+                    shard_reports=[{'shard': n} for n in range(9)],
+                    tests=dict(run=5, failures=0, errors=0, skipped=[], successful=True),
+                    coverage_reconciliation=dict(status='PASS' if installed else 'PENDING_INSTALLED_ACCEPTANCE',
+                        deferred_coverage={} if installed else {
+                            'scripts/tests/test_installed_self_test.py': 'installed-acceptance'}))
+
+    def test_archive_binds_both_source_passes_to_installed_acceptance(self):
+        tests = dict(run=1, failures=0, errors=0, skipped=[], successful=True)
+        report = self.assemble_report(tests, tests)
+        for key in ('coverage_reconciliation', 'default_coverage_reconciliation'):
+            self.assertEqual('PASS', report[key]['status'])
+            self.assertEqual({'scripts/tests/test_installed_self_test.py': 'installed-acceptance'},
+                             report[key]['covered_by_installed_acceptance'])
+        for key in ('errors', 'failures'):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'installed acceptance'):
+                self.assemble_report(tests, {**tests, key: 1})
+
+    def test_archive_installed_acceptance_uses_sharded_runner_and_unchanged_timeout(self):
+        tree = ast.parse(SCRIPT.read_text(encoding='utf-8'))
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+        stages = [n for n in calls if n.func.id == 'sequential_self_test']
+        self.assertEqual(3, len(stages))
+        installed, = [n for n in stages if any(k.arg == 'installed_root' for k in n.keywords)]
+        self.assertEqual('ADOPTION', ast.unparse(next(k.value for k in installed.keywords if k.arg == 'installed_root')))
+        self.assertEqual('installed_stage_python(ADOPTION)',
+                         ast.unparse(next(k.value for k in installed.keywords if k.arg == 'interpreter')))
+        runner, = [n for n in calls if n.func.id == 'run_self_test']
+        self.assertEqual('selected_self_test_timeout', ast.unparse(next(k.value for k in runner.keywords if k.arg == 'timeout')))
+        option, = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and n.args
+                   and isinstance(n.args[0], ast.Constant) and n.args[0].value == '--self-test-timeout-seconds']
+        self.assertEqual(600, next(k.value.value for k in option.keywords if k.arg == 'default'))
 
     def test_external_operator_report_uses_source_and_installed_test_summaries(self):
         source = dict(run=7, failures=0, errors=0, skipped=[], successful=True)
