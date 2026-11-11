@@ -54,7 +54,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `4792b6778c22e94abce249cf534839bfba4bedcda82a2acfee5a74388a9d6f35` |
 | `.agentic/docs/38-RELEASE-196-QUALIFICATION.md` | `2514072b1abe8c38e3ba7dfdc7a78c6fce35e3325e5a6687e95b8d0487c5d3da` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `29249f73d2e2cb8c43eb19dba39a7db580fd0c687da19d98d977f0131b7115e1` |
-| `.agentic/docs/39-BUDGETING.md` | `8730b43097f6a3d1cb7675a3df980bdb817e88dd3dca94d4d4c78d0c7e4a7f68` |
+| `.agentic/docs/39-BUDGETING.md` | `adbb495f6251267d20260c3fdad4f6b9d0773d1bc834417167412d47a3d988b1` |
 | `.agentic/docs/40-EXTERNAL-RESOURCES.md` | `7b648bc302fa826832162af193a14a6dfd793f8624b5c7cb1990581cb40f866e` |
 | `.agentic/docs/41-WRITER-CRITIC-PROVENANCE.md` | `bbaa1bfb2d3613ed28da29dbca16e20c8ab4f01231d055f7d3c5d3a82d1426cc` |
 | `.agentic/docs/42-PR-INTEGRATION-QUEUE.md` | `6645b3bc1b5568bcd2539562292f86ef40975e635fae6eb1971c0fded53933e7` |

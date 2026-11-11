@@ -16,31 +16,31 @@ Run `operating validate --file PROPOSED`; invalid combinations refuse before PR 
 
 Branch from fetched default; preserve text/comments. Show before/after under publication authority; change requested values. Restricted pushes: branch/body for owner publication. Owners merge; agents never merge.
 No owner terminal commands. Git/PR history audits protected changes;
-protected `operating set` refuses without writes. Calendar uses the same PR route,
+protected `operating set` refuses without writes. Calendar uses this PR route,
 effective source and validation; see [calendar](operating-calendar.md).
 Reporting defaults OFF; Teams/Slack/both share this PR route with project-bound destinations; preserve delivery state.
 
-Protected settings use the locally fetched default-branch commit.
+Effective protected settings come from the locally fetched default-branch commit.
 Only `refs/remotes/origin/HEAD` identifies it. Configuration is never an identity
 input; `show` reports disagreement with configured `github.base_branch`.
 Working-tree edits and PR branches have no effect on budget admission,
 recovery, controller or routing, including disabling enforcement. Only merged
-and fetched changes take effect. Older checkouts read that policy; differences
+and fetched changes take effect. Older checkouts read the same policy; differences
 mean update the checkout when behind, otherwise propose a PR.
 
-Absent default-branch files accept fresh defaults or legacy retained. With configured origin but no origin/HEAD, the default is unverified.
+An absent default-branch file is accepted: fresh defaults or legacy retained. With configured origin but no origin/HEAD, the default is unverified.
 Show/validation/installation retain the warning; working values are provisional. Admission tries refresh first. If still unverified,
 tracking refs or nondefault working values refuse budget work even if enforcement
 says OFF. Without refs, fresh OFF/legacy can continue offline. The cycle stops
 before planning/dispatch on that refusal; other commands remain available.
 Next cycle or `git remote set-head origin --auto` establishes identity.
-With no origin configured there is no remote policy refresh. Empty,
+Without configured origin, remote policy never refreshes. Empty,
 malformed, invalid or unavailable policy blobs refuse. Non-repositories run no Git/gh.
 OFF needs no ledger/telemetry/reservations. Preserve upgrade choices/history; never invent usage.
 
 `show` reports commit and FETCH_HEAD time as the fetch attempt of any
-ref, never evidence of policy refresh. New merges remain invisible until fetched.
-The controller checkout requires repository-local remote.origin.url;
+ref, never evidence of policy refresh. Merges remain invisible until fetched.
+The controller's own checkout requires repository-local remote.origin.url;
 relative/inside-checkout paths refuse. Use Git 2.29+ ([notes](https://git-scm.com/docs/RelNotes/2.29.0)); older-binary execution remains unproven. Lock before 30-second discovery/fetch,
 advertised-commit checking and publication. Mismatches retry next cycle.
 UTF-8 names use check-ref-format. Preserve unverified tracking HEAD when identity
@@ -83,7 +83,7 @@ duplicate reservations. Preserve legacy identities; never relaunch replays.
 OFF requires no budget database, telemetry, reservations/events, warnings or
 overrun quarantine. Retain security/permissions/ownership/review/merge/host-capacity
 and bounded recovery controls; security/context/review mismatches quarantine.
-Existing recovery limits and owner authorization to raise them bind in every mode.
+Recovery limits and owner authorization to raise them bind in every mode.
 Historical budget overruns do not block OFF/accounting-only work.
 Ledger-free routing proposals never admit/launch; operational admission remains required.
 Accounting-only records usage without quota refusal/warnings/quarantine. Unknown
