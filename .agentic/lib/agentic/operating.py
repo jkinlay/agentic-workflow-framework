@@ -28,8 +28,9 @@ from .canonical import load_yaml as load_governance_yaml
 from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 from .budgeting import resolve_settings
-from .protected_settings import audit_matches, unprotected_hash, load_operating_yaml as load_yaml
+from .protected_settings import audit_matches as _protected_audit_matches, unprotected_hash, load_operating_yaml as load_yaml
 from .operating_calendar import effective_calendar, SETTING_PATHS
+from .reporting.settings import effective_reporting
 
 CONFIG = "OPERATING_CONFIG.yaml"
 GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
@@ -37,6 +38,34 @@ STATE = ".agentic-state/operating"
 LOCK = STATE + "/lock"
 JOURNAL = STATE + "/pending.json"
 DEFAULT_MAX_LANES = 6
+
+
+def audit_matches(value, event, *, history=()):
+    """Verify old reporting audit projections without rewriting retained bytes."""
+    if _protected_audit_matches(value, event):
+        return True
+    from .protected_settings import PROTECTED_DOMAINS
+    retained = {}
+    domains = {name for name, _, _ in PROTECTED_DOMAINS}
+    for prior in history:
+        if prior['sequence'] > event['sequence']:
+            break
+        for change in prior['changes']:
+            keys = change['path'].split('.')
+            if keys[0] not in domains:
+                continue
+            cursor = retained
+            for key in keys[:-1]:
+                if not isinstance(cursor.get(key), dict):
+                    cursor[key] = {}
+                cursor = cursor[key]
+            if change['after'] is None:
+                cursor.pop(keys[-1], None)
+            else:
+                cursor[keys[-1]] = deepcopy(change['after'])
+    historical = deepcopy(value)
+    historical.update(retained)
+    return bool(retained) and _protected_audit_matches(historical, event)
 DEFAULT_MAX_LANES_SOURCE = ".agentic/schemas/operating-config.schema.json#/properties/streams/properties/count/maximum"
 EPIC_ID = r"[A-Z][A-Z0-9_]*-[1-9][0-9]*"
 STAGING_NAME = r"\.awf-operating-[0-9a-f]{32}\.tmp"
@@ -350,9 +379,25 @@ def validate_operating(value, governance):
     # become dictionary lookups, identifiers or diagnostic interpolation.
     if not isinstance(value, dict) or not isinstance(value.get('streams'), dict):
         raise OperatingError(errors)
-    if any(error['path'].startswith(('$.budgeting', '$.operating_calendar')) for error in errors):
+    if any(error['path'].startswith(('$.budgeting', '$.operating_calendar', '$.reporting')) for error in errors):
         raise OperatingError(errors)
     if isinstance(value, dict):
+        if 'reporting' in value:
+            try:
+                reporting = effective_reporting(value)
+                if reporting['bindings']:
+                    project = governance.get('project', {})
+                    github = governance.get('github', {})
+                    if (not isinstance(project, dict) or not isinstance(github, dict) or
+                            not project.get('id') or github.get('repository_id') is None):
+                        raise ValidationError('REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED')
+                    effective_reporting(value, binding={'project': project['id'],
+                        'repository': str(github['repository_id'])})
+            except ValidationError as exc:
+                codes = {'REPORT_SCOPE_BINDING_MISMATCH', 'REPORT_PROJECT_REPOSITORY_BINDING_REQUIRED',
+                         'REPORT_BINDING_REQUIRED', 'REPORT_BINDING_DUPLICATE'}
+                code = str(exc) if str(exc) in codes else None
+                fail('$.reporting.bindings', 'not allowed' + (': ' + code if code else ''))
         if 'operating_calendar' in value:
             try:
                 effective_calendar(value)
@@ -549,7 +594,7 @@ def _events(tree, *, additional_bytes=0):
                 and not (isinstance(event.get("legacy_before_configuration"), dict)
                          and fingerprint("operating", event["legacy_before_configuration"]) == event["before_hash"]
                          and unprotected_hash(event["legacy_before_configuration"]) == event.get("unprotected_before_hash")
-                         and audit_matches(event["legacy_before_configuration"], previous))):
+                         and audit_matches(event["legacy_before_configuration"], previous, history=events[:index - 1]))):
             fail("$", "Operating audit hash chain differs")
         previous = event
     return events
@@ -570,7 +615,7 @@ def _snapshot(tree, governance, *, working_only=False):
         effective = working
     snapshot = validate_operating(effective, governance)
     events = _events(tree)
-    if events and not audit_matches(working, events[-1]):
+    if events and not audit_matches(working, events[-1], history=events):
         fail("$", "Operating file differs from the last audited change; reconcile the external edit before dispatch")
     snapshot = replace(snapshot, last_change_id=events[-1]["id"] if events else None,
                    _provenance_json=canonical({"path": str(tree.root / CONFIG), "raw_sha256": sha256(raw),
@@ -640,6 +685,7 @@ def inspect_operating(project_root, governance):
         return {"status": "ACCEPTED", "budget_admission": _budget_admission_projection(value.config, value.provenance.get('protected_settings', {})), "protected_settings": value.provenance.get("protected_settings", {}), "hash": value.operating_hash, "source": value.source,
                 "streams": value.count, "last_change_id": value.last_change_id, "refusals": [],
                 "budgeting": _budgeting_projection(value.config),
+                "reporting": effective_reporting(value.config),
                 **operating_ceiling(governance)}
     except OSError as exc:
         from .activation import access_diagnostic
@@ -648,7 +694,7 @@ def inspect_operating(project_root, governance):
                 "last_change_id": None, "refusals": [], "diagnostic": diagnostic,
                 **operating_ceiling(governance)}
     except (ValidationError, ValueError) as exc:
-        return {"status": "REJECTED", "hash": None, "source": None, "streams": None, "last_change_id": None,
+        return {"status": getattr(exc, 'status', 'REJECTED'), "hash": None, "source": None, "streams": None, "last_change_id": None,
                 "refusals": getattr(exc, "refusals", [refusal("$", str(exc) if isinstance(exc, ValidationError) else
                     "Operating configuration could not be read; restore the project file and correct filesystem/runtime access")]),
                 "diagnostic": None if isinstance(exc, ValidationError) else str(exc)}
@@ -717,7 +763,7 @@ def _prepare_commit(tree, governance, before, value, instruction, changed, appli
     if (before is None and current is not None) or (before is not None and current != before):
         fail("$", "Operating bytes changed during preparation")
     before_hash = fingerprint("operating", load_yaml(before)) if before is not None else None
-    if events and not audit_matches(load_yaml(before), events[-1]):
+    if events and not audit_matches(load_yaml(before), events[-1], history=events):
         fail("$", "Current operating bytes disagree with the audit chain")
     event = {"id": "C-" + uuid.uuid4().hex, "created_at": created_at or now_text(), "instruction": instruction,
              "before_hash": before_hash, "after_hash": after.operating_hash, "changes": changed,
@@ -782,7 +828,7 @@ def plan_initialize_operating(project_root, governance, *, change_id=None, creat
                      else _upgrade_safe_operating(governance))
         else:
             snapshot = validate_operating(load_yaml(before), governance)
-            if events and not audit_matches(snapshot.config, events[-1]):
+            if events and not audit_matches(snapshot.config, events[-1], history=events):
                 fail("$", "Operating file differs from the last audited change; reconcile the external edit before upgrade")
             if events:
                 files = {} if tree.inspect(LOCK) is not None else {LOCK: b"0" if os.name == "nt" else b""}
@@ -886,6 +932,10 @@ def recover_operating(project_root, governance, expected_journal_sha256):
 
 
 def _path(path, epic_id=None):
+    if path in {'reporting.mode', 'reporting.bindings'}:
+        if epic_id is not None:
+            fail('$.reporting', 'Reporting settings are project-wide')
+        return path
     if path.startswith('operating_calendar.') and path[19:] in SETTING_PATHS:
         if epic_id is not None:
             fail('$.operating_calendar', 'Calendar settings are project-wide')
@@ -934,6 +984,13 @@ def _put(value, path, selected):
 
 
 def _selection(path, text):
+    if path.startswith('reporting.'):
+        if path == 'reporting.bindings':
+            try:
+                return loads(text)
+            except ValueError:
+                fail('$.' + path, 'Expected a JSON list of approved destination bindings')
+        return text
     if path.startswith('operating_calendar.'):
         if path.endswith('.enabled'):
             if text not in {'true', 'false'}:
@@ -1147,7 +1204,7 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
-        if any(p.startswith(('budgeting.', 'operating_calendar.')) for p in selected):
+        if any(p.startswith(('budgeting.', 'operating_calendar.', 'reporting.')) for p in selected):
             fail('$', 'Protected settings require a PR: open a PR changing only the requested OPERATING_CONFIG.yaml values; the owner merges, then fetch the default branch. The live file was not changed')
         # Complete all refusal checks before creating the lock/state directory.
         from .protected_settings import resolve_protected, require_mutation_policy
@@ -1465,6 +1522,7 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
                       f"Token limit per ticket: {format(budget['max_tokens_per_ticket'], ',') if budget['max_tokens_per_ticket'] is not None else 'legacy reviewed limit'}",
                       f"Token limit per project lifetime: {format(budget['max_tokens_per_project'], ',') if budget['max_tokens_per_project'] is not None else 'legacy reviewed limit'}"])
     lines.append("Operating calendar (effective settings): " + json.dumps(effective_calendar(value), sort_keys=True))
+    lines.append('Reporting (effective settings): ' + json.dumps(effective_reporting(value), sort_keys=True))
     return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
 
 
@@ -1540,7 +1598,7 @@ def main(argv=None, default_root=None):
                 fail('$', 'Proposed operating file exceeds its 1 MiB bound')
             proposed = validate_operating(load_yaml(args.file.read_bytes()), governance)
             print(json_text(dict(status='ACCEPTED', proposed_configuration=proposed.config,
-                                 execution_authority=False, next_action='Open a PR; the owner reviews and merges')))
+                                 execution_authority=False, reachability='UNOBSERVED: provider accessibility and membership are unobserved; no credentials resolved', next_action='Open a PR; the owner reviews and merges')))
             return 0
         if args.command == "recommend":
             record = save_recommendation(args.root, governance, args.epics, args.inventory)
@@ -1562,6 +1620,8 @@ def main(argv=None, default_root=None):
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
         from .protected_settings import repository_rules_warning
         protected = snapshot.provenance.get('protected_settings', {})
+        if protected.get('differences') and 'PR' not in protected.get('next_action', ''):
+            protected['next_action'] += '; then open a PR for the requested protected settings'
         result.update(protected_settings=protected, budget_admission=_budget_admission_projection(snapshot.config, protected),
                       budgeting=_budgeting_projection(snapshot.config),
                       repository_rules=repository_rules_warning())

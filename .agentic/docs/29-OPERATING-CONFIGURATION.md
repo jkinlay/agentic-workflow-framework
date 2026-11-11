@@ -1,10 +1,10 @@
 # Operating configuration
 
-In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. No owner terminal command. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
+In AWF Codex chat, the skill runs `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show` read-only and offers **keep defaults**, **review Epics and recommend**, or **custom**. CONFIGURED permits authorized work, is not ACTIVE, and enables no adapter.
 
 Protected `.agentic/PROJECT_CONFIG.yaml`: ceilings/budgets/allowlists/floors/escalation/shared critic; legacy routes accepted; see [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
-Show/status/`operating.state` `effective_ceiling`: minimum of `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, enabled `execution.host_broker.max_workers`.
+Show/status/`operating.state` `effective_ceiling`: minimum: `execution.max_lanes` (omitted: six), `execution.max_parallel_tickets`, enabled `execution.host_broker.max_workers`.
 
 `effective_ceiling_governance_path`: binding path; project wins ties; null: omitted default binds. `effective_ceiling_sources`: ties.
 
@@ -26,7 +26,7 @@ Defaults: twelve `gpt-6.1-sol`/high workers, shared critic/controller/specialist
 
 `independent_reviewers.allocation: shared_critic`: one slot; legacy counts bind. `--propose-operating-capacity` proposes ceilings.
 
-Audited authenticated `fixed` selects safe counts; `max` limits recommendations. Neither raises sealed safe capacity. Replan at round boundaries; preserve reservations/triggers.
+Authenticated, audited `fixed` refuses above sealed safe capacity; `max` limits recommendations. Neither raises capacity; durable plans constrain admission; replan at round boundaries; preserve reservations/triggers.
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
@@ -38,14 +38,12 @@ Above-cap upgrades refuse; use `& '.agentic\.venv\Scripts\python.exe' -B -I '.ag
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Stream B's worker on Sol/high for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-5.6-sol/high
 ```
 
-Pins `epic_overrides.PROJ-123.streams.B.worker`. Matching `epic_id` selects allowed scoped routes. `--epic` excludes counts/simple switches/recommendations. Unpinning requires a route.
+Pins `epic_overrides.PROJ-123.streams.B.worker`; `epic_id` selects scoped allowlisted routes. `--epic` excludes counts/simple switches/recommendations; unpinning requires routes.
 
 Dispatch changes; running work retains route/hash. Surplus finishes without packets/cancellation. Labels prove no availability.
 
-Read Jira; save IDs/paths in `operating-epics.schema.json`.
-Unknown custom statuses need reviewed adapter mappings before planning.
-Operating and governance policy hashes bind separately; running reservations
-retain their admission-time bindings.
+Read Jira into `operating-epics.schema.json`; unknown statuses need reviewed mappings.
+Operating/governance hashes bind separately; preserve running reservations.
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating recommend --epics EPICS.json --inventory INVENTORY.json
@@ -59,8 +57,7 @@ Await adoption/keep; apply: `& '.agentic\.venv\Scripts\python.exe' -B -I '.agent
 
 Commit `.agentic-state/operating/changes/` with settings. Bootstrap preserves outside `.gitignore` bytes; `MIGRATION-v1.9.4-to-v1.9.5.md` defines placement, deduplication, malformed boundaries and `added_lines`. Ignore locks, `pending.json`, `*.awf-operating-*.tmp`, `.awf-*.tmp`; inspect recovery artifacts; incomplete transactions block dispatch.
 
-Publish flushed journal/audit without replacement; preserve conflicts. Inspect/pin journal SHA-256.
-Unprotected recovery retains the inspected journal pin and append-only audit.
+Publish flushed journal/append-only audit without replacement; preserve conflicts and inspected journal SHA-256.
 Protected changes use Git history and a PR, never local recovery authority.
 
 Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
@@ -68,14 +65,14 @@ Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
 neither switch. No Epic budget overrides.
 
 Ask in AWF Codex chat to check switches, limits, source/commit and differences.
-Last PR/merger is optional. For changes, the skill prepares a validated PR
+Last PR/merger is optional. Prepare a validated PR
 preserving comments and showing before/after. The owner merges; restricted pushes
 prepare owner publication. Protected `set` refuses without writes. See the
 [chat/PR procedure](39-BUDGETING.md#settings-in-chat-and-prs).
 
 Effective protected settings come from `OPERATING_CONFIG.yaml` at the commit
 named by `refs/remotes/origin/HEAD` only. `github.base_branch` cannot select policy;
-`show` reports disagreement. Branch/working edits cannot change enforcement or calendar batching.
+`show` reports disagreement. Branch/working edits cannot change enforcement, calendar batching or reporting, including OFF and destination bindings.
 Differences mean update an older checkout, otherwise propose a PR. At cycle start
 the controller locks before discovery, fetch, commit checking and publication.
 Git-valid UTF-8 names and hierarchical renames are supported. Failure retains
@@ -86,15 +83,20 @@ Configured origin without verified origin/HEAD: show/validation/installation
 work; admission refreshes, then refuses dangling identity, tracking refs or
 nondefault working protected values. The remedy is the next
 controller cycle or `git remote set-head origin --auto`. Fresh OFF without refs
-can continue offline. Non-repositories invoke no Git/gh. OFF needs no ledger.
+works offline. Non-repositories invoke no Git/gh. OFF needs no ledger.
 
-Merge authority rests with the host's repository rules and the owner.
+Host rules and owner retain merge authority.
 `show` reports rules UNOBSERVED as a warning. Adoption/publication observations
 report APPLIED, MISSING or UNOBSERVED; warnings never block local adoption.
-Git metadata must be outside worker write authority. Direct pushes to an unprotected default branch or the owner's full rights
-bypass this: offer the shipped ruleset separately.
+Keep Git metadata outside worker write authority. Unprotected default-branch pushes/owner rights
+bypass governance: offer the shipped ruleset separately.
 `merge_gate.trusted_owner_ids` remains for merge-gate use.
 Calendar shares this PR route and effective source. Defaults: continuous 24/7 work;
 review batching enabled weekdays 07:00-17:00 Europe/London, EoD 17:00 daily.
 Absent calendar retains these defaults; malformed accepted values refuse.
 See [calendar](operating-calendar.md) and [budgeting](39-BUDGETING.md).
+Reporting shares this PR route and defaults OFF. Teams/Slack/both require
+project/repository/scope/platform/destination/revision/secret_ref bindings.
+`show` withholds unsafe values; validate offline. Reachability remains UNOBSERVED.
+Unavailable policy refuses; accepted absence means defaults. Preserve corrections
+and the two-send ceiling across changes.
