@@ -96,13 +96,13 @@ class SelfTestReviewTests(unittest.TestCase):
                 code = error.code
         return code, stdout.getvalue(), stderr.getvalue(), runner.call_count
 
-    def test_stable_real_review_pins_qualify_after_bounded_runner(self):
+    def test_stable_real_review_pins_validate_without_qualifying_after_bounded_runner(self):
         with mock.patch.object(release_review, 'review_source', wraps=release_review.review_source) as review:
             code, output, error, calls = self.invoke(self.review_arguments() + ['--report', str(self.report)])
         self.assertEqual((0, 1, 2), (code, calls, review.call_count), output + error)
         value = json.loads(self.report.read_bytes())
         self.assertEqual('PASS', value['status'])
-        self.assertTrue(value['release_qualified'])
+        self.assertIs(value['release_qualified'], False)
         self.assertEqual('all_manifest_content', value['current_review']['coverage_basis'])
         self.assertFalse(value['execution_authority'])
 
@@ -115,7 +115,7 @@ class SelfTestReviewTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs["allow_source_checkout"] is True
                             for call in review.call_args_list))
         value = json.loads(self.report.read_bytes())
-        self.assertTrue(value["release_qualified"])
+        self.assertIs(value["release_qualified"], False)
         self.assertEqual("PASS", value["current_review"]["status"])
 
     def test_checks_only_can_pass_components_without_release_qualification(self):
@@ -152,10 +152,16 @@ class SelfTestReviewTests(unittest.TestCase):
                 code, output, error, calls = self.invoke(args)
                 self.assertEqual((1, 0), (code, calls), output + error)
 
-    def test_explicit_release_with_pins_qualifies(self):
+    def test_explicit_release_with_pins_requires_sharded_qualification(self):
         code, output, error, calls = self.invoke(['--release', *self.review_arguments()])
         self.assertEqual((0, 1), (code, calls), output + error)
-        self.assertIs(json.loads(output)['release_qualified'], True)
+        value = json.loads(output)
+        self.assertEqual('PASS', value['status'])
+        self.assertEqual('PASS', value['current_review']['status'])
+        self.assertIs(value['release_qualified'], False)
+        for path in ('scripts/release_self_test.py', 'scripts/validate_archive.py',
+                     'scripts/publish_release.py'):
+            self.assertIn(path, value['release_qualification_reason'])
 
     def test_checks_only_cannot_override_release_or_supplied_review(self):
         for args, expected in ((['--checks-only', '--release'], 2),
@@ -163,6 +169,16 @@ class SelfTestReviewTests(unittest.TestCase):
             with self.subTest(args=args):
                 code, output, error, calls = self.invoke(args)
                 self.assertEqual((expected, 0), (code, calls), output + error)
+
+    def test_release_help_names_component_checks_and_sharded_qualification(self):
+        code, output, error, calls = self.invoke(['--help'])
+        self.assertEqual((0, 0), (code, calls), output + error)
+        help_text = ' '.join(output.split())
+        self.assertIn('component checks and require pinned current independent reviews', help_text)
+        self.assertIn('never qualifies a release', help_text)
+        for path in ('scripts/release_self_test.py', 'scripts/validate_archive.py',
+                     'scripts/publish_release.py'):
+            self.assertIn(path, help_text)
 
     def test_existing_report_is_preserved_before_any_runner(self):
         original = b'{"status":"PASS","historical_fixture":true}\n'

@@ -245,7 +245,7 @@ def main(argv=None):
     parser.add_argument('--report', type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--checks-only', action='store_true', help='Explicit default: component checks without release qualification; review remains NOT_PROVIDED')
-    mode.add_argument('--release', action='store_true', help='Require pinned current independent reviews and qualify source release acceptance')
+    mode.add_argument('--release', action='store_true', help='Run component checks and require pinned current independent reviews; never qualifies a release. Qualification requires scripts/release_self_test.py via scripts/validate_archive.py or scripts/publish_release.py')
     parser.add_argument('--expected-manifest-sha256')
     parser.add_argument('--reviews', type=Path)
     parser.add_argument('--expected-reviews-sha256')
@@ -298,7 +298,9 @@ def main(argv=None):
             'balanced_model_routing', 'routing_budget_ledger', 'shadow_routing_evidence'],
         'created_at': datetime.now(timezone.utc).isoformat(), 'python': sys.version,
         'platform': platform.platform(), 'checks': {}, 'dependencies': {}, 'status': 'FAILED',
-        'release_qualified': False, 'current_review': {'status': 'NOT_PROVIDED'}}
+        'release_qualified': False,
+        'release_qualification_reason': 'Component checks never qualify a release, even with valid review pins. Only the sharded scripts/release_self_test.py path via scripts/validate_archive.py or scripts/publish_release.py can qualify after deferral and reconciliation.',
+        'current_review': {'status': 'NOT_PROVIDED'}}
     if sharded:
         report.update(scope='source-shard' if SOURCE_REPOSITORY else 'installed-shard', suite_complete=False, shard=args.shard, shard_count=9,
                       selection_sha256=args.expected_selection_sha256, isolation='FAILED',
@@ -498,7 +500,6 @@ def main(argv=None):
                 allow_source_checkout=(ROOT / '.git').exists())
             if final_review != report['current_review']:
                 raise ValueError('Current review inputs changed during source validation')
-        report['release_qualified'] = not sharded and result.wasSuccessful() and report['current_review'].get('release_qualified') is True
     except (KeyboardInterrupt, TimeoutError) as exc:
         report['status'] = 'INTERRUPTED'
         report['release_qualified'] = False
