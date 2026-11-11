@@ -40,6 +40,25 @@ class SequentialReleaseTests(unittest.TestCase):
         self.report = self.work / 'stage.json'
         self.calls = []
         self.mutate = lambda report: None
+        # Release shards have already imported the real split module. Let this
+        # synthetic root own its cache entry, then restore the surrounding suite.
+        split_name = Path(UPGRADE_MATRIX).stem
+        existing_split = sys.modules.pop(split_name, None)
+        def restore_split():
+            sys.modules.pop(split_name, None)
+            if existing_split is not None:
+                sys.modules[split_name] = existing_split
+        self.addCleanup(restore_split)
+
+    def test_split_module_origin_mismatch_refuses_foreign_cached_module(self):
+        plan = planner.build_release_plan(self.root)
+        name = Path(UPGRADE_MATRIX).stem
+        foreign = type(sys)(name)
+        foreign.__file__ = str(ROOT / UPGRADE_MATRIX)
+        with mock.patch.dict(sys.modules, {name: foreign}):
+            with self.assertRaisesRegex(ValueError, 'split module origin mismatch'):
+                release.expected_partitions(self.root, plan)
+            self.assertIs(foreign, sys.modules[name])
 
     def runner(self, command, **kwargs):
         self.calls.append((command, kwargs))

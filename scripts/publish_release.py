@@ -420,8 +420,10 @@ def materialize_commit(repository, commit, destination, *, mode_manifest=None):
 def validation_checkout(repository, commit, destination):
     """Yield a temporary detached Git worktree of exactly ``commit`` for validation.
 
-    Self-test cases inspect Git (HEAD, attributes, the raw tree), so they cannot
-    run in the Git-less release projection.  The worktree shares the release
+    Archive validation also runs default and review-pinned self-test shards in
+    the Git-less release projection; cases requiring source Git metadata skip
+    there. This checkout exercises those cases (HEAD, attributes, the raw tree).
+    The worktree shares the release
     repository's objects, must match the raw tree byte for byte with a clean
     status, and is always removed afterwards.  Windows and POSIX use the same
     command-scoped ``core.autocrlf=false`` checkout; this does not write the
