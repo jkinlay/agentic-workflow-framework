@@ -55,7 +55,7 @@ def run(config_path, invoke=run_tick):
     relative='.awf-status/'+sha256(str(config_path).encode('utf-8'))+'.md'
     report='Recorded at: '+now_text()+'\n\n'+body
     with Tree(config_path.parent) as tree:
-        tree.write(relative,report.encode('utf-8'))
+        tree.write(relative,report.encode('utf-8'),authority='managed')
     print(report)
     print('Retained report: '+str(config_path.parent/relative))
     return code

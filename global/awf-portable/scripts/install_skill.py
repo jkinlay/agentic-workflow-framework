@@ -23,6 +23,106 @@ class InstallError(ValueError):
     pass
 
 
+class Publication:
+    """Pinned parents and final identity checks under the installer lease.
+
+    Requires owner-established quiescence; doc 38 names the final namespace race.
+    """
+    def __init__(self):
+        from contextlib import ExitStack
+        self.stack = ExitStack()
+        self.parents = {}
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            self.ctypes = ctypes
+            self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            self.kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            self.kernel.CreateFileW.restype = wintypes.HANDLE
+            self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            self.kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                ctypes.c_void_p, wintypes.DWORD]
+
+    def pin(self, directory):
+        directory = Path(os.path.abspath(directory))
+        if directory in self.parents:
+            return self.parents[directory]
+        parent = self.pin(directory.parent) if directory.parent != directory else None
+        if os.name == 'nt':
+            safe_path(directory)
+            # Include FILE_LIST_DIRECTORY: metadata-only handles do not enforce
+            # the denied delete-sharing lease needed to pin this parent.
+            handle = self.kernel.CreateFileW(str(directory), 0x81, 3, None, 3, 0x02200000, None)
+            if handle == self.ctypes.c_void_p(-1).value:
+                raise self.ctypes.WinError(self.ctypes.get_last_error())
+            self.stack.callback(self.kernel.CloseHandle, handle)
+        else:
+            handle = os.open(str(directory) if parent is None else directory.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                **({} if parent is None else {'dir_fd': parent}))
+            self.stack.callback(os.close, handle)
+        self.parents[directory] = handle
+        return handle
+
+    def identity(self, path):
+        path = Path(path)
+        parent = self.pin(path.parent)
+        try:
+            info = os.lstat(path) if os.name == 'nt' else os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISDIR(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise InstallError('Unsafe publication directory; retained: ' + str(path))
+        if os.name != 'nt':
+            return (info.st_dev, info.st_ino)
+        ctypes = self.ctypes
+        handle = self.kernel.CreateFileW(str(path), 0x80, 3, None, 3, 0x02200000, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            class FileId(ctypes.Structure):
+                _fields_ = [('volume', ctypes.c_ulonglong), ('file_id', ctypes.c_ubyte * 16)]
+            identity = FileId()
+            if not self.kernel.GetFileInformationByHandleEx(handle, 18, ctypes.byref(identity), ctypes.sizeof(identity)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return (identity.volume, bytes(identity.file_id))
+        finally:
+            self.kernel.CloseHandle(handle)
+
+    def check(self, path, expected):
+        if os.name != 'nt':
+            for directory, descriptor in self.parents.items():
+                parent = self.parents.get(directory.parent)
+                current = (os.stat(directory.name, dir_fd=parent, follow_symlinks=False)
+                           if parent is not None and directory.parent != directory else os.lstat(directory))
+                held = os.fstat(descriptor)
+                if (not stat.S_ISDIR(current.st_mode) or
+                        (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)):
+                    raise InstallError('Publication parent identity changed; no mutation; evidence retained: ' + str(directory))
+        observed = self.identity(path)
+        if observed != expected:
+            raise InstallError('Publication ' + ('unexpected occupancy' if expected is None else 'identity changed')
+                + '; no mutation; retained: ' + str(path) + '; expected=' + repr(expected) + '; observed=' + repr(observed))
+
+    def replace(self, source, destination, expected):
+        if expected is None:
+            raise InstallError('Publication source identity missing; no mutation; retained: ' + str(source))
+        source_fd, target_fd = self.pin(source.parent), self.pin(destination.parent)
+        self.check(source, expected)
+        self.check(destination, None)
+        if os.name == 'nt':
+            os.replace(source, destination)
+        else:
+            os.replace(source.name, destination.name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+            os.fsync(source_fd)
+            if target_fd != source_fd:
+                os.fsync(target_fd)
+
+    def close(self):
+        self.stack.close()
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -400,6 +500,11 @@ def create_stage_directory(source, target):
 def copy_stage(source, stage):
     """Build a new tree without copytree's pathname copystat or copy2 writers."""
     create_stage_directory(source, stage)
+    publication = Publication()
+    try:
+        identity = publication.identity(stage)
+    finally:
+        publication.close()
     for parent, directories, files in os.walk(source, followlinks=False):
         relative = Path(parent).relative_to(source)
         for name in directories:
@@ -407,6 +512,7 @@ def copy_stage(source, stage):
             create_stage_directory(Path(parent) / name, stage / relative / name)
         for name in files:
             copy_exclusive(Path(parent) / name, stage / relative / name)
+    return identity
 
 
 def create_install_lock(path):
@@ -532,10 +638,12 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
     stage = dest.parent / f".awf-stage-{uuid.uuid4().hex}"
     backup = backup_root / f"awf-{previous or 'new'}-{uuid.uuid4().hex}"
     moved = False
+    publication = Publication()
     try:
+        previous_identity = publication.identity(dest)
         if (inventory(dest) if dest.exists() else None) != before:
             raise InstallError("Destination changed during installation planning")
-        copy_stage(source, stage)
+        stage_identity = copy_stage(source, stage)
         verify_package(stage, expected_manifest_sha256)
         for rel in result["preserved"]:
             target = stage / rel
@@ -556,13 +664,13 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
             backup_root.mkdir(parents=True, exist_ok=True)
             safe_path(backup_root)
             # Rename, not copy-and-delete: cross-filesystem backups fail safely here.
-            os.replace(dest, backup)
+            publication.replace(dest, backup, previous_identity)
             moved = True
         try:
-            os.replace(stage, dest)
+            publication.replace(stage, dest, stage_identity)
         except OSError:
             if moved:
-                os.replace(backup, dest)
+                publication.replace(backup, dest, previous_identity)
                 moved = False
             raise
         result.update(status="upgraded" if previous else "installed", backup=str(backup) if moved else None)
@@ -583,6 +691,7 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
                     raise
                 primary.add_note('Stage retained; cleanup diagnostic unavailable: ' + type(error).__name__)
         dispose_install_lock(lock_fd)
+        publication.close()
 
 
 def main(argv=None):

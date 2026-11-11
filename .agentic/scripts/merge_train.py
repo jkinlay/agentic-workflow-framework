@@ -141,7 +141,7 @@ def _materialize(git, database, head, destination):
             offset = end + 1
             if sha != expected or kind != b"blob" or size < 0 or offset + size >= len(raw):
                 raise ValidationError("batch object materialization is incomplete")
-            tree.write(name, raw[offset:offset + size])
+            tree.write(name, raw[offset:offset + size], authority='transaction')
             offset += size + 1
         if offset != len(raw):
             raise ValidationError("batch object materialization has trailing bytes")

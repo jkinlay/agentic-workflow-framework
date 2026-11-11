@@ -523,13 +523,114 @@ def _builder_owns_backup_cleanup(transaction):
 
 def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None,
                              transaction=None):
+    from .installer import Tree, install_lock
+    if transaction is not None:
+        return _ensure_installed_runtime(destination, wheelhouse,
+            prepared_wheelhouse=prepared_wheelhouse, transaction=transaction, tree=transaction.tree)
+    with Tree(destination) as tree, install_lock(tree):
+        return _ensure_installed_runtime(destination, wheelhouse,
+            prepared_wheelhouse=prepared_wheelhouse, tree=tree)
+
+
+class _RuntimeBuilder(venv.EnvBuilder):
+    def __init__(self, *, custody_tree, stage_relative, stage_identity, **options):
+        super().__init__(**options)
+        self.custody_tree = custody_tree
+        self.stage_relative = stage_relative
+        self.stage_identity = stage_identity
+
+    def _check_stage(self):
+        self.custody_tree.check_entry(self.stage_relative, self.stage_identity, directory=True)
+
+    def ensure_directories(self, env_dir):
+        self._check_stage()
+        return super().ensure_directories(env_dir)
+
+    def _publish(self, path, raw, mode=0o600):
+        self._check_stage()
+        path = Path(path)
+        with Tree(path.parent) as directory:
+            directory.write_exclusive(path.name, raw, mode=mode)
+
+    def create_configuration(self, context):
+        self._check_stage()
+        # stdlib opens this with 'w'. Even a fresh private stage must never
+        # truncate an inserted owner hard link. Create exactly once instead.
+        context.cfg_path = str(Path(context.env_dir) / 'pyvenv.cfg')
+        raw = ('home = ' + context.python_dir + '\ninclude-system-site-packages = false\n'
+               + 'version = %d.%d.%d\n' % sys.version_info[:3]
+               + 'executable = ' + os.path.realpath(sys.executable) + '\n')
+        with Tree(context.env_dir) as stage:
+            _verify_stage_links(Path(context.env_dir))
+            stage.write_exclusive('pyvenv.cfg', raw.encode('utf-8'))
+
+    def setup_python(self, context):
+        # The stdlib Windows implementation calls copy2 directly, and the POSIX
+        # implementation can reopen an existing name. Publish independent copies
+        # exclusively on both platforms, including their executable mode.
+        if os.name == 'nt':
+            scripts = Path(venv.__file__).parent / 'scripts' / 'nt'
+            for name, candidates in (
+                    ('python.exe', ('venvlauncher.exe', 'python.exe')),
+                    ('pythonw.exe', ('venvwlauncher.exe', 'pythonw.exe'))):
+                source = next((scripts / candidate for candidate in candidates if (scripts / candidate).is_file()), None)
+                if source is None:
+                    raise ValidationError('Independent venv launcher is unavailable; stage retained')
+                self._publish(Path(context.bin_path) / name, source.read_bytes())
+        else:
+            source = Path(context.executable)
+            for name in dict.fromkeys((Path(context.env_exe).name, 'python', 'python3',
+                                      'python%d.%d' % sys.version_info[:2])):
+                self._publish(Path(context.bin_path) / name, source.read_bytes(), stat.S_IMODE(source.stat().st_mode))
+
+    def install_scripts(self, context, path):
+        self._check_stage()
+        for directory, _subdirectories, files in os.walk(path):
+            relative = Path(directory).relative_to(path)
+            if not relative.parts or relative.parts[0] not in {'common', os.name}:
+                continue
+            for name in files:
+                if name.endswith(('.exe', '.pdb')):
+                    continue
+                source = Path(directory) / name
+                target = Path(context.bin_path).joinpath(*relative.parts[1:], name)
+                with Tree(context.env_dir) as stage:
+                    stage.parent(target.relative_to(context.env_dir).as_posix(), create=True)
+                context.script_path = str(source)
+                raw = self.replace_variables(source.read_text(encoding='utf-8'), context).encode('utf-8')
+                self._publish(target, raw, stat.S_IMODE(source.stat().st_mode))
+
+    def create_git_ignore_file(self, context):
+        self._publish(Path(context.env_dir) / '.gitignore', b'# Created by venv\n*\n')
+
+
+def _verify_stage_links(stage):
+    for directory, directories, files in os.walk(stage, followlinks=False):
+        for name in directories + files:
+            path = Path(directory) / name
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode):
+                # CPython's own POSIX lib64 alias is internal to this fresh stage.
+                if os.name != 'nt' and path == stage / 'lib64' and os.readlink(path) == 'lib':
+                    continue
+                raise ValidationError('Foreign runtime stage link; no use; stage retained')
+            if (getattr(info, 'st_file_attributes', 0) & 0x400 or
+                    (stat.S_ISREG(info.st_mode) and info.st_nlink != 1) or
+                    not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))):
+                raise ValidationError('Foreign runtime stage entry; no use; stage retained')
+
+
+def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None,
+                              transaction=None, tree):
     """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
-    from .installer import Tree, _retained_directory_result, _record_cleanup_pending
-    with Tree(root) as tree:
-        _retained_directory_result(tree)
+    from .installer import _retained_directory_result, _record_cleanup_pending
+    _retained_directory_result(tree)
     runtime_root = root / ".agentic" / ".venv"
+    previous_identity = (transaction.previous_identity if transaction is not None else
+                         tree.entry_identity('.agentic/.venv', directory=True))
+    tree.check_entry('.agentic/.venv', previous_identity, directory=True)
     if runtime_root.exists() or runtime_root.is_symlink():
         metadata = os.lstat(runtime_root)
         reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -565,7 +666,18 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         had_previous = transaction.had_previous
     runtime_swap_started = False
     try:
-        venv.EnvBuilder(with_pip=False, system_site_packages=False, clear=False).create(stage)
+        stage_relative = stage.relative_to(root).as_posix()
+        backup_relative = backup.relative_to(root).as_posix()
+        stage_parent, stage_fd, stage_name = tree.parent(stage_relative, create=True)
+        if os.name == 'nt':
+            from .installer import _windows_create_directory
+            _windows_create_directory(stage_fd, stage_name)
+        else:
+            os.mkdir(stage_name, 0o700, dir_fd=stage_fd)
+        stage_identity = tree.entry_identity(stage_relative, directory=True)
+        _RuntimeBuilder(custody_tree=tree, stage_relative=stage_relative, stage_identity=stage_identity,
+                        with_pip=False, system_site_packages=False, clear=False).create(stage)
+        _verify_stage_links(stage)
         stage_interpreter = _runtime_interpreter(stage)
         if not stage_interpreter.is_file() or not entry_point.is_file():
             raise ValidationError("Canonical installed runtime or workflow entry point is unavailable")
@@ -576,9 +688,9 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         if transaction is not None:
             transaction.record_staged_runtime()
         if had_previous:
-            os.replace(runtime_root, backup)
+            tree.rename_checked('.agentic/.venv', backup_relative, previous_identity, directory=True)
         runtime_swap_started = True
-        os.replace(stage, runtime_root)
+        tree.rename_checked(stage_relative, '.agentic/.venv', stage_identity, directory=True)
         _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files)
         # Final-path validation is the standalone commit point. A coordinated
         # install hands the intact backup to the outer transaction, which must
@@ -595,16 +707,14 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
             retained = [path for path in candidates
                         if path.exists() or path.is_symlink()]
             if retained:
-                with Tree(root) as tree:
-                    _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')
+                _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')
                 original.add_note('Runtime cleanup pending; inspect retained-journal.json before owner recovery')
         except BaseException as diagnostic_error:
             original.add_note('Retained cleanup diagnostic could not be written: ' + type(diagnostic_error).__name__)
         raise
     cleanup = []
     if transaction is None and (backup.exists() or backup.is_symlink()):
-        with Tree(root) as tree:
-            cleanup = _record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
+        cleanup = _record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
     return {"interpreter": str(interpreter), "entry_point": str(entry_point),
             "transaction_cleanup": "COMMITTED_CLEANUP_PENDING" if cleanup else "COMPLETE",
             "transaction_cleanup_failures": cleanup,
@@ -818,40 +928,22 @@ def _post_command(command, root, timeout=60):
     result = {"command": command, "exit_code": None, "output": None, "diagnostic": None}
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
     env.update(PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
-    process = None
     try:
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            deadline = time.monotonic() + timeout
-            process = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=out,
-                                       stderr=err, env=child_env(env), shell=False)
-            try:
-                while process.poll() is None:
-                    if time.monotonic() >= deadline or max(os.fstat(out.fileno()).st_size, os.fstat(err.fileno()).st_size) > MAX_METADATA_BYTES:
-                        raise ValidationError("Post-install check exceeded its time or byte limit")
-                    try:
-                        process.wait(timeout=min(.05, max(.001, deadline - time.monotonic())))
-                    except subprocess.TimeoutExpired:
-                        pass
-                result["exit_code"] = process.returncode
-                if time.monotonic() > deadline or max(os.fstat(out.fileno()).st_size, os.fstat(err.fileno()).st_size) > MAX_METADATA_BYTES:
-                    raise ValidationError("Post-install check exceeded its time or byte limit")
-                out.seek(0)
-                raw = out.read(MAX_METADATA_BYTES + 1)
-                result["output_stream"] = "stdout"
-                if not raw.strip() and process.returncode:
-                    err.seek(0)
-                    raw = err.read(MAX_METADATA_BYTES + 1)
-                    result["output_stream"] = "stderr"
-                value = loads(raw.decode("utf-8"))
-                if not isinstance(value, dict):
-                    raise ValidationError("Post-install CLI output is not an object")
-                result["output"] = value
-                if process.returncode:
-                    result["diagnostic"] = "Installed CLI returned a nonzero exit status"
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=2)
+        from .safeio import run_bounded
+        completed = run_bounded(command, cwd=root, env=env, timeout=timeout,
+                                stdout_limit=MAX_METADATA_BYTES, stderr_limit=MAX_METADATA_BYTES)
+        result["exit_code"] = completed.returncode
+        raw = completed.stdout
+        result["output_stream"] = "stdout"
+        if not raw.strip() and completed.returncode:
+            raw = completed.stderr
+            result["output_stream"] = "stderr"
+        value = loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValidationError("Post-install CLI output is not an object")
+        result["output"] = value
+        if completed.returncode:
+            result["diagnostic"] = "Installed CLI returned a nonzero exit status"
     except (ValidationError, OSError, ValueError, UnicodeError, subprocess.SubprocessError):
         result["diagnostic"] = "Post-install CLI did not return bounded valid JSON; inspect the installed runtime/dependencies and rerun the recorded command"
     return result

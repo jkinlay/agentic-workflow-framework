@@ -289,7 +289,7 @@ class AdoptionStatusTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, backup)
         evidence = self.root / installer.RETAINED_JOURNAL
         self.addCleanup(evidence.unlink, missing_ok=True)
-        with Tree(self.root) as tree:
+        with Tree(self.root, mutation_authority='transaction') as tree:
             installer._record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
         before = evidence.read_bytes()
         result = self.observe()

@@ -579,7 +579,8 @@ class ForwardModeTests(unittest.TestCase):
             setattr(operating, name, getattr(os, name, 0))
         operating.open.return_value = 456
         operating.fdopen.return_value = stream
-        metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=101, st_gid=202)
+        metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=101, st_gid=202,
+                                   st_dev=1, st_ino=2, st_size=0, st_mtime_ns=3, st_nlink=1)
         operating.fstat.side_effect = lambda fd: metadata
         def chmod(fd, value):
             events.append(('mode', value))
@@ -596,6 +597,12 @@ class ForwardModeTests(unittest.TestCase):
         tree.write_temporary_names = {}
         tree.write_modes = {} if override is None else {path: override}
         tree.write_ownership = {}
+        tree.mutation_authority = 'transaction'
+        tree._authenticated = {}
+        tree._created_entries = set()
+        tree.record_temporary_identity = None
+        tree.retire_temporary_identity = None
+        tree.rename_checked.side_effect = lambda *args, **kwargs: safeio.Tree.rename_checked(tree, *args, **kwargs)
         with patch.object(safeio, 'os', operating):
             if read_error or apply_error:
                 with self.assertRaises(OSError):

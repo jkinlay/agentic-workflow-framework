@@ -10,7 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import ValidationError, installer, adoption_config
-from agentic.safeio import Tree
+from agentic.installer import Tree
 
 
 class CleanupStopgapTests(unittest.TestCase):
@@ -161,7 +161,7 @@ class CleanupStopgapTests(unittest.TestCase):
         interpreter = runtime / 'python'
 
         def create(stage):
-            Path(stage).mkdir()
+            Path(stage).mkdir(exist_ok=True)
             (Path(stage) / 'python').write_bytes(b'new runtime')
             if error:
                 raise error

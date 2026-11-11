@@ -12,11 +12,12 @@ ALLOWLIST = Path(__file__).with_name('path_mutation_allowlist.json')
 ROOTS = ('.agentic/lib/agentic', 'scripts', 'global/awf-portable/scripts')
 METHODS = {'unlink', 'rmdir', 'rmtree', 'chmod', 'chown', 'utime',
            'lchmod', 'setxattr', 'removexattr', 'copystat', 'copymode',
-           'TemporaryDirectory', 'NamedTemporaryFile', 'mkdtemp', 'copy2', 'copyfile', 'copytree',
+           'TemporaryDirectory', 'TemporaryFile', 'NamedTemporaryFile', 'mkdtemp', 'copy2', 'copyfile', 'copytree',
            'DeleteFileW', 'DeleteFileA', 'RemoveDirectoryW', 'RemoveDirectoryA',
            'MoveFileW', 'MoveFileA', 'MoveFileExW', 'MoveFileExA', 'ReplaceFileW', 'ReplaceFileA',
            'SetFileAttributesW', 'SetFileAttributesA', 'SetFileSecurityW', 'SetFileSecurityA',
-           'SetNamedSecurityInfoW', 'SetNamedSecurityInfoA'}
+           'SetNamedSecurityInfoW', 'SetNamedSecurityInfoA', 'replace', 'rename_checked',
+           'write_bytes', 'write_text', '<dynamic-getattr>'}
 
 
 def product_modules(root):
@@ -41,14 +42,52 @@ def mutation_calls(path):
             return imports.get(node.id, node.id)
         if isinstance(node, ast.Attribute):
             return name(node.value) + '.' + node.attr
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == 'getattr' and len(node.args) >= 2):
+            attribute = node.args[1]
+            return name(node.args[0]) + '.' + (attribute.value if isinstance(attribute, ast.Constant)
+                and isinstance(attribute.value, str) else '<dynamic-getattr>')
         return ast.unparse(node)
+    # Resolve chains of assignment aliases as well as import aliases. Preserve
+    # every possible binding: an alias cannot hide a mutator through reassignment.
+    aliases = {}
+    for _ in range(len(list(ast.walk(tree)))):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                resolved = name(node.value)
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id != resolved:
+                        values = aliases.setdefault(target.id, set())
+                        if resolved not in values:
+                            values.add(resolved)
+                            changed = True
+                        # Mutating aliases take precedence over nonmutating ones.
+                        if resolved.rsplit('.', 1)[-1] in METHODS | {'rename', 'remove', 'CreateFileW', 'CreateFileA', 'open'}:
+                            imports[target.id] = resolved
+        if not changed:
+            break
     calls = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         function = name(node.func)
         leaf = function.rsplit('.', 1)[-1]
-        if (leaf in METHODS or function in ('os.remove', 'os.unlink', 'os.rmdir',
+        overwrite = False
+        if leaf == 'open':
+            mode_index = 1 if function in {'open', 'builtins.open', 'io.open'} else 0
+            mode = next((keyword.value for keyword in node.keywords if keyword.arg == 'mode'),
+                        node.args[mode_index] if len(node.args) > mode_index else ast.Constant('r'))
+            overwrite = (not isinstance(mode, ast.Constant) or not isinstance(mode.value, str)
+                         or ('x' not in mode.value and any(flag in mode.value for flag in 'wa+')))
+        if leaf in {'CreateFileW', 'CreateFileA'}:
+            disposition = node.args[4] if len(node.args) > 4 else None
+            overwrite = not isinstance(disposition, ast.Constant) or disposition.value not in {1, 3, 4}
+        builder = (leaf == 'create' and isinstance(node.func, ast.Attribute)
+                   and isinstance(node.func.value, ast.Call)
+                   and name(node.func.value.func) in {'venv.EnvBuilder', '_RuntimeBuilder'})
+        if (leaf in METHODS or overwrite or builder or function in ('os.remove', 'os.unlink', 'os.rmdir',
                 'os.replace', 'os.rename', 'shutil.move')
                 or leaf == 'rename'):
             encoded = ast.dump(node, annotate_fields=True, include_attributes=False).encode()
@@ -64,11 +103,52 @@ def violations(root, allowlist):
     for row in allowlist:
         if not row.get('justification', '').strip() or '\n' in row['justification']:
             raise ValueError('Every allowlist entry requires a one-line justification')
+        if row.get('disposition') not in {'SAFE', 'SAFE-UNDER-BOUNDARY', 'FIXED', 'OUT-OF-SCOPE', 'NON-MUTATING'}:
+            raise ValueError('Unresolved or unknown mutation disposition: ' + str(row.get('disposition')))
         expected[row['path'], row['fingerprint']] += 1
     return dict(unreviewed=list((actual - expected).elements()), stale=list((expected - actual).elements()))
 
 
 class PathMutationGuardTests(unittest.TestCase):
+    def test_all_nine_original_publications_have_boundary_dispositions(self):
+        expected = {'adoption_config.py:579', 'adoption_config.py:581', 'installer.py:2016',
+                    'installer.py:2277', 'safeio.py:1249', 'safeio.py:1251',
+                    'install_skill.py:559', 'install_skill.py:562', 'install_skill.py:565'}
+        rows = json.loads(ALLOWLIST.read_text(encoding='utf-8'))
+        observed = [site for row in rows for site in row.get('former_sites', [])]
+        self.assertEqual(expected, set(observed))
+        self.assertEqual(9, len(observed))
+        for row in rows:
+            if row.get('former_sites'):
+                self.assertEqual('SAFE-UNDER-BOUNDARY', row['disposition'])
+
+    def assert_injection(self, source, count=1):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'injected.py'
+            path.write_text(source, encoding='utf-8')
+            self.assertEqual(count, len(mutation_calls(path)), source)
+
+    def test_gap_path_replace(self):
+        self.assert_injection('from pathlib import Path\nPath("source").replace("owner")\n')
+
+    def test_gap_temporary_file(self):
+        self.assert_injection('from tempfile import TemporaryFile\nTemporaryFile()\n')
+
+    def test_gap_getattr(self):
+        self.assert_injection('import os\ngetattr(os, "unlink")("owner")\n')
+
+    def test_gap_assignment_alias(self):
+        self.assert_injection('import os\nerase = os.unlink\nerase("owner")\n')
+
+    def test_gap_native_alias(self):
+        self.assert_injection('erase = kernel.DeleteFileW\nerase("owner")\n')
+
+    def test_gap_truncating_createfile(self):
+        self.assert_injection('kernel.CreateFileW("owner", access, 7, None, 2, flags, None)\n')
+
+    def test_gap_plain_overwrite(self):
+        self.assert_injection('from pathlib import Path\nimport builtins as b\nfrom io import open as writer\nopen("owner", "wb")\nPath("owner").open("w")\nPath("owner").write_bytes(b"data")\nPath("owner").write_text("data")\nb.open("file", "wb")\nwriter("file", "w")\n', 6)
+
     def test_shipped_calls_have_exact_reviewed_allowlist_entries(self):
         result = violations(ROOT, json.loads(ALLOWLIST.read_text(encoding='utf-8')))
         self.assertEqual({'unreviewed': [], 'stale': []}, result)

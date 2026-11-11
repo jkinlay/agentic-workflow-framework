@@ -30,7 +30,8 @@ class TemporaryMetadataTests(unittest.TestCase):
         stream.__enter__ = Mock(return_value=stream)
         stream.__exit__ = Mock(return_value=False)
         stream.fileno.return_value = 456
-        state = dict(st_uid=101, st_gid=101, st_mode=stat.S_IFREG | 0o600)
+        state = dict(st_uid=101, st_gid=101, st_mode=stat.S_IFREG | 0o600,
+                     st_dev=1, st_ino=2, st_size=0, st_mtime_ns=3, st_nlink=1)
         operating = Mock()
         operating.name = 'posix'
         for name in ('O_CREAT', 'O_EXCL', 'O_WRONLY', 'O_BINARY', 'O_NOFOLLOW'):
@@ -58,6 +59,12 @@ class TemporaryMetadataTests(unittest.TestCase):
         tree.write_temporary_names = {}
         tree.write_modes = {} if override is None else {'config': override}
         tree.write_ownership = {}
+        tree.mutation_authority = 'transaction'
+        tree._authenticated = {}
+        tree._created_entries = set()
+        tree.record_temporary_identity = None
+        tree.retire_temporary_identity = None
+        tree.rename_checked.side_effect = lambda *args, **kwargs: safeio.Tree.rename_checked(tree, *args, **kwargs)
         with patch.object(safeio, 'os', operating):
             if owner_error or mode_loss or owner_loss:
                 with self.assertRaises((ValidationError, OSError)):
@@ -109,7 +116,7 @@ class TemporaryMetadataTests(unittest.TestCase):
             path.chmod(0o640)
             before = path.stat()
             with safeio.Tree(temporary) as tree:
-                tree.write('config', b'new')
+                tree.write('config', b'new', authority='transaction')
             after = path.stat()
             self.assertEqual((before.st_uid, before.st_gid, 0o640),
                              (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)))
@@ -122,7 +129,7 @@ class RollbackMetadataTests(unittest.TestCase):
             try:
                 with safeio.Tree(temporary) as tree:
                     tree.write_modes = {'archive': stat.S_IREAD}
-                    tree.write('archive', b'archive')
+                    tree.write('archive', b'archive', authority='transaction')
                     self.assertEqual(b'archive', tree.read('archive'))
                 self.assertFalse(path.stat().st_mode & stat.S_IWRITE)
             finally:

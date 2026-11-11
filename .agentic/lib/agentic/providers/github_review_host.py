@@ -586,7 +586,7 @@ class HostDriver:
                 require(tree.read('commit-run-log.json', maximum=1024 * 1024)
                         == raw, 'Retained commit run-log binding changed')
             else:
-                tree.write('commit-run-log.json', raw)
+                tree.write('commit-run-log.json', raw, authority='transaction')
         return record
 
     def register_commit_run_log(self, controller_run_id, commit_sha):
@@ -1506,7 +1506,7 @@ class HostDriver:
             if raw.get('pr') == 0:
                 raw['pr'] = number
                 encoded = (json.dumps(raw, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
-                tree.write(relative, encoded)
+                tree.write(relative, encoded, authority='transaction')
         self.c['pr'] = number
         self.c['key'] = f"{self.c['repository_id']}:{number}"
         self.c['config_hash'] = sha256(path.read_bytes())
@@ -1735,7 +1735,7 @@ class HostDriver:
                 with Tree(run) as tree:
                     tree.write('execution-outcome.json', canonical(dict(binding=binding,
                         success=success, failure_kind=None if success else failure_kind,
-                        budgeted=admission is not None)))
+                        budgeted=admission is not None)), authority='transaction')
         require(not identity_missing, 'Terminal execution lacks an unambiguous observed context')
         return session
 
@@ -1755,12 +1755,12 @@ class HostDriver:
                 self.budgeting.operations.worker_contexts(binding)
             self.budgeting.start_execution(binding)
         with Tree(run) as tree:
-            tree.write('execution-started.json', canonical(dict(binding=binding)))
+            tree.write('execution-started.json', canonical(dict(binding=binding)), authority='transaction')
         if first_draft_run is not None and binding is not None:
             with Tree(self.state / 'runs' / first_draft_run) as tree:
                 tree.write('first-draft-attempt.json', canonical(dict(
                     controller_run_id=first_draft_run, binding=binding,
-                    directory='.' if run.name == first_draft_run else run.name)))
+                    directory='.' if run.name == first_draft_run else run.name)), authority='transaction')
         require(self._pending_agent_outcomes is not None, 'Agent launch requires a terminal validation boundary')
         self._pending_agent_outcomes.append((run, admission, binding))
         self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')

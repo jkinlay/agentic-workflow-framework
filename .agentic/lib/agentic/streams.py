@@ -1398,7 +1398,7 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
     require(not project_root.is_relative_to(runtime_root / ".agentic"), "Cannot put a project plan in installed runtime files")
     if expected_plan_sha256 is not None:
         require(re.fullmatch(r"[0-9a-f]{64}", expected_plan_sha256), "Invalid expected plan SHA256")
-    with Tree(project_root) as tree, _lock(tree):
+    with Tree(project_root, mutation_authority='managed') as tree, _lock(tree):
         _recover(tree, expected_plan_sha256)
         old_plan, old_md = _read(tree, PLAN), _read(tree, MARKDOWN)
         if old_plan is not None or old_md is not None:

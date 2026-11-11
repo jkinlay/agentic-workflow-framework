@@ -356,7 +356,7 @@ class PreservationReportTests(unittest.TestCase):
         readonly_state = _creation_state(self.root, file_path, readonly=True)
         self.assertEqual(before, inventory(self.root))
         with Tree(self.root) as tree:
-            tree.write(file_path, b'permission creation test\n')
+            tree.write(file_path, b'permission creation test\n', authority='transaction')
         after = inventory(self.root)
         self.assertEqual(file_state, {key: after['files'][file_path][key]
                                      for key in ('mode', 'permissions', 'named_streams')})

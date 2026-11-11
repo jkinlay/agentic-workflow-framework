@@ -4,6 +4,12 @@ AWF-238: Tier 3, owner-approved FULL rebind except automatic
 deletion deferred to [AWF-258](#awf-258-successor). Retain pre-F5 #1
 (object-continuity deletion). Rollout/adapters unauthorized.
 
+## 1.9.6 limitation
+
+**1.9.6 limitation—quiescent, identity-checked namespace publication.** Name-based rename or single-file unlink is permitted only for an object created by AWF in this transaction, or an explicitly managed object whose recorded identity is checked immediately before mutation. Every affected parent must remain pinned and held by AWF; the operation must hold the applicable exclusive transaction lock, and the owner must establish quiescence across installers, agents, editors, schedulers and other writers. Owner files are never eligible. Unknown identity, replacement, links, unexpected occupancy or lost custody causes refusal and retained, reported evidence. These checks do not atomically bind a pathname mutation to its inspected leaf: a non-cooperating process with directory-write access can still win the final race. Object-bound publication/closeout is deferred to AWF-258, release 1.9.8. Recursive runtime deletion and deletion-dependent automatic rollback remain refused.
+
+Interrupted temporary recovery stores one active creating identity on the held lock (POSIX user xattrs; Windows ADS); unsupported metadata refuses. Preserve lock metadata with journals.
+
 ## Baseline
 
 `v1.9.5` commit: `8ad399943c8f5e4f17db72f3e321b9365ee27782`; manifest SHA-256:
@@ -41,21 +47,7 @@ Digest-only reports exclude contents/SIDs; unverified permissions/streams fail.
 
 ### Migration policy
 
-`prepare_upgrade` authenticates target manifest/pin/baseline membership; `compare_upgrade` binds rules/hashes/`approved_changes`/`changes`/baseline/manifest.
-
-- Exact managed hashes/sizes; removals require authenticated old-membership/target-absence. Outside-membership content stays owner-owned; refuse collisions, including identical-byte/preinstallation removals. **AGENTS.md is managed**; preserve other owner paths.
-- PROJECT_CONFIG changes only `template.expected_workflow_version`; preserve other values/types/permissions.
-- Only recorded schema-migrations change state; prederive bytes/source-target-hashes/actions.
-  `state_archive_plan` binds named `upgrade-to-<target>` read-only copies/manifest
-  to exact contents/sources. Preserve prior archives; prefixes authorize nothing.
-- Independently snapshot pre-migration state; query-only in-memory SQLite invokes no migration/initializer/upgrade validator. Preserve all historical tables/columns/rowids/typed values/duplicates/reservations/settlements/unknown charges/audits. **Existing-field exceptions: none.** Check exact new-column/table schema/migrations separately. Non-SQL state/reservations/audits/sidecars/unknown records remain byte-identical; missing continuity refuses.
-  Migrations cannot authorize loss.
-- Reconstruct receipt membership/hashes/embedded manifest/install-project IDs/mutable
-  paths/configuration hash. Require exact provenance target/schema/manifest/retained
-  ID/upgrade/manual profile/canonical cohort time; reject extras. No recovery-objects/journal/marker/lock; retain only empty named object-store.
-- Authenticate complete journals/files/directories/metadata/fresh transaction namespaces. Backups match exact replaced/deleted originals/metadata; no prefix waiver.
-- Exact output directories/permissions/streams; unsupported metadata refuses. Windows probes dispose pinned handles; POSIX replicas remain external.
-  Managed removals preserve streams.
+Require verified RELEASE's `docs/runbook/19-runbook-journal-recovery.md` ?Migration preservation policy, including every managed/state/metadata membership check.
 
 POSIX qualification requires TMPDIR outside PROJECT on its filesystem; select external same-filesystem storage. Private 0700 wrappers retain inheritance replicas; qualify JSON lists exact paths. Preserve wrappers; owner-controlled cleanup only. Windows metadata preflights dispose creating handles; dry runs skip them.
 

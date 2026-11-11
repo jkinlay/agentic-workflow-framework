@@ -178,7 +178,7 @@ class PublicationRecordStore:
                         raise ValidationError("Publication record is append-only")
                     return result
                 relative = slot + "/record.json"
-                tree.write(relative, raw)
+                tree.write(relative, raw, authority='transaction')
                 if before_commit is not None:
                     before_commit(self.path_for(key))
                 observed, result = self._record(tree, key, slot)

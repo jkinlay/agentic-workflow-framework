@@ -32,7 +32,7 @@ class ReplacementTests(unittest.TestCase):
                 replacements.append(target)
             return result
         with safeio.Tree(self.root) as tree, patch.object(os, 'replace', publish):
-            tree.write('managed', b'published')
+            tree.write('managed', b'published', authority='transaction')
         self.assertEqual(1, len(replacements))
         self.assertEqual(b'OWNER REPLACEMENT', replacements[0].read_bytes())
         self.assertEqual(b'published', (self.root / 'managed').read_bytes())
@@ -41,8 +41,8 @@ class ReplacementTests(unittest.TestCase):
         from agentic import operating
         native = operating._publish_new
         replacements = []
-        def publish(parent, handle, temp, leaf):
-            result = native(parent, handle, temp, leaf)
+        def publish(parent, handle, temp, leaf, expected):
+            result = native(parent, handle, temp, leaf, expected)
             target = parent / temp
             target.write_bytes(b'OWNER REPLACEMENT')
             replacements.append(target)

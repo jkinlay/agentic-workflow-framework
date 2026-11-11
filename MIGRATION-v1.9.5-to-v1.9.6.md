@@ -1,8 +1,6 @@
-# Upgrade from 1.9.5 to 1.9.6
+# Upgrade 1.9.5 to 1.9.6
 
 Verify release/pin; quiesce/exclusively own; rehearse disposably; retain untouched authentic baseline/external reports.
-
-[Adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md).
 
 Before managed commits/checkouts merge `.agentic/templates/installed.gitattributes` into root `.gitattributes`; preserve product rules. Inspect nested/info overrides; prevent `core.autocrlf=true` corruption. Never renormalize unrelated files; reverify checkouts.
 
@@ -24,7 +22,7 @@ Comparison preserves **since BEFORE**: exact replaced/deleted originals/metadata
 
 Inspect plan: identity matches configuration; unresolved validation commands refuse. Rejected settings await owner review; incomplete enabled Jira identity alone may become accepted with JIRA_IDENTITY_UNBOUND. Plan reports compatibility; unchanged settings refuse writes pending explicit identity adoption. Disabled Jira remains disabled; adapters/controllers stay OFF.
 
-YAML changes only version; preserve comments/format; refusals name paths/remedies. Externally preserve unexpected import/schema files; correct/move outside managed directories. Preserve linked targets externally, restore contained independent regular objects and reconcile references before replanning. Preserve history/containment; exclude unrelated product trees.
+Require the [migration preservation policy](docs/runbook/19-runbook-journal-recovery.md#migration-preservation-policy).
 
 Preserve routes/operating/reviewers/pins/budgets/accounting. Archive unknown state read-only; prior archives nonrecursively. Conflicting destinations refuse; never reset accounting/edit receipts.
 
@@ -38,7 +36,11 @@ RUNTIME -B -I WORKFLOW --root DISPOSABLE status
 
 CONFIGURED requires executed zero exits/integrity true/ACCEPTED configuration/matching digests. ACTIVE additionally requires independent release trust/observed human-reviewed adoption acceptance; adapters/controllers stay OFF. See [qualification](.agentic/docs/38-RELEASE-196-QUALIFICATION.md).
 
-Retain marker/journal/recovery objects. Automatic rollback that needs runtime removal is unavailable in 1.9.6; it returns with AWF-258 (1.9.8). Refusal precedes managed mutation; retries cannot clear it. Stay quiescent; never reinstall over unknown/tampered state.
+Retain marker/journal/recovery objects/lock-metadata. Automatic rollback that needs runtime removal is unavailable in 1.9.6; it returns with AWF-258 (1.9.8). Refusal precedes managed mutation; retries cannot clear it. Stay quiescent; never reinstall over unknown/tampered state.
+
+## 1.9.6 limitation
+
+**1.9.6 limitation—quiescent, identity-checked namespace publication.** Name-based rename or single-file unlink is permitted only for an object created by AWF in this transaction, or an explicitly managed object whose recorded identity is checked immediately before mutation. Every affected parent must remain pinned and held by AWF; the operation must hold the applicable exclusive transaction lock, and the owner must establish quiescence across installers, agents, editors, schedulers and other writers. Owner files are never eligible. Unknown identity, replacement, links, unexpected occupancy or lost custody causes refusal and retained, reported evidence. These checks do not atomically bind a pathname mutation to its inspected leaf: a non-cooperating process with directory-write access can still win the final race. Object-bound publication/closeout is deferred to AWF-258, release 1.9.8. Recursive runtime deletion and deletion-dependent automatic rollback remain refused.
 
 Owner recovery:
 
@@ -58,13 +60,8 @@ Forward recovery with retained backups returns `status: COMMITTED`, `transaction
 Recovery recognises only exact sibling temporaries derived from journal transaction identity/naming scheme/targets. Unrecorded look-alikes/managed additions refuse, retaining marker. Older journals grant
 no cleanup authority. Never glob-delete `.awf-*.tmp` or edit recovery records.
 
-Budgeting stays LEGACY_RETAINED when absent, with original engine/limits; explicit settings remain. Upgrade report/state records prior-hash/EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED, never completeness/adoption.
+Budget adoption and compatibility require the [migration budget controls](docs/runbook/19-runbook-journal-recovery.md#migration-budget-controls).
 
-Request AWF-chat adoption from fetched default: preserve OPERATING_CONFIG.yaml comments/text; add accounting/enforcement false, 4,000,000 tokens/ticket and 1,000,000,000/project lifetime in upgrade PR. `operating set --adopt-budgeting --instruction "Adopt dormant budget controls"` prepares adoption without --set choices/enabling controls. Restricted publication prepares owner branch/body. Owner review/merge/fetch applies; unmerged edits do nothing. Non-OFF changes require another settings PR. Git/PR history replaces confirmation transactions.
-
-Before enabling, follow all [budget-history preservation prerequisites](docs/runbook/19-runbook-journal-recovery.md#budget-history-preservation).
-
-Published 1.9.5 operating records verify without confirmation; unsupported pre-release fields refuse. Preserve records/restore supported baseline before upgrade.
 [Budgeting](.agentic/docs/39-BUDGETING.md).
 
 Rollout unauthorized.

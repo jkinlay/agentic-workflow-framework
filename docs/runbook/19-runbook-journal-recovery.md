@@ -28,6 +28,8 @@ CLI recovery dispatch: `7fcaeece:scripts/bootstrap_project.py:181`.
 
 Recovery phases are `object_prepare`, `active`, `rollback_cleanup`, `commit_cleanup`, and `commit_cleanup_authenticated`. They are transaction phases, not repository activation states. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1121`.
 
+The held installer lock retains temporary creating identities across crashes; missing or mismatched custody refuses cleanup. Preserve its bytes and metadata with recovery evidence. One active record uses POSIX user xattrs or Windows ADS; unsupported metadata refuses before payload publication. No lock bytes or inode are replaced.
+
 A stable installer lock may remain after successful rollback; its presence alone does not prove an active installer. Tests retain its inode. Source: [.agentic/lib/agentic/installer.py](../../.agentic/lib/agentic/installer.py), `install_lock`.
 
 **Owner recovery and retiring resolved diagnostics:**
@@ -47,6 +49,26 @@ A later successful transaction can instead adopt an existing managed directory i
 
 **Related rollback guidance:** [Upgrade rollback](21-runbook-upgrade-rollback.md); [installation/adoption rollback](23-runbook-rollback-install-adoption.md).
 
+### Migration preservation policy
+
+YAML changes only version; preserve comments/format; refusals name paths/remedies. Externally preserve unexpected import/schema files; correct/move outside managed directories. Preserve linked targets externally, restore contained independent regular objects and reconcile references before replanning. Preserve history/containment; exclude unrelated product trees.
+
+`prepare_upgrade` authenticates target manifest/pin/baseline membership; `compare_upgrade` binds rules/hashes/`approved_changes`/`changes`/baseline/manifest.
+
+- Exact managed hashes/sizes; removals require authenticated old-membership/target-absence. Outside-membership content stays owner-owned; refuse collisions, including identical-byte/preinstallation removals. **AGENTS.md is managed**; preserve other owner paths.
+- PROJECT_CONFIG changes only `template.expected_workflow_version`; preserve other values/types/permissions.
+- Only recorded schema-migrations change state; prederive bytes/source-target-hashes/actions.
+  `state_archive_plan` binds named `upgrade-to-<target>` read-only copies/manifest
+  to exact contents/sources. Preserve prior archives; prefixes authorize nothing.
+- Independently snapshot pre-migration state; query-only in-memory SQLite invokes no migration/initializer/upgrade validator. Preserve all historical tables/columns/rowids/typed values/duplicates/reservations/settlements/unknown charges/audits. **Existing-field exceptions: none.** Check exact new-column/table schema/migrations separately. Non-SQL state/reservations/audits/sidecars/unknown records remain byte-identical; missing continuity refuses.
+  Migrations cannot authorize loss.
+- Reconstruct receipt membership/hashes/embedded manifest/install-project IDs/mutable
+  paths/configuration hash. Require exact provenance target/schema/manifest/retained
+  ID/upgrade/manual profile/canonical cohort time; reject extras. No recovery-objects/journal/marker/lock; retain only empty named object-store.
+- Authenticate complete journals/files/directories/metadata/fresh transaction namespaces. Backups match exact replaced/deleted originals/metadata; no prefix waiver.
+- Exact output directories/permissions/streams; unsupported metadata refuses. Windows probes dispose pinned handles; POSIX replicas remain external.
+  Managed removals preserve streams.
+
 ### Migration budget controls
 
 External deltas never waive preservation; absent controls stay LEGACY_RETAINED.
@@ -56,6 +78,14 @@ pre-release confirmations refuse/remain retained. `import_budget_history` merges
 pinned state-store/per-host history. Independent `prepare_budget_import`/`check_budget_import` verify sources/charges/UNKNOWN/deduplication. Qualification
 requires published-API history, lost-row injection, import/check/replay/interruption/
 concurrency. See `MIGRATION-v1.9.5-to-v1.9.6.md`.
+
+Budgeting stays LEGACY_RETAINED when absent, with original engine/limits; explicit settings remain. Upgrade report/state records prior-hash/EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED, never completeness/adoption.
+
+Request AWF-chat adoption from fetched default: preserve OPERATING_CONFIG.yaml comments/text; add accounting/enforcement false, 4,000,000 tokens/ticket and 1,000,000,000/project lifetime in upgrade PR. `operating set --adopt-budgeting --instruction "Adopt dormant budget controls"` prepares adoption without --set choices/enabling controls. Restricted publication prepares owner branch/body. Owner review/merge/fetch applies; unmerged edits do nothing. Non-OFF changes require another settings PR. Git/PR history replaces confirmation transactions.
+
+Before enabling, follow all [budget-history preservation prerequisites](docs/runbook/19-runbook-journal-recovery.md#budget-history-preservation).
+
+Published 1.9.5 operating records verify without confirmation; unsupported pre-release fields refuse. Preserve records/restore supported baseline before upgrade.
 
 ### Budget-history preservation
 

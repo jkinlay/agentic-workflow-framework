@@ -84,7 +84,7 @@ def publish(source, archive, validation_report, catalog, reviews=None, reviews_s
         'version': VERSION, 'source_directory': str(source), 'archive': str(archive),
         'archive_sha256': archive_digest, 'manifest_sha256': manifest_digest}}
     data = (json.dumps(value, indent=2) + '\n').encode('utf-8')
-    with Tree(catalog.parent) as tree, install_lock(tree, '.awf-catalog.lock'):
+    with Tree(catalog.parent, mutation_authority='transaction') as tree, install_lock(tree, '.awf-catalog.lock'):
         if tree.inspect(catalog.name) is not None:
             old = tree.read(catalog.name)
             previous = loads(old.decode('utf-8'))

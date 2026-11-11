@@ -1025,7 +1025,7 @@ class OperatingFileTests(unittest.TestCase):
     def test_abrupt_interruption_staging_residue_is_retained_and_recoverable(self):
         original = op._publish_new
         residue = None
-        def interrupted(parent, handle, temp, leaf):
+        def interrupted(parent, handle, temp, leaf, expected):
             nonlocal residue
             if parent.name == "changes":
                 # Model process death after a partial staging write: its file
@@ -1033,7 +1033,7 @@ class OperatingFileTests(unittest.TestCase):
                 residue = parent / (".awf-operating-" + "f" * 32 + ".tmp")
                 residue.write_bytes((parent / temp).read_bytes()[:64])
                 raise OSError("injected abrupt interruption")
-            return original(parent, handle, temp, leaf)
+            return original(parent, handle, temp, leaf, expected)
         with patch.object(op, "_publish_new", interrupted), self.assertRaises(OSError):
             op.set_operating(self.root, self.gov, "four", ["streams.count=4"])
         pending, evidence = (self.root / op.JOURNAL).read_bytes(), residue.read_bytes()
@@ -1045,12 +1045,12 @@ class OperatingFileTests(unittest.TestCase):
     def test_publication_conflict_never_replaces_different_final_bytes(self):
         original = op._publish_new
         conflict = None
-        def race(parent, handle, temp, leaf):
+        def race(parent, handle, temp, leaf, expected):
             nonlocal conflict
             if parent.name == "changes":
                 conflict = parent / leaf
                 conflict.write_bytes(b"conflicting external record\n")
-            return original(parent, handle, temp, leaf)
+            return original(parent, handle, temp, leaf, expected)
         with patch.object(op, "_publish_new", race), self.assertRaises(FileExistsError):
             op.set_operating(self.root, self.gov, "four", ["streams.count=4"])
         pending = (self.root / op.JOURNAL).read_bytes()

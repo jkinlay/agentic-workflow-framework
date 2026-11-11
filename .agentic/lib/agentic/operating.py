@@ -583,7 +583,7 @@ def _snapshot(tree, governance, *, working_only=False):
 
 @contextmanager
 def locked_operating(project_root, governance):
-    with Tree(project_root) as tree, _lock(tree):
+    with Tree(project_root, mutation_authority='managed') as tree, _lock(tree):
         _bound_governance(tree, governance)
         yield _snapshot(tree, governance)
 
@@ -602,7 +602,7 @@ def read_operating(project_root, governance):
     """
     observed = []
     for _attempt in range(2):
-        with Tree(project_root) as tree:
+        with Tree(project_root, mutation_authority='managed') as tree:
             _bound_governance(tree, governance)
             observed.append(_snapshot(tree, governance))
     first, second = observed
@@ -658,27 +658,34 @@ def _json(value):
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def _publish_new(parent, handle, temp, leaf):
+def _publish_new(parent, handle, temp, leaf, expected):
     """Atomic no-replace rename: never overwrite a conflicting final record."""
-    if os.name == "nt":
-        os.rename(parent / temp, parent / leaf)
-        return
-    import ctypes
-    import errno
-    library = ctypes.CDLL(None, use_errno=True)
-    if sys.platform.startswith("linux"):
-        rename, flag = getattr(library, "renameat2", None), 1  # RENAME_NOREPLACE
-    elif sys.platform == "darwin":
-        rename, flag = getattr(library, "renameatx_np", None), 4  # RENAME_EXCL
-    else:
-        rename, flag = None, None
-    if rename is None:
-        raise OSError(errno.ENOTSUP, "Atomic no-replace operating publication is unavailable")
-    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    rename.restype = ctypes.c_int
-    if rename(handle, os.fsencode(temp), handle, os.fsencode(leaf), flag):
-        code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code), str(parent / leaf))
+    with Tree(parent) as publication:
+        if os.name != 'nt':
+            held = os.fstat(handle)
+            observed = os.fstat(publication._dirs[publication.root])
+            if (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino):
+                raise ValidationError('Operating publication parent identity changed; no mutation; evidence retained')
+        publication.check_entry(temp, expected)
+        if os.name == "nt":
+            os.rename(parent / temp, parent / leaf)
+            return
+        import ctypes
+        import errno
+        library = ctypes.CDLL(None, use_errno=True)
+        if sys.platform.startswith("linux"):
+            rename, flag = getattr(library, "renameat2", None), 1  # RENAME_NOREPLACE
+        elif sys.platform == "darwin":
+            rename, flag = getattr(library, "renameatx_np", None), 4  # RENAME_EXCL
+        else:
+            rename, flag = None, None
+        if rename is None:
+            raise OSError(errno.ENOTSUP, "Atomic no-replace operating publication is unavailable")
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(handle, os.fsencode(temp), handle, os.fsencode(leaf), flag):
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), str(parent / leaf))
 
 
 def _new(tree, name, raw):
@@ -694,7 +701,11 @@ def _new(tree, name, raw):
                 raise OSError("Incomplete operating staging write")
             stream.flush()
             os.fsync(stream.fileno())
-        _publish_new(parent, handle, temp, leaf)
+            from . import safeio
+            created = (safeio._windows_leaf_identity(safeio.msvcrt.get_osfhandle(stream.fileno()))
+                       if os.name == 'nt' else safeio._file_identity(os.fstat(stream.fileno())))
+        _publish_new(parent, handle, temp, leaf, created)
+        tree._authenticated[name] = tree.published_identity(name, created)
         if os.name != "nt":
             os.fsync(handle)
     except BaseException as error:
@@ -767,7 +778,7 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
 
 def plan_initialize_operating(project_root, governance, *, change_id=None, created_at=None, initial_operating=None):
     """Validate operating semantics and return the exact bootstrap writes without mutating the tree."""
-    with Tree(project_root) as tree:
+    with Tree(project_root, mutation_authority='managed') as tree:
         if _read(tree, JOURNAL) is not None:
             fail("$", "Pending operating transaction: inspect and recover before upgrade")
         before = _read(tree, CONFIG)
@@ -820,7 +831,7 @@ def plan_initialize_operating(project_root, governance, *, change_id=None, creat
 
 def initialize_operating(project_root, governance):
     """Preserve valid project choices; honestly audit bootstrap initialization."""
-    with Tree(project_root) as tree, _lock(tree):
+    with Tree(project_root, mutation_authority='managed') as tree, _lock(tree):
         _bound_governance(tree, governance)
         before = _read(tree, CONFIG)
         if before is not None:
@@ -835,7 +846,7 @@ def initialize_operating(project_root, governance):
 
 def recover_operating(project_root, governance, expected_journal_sha256):
     """Complete only the exact externally pinned intent; never undo unmatched edits."""
-    with Tree(project_root) as tree, _lock(tree):
+    with Tree(project_root, mutation_authority='managed') as tree, _lock(tree):
         _bound_governance(tree, governance)
         raw = _read(tree, JOURNAL)
         if raw is None or sha256(raw) != expected_journal_sha256:
@@ -1029,7 +1040,7 @@ def prepare_budgeting_adoption(project_root, governance, instruction):
     from .protected_settings import _git
     from .budgeting import fresh_settings
     import yaml
-    with Tree(project_root) as tree:
+    with Tree(project_root, mutation_authority='managed') as tree:
         _bound_governance(tree, governance)
         working = _snapshot(tree, governance, working_only=True)
         effective = _snapshot(tree, governance)
@@ -1091,7 +1102,7 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         fail("$", "--initialize requires explicit custom --set choices, not a prior recommendation")
     if epic_id is not None and recommendation_id:
         fail("$.epic", "A project-wide recommendation cannot be reinterpreted as an Epic-scoped change")
-    with Tree(project_root) as tree:
+    with Tree(project_root, mutation_authority='managed') as tree:
         _bound_governance(tree, governance)
         if recommendation_id:
             snapshot, before = _snapshot(tree, governance, working_only=True), tree.read(CONFIG, maximum=MAX_BYTES)
@@ -1381,7 +1392,7 @@ def save_recommendation(project_root, governance, epics_path, inventory_path=Non
                 content[key] = input_tree.read(Path(path).name, maximum=MAX_BYTES)
         else:
             content[key] = None
-    with Tree(project_root) as tree, _lock(tree):
+    with Tree(project_root, mutation_authority='managed') as tree, _lock(tree):
         _bound_governance(tree, governance)
         snapshot = _snapshot(tree, governance, working_only=True)
         record = recommend_operating(content["epics"], snapshot, governance, inventory_raw=content["inventory"], now=now, input_files=files)

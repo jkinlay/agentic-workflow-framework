@@ -14,7 +14,8 @@ import uuid
 
 from . import ValidationError, VERSION
 from .canonical import MAX_DOCUMENT_BYTES, load_yaml, loads, now_text, sha256, validate_value
-from .safeio import (Tree, relative_parts, validate_windows_metadata,
+from .safeio import (Tree as _Tree, relative_parts, validate_windows_metadata,
+                     object_key,
                      windows_directory_identity as _windows_directory_identity)
 from .providers.github import load_observation_report, validate_codeowner
 
@@ -88,6 +89,12 @@ PENDING_UPDATE_KINDS = frozenset({
     "rollback_cleanup",
 })
 _UNSPECIFIED_UPDATE_KIND = object()
+
+
+class Tree(_Tree):
+    """Installer transaction scope; callers validate the exact write plan first."""
+    def __init__(self, root, create=False):
+        super().__init__(root, create, mutation_authority='transaction')
 
 
 def json_bytes(value):
@@ -585,11 +592,21 @@ def _transaction_temporary_paths(journal):
 
 def _bind_transaction_temporaries(tree, journal, *, initial=False):
     paths = _transaction_temporary_paths(journal)
+    tree._custody_transaction = journal.get('transaction_id')
     for path in paths.values():
-        info = tree.inspect(path)
-        if info is not None:
+        current = tree.entry_identity(path)
+        if current is not None:
             if initial:
                 raise ValidationError('Installation temporary path already exists; no payload changed')
+            expected = getattr(tree, '_temporary_custody', {}).get((journal['transaction_id'], path))
+            cached = tree._authenticated.get(path)
+            if expected is None and cached is not None and path in tree._created_entries:
+                expected = object_key(cached)
+            if expected is None:
+                raise ValidationError('Temporary creating identity is missing; no mutation; retained: ' + path)
+            if object_key(current) != expected:
+                raise ValidationError('Temporary identity changed; no mutation; retained: ' + path)
+            tree._authenticated[path] = current
             # Confined read rejects links, hardlinks and unsafe Windows metadata.
             tree.read(path)
     tree.write_temporary_names = {target: Path(path).name for target, path in paths.items()}
@@ -825,10 +842,18 @@ def _load_recovery_objects(tree, journal):
 def _cleanup_recovery_objects(tree, journal):
     if not _compact_journal(journal):
         return
+    sizes = {item['old_sha256']: item['old_size'] for item in journal['files']
+             if item['old_sha256'] is not None}
+    sizes.update({ref['sha256']: ref['size'] for ref in journal.get('windows_metadata', {}).values()})
     for digest in sorted({item["old_sha256"] for item in journal["files"]
                           if item["old_sha256"] is not None} |
                          {ref['sha256'] for ref in journal.get('windows_metadata', {}).values()}):
-        tree.unlink(_recovery_object_path(digest))
+        path = _recovery_object_path(digest)
+        if tree.inspect(path) is not None:
+            # Terminal recovery can resume after earlier objects were retired.
+            # Authenticate every remaining object against the bound journal.
+            _read_recovery_object(tree, digest, sizes[digest])
+            tree.unlink(path)
 
 
 def _verify_compact_old_endpoint(tree, journal, context):
@@ -1511,7 +1536,12 @@ def verify_release(tree, expected_digest=None, *, allow_source_checkout=False):
 @contextmanager
 def install_lock(tree, lock_path=LOCK):
     parent, handle, name = tree.parent(lock_path, create=True)
-    tree.inspect(lock_path)
+    try:
+        tree.inspect(lock_path)
+    except PermissionError as exc:
+        if getattr(exc, 'winerror', None) == 32:
+            raise ValidationError('Another installer owns the destination lock') from exc
+        raise
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     if os.name == "nt":
         import msvcrt
@@ -1533,10 +1563,59 @@ def install_lock(tree, lock_path=LOCK):
             import fcntl
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         locked = True
-        yield
+        # Preserve the lock's original bytes/inode. One active temporary's
+        # creating identity lives in metadata on this same held lock object;
+        # publication retires it before another temporary can be created.
+        expected_lock = tree._authenticated.get(lock_path)
+        actual_lock = (_windows_lock_identity(fd) if os.name == 'nt' else
+                       (os.fstat(fd).st_dev, os.fstat(fd).st_ino))
+        if expected_lock is not None and object_key(expected_lock) != object_key(actual_lock):
+            raise ValidationError('Installer lock identity changed; no mutation; lock retained')
+        def check_lock():
+            if os.name == 'nt':
+                return  # Held lock handle denies delete sharing.
+            current = tree.entry_identity(lock_path)
+            if current is None or object_key(current) != object_key(actual_lock):
+                raise ValidationError('Installer lock identity changed; no mutation; recovery evidence retained: ' + lock_path)
+        tree.transaction_check = check_lock
+        with _temporary_custody_metadata(tree, lock_path, fd) as (active, save):
+            custody = {} if active is None else {(active[0], active[1]): active[2]}
+            tree._temporary_custody = custody
+            def record(relative, identity):
+                nonlocal active
+                transaction_id = getattr(tree, '_custody_transaction', None)
+                if transaction_id is None:
+                    return
+                if tree.entry_identity(JOURNAL) is None:
+                    # Before the first intent is published, no journal grants
+                    # recovery authority. Keep creating custody in this Tree;
+                    # an interrupted unbound temporary stays unclaimed. Do not
+                    # alter persistent lock metadata for that diagnostic leaf.
+                    return
+                if active is not None and tree.entry_identity(active[1]) is not None:
+                    raise ValidationError('Previous temporary custody remains active; no publication; retained: ' + active[1])
+                active = [transaction_id, relative, identity]
+                save(active)
+                custody[transaction_id, relative] = identity
+            def retire(relative, identity):
+                nonlocal active
+                if active is None or active[1] != relative:
+                    return
+                if identity is None:
+                    identity = active[2]  # Only a journal-declared absent temporary.
+                if active != [getattr(tree, '_custody_transaction', None), relative, identity]:
+                    raise ValidationError('Temporary custody retirement differs; recovery evidence retained: ' + relative)
+                save(None)
+                active = None
+            tree.record_temporary_identity = record
+            tree.retire_temporary_identity = retire
+            yield
     except (BlockingIOError, PermissionError) as exc:
         raise ValidationError("Another installer owns the destination lock") from exc
     finally:
+        tree.record_temporary_identity = None
+        tree.retire_temporary_identity = None
+        tree.transaction_check = None
         if locked:
             if os.name == "nt":
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -1544,6 +1623,104 @@ def install_lock(tree, lock_path=LOCK):
             else:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def _windows_lock_identity(fd):
+    import msvcrt
+    from .safeio import _windows_leaf_identity
+    return _windows_leaf_identity(msvcrt.get_osfhandle(fd))
+
+
+@contextmanager
+def _temporary_custody_metadata(tree, relative, lock_fd):
+    """One bounded record; no named side-store, lock-byte change or path deletion."""
+    import errno
+    stream_fd = None
+    def open_stream(disposition):
+        from . import safeio
+        import ctypes
+        import msvcrt
+        handle = safeio.kernel.CreateFileW(path, 0xC0000000 | 0x10000, 1, None,
+                                          disposition, 0x00200000, None)
+        if handle == safeio.INVALID_HANDLE:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+        except BaseException:
+            safeio.kernel.CloseHandle(handle)
+            raise
+    if os.name == 'nt':
+        path = str(tree.root / relative) + ':awf-temporary-custody:$DATA'
+        # Observe without creating a stream during dry runs. Deny stream write
+        # and delete sharing, independently of the primary lock's held lease.
+        try:
+            stream_fd = open_stream(3)  # OPEN_EXISTING, never truncate.
+        except FileNotFoundError:
+            raw = b''
+        else:
+            if object_key(_windows_lock_identity(stream_fd)) != object_key(_windows_lock_identity(lock_fd)):
+                os.close(stream_fd)
+                raise ValidationError('Temporary custody stream identity changed; no mutation')
+            raw = os.read(stream_fd, MAX_DOCUMENT_BYTES + 1)
+            if not raw:
+                os.close(stream_fd)
+                raise ValidationError('Temporary custody stream is unproved; preserve lock metadata')
+    else:
+        try:
+            raw = os.getxattr(lock_fd, 'user.awf-temporary-custody')
+        except OSError as exc:
+            if exc.errno not in {errno.ENODATA, getattr(errno, 'ENOATTR', errno.ENODATA)}:
+                raise ValidationError('Temporary custody metadata unavailable; preserve evidence and use a filesystem supporting user xattrs') from exc
+            raw = b''
+    dirty = False
+    pending = object()  # Malformed observations are never cleanup authority.
+    try:
+        active = loads(raw.decode('utf-8')) if raw else None
+        if active is not None:
+            if (not isinstance(active, list) or len(active) != 3 or
+                    not isinstance(active[2], list) or len(active[2]) != 2 or
+                    any(not isinstance(value, str) for value in active[2])):
+                raise ValidationError('Temporary custody metadata is malformed; retained')
+            uuid.UUID(active[0])
+            relative_parts(active[1])
+        pending = active
+        def save(value):
+            nonlocal stream_fd, pending, dirty
+            pending, dirty = value, True
+            # Retirement need not change durable bytes at every publication.
+            # After a crash, the last creating ID still rejects a replacement
+            # at its freed name; absence is harmless. Retire metadata once at
+            # lock close, after all active temporaries have been resolved.
+            if value is None:
+                return
+            raw = json_bytes(value)
+            if os.name == 'nt':
+                if stream_fd is None:
+                    stream_fd = open_stream(1)  # CREATE_NEW refuses occupancy.
+                    if object_key(_windows_lock_identity(stream_fd)) != object_key(_windows_lock_identity(lock_fd)):
+                        raise ValidationError('Created custody stream identity differs; retained')
+                os.lseek(stream_fd, 0, os.SEEK_SET)
+                if os.write(stream_fd, raw) != len(raw):
+                    raise ValidationError('Temporary custody metadata write incomplete; retained')
+                os.ftruncate(stream_fd, len(raw))
+                os.fsync(stream_fd)
+            else:
+                os.setxattr(lock_fd, 'user.awf-temporary-custody', raw)
+                os.fsync(lock_fd)
+        yield active, save
+    finally:
+        try:
+            if dirty and pending is None:
+                if os.name == 'nt' and stream_fd is not None:
+                    from .safeio import win_dispose_created
+                    import msvcrt
+                    win_dispose_created(msvcrt.get_osfhandle(stream_fd))
+                elif os.name != 'nt':
+                    os.removexattr(lock_fd, 'user.awf-temporary-custody')
+                    os.fsync(lock_fd)
+        finally:
+            if stream_fd is not None:
+                os.close(stream_fd)
 
 
 def _exists_read(tree, path):
@@ -2006,6 +2183,7 @@ def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
         return
 
     if backup.exists() or backup.is_symlink():
+        backup_identity = tree.entry_identity(runtime['backup'], directory=True)
         if _runtime_tree_sha256(backup) != previous:
             raise ValidationError("Runtime recovery backup differs from the exact prior runtime; journal retained")
         if canonical.exists() or canonical.is_symlink():
@@ -2013,7 +2191,7 @@ def _rollback_runtime(tree, runtime, *, preserve_partial_stage=False):
                 raise ValidationError("Runtime recovery found an external canonical-runtime edit; journal retained")
             _record_cleanup_pending(tree, [canonical], status='RECOVERY_REFUSED')
             _remove_runtime_transaction_path(canonical)
-        os.replace(backup, canonical)
+        tree.rename_checked(runtime['backup'], runtime['path'], backup_identity, directory=True)
     elif not (canonical.exists() or canonical.is_symlink()) or _runtime_tree_sha256(canonical) != previous:
         raise ValidationError("Runtime recovery cannot prove or restore the exact prior runtime; journal retained")
     if _runtime_tree_sha256(canonical) != previous:
@@ -2165,12 +2343,14 @@ class _RuntimeInstallTransaction:
         self.stage = self.root / self.runtime["stage"]
         self.backup = self.root / self.runtime["backup"]
         self.cleanup = _runtime_cleanup_path(self.root, self.runtime)
+        self.previous_identity = None
 
     @property
     def had_previous(self):
         return self.runtime["previous_sha256"] is not None
 
     def verify_initial(self):
+        self.previous_identity = self.tree.entry_identity(self.runtime['path'], directory=True)
         if (self.stage.exists() or self.stage.is_symlink() or
                 self.backup.exists() or self.backup.is_symlink() or
                 self.cleanup.exists() or self.cleanup.is_symlink()):
@@ -2248,6 +2428,7 @@ def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False,
                 runtime.get("cleanup_identity") is None and
                 runtime.get("cleanup_members") is None):
             raise ValidationError("Runtime staging path remains after transaction finalization")
+        stage_identity = tree.entry_identity(runtime['stage'], directory=True)
         info = os.lstat(stage)
         reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         junction = getattr(stage, "is_junction", lambda: False)()
@@ -2271,12 +2452,7 @@ def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False,
             raise ValidationError("Partial runtime preservation path already exists; journal retained")
         retained = parent / name
         _stage_parent, stage_handle, stage_name = tree.parent(runtime["stage"])
-        if os.name == "nt":
-            os.rename(stage, retained)
-        else:
-            os.rename(stage_name, name, src_dir_fd=stage_handle, dst_dir_fd=handle)
-            os.fsync(stage_handle)
-            os.fsync(handle)
+        tree.rename_checked(runtime['stage'], relative, stage_identity, directory=True)
         logging.warning("Unproved partial runtime stage moved to %s; bytes preserved for inspection",
                         retained)
 

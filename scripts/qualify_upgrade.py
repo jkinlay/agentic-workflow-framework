@@ -182,9 +182,13 @@ def _posix_probe_parent(parent):
             if stat.S_IMODE(os.fstat(wrapper_fd).st_mode) != 0o700:
                 raise ValueError('Permission probe wrapper is not private; retained externally')
             os.mkdir('replica', 0o700, dir_fd=wrapper_fd)
+            created = os.stat('replica', dir_fd=wrapper_fd, follow_symlinks=False)
+            creating_identity = (created.st_dev, created.st_ino)
             _remember_permission_probe(external)
             fd = os.open('replica', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=wrapper_fd)
         try:
+            if (os.fstat(fd).st_dev, os.fstat(fd).st_ino) != creating_identity:
+                raise ValueError('Permission replica identity changed; no metadata changed; probes retained externally')
             before = os.fstat(source)
             if os.fstat(fd).st_dev != before.st_dev:
                 raise ValueError('Permission probes need external temporary storage on the project filesystem; probes retained')
@@ -1391,7 +1395,8 @@ def _seed_qualification_state(historical, project, budget_baseline):
     from upgrade_195_fixtures import seed_legacy_accounting
     seed_legacy_accounting(historical, project)
     host = project / '.agentic-state/routing/published-host.sqlite'
-    host.write_bytes(budget_baseline['sources']['host']['path'].read_bytes())
+    with Tree(project, mutation_authority='transaction') as tree:
+        tree.write_exclusive(host.relative_to(project).as_posix(), budget_baseline['sources']['host']['path'].read_bytes())
 
 
 def _prepare_qualification_budget(historical, project, work_dir):

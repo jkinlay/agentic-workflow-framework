@@ -467,7 +467,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
             self.assertEqual(raw, (project / RETAINED_JOURNAL).read_bytes())
             probe = '.agentic-install/diagnostic-metadata-probe'
             with Tree(project) as tree:
-                tree.write(probe, raw)
+                tree.write(probe, raw, authority='transaction')
                 try:
                     expected['files'][RETAINED_JOURNAL] = inventory(project)['files'][probe]
                 finally:
@@ -631,10 +631,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
             base = Path(temporary)
             baseline = base / 'baseline'
             shutil.copytree(self.baseline, baseline)
-            if os.name == 'nt':
-                self.provision_fixture_runtime(baseline)
-            else:
-                venv.EnvBuilder(with_pip=False).create(baseline / '.agentic/.venv')
+            self.provision_fixture_runtime(baseline)
             for boundary in ('before_stage', 'partial_stage', 'staged', 'backup_swap',
                              'runtime_swap', 'commit_cleanup'):
                 with self.subTest(boundary=boundary):
@@ -706,15 +703,11 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
                             installer.verify_installed(project)
                         self.assertEqual('Installation is incomplete; use bootstrap --recover before running tools',
                                          str(incomplete.exception))
-                        if os.name == 'nt' and boundary in ('backup_swap', 'runtime_swap'):
+                        if boundary in ('backup_swap', 'runtime_swap'):
                             self.finish_swapped_owner_recovery(project, journal, originals,
                                                                base / (boundary + '-archive'))
-                        # Pending owner decision: POSIX Tree.unlink currently refuses.
-                        # Linux must retain the refusal checks above, then execute
-                        # this same owner procedure for BOTH swap boundaries with
-                        # a dependency-provisioned previous runtime, and
-                        # prove ROLLED_BACK -> NO_PENDING_INSTALL -> CONFIGURED
-                        # after the owner settles that policy. No path is skipped.
+                        # Linux executes the identical owner steps and restored
+                        # isolated-runtime commands for both swap boundaries.
                         continue
                     observed = self.recover_fresh(project)
                     self.assertNotIn(observed['recovery']['status'], ('CONFIGURED', 'ACTIVE'))
@@ -852,26 +845,18 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
         return records
 
     def test_backup_owner_authentication_requires_every_row_and_rejects_extras_and_modes(self):
-        # Early 'backup' interruption (including POSIX) is covered above and
-        # must stop for absent/unrecorded metadata. The fully journaled endpoint
-        # below needs deletion during upgrade. Pending Tree.unlink decision:
-        # Linux must run the full positive/extra/mode path once policy permits
-        # it, checking copy UID=installing effective UID and BOTH GID cases:
-        # setgid-parent inheritance and installing effective GID otherwise.
-        # The early-boundary assertions remain executable without that decision.
-        if os.name != 'nt':
-            # Execute the reachable refusal path rather than reporting an
-            # unexecuted positive path as a skip. Full-path Linux work is above.
-            with tempfile.TemporaryDirectory() as temporary:
-                project = Path(temporary) / 'backup-project'
-                shutil.copytree(self.baseline, project)
-                self.interrupt_temporary(project, 'backup')
-                journal = json.loads((project / JOURNAL).read_bytes())
-                preserved = refusal_inventory(project)
-                with self.assertRaisesRegex(AssertionError, 'absent|unrecorded'):
-                    self.authenticate_backup_rows(project, journal, {})
-                self.assertEqual(preserved, refusal_inventory(project))
-            return
+        # The early incomplete endpoint still refuses on every platform.
+        # Execute the reachable refusal path rather than reporting an
+        # unexecuted positive path as a skip. Full-path Linux work is above.
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / 'backup-project'
+            shutil.copytree(self.baseline, project)
+            self.interrupt_temporary(project, 'backup')
+            journal = json.loads((project / JOURNAL).read_bytes())
+            preserved = refusal_inventory(project)
+            with self.assertRaisesRegex(AssertionError, 'absent|unrecorded'):
+                self.authenticate_backup_rows(project, journal, {})
+            self.assertEqual(preserved, refusal_inventory(project))
         from agentic.preservation_metadata import _permissions, _named_streams
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary) / 'backup-project'
