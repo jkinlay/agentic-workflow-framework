@@ -337,78 +337,148 @@ class DeadlineControllerTests(unittest.TestCase):
 
 class HTTPSDeadlineTests(unittest.TestCase):
     def test_deadline_covers_dns_connect_tls_send_headers_and_body(self):
+        from types import SimpleNamespace
         from agentic.reporting.http_transport import http_json
         from agentic.reporting import deadline
         for stage in ('dns', 'connect', 'tls', 'send', 'headers', 'body'):
             with self.subTest(stage=stage):
-                left, right = socket.socketpair()
                 halted = threading.Event()
                 lookup_done = threading.Event()
                 handshake_entered = threading.Event()
+                entered = threading.Event()
+                fired = threading.Event()
+                released_by_deadline = threading.Event()
+                fallback = threading.Event()
+                changed = threading.Event()
+                now, timers, entry_states, lookups = [0.0], [], [], []
+
+                class LogicalTimer:
+                    def __init__(self, seconds, callback):
+                        self.seconds, self.callback = seconds, callback
+                        self.started = False
+                        timers.append(self)
+                    def start(self):
+                        self.started = True
+                    def cancel(self):
+                        pass
+                    def join(self):
+                        pass
+                    def fire(self):
+                        if self.started:
+                            # Publish the trigger before DNS can observe expiry.
+                            fired.set()
+                            now[0] = self.callback.__self__.end
+                            self.callback()
+                            changed.set()
+
+                class LookupThread(threading.Thread):
+                    def __init__(self, *args, **kwargs):
+                        super().__init__(*args, **kwargs)
+                        lookups.append(self)
+
+                class LookupCompleted:
+                    # DNS uses an Event timeout as well as the deadline clock.
+                    # Wake that wait on logical expiry, never on a real .15 s.
+                    def __init__(self):
+                        self.completed = threading.Event()
+                    def set(self):
+                        self.completed.set()
+                        changed.set()
+                    def wait(self, timeout=None):
+                        if timeout is None:
+                            return self.completed.wait()
+                        if timeout != timers[0].seconds:
+                            fallback.set()
+                        if not changed.wait(2):
+                            fallback.set()
+                        return self.completed.is_set()
+
+                def stall():
+                    timer = timers[0]
+                    entry_states.append((now[0], timer.callback.__self__.expired))
+                    entered.set()
+                    # Only the selected stage can advance the request clock.
+                    timer.fire()
+                    if not halted.wait(2):
+                        fallback.set()
+                    elif fired.is_set():
+                        released_by_deadline.set()
+
+                class ResponseBytes(io.BytesIO):
+                    def readline(self, *args, **kwargs):
+                        if stage == 'headers':
+                            stall()
+                            return b''
+                        return super().readline(*args, **kwargs)
+                    def read(self, *args, **kwargs):
+                        if stage == 'body':
+                            stall()
+                            return b''
+                        return super().read(*args, **kwargs)
+
                 class Wire:
                     def settimeout(self, seconds):
-                        left.settimeout(seconds)
+                        pass
                     def connect(self, address):
                         if stage == 'connect':
-                            halted.wait(2)
+                            stall()
                     def do_handshake(self):
                         handshake_entered.set()
                         if stage == 'tls':
-                            halted.wait(2)
+                            stall()
                     def sendall(self, data):
+                        if halted.is_set():
+                            raise OSError('wire closed by deadline')
                         if stage == 'send':
-                            halted.wait(2)
-                        else:
-                            left.sendall(data)
+                            stall()
                     def makefile(self, *args, **kwargs):
-                        return left.makefile(*args, **kwargs)
+                        return ResponseBytes(b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok":true}')
                     def shutdown(self, how):
                         halted.set()
-                        left.shutdown(how)
                     def close(self):
-                        # HTTPResponse owns the fd after Connection: close.
-                        left.close()
+                        pass
+
                 wire = Wire()
                 def lookup(*args):
                     try:
                         if stage == 'dns':
-                            halted.wait(2)
+                            stall()
                         return [(socket.AF_INET, socket.SOCK_STREAM, 0, '', ('127.0.0.1', 443))]
                     finally:
                         lookup_done.set()
-                def peer():
-                    try:
-                        right.recv(65536)
-                        raw = b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok":true}'
-                        if stage == 'body':
-                            header, raw = raw.split(b'\r\n\r\n', 1)
-                            right.sendall(header + b'\r\n\r\n')
-                        if stage in {'headers', 'body'}:
-                            for byte in raw:
-                                if halted.wait(.04):
-                                    break
-                                right.sendall(bytes([byte]))
-                        else:
-                            right.sendall(raw)
-                    except OSError:
-                        pass
-                    finally:
-                        right.close()
-                worker = threading.Thread(target=peer)
-                worker.start()
-                started = time.monotonic()
+
+                # Replace only this module's references, not stdlib clocks or
+                # threading/socket objects used elsewhere in the test process.
+                local_threads = SimpleNamespace(Lock=threading.Lock, Thread=LookupThread,
+                    Event=LookupCompleted, Timer=LogicalTimer)
+                local_sockets = SimpleNamespace(socket=lambda *args: wire, getaddrinfo=lookup,
+                    SOCK_STREAM=socket.SOCK_STREAM, SHUT_RDWR=socket.SHUT_RDWR)
                 try:
-                    with patch.object(deadline.socket, 'socket', return_value=wire), \
-                         patch.object(deadline.socket, 'getaddrinfo', side_effect=lookup), \
+                    with patch.object(deadline, 'monotonic', new=lambda: now[0]), \
+                         patch.object(deadline, 'threading', local_threads), \
+                         patch.object(deadline, 'socket', local_sockets), \
                          patch('ssl.SSLContext.wrap_socket', new=lambda context, sock, **kwargs: sock):
                         with self.assertRaisesRegex(ValidationError, '^REPORT_HTTP_UNAVAILABLE$'):
                             http_json('POST', 'https://slack.com/api/chat.postMessage', {}, {}, timeout=.15)
-                    self.assertLess(time.monotonic() - started, .8)
-                    if stage == 'tls':
-                        self.assertTrue(handshake_entered.is_set())
+                        self.assertTrue(entered.is_set())
+                        self.assertEqual(entry_states, [(0.0, False)])
+                        self.assertEqual(len(timers), 1)
+                        self.assertEqual(timers[0].seconds, .15)
+                        self.assertTrue(fired.is_set())
+                        self.assertTrue(timers[0].callback.__self__.expired)
+                        self.assertFalse(fallback.is_set())
+                        if stage == 'dns':
+                            # OS DNS cannot be cancelled: the caller must return
+                            # while lookup is still stalled, before cleanup.
+                            self.assertFalse(lookup_done.is_set())
+                        else:
+                            self.assertTrue(released_by_deadline.is_set())
+                        if stage == 'tls':
+                            self.assertTrue(handshake_entered.is_set())
                 finally:
                     halted.set()
-                    left.close()
-                    right.close()
-                    worker.join(2)
                     self.assertTrue(lookup_done.wait(2))
+                    for lookup_worker in lookups:
+                        lookup_worker.join(2)
+                        self.assertFalse(lookup_worker.is_alive())
+                    self.assertFalse(fallback.is_set())
