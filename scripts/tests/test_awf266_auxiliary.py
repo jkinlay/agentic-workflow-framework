@@ -17,6 +17,12 @@ from agentic import safeio, ValidationError
 
 
 class AuxiliaryBoundaryTests(unittest.TestCase):
+    def test_assignment_without_xattr_apis_normal_and_substitution(self):
+        from test_awf266_xattr import missing_custody_apis
+        with missing_custody_apis():
+            self.test_assignment_normal_probe_and_repeated_state_publication()
+            self.test_assignment_state_destination_substitution_after_close_is_preserved()
+
     def materialize_batch(self, destination):
         adapter = runpy.run_path(str(ROOT / '.agentic/scripts/merge_train.py'))
         function = adapter['_materialize']
@@ -159,6 +165,15 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
         if os.name == 'nt':
             self.assertTrue(callable(qualification._posix_probe_parent))
             return  # Native Linux must execute the following fd/xattr assertions.
+        if not all(hasattr(os, name) for name in ('listxattr', 'getxattr', 'setxattr', 'removexattr')):
+            with tempfile.TemporaryDirectory() as temporary:
+                parent = Path(temporary)
+                before = parent.stat()
+                with self.assertRaisesRegex(ValidationError, 'lacks xattr APIs.*xattr-capable'):
+                    qualification._posix_probe_parent(parent)
+                self.assertEqual([], list(parent.iterdir()))
+                self.assertEqual((before.st_ino, before.st_mode), (parent.stat().st_ino, parent.stat().st_mode))
+            return  # Missing-API POSIX platforms refuse exact qualification.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); parent = root / 'parent'; parent.mkdir(mode=0o755)
             hits = []

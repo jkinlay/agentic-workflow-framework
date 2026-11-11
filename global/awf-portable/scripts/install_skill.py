@@ -442,6 +442,9 @@ def publish_exclusive(path, raw, mode=0o600, metadata=None):
             else:
                 if metadata is not None:
                     os.utime(stream.fileno(), ns=(metadata['atime_ns'], metadata['mtime_ns']))
+                    if metadata['xattrs'] and not hasattr(os, 'setxattr'):
+                        raise InstallError('This POSIX Python cannot preserve source xattrs; use '
+                                           'a Python with setxattr support')
                     for name, value in metadata['xattrs'].items():
                         os.setxattr(stream.fileno(), name, value)
                 os.fchmod(stream.fileno(), mode)
@@ -468,9 +471,15 @@ def copy_exclusive(source, target):
             raise InstallError('Stage source changed before opening; no destination published')
         metadata = dict(atime_ns=current.st_atime_ns, mtime_ns=current.st_mtime_ns,
                         attributes=getattr(current, 'st_file_attributes', 0), xattrs={})
-        if os.name != 'nt':
+        # Like stdlib copy2 on POSIX builds without xattr APIs, preserve the
+        # supported mode/times. This never affects exclusive creation/custody.
+        # Exact inheritance qualification separately refuses unavailable APIs.
+        if os.name != 'nt' and all(hasattr(os, name) for name in ('listxattr', 'getxattr')):
             metadata['xattrs'] = {name: os.getxattr(stream.fileno(), name)
                                   for name in os.listxattr(stream.fileno())}
+            if metadata['xattrs'] and not hasattr(os, 'setxattr'):
+                raise InstallError('This POSIX Python cannot preserve source xattrs; use a Python '
+                                   'with listxattr/getxattr/setxattr support')
         publish_exclusive(target, stream, stat.S_IMODE(current.st_mode), metadata)
         if identity(current) != identity(os.fstat(stream.fileno())):
             raise InstallError('Stage source changed while copying; no destination published')
@@ -484,7 +493,7 @@ def create_stage_directory(source, target):
     safe_path(target)
     if stat.S_IMODE(target.lstat().st_mode) != mode:
         raise InstallError('Stage directory creation mode differs; no destination published')
-    if os.name != 'nt':
+    if os.name != 'nt' and all(hasattr(os, name) for name in ('listxattr', 'getxattr')):
         descriptors = []
         try:
             for path in (source, target):

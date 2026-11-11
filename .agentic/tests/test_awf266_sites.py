@@ -264,13 +264,17 @@ class SiteTests(unittest.TestCase):
                 self.assertEqual(installer.json_bytes(journal), (root / installer.JOURNAL).read_bytes())
                 if replacement: substitute(temporary_path)
                 with installer.Tree(root) as tree, installer.install_lock(tree):
-                    if replacement:
-                        with self.assertRaises(ValidationError): installer._bind_transaction_temporaries(tree, journal)
-                        self.assertEqual(b'owner replacement', temporary_path.read_bytes())
-                    else:
+                    if not getattr(tree, '_custody_metadata_unavailable', False) and not replacement:
                         installer._bind_transaction_temporaries(tree, journal)
                         installer._cleanup_transaction_temporaries(tree, journal)
                         self.assertFalse(temporary_path.exists())
+                    elif replacement:
+                        with self.assertRaises(ValidationError): installer._bind_transaction_temporaries(tree, journal)
+                        self.assertEqual(b'owner replacement', temporary_path.read_bytes())
+                    else:
+                        with self.assertRaisesRegex(ValidationError, 'lacks.*xattr.*quarantine'):
+                            installer._bind_transaction_temporaries(tree, journal)
+                        self.assertEqual(b'', temporary_path.read_bytes())
                 self.assertEqual(lock_bytes, (root / installer.LOCK).read_bytes())
 
     def test_unbound_first_journal_temporary_retains_bytes_without_lock_metadata(self):
@@ -290,8 +294,10 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(b'', temporary.read_bytes())
         if os.name == 'nt':
             self.assertEqual({}, safeio._windows_metadata(self.root / installer.LOCK)['streams'])
-        else:
+        elif hasattr(os, 'listxattr'):
             self.assertNotIn('user.awf-temporary-custody', os.listxattr(self.root / installer.LOCK))
+        else:
+            self.assertEqual(b'', (self.root / installer.LOCK).read_bytes())
 
     def test_terminal_recovery_authenticates_remaining_object_before_retirement(self):
         # pre-allow/reproduce_terminal_object.py, fresh terminal recovery.
@@ -361,8 +367,10 @@ class SiteTests(unittest.TestCase):
         self.assertEqual([], list((project / installer.RECOVERY_OBJECTS).iterdir()))
         if os.name == 'nt':
             self.assertEqual({}, safeio._windows_metadata(project / installer.LOCK)['streams'])
-        else:
+        elif hasattr(os, 'listxattr'):
             self.assertNotIn('user.awf-temporary-custody', os.listxattr(project / installer.LOCK))
+        else:
+            self.assertEqual(b'', (project / installer.LOCK).read_bytes())
 
     def test_pending_marker_and_journal_reproductions(self):
         # Both pre-allow pending-update reproductions, with substitution at the

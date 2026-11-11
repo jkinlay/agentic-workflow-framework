@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -14,6 +15,30 @@ import qualify_upgrade as qualification
 
 
 class RetentionTests(unittest.TestCase):
+    def test_missing_xattr_apis_refuse_only_exact_qualification_before_creating_probes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            owner = parent / 'owner'
+            owner.write_bytes(b'OWNER DATA')
+            before = (owner.stat().st_ino, owner.stat().st_mode, owner.read_bytes())
+            for substitution in (False, True):
+                with self.subTest(substitution=substitution):
+                    view = SimpleNamespace(**vars(os))
+                    view.name = 'posix'
+                    for name in ('getxattr', 'setxattr', 'removexattr', 'listxattr'):
+                        if hasattr(view, name):
+                            delattr(view, name)
+                    def substitute(*args):
+                        owner.write_bytes(b'forbidden substitution')
+                        self.fail('missing API refusal must precede every replica operation')
+                    with patch.object(qualification, 'os', view), \
+                            patch.object(qualification, '_remember_permission_probe', side_effect=substitute if substitution else None) as remembered, \
+                            patch.object(qualification.tempfile, 'mkdtemp', side_effect=AssertionError('probe created')):
+                        with self.assertRaisesRegex(qualification.safeio.ValidationError, 'lacks xattr APIs.*xattr-capable'):
+                            qualification._posix_probe_parent(parent)
+                    remembered.assert_not_called()
+                    self.assertEqual(before, (owner.stat().st_ino, owner.stat().st_mode, owner.read_bytes()))
+
     def test_compare_preparation_refusal_durably_reports_created_probes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -75,6 +100,15 @@ class RetentionTests(unittest.TestCase):
             parent = root / 'parent'
             parent.mkdir(mode=0o755)
             parent.chmod(0o755)
+            if not all(hasattr(os, name) for name in ('listxattr', 'getxattr', 'setxattr', 'removexattr')):
+                before = parent.stat()
+                with qualification._permission_probe_collection() as roots:
+                    with self.assertRaisesRegex(qualification.safeio.ValidationError, 'lacks xattr APIs.*xattr-capable'):
+                        qualification._creation_state(parent, 'new/file')
+                    self.assertEqual([], roots)
+                self.assertEqual([], list(parent.iterdir()))
+                self.assertEqual((before.st_ino, before.st_mode), (parent.stat().st_ino, parent.stat().st_mode))
+                return  # Missing-API POSIX platforms refuse exact replication.
             if hasattr(os, 'setxattr'):
                 os.setxattr(parent, 'user.awf-test-private', b'private synthetic value')
             with patch.object(qualification.tempfile, 'tempdir', str(root)):

@@ -17,15 +17,18 @@ class RoundTwoTests(unittest.TestCase):
         source = self.source / 'SKILL.md'
         stamp = 946684800123456700
         os.utime(source, ns=(stamp, stamp))
+        xattrs = os.name != 'nt' and all(hasattr(os, name) for name in ('getxattr', 'setxattr', 'listxattr'))
         if os.name != 'nt':
             source.chmod(0o640)
+        if xattrs:
             os.setxattr(source, 'user.awf-private-fixture', b'synthetic metadata')
         before = source.stat()
         target = self.root / 'copied'
         installer.copy_exclusive(source, target)
         self.assertEqual(before.st_mtime_ns, target.stat().st_mtime_ns)
         self.assertEqual(before.st_mode & 0o777, target.stat().st_mode & 0o777)
-        if os.name != 'nt':
+        self.assertEqual(source.read_bytes(), target.read_bytes())
+        if xattrs:
             self.assertEqual(b'synthetic metadata', os.getxattr(target, 'user.awf-private-fixture'))
 
     def test_stage_directories_request_source_mode_at_creation(self):
@@ -49,7 +52,15 @@ class RoundTwoTests(unittest.TestCase):
         calls = []
         def create(path, flags, *args, **kwargs):
             target = Path(path)
+            if not target.is_absolute() and kwargs.get('dir_fd') is not None:
+                held = os.fstat(kwargs['dir_fd'])
+                for directory in self.dest.parent.glob('.awf-stage-*'):
+                    info = directory.stat()
+                    if (held.st_dev, held.st_ino) == (info.st_dev, info.st_ino):
+                        target = directory / target
+                        break
             if target.name == 'SKILL.md' and target.parent.name.startswith('.awf-stage-'):
+                self.assertEqual(os.O_CREAT | os.O_EXCL, flags & (os.O_CREAT | os.O_EXCL))
                 os.link(owner, target)
                 calls.append(target)
             return native(path, flags, *args, **kwargs)

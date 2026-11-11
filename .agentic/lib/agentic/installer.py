@@ -620,6 +620,12 @@ def _bind_transaction_temporaries(tree, journal, *, initial=False):
             if expected is None and cached is not None and path in tree._created_entries:
                 expected = object_key(cached)
             if expected is None:
+                if getattr(tree, '_custody_metadata_unavailable', False):
+                    raise ValidationError('Temporary creating identity is missing: this POSIX Python lacks '
+                        'getxattr/setxattr/removexattr; interrupted temporary recovery is unavailable; '
+                        'preserve evidence and quarantine the temporary under exclusive owner control '
+                        'before retrying recovery; use an xattr-capable Python/filesystem for durable '
+                        'custody in future transactions: ' + path)
                 raise ValidationError('Temporary creating identity is missing; no mutation; retained: ' + path)
             if object_key(current) != expected:
                 raise ValidationError('Temporary identity changed; no mutation; retained: ' + path)
@@ -1650,8 +1656,28 @@ def _windows_lock_identity(fd):
 
 @contextmanager
 def _temporary_custody_metadata(tree, relative, lock_fd):
-    """One bounded record; no named side-store, lock-byte change or path deletion."""
+    """Durable lock metadata when supported, otherwise live creating custody only.
+
+    A platform without xattr APIs can run normal transactions using the same
+    Tree's creating identities. A fresh Tree cannot claim interrupted temporary
+    objects: _bind_transaction_temporaries refuses them, including substitutes.
+    No lock bytes or extra named recovery stores are changed.
+    """
     import errno
+    tree._custody_metadata_unavailable = (os.name != 'nt' and not all(
+        hasattr(os, name) for name in ('getxattr', 'setxattr', 'removexattr')))
+    if tree._custody_metadata_unavailable:
+        held = os.fstat(lock_fd)
+        identity = (held.st_dev, held.st_ino)
+        def save_live(value):
+            current = os.fstat(lock_fd)
+            if (current.st_dev, current.st_ino) != identity:
+                raise ValidationError('Held custody lock identity changed; no mutation; retained')
+            # This identity is usable only by this held-lock Tree. Persisting
+            # nothing grants no recovery authority to a subsequent Tree.
+            tree._live_temporary_custody = value
+        yield None, save_live
+        return
     stream_fd = None
     def open_stream(disposition):
         from . import safeio
@@ -1722,7 +1748,11 @@ def _temporary_custody_metadata(tree, relative, lock_fd):
                 os.ftruncate(stream_fd, len(raw))
                 os.fsync(stream_fd)
             else:
-                os.setxattr(lock_fd, 'user.awf-temporary-custody', raw)
+                try:
+                    os.setxattr(lock_fd, 'user.awf-temporary-custody', raw)
+                except OSError as exc:
+                    raise ValidationError('Temporary custody metadata unavailable; preserve evidence '
+                        'and use a filesystem supporting user xattrs') from exc
                 os.fsync(lock_fd)
         yield active, save
     finally:

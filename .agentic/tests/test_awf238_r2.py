@@ -85,6 +85,7 @@ class ReplacementTests(unittest.TestCase):
                 tree.unlink('managed')
         self.assertEqual(b'OWNER REPLACEMENT', target.read_bytes())
 
+    @unittest.skipUnless(os.name == "nt", "Windows handle semantics")
     def test_deletion_handle_denies_late_content_writes(self):
         target = self.root / 'managed'
         target.write_bytes(b'journal-bound')

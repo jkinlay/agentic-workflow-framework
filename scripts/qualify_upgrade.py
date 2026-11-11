@@ -168,6 +168,10 @@ def _posix_probe_parent(parent):
     ownership/mode/xattrs (including default ACLs), or refuse. Never approximate
     inheritance or exempt retained probes from the project inventory.
     """
+    if not all(hasattr(os, name) for name in ('listxattr', 'getxattr', 'setxattr', 'removexattr')):
+        raise safeio.ValidationError('This POSIX Python lacks xattr APIs; exact permission-inheritance '
+            'qualification is unavailable; use an xattr-capable Python/platform for qualification. '
+            'Installation, bootstrap and upgrade do not require permission replicas.')
     wrapper = Path(tempfile.mkdtemp(prefix='awf-permission-probe-'))
     roots = _PERMISSION_PROBES.get()
     if roots is not None:

@@ -237,13 +237,28 @@ class InstallerTests(unittest.TestCase):
         directory_identity = self.dest.stat().st_ino
         captured = {}
         real_replace = os.replace
-        def fail_stage(source, target):
+        def fail_stage(source, target, *, src_dir_fd=None, dst_dir_fd=None):
+            if installer.os.name != 'nt':
+                self.assertIsInstance(src_dir_fd, int)
+                self.assertIsInstance(dst_dir_fd, int)
+                source_parent = self.dest.parent if Path(source).name.startswith('.awf-stage-') or Path(source).name == self.dest.name else self.backups
+                target_parent = self.dest.parent if Path(target).name == self.dest.name else self.backups
+                for descriptor, parent in ((src_dir_fd, source_parent), (dst_dir_fd, target_parent)):
+                    observed = os.fstat(descriptor)
+                    self.assertEqual((parent.stat().st_dev, parent.stat().st_ino),
+                                     (observed.st_dev, observed.st_ino))
+                stage_source = source_parent / source
+            else:
+                self.assertIsNone(src_dir_fd)
+                self.assertIsNone(dst_dir_fd)
+                stage_source = Path(source)
             if Path(source).name.startswith(".awf-stage-"):
-                stage = Path(source)
+                stage = stage_source
                 captured.update(stage=stage, inventory=installer.inventory(stage),
                                 identity=stage.stat().st_ino)
                 raise OSError("simulated replacement failure")
-            return real_replace(source, target)
+            return real_replace(source, target, **({} if installer.os.name == 'nt' else
+                dict(src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)))
         with patch.object(installer.os, "replace", side_effect=fail_stage):
             with self.assertRaises(OSError) as raised:
                 self.run_install()

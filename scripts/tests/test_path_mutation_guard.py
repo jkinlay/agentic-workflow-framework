@@ -28,6 +28,26 @@ def product_modules(root):
                 yield path
 
 
+def normalized_ast(node):
+    """Stable semantic fields, independent of ast.dump's optional-field display.
+
+    Python 3.13 omits empty optional fields in dumps. Ignore empty fields on all
+    versions, retaining every populated field, node type and argument order.
+    """
+    if isinstance(node, ast.AST):
+        return [type(node).__name__, {key: normalized_ast(value)
+                for key, value in ast.iter_fields(node) if value is not None and value != []}]
+    if isinstance(node, list):
+        return [normalized_ast(value) for value in node]
+    if isinstance(node, bytes):
+        return {'bytes': node.hex()}
+    if node is Ellipsis:
+        return {'ellipsis': True}
+    if isinstance(node, complex):
+        return {'complex': repr(node)}
+    return node
+
+
 def mutation_calls(path):
     tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
     imports = {}
@@ -90,7 +110,8 @@ def mutation_calls(path):
         if (leaf in METHODS or overwrite or builder or function in ('os.remove', 'os.unlink', 'os.rmdir',
                 'os.replace', 'os.rename', 'shutil.move')
                 or leaf == 'rename'):
-            encoded = ast.dump(node, annotate_fields=True, include_attributes=False).encode()
+            encoded = json.dumps(normalized_ast(node), sort_keys=True,
+                                 separators=(',', ':'), ensure_ascii=True).encode('ascii')
             calls.append(dict(line=node.lineno, call=ast.unparse(node),
                               fingerprint=hashlib.sha256(encoded).hexdigest()))
     return sorted(calls, key=lambda row: row['line'])
@@ -110,6 +131,17 @@ def violations(root, allowlist):
 
 
 class PathMutationGuardTests(unittest.TestCase):
+    def test_fingerprint_ignores_optional_empty_fields_but_retains_semantics(self):
+        call = ast.parse('os.replace(source, destination, src_dir_fd=held)').body[0].value
+        same = ast.parse('os.replace(source, destination, src_dir_fd=held)').body[0].value
+        same.args[0].synthetic_empty_field = []
+        same.args[0]._fields += ('synthetic_empty_field',)
+        self.assertEqual(normalized_ast(call), normalized_ast(same))
+        for source in ('os.replace(destination, source, src_dir_fd=held)',
+                       'os.replace(source, destination, dst_dir_fd=held)',
+                       'os.replace(source, destination, src_dir_fd=other)'):
+            self.assertNotEqual(normalized_ast(call), normalized_ast(ast.parse(source).body[0].value))
+
     def test_all_nine_original_publications_have_boundary_dispositions(self):
         expected = {'adoption_config.py:579', 'adoption_config.py:581', 'installer.py:2016',
                     'installer.py:2277', 'safeio.py:1249', 'safeio.py:1251',
