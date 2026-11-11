@@ -2,7 +2,7 @@
 import copy
 import unittest
 from unittest.mock import patch
-from source_only import skip_unless_source_repo
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo
 
 import test_jira_mutation_scope as scope_fixture
 from test_jira_mutation_scope import Jira, snapshot, KEY, NOW
@@ -2376,6 +2376,7 @@ class PreNineCliRegressions(unittest.TestCase):
                 self.assertEqual(1, len(self.posted))
 
     @skip_unless_source_repo()
+    @unittest.skipIf(committed_git_tuple(scope_fixture.ROOT) is None, COMMITTED_GIT_REASON)
     def test_pre9_historical_unknown_never_hides_external_transitions_in_either_order(self):
         for newest in (False, True):
             with self.subTest(newest_first=newest):
@@ -2486,6 +2487,7 @@ class PreNineCliRegressions(unittest.TestCase):
                         count_gate={'closeout_record': self.record})))])
 
     @skip_unless_source_repo()
+    @unittest.skipIf(committed_git_tuple(scope_fixture.ROOT) is None, COMMITTED_GIT_REASON)
     def test_pre9_genuine_f71_success_reconciles_after_explicit_adoption_without_write(self):
         for newest in (False, True):
             with self.subTest(newest_first=newest):
@@ -2503,6 +2505,7 @@ class PreNineCliRegressions(unittest.TestCase):
                 self.assertEqual(1, len(self.posted))
 
     @skip_unless_source_repo()
+    @unittest.skipIf(committed_git_tuple(scope_fixture.ROOT) is None, COMMITTED_GIT_REASON)
     def test_pre9_adoption_never_clears_unsuccessful_or_corrupt_legacy_success(self):
         for problem in ('UNKNOWN', 'FAILED', 'readback', 'receipt'):
             with self.subTest(problem=problem):
@@ -2532,6 +2535,7 @@ class PreNineCliRegressions(unittest.TestCase):
                 self.assertEqual(1, len(self.posted))
 
     @skip_unless_source_repo()
+    @unittest.skipIf(committed_git_tuple(scope_fixture.ROOT) is None, COMMITTED_GIT_REASON)
     def test_pre9_adopted_success_revalidates_retained_and_live_evidence(self):
         from pathlib import Path
         for problem in ('UNKNOWN', 'FAILED', 'readback', 'receipt', 'external', 'truncated', 'missing', 'attempt'):

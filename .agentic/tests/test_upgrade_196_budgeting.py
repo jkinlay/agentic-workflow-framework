@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 sys.path.insert(0, str(ROOT / '.agentic/tests'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 from agentic import ValidationError, upgrade
-from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo
+from source_only import (AWF_SOURCE_REPOSITORY, COMMITTED_GIT_REASON,
+                         committed_git_tuple, skip_unless_source_repo)
 from upgrade_195_fixtures import (materialize_published, generate_budget_history,
     materialize_candidate, install_baseline)
 # The qualification oracle/CLI is source tooling; installed runtime tests still run.
@@ -103,6 +104,7 @@ class BudgetDispositionTests(unittest.TestCase):
                 self.assertEqual('EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED', records[0]['history_import'])
 
 
+@unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
 @skip_unless_source_repo('requires authentic published v1.9.5 Git objects', '.git')
 class BudgetUpgradeTests(unittest.TestCase):
     @classmethod

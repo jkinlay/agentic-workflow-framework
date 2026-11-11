@@ -699,9 +699,9 @@ class TwelveStreamTests(unittest.TestCase):
         import subprocess
         import zipfile
         from agentic.child_process import child_env
-        from source_only import AWF_SOURCE_REPOSITORY
-        if not AWF_SOURCE_REPOSITORY or not (ROOT / ".git").exists():
-            self.skipTest("published historical Git source is absent from closed release archives")
+        from source_only import COMMITTED_GIT_REASON, committed_git_tuple
+        if committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         commit = "8ad399943c8f5e4f17db72f3e321b9365ee27782"
         pin = "1d1f2fb60d721aa6723a1a99d352bbfda0124224d8c8ba6a2e2977659a003ab7"
         archive = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=zip", commit,
