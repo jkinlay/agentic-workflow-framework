@@ -1486,6 +1486,51 @@
       "regression_id": "AWF243-OPERATOR-R1-POLICY",
       "source_finding_id": null,
       "test_id": "OwnerClosureIdentityTests.test_r1_reviewed_policy_edit_and_repeat_owner_observations_remain_idempotent"
+    },
+    {
+      "category": "race",
+      "evidence_path": "scripts/tests/test_publish_release.py",
+      "name": "Release tag consumes scanned stdin bytes despite a file swap",
+      "permanent": true,
+      "regression_id": "AWF278-R1-TAG-STDIN",
+      "source_finding_id": "R1-01",
+      "test_id": "PublicationBoundaryTests.test_tag_file_swap_at_consumer_cannot_change_scanned_input"
+    },
+    {
+      "category": "race",
+      "evidence_path": "scripts/tests/test_publish_release.py",
+      "name": "Release body consumes scanned stdin bytes despite a file swap",
+      "permanent": true,
+      "regression_id": "AWF278-R1-BODY-STDIN",
+      "source_finding_id": null,
+      "test_id": "PublicationBoundaryTests.test_body_file_swap_at_consumer_cannot_change_scanned_input"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": "scripts/tests/test_publish_release.py",
+      "name": "Stored tag message or target mismatch refuses before tag push",
+      "permanent": true,
+      "regression_id": "AWF278-R1-TAG-OBJECT",
+      "source_finding_id": null,
+      "test_id": "PublicationBoundaryTests.test_tag_readback_mismatch_refuses_push_and_names_owner_remedy"
+    },
+    {
+      "category": "race",
+      "evidence_path": "scripts/tests/test_publish_release.py",
+      "name": "Upload read-boundary replacement is denied or detected before draft success",
+      "permanent": true,
+      "regression_id": "AWF278-R1-UPLOAD-READ",
+      "source_finding_id": "R1-02",
+      "test_id": "PublicationBoundaryTests.test_upload_read_boundary_replacement_is_refused_or_detected"
+    },
+    {
+      "category": "race",
+      "evidence_path": "scripts/tests/test_publish_release.py",
+      "name": "Nonmandatory lock model detects same-user substitution in draft asset readback",
+      "permanent": true,
+      "regression_id": "AWF278-R1-POSIX-READBACK",
+      "source_finding_id": null,
+      "test_id": "PublicationBoundaryTests.test_nonmandatory_lock_model_detects_same_user_replacement_in_draft"
     }
   ]
 }
