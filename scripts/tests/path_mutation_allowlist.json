@@ -3050,28 +3050,6 @@
   },
   {
     "path": "scripts/publish_release.py",
-    "context": "publish",
-    "line": 739,
-    "call": "tag_file.write_text(tag_message, encoding='utf-8', newline='\\n')",
-    "fingerprint": "dd9e1cd1ddcfb4a8e32e94379189770dda8a5853f4c52a84c4ad02f7d3b4ffd2",
-    "object": "explicit call-site inventory",
-    "created_by_us": "see justification",
-    "disposition": "OUT-OF-SCOPE",
-    "justification": "Owner-controlled publish_release.py scratch, state or report writer; outside the assigned installation/runtime recovery mutation routes; no race-hardening claim."
-  },
-  {
-    "path": "scripts/publish_release.py",
-    "context": "publish",
-    "line": 740,
-    "call": "body_file.write_text(body, encoding='utf-8', newline='\\n')",
-    "fingerprint": "195d488e96e93ef490b573241d88fbdf2344cb17bddeb0639ac0f98ac1ac4487",
-    "object": "explicit call-site inventory",
-    "created_by_us": "see justification",
-    "disposition": "OUT-OF-SCOPE",
-    "justification": "Owner-controlled publish_release.py scratch, state or report writer; outside the assigned installation/runtime recovery mutation routes; no race-hardening claim."
-  },
-  {
-    "path": "scripts/publish_release.py",
     "context": "verify_tag",
     "line": 767,
     "call": "tempfile.TemporaryDirectory(prefix='awf-release-verify-')",
@@ -4156,5 +4134,38 @@
     "created_by_us": true,
     "disposition": "SAFE",
     "justification": "O_RDWR | O_TMPFILE creates an anonymous regular inode under the held parent descriptor; fstat requires regular type and nlink zero before writing, and publication uses linkat without replacing an occupied owner destination."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "context": "stage_release_assets",
+    "line": 748,
+    "call": "tempfile.mkdtemp(prefix='upload-assets-', dir=destination.parent)",
+    "fingerprint": "61b28eb444152f9ef5fa770b52c980851f397903dadcc83193770211757d17cd",
+    "object": "exclusive release upload staging directory",
+    "created_by_us": true,
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Creates only a new private 0700 upload staging directory with exclusive mkdtemp under the publisher-created output directory; outside adopter installation/runtime recovery mutation routes."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "context": "_open_upload_asset",
+    "line": 768,
+    "call": "os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)",
+    "fingerprint": "85631a79aac5d636dbf4f66004c90818abc02291fe6d42dbd86542c2783212ca",
+    "object": "read-only staged upload copy",
+    "created_by_us": true,
+    "disposition": "NON-MUTATING",
+    "justification": "Opens the staged 0400 copy read-only with O_RDONLY, O_NOFOLLOW and O_NONBLOCK relative to the held directory descriptor; mutates nothing. Known BitOr false positive: the guard tests the os.O_ name shortcut before decomposing combined flags."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "context": "publish",
+    "line": 898,
+    "call": "label.replace('_', '-')",
+    "fingerprint": "cf45af96117eaab91d8503f60d207f702fad8f28e4407f1e8c97e489419cfb77",
+    "object": "report filename string",
+    "created_by_us": true,
+    "disposition": "NON-MUTATING",
+    "justification": "String replacement builds the scan report filename; METHODS collides with Path.replace. The actual report write is run_publication_scan and is already allowlisted."
   }
 ]

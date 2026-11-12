@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 import io
 import importlib.util
 import json
@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("awf_publish_release", ROOT / "scripts/publish_release.py")
 publisher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(publisher)
+from agentic import publication
 
 
 def command(args, cwd, env=None):
@@ -112,6 +113,9 @@ class PublishReleaseTests(unittest.TestCase):
         base = command_line[command_line.index("--base") + 1]
         head = command_line[command_line.index("--head") + 1]
         report = cls.scan_report(base, head)
+        if "--pr-body" in command_line:
+            report["pr_body_sha256"] = publisher.sha256(command_line[command_line.index("--pr-body") + 1])
+            report["coverage"]["pr_bodies"] = True
         raw = (json.dumps(report, sort_keys=True) + "\n").encode("utf-8")
         return SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
 
@@ -713,7 +717,8 @@ class PublishReleaseTests(unittest.TestCase):
              "-c", f"{header_key}=",
              "-c", f"{helper_key}=", "-c", helper],
             push[push_index - 14:push_index])
-        self.assertEqual(["push", "origin", "refs/tags/v1.9.6"], push[push_index:])
+        tag_oid = command(["git", "rev-parse", "refs/tags/v1.9.6"], self.repository, self.git_env)
+        self.assertEqual(["push", "origin", tag_oid + ":refs/tags/v1.9.6"], push[push_index:])
         for line, env in git_calls:
             with self.subTest(command=line):
                 self.assertEqual(os.devnull, env["GIT_CONFIG_GLOBAL"])
@@ -736,7 +741,7 @@ class PublishReleaseTests(unittest.TestCase):
             "-c credential.https://github.com/jkinlay/awf-fixture.git.helper= "
             "-c 'credential.https://github.com/jkinlay/awf-fixture.git.helper="
             "!gh auth git-credential' "
-            "push origin refs/tags/v1.9.6", message)
+            f"push origin {tag_oid}:refs/tags/v1.9.6", message)
         self.assertNotIn(helper_secret, message)
         self.assertNotIn(transport_secret, message)
         self.assertNotIn("embedded-secret", message)
@@ -1033,6 +1038,8 @@ with pathlib.Path(os.environ['AWF_FAKE_GH_LOG']).open('a', encoding='utf-8') as 
 store=pathlib.Path(os.environ['AWF_FAKE_GH_STORE'])
 store.mkdir(exist_ok=True)
 if args[:2] == ['release','create']:
+    notes=args[args.index('--notes-file')+1]
+    (store/'release-body.txt').write_bytes(sys.stdin.buffer.read() if notes == '-' else pathlib.Path(notes).read_bytes())
     for value in args[3:]:
         path=pathlib.Path(value)
         if path.suffix == '.zip' and path.is_file(): shutil.copyfile(path, store/path.name)
@@ -1107,6 +1114,11 @@ print('password=repository-secret')
                                        validation_runner=self.fake_validation, gh=str(executable),
                                        scan_command_runner=self.fake_scan_command)
             self.assertEqual("DRAFT_CREATED", result["status"])
+            stored = publisher.git_run(self.repository, "cat-file", "tag", "v1.9.6", text=False).stdout
+            header, _separator, message = stored.partition(b"\n\n")
+            self.assertEqual(result["tag_message"].encode("utf-8"), message)
+            self.assertIn(b"object " + self.commit.encode("ascii"), header.splitlines())
+            self.assertEqual(result["release_body"].encode("utf-8"), (store / "release-body.txt").read_bytes())
             verified = publisher.verify_tag(self.repository, "v1.9.6", self.base / "verify-output",
                                             gh=str(executable))
             self.assertEqual("PASS", verified["status"])
@@ -1192,6 +1204,383 @@ print('password=repository-secret')
                                       scan_command_runner=self.fake_scan_command)
                 self.assertEqual(before, tag_list())
         self.assertFalse(log.exists() and log.read_text(encoding="utf-8").strip())
+
+
+class PublicationBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="awf-278-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repository = self.root / "repository"
+        self.repository.mkdir()
+        self.output = self.root / "output"
+        self.commit = "a" * 40
+        self.events = []
+        self.scans = []
+        self.validation = {"wall_seconds": 1.25}
+        self.at_origin = lambda: None
+        self.at_tag = lambda: None
+        self.at_push = lambda: None
+        self.before_tag_read = lambda: None
+        self.before_body_read = lambda: None
+        self.before_asset_read = lambda paths: None
+        self.tag_object_edit = lambda raw: raw
+        self.download_edit = lambda paths: None
+        self.original_push = publisher.push_release_tag
+        self.scan_edit = lambda report, path: None
+        self.windows = self.root / "windows.json"
+        self.windows.write_text(json.dumps({
+            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.6",
+            "source_commit": self.commit,
+            "checks": {"portable_build": "PASS", "host_skill_install": "PASS", "host_skill_verify": "PASS"},
+        }), encoding="utf-8")
+        for name, replacement in (
+            ("source_report", lambda *a: {"problems": [], "commit": self.commit}),
+            ("materialize_commit", lambda *a, **k: ROOT),
+            ("build_assets", self.build_assets),
+            ("validation_checkout", lambda *a: nullcontext(ROOT)),
+            ("publication_scan_base", lambda *a: ("v1.9.5", self.commit)),
+            ("git", lambda *a: "1234567890\n"),
+            ("git_run", self.fake_git_run),
+            ("origin_repository", self.origin),
+            ("origin_push_url", lambda *a: "https://example.invalid/owner/repository.git"),
+            ("_release_tag_push_plan", lambda *a, **k: object()),
+            ("push_release_tag", self.push),
+            ("run", self.fake_gh),
+        ):
+            patcher = patch.object(publisher, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def build_assets(self, source, output, *args):
+        output.mkdir()
+        self.asset = output / "synthetic.zip"
+        self.asset.write_bytes(b"synthetic release asset\n")
+        return [self.asset], {"manifest_sha256": "b" * 64}
+
+    def origin(self, *args):
+        self.at_origin()
+        return "example.invalid/owner/repository"
+
+    def fake_git_run(self, repository, *args, **kwargs):
+        if args[:2] == ("cat-file", "tag"):
+            return SimpleNamespace(stdout=self.tag_object_edit(
+                b"object " + self.commit.encode() + b"\ntype commit\ntag v1.9.6\n"
+                b"tagger Synthetic <test@example.invalid> 1234567890 +0000\n\n" + self.tag_bytes))
+        self.assertIn("tag", args)
+        self.events.append("local-tag")
+        self.before_tag_read()
+        argument = args[args.index("-F") + 1]
+        self.tag_bytes = kwargs["input_data"] if argument == "-" else Path(argument).read_bytes()
+        if argument == "-":
+            self.assertFalse(kwargs["text"])
+            self.assertIn("--cleanup=verbatim", args)
+        self.at_tag()
+        return SimpleNamespace(stdout="")
+
+    def push(self, *args, **kwargs):
+        self.events.append("tag-push")
+        self.pushed_object = kwargs.get("object_id")
+        self.at_push()
+
+    def fake_gh(self, args, **kwargs):
+        if args[:3] == ["fake-gh", "release", "download"]:
+            self.events.append("asset-readback")
+            target = Path(args[args.index("--dir") + 1])
+            paths = []
+            for path, raw in zip(self.upload_paths, self.upload_bytes):
+                copy = target / path.name
+                copy.write_bytes(raw)
+                paths.append(copy)
+            self.download_edit(paths)
+            return SimpleNamespace(stdout="")
+        self.assertEqual(["fake-gh", "release", "create"], args[:3])
+        self.events.append("release-create")
+        self.before_body_read()
+        argument = args[args.index("--notes-file") + 1]
+        self.body_bytes = kwargs["input_data"] if argument == "-" else Path(argument).read_bytes()
+        if argument == "-":
+            self.assertFalse(kwargs["text"])
+        self.upload_paths = [Path(value) for value in args[4:args.index("--repo")]]
+        self.before_asset_read(self.upload_paths)
+        self.upload_bytes = [path.read_bytes() for path in self.upload_paths]
+        return SimpleNamespace(stdout="")
+
+    def scan(self, args, *, cwd):
+        base = args[args.index("--base") + 1]
+        head = args[args.index("--head") + 1]
+        paths = [Path(args[args.index("--pr-body") + 1])] if "--pr-body" in args else []
+
+        def fake_git(root, *arguments, **kwargs):
+            self.assertIn(arguments[0], {"rev-parse", "merge-base", "rev-list", "ls-tree"})
+            raw = (head + "\n").encode() if arguments[0] == "rev-parse" else b""
+            return SimpleNamespace(stdout=raw, returncode=0)
+
+        # Run the shipped provider-file reader and detectors; only Git history is fake.
+        mapping = {"version": 1, "aliases": {}, "deny_literals": ["AWF278_" + "DENIED"]}
+        with patch.object(publication, "_git", side_effect=fake_git), \
+                patch.object(publication, "load_mapping", return_value=(mapping, None, None)):
+            report = publication.scan_repository(cwd, base, head, pr_body_paths=paths)
+        self.scans.append((paths[0].name if paths else "history", report))
+        self.scan_edit(report, paths[0] if paths else None)
+        return SimpleNamespace(returncode=0 if report["status"] == "PASS" else 2,
+                               stdout=(json.dumps(report) + "\n").encode(), stderr=b"")
+
+    def publish(self, *, dry_run=False):
+        return publisher.publish(self.repository, self.commit, self.output, self.windows,
+                                 publisher.sha256(self.windows), dry_run=dry_run,
+                                 validation_runner=lambda *a: dict(self.validation),
+                                 gh="fake-gh", scan_command_runner=self.scan)
+
+    def text_file(self, name):
+        paths = list(self.output.rglob(name))
+        if paths:
+            paths[0].write_bytes(paths[0].read_bytes() + b"altered after scanning\n")
+
+    def test_validation_deny_literal_refused_before_any_mutation(self):
+        self.validation["diagnostic"] = "AWF278_" + "DENIED"
+        with self.assertRaisesRegex(publisher.ReleaseError, "publication scan BLOCKED"):
+            self.publish()
+        self.assertEqual([], self.events)
+
+    def test_validation_private_path_refused_before_any_mutation(self):
+        self.validation["diagnostic"] = "/" + "home/synthetic/private-result"
+        with self.assertRaisesRegex(publisher.ReleaseError, "publication scan BLOCKED"):
+            self.publish()
+        self.assertEqual([], self.events)
+
+    def test_release_body_is_scanned_even_when_tag_text_passes(self):
+        with patch.object(publisher, "changelog_notes", return_value="AWF278_" + "DENIED"), \
+                self.assertRaisesRegex(publisher.ReleaseError, "publication scan BLOCKED"):
+            self.publish()
+        self.assertEqual(["history", "tag-message.txt", "release-body.md"],
+                         [name for name, _ in self.scans])
+        self.assertEqual(["PASS", "PASS", "BLOCKED"], [report["status"] for _, report in self.scans])
+        self.assertEqual([], self.events)
+
+    def test_changed_text_after_scan_refused_before_any_mutation(self):
+        for name in ("tag-message.txt", "release-body.md"):
+            with self.subTest(name=name):
+                self.output = self.root / name.replace(".", "-")
+                self.at_origin = lambda: self.text_file(name)
+                with self.assertRaisesRegex(publisher.ReleaseError, "changed|mismatch"):
+                    self.publish()
+                self.assertEqual([], self.events)
+
+    def test_asset_replaced_after_record_hash_refused_before_any_mutation(self):
+        self.at_origin = lambda: self.asset.write_bytes(b"replaced after hashing\n")
+        with self.assertRaisesRegex(publisher.ReleaseError, "asset.*changed|asset.*mismatch"):
+            self.publish()
+        self.assertEqual([], self.events)
+
+    def test_scan_receipt_must_bind_frozen_text_digest(self):
+        for defect in ("digest", "coverage", "exit", "blocked-count", "unscanned", "additional-body"):
+            with self.subTest(defect=defect):
+                self.output = self.root / defect
+                def edit(report, path):
+                    if path is None:
+                        return
+                    if defect == "digest":
+                        report["pr_body_sha256"] = "0" * 64
+                    elif defect == "coverage":
+                        report["coverage"]["pr_bodies"] = False
+                    elif defect == "blocked-count":
+                        report["blocking_findings"] = 1
+                    elif defect == "unscanned":
+                        report["unscanned_count"] = 1
+                    elif defect == "additional-body":
+                        report["additional_pr_body_sha256"] = ["f" * 64]
+                self.scan_edit = edit
+                scanner = self.scan
+                def fail_exit(args, **kwargs):
+                    result = scanner(args, **kwargs)
+                    if defect == "exit" and "--pr-body" in args:
+                        result.returncode = 1
+                    return result
+                with patch.object(self, "scan", side_effect=fail_exit), \
+                        self.assertRaises(publisher.ReleaseError):
+                    self.publish()
+                self.assertEqual([], self.events)
+
+    def test_text_changed_during_scanning_is_refused(self):
+        def edit(report, path):
+            if path is not None:
+                path.write_bytes(path.read_bytes() + b"changed during scan\n")
+        self.scan_edit = edit
+        with self.assertRaisesRegex(publisher.ReleaseError, "changed|mismatch"):
+            self.publish()
+        self.assertEqual([], self.events)
+
+    def test_dry_run_freezes_scans_and_returns_separate_receipts(self):
+        result = self.publish(dry_run=True)
+        self.assertEqual(["history", "tag-message.txt", "release-body.md"],
+                         [name for name, _ in self.scans])
+        self.assertEqual([], self.events)
+        self.assertFalse(result["remote_changes"])
+        self.assertEqual({"tag_message", "release_body"}, set(result["provider_text_scans"]))
+        for label, name in (("tag_message", "tag-message.txt"), ("release_body", "release-body.md")):
+            receipt = result["provider_text_scans"][label]
+            raw = next(self.output.rglob(name)).read_bytes()
+            self.assertEqual(result[label].encode("utf-8"), raw)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), receipt["pr_body_sha256"])
+            report = self.output / (label.replace("_", "-") + "-scan.json")
+            self.assertEqual(hashlib.sha256(report.read_bytes()).hexdigest(), receipt["sha256"])
+            self.assertNotIn("provider_text_scans", result["record"])
+
+    def test_live_run_scans_fresh_values_and_uploads_verified_copies(self):
+        dry = self.publish(dry_run=True)
+        self.output = self.root / "live-output"
+        self.validation["wall_seconds"] = 2.5
+        live = self.publish()
+        self.assertEqual(["local-tag", "tag-push", "release-create", "asset-readback"], self.events)
+        self.assertNotEqual(dry["provider_text_scans"], live["provider_text_scans"])
+        self.assertEqual(live["tag_message"].encode(), self.tag_bytes)
+        self.assertEqual(live["release_body"].encode(), self.body_bytes)
+        self.assertNotEqual(self.asset, self.upload_paths[0])
+        self.assertEqual([self.asset.read_bytes()], self.upload_bytes)
+        self.assertEqual(live["record"]["assets"][self.asset.name],
+                         hashlib.sha256(self.upload_bytes[0]).hexdigest())
+
+    def test_recheck_after_local_tag_prevents_remote_change(self):
+        for name in ("tag-message.txt", "release-body.md", "synthetic.zip"):
+            with self.subTest(name=name):
+                self.output = self.root / ("after-tag-" + name)
+                self.events.clear()
+                self.at_tag = lambda: self.text_file(name)
+                with self.assertRaisesRegex(publisher.ReleaseError, "changed|mismatch"):
+                    self.publish()
+                self.assertEqual(["local-tag"], self.events)
+
+    def test_staged_asset_replacement_is_refused_before_remote_mutation(self):
+        self.at_tag = lambda: next(self.output.rglob("upload-assets*/**/synthetic.zip")).write_bytes(b"staged replacement\n")
+        with self.assertRaises((publisher.ReleaseError, PermissionError)):
+            self.publish()
+        self.assertEqual(["local-tag"], self.events)
+
+    def test_removed_frozen_file_is_refused_before_mutation(self):
+        self.at_origin = lambda: next(self.output.rglob("release-body.md")).unlink()
+        with self.assertRaisesRegex(publisher.ReleaseError, "changed|unavailable"):
+            self.publish()
+        self.assertEqual([], self.events)
+
+    def test_recheck_immediately_before_create_refuses_changed_body_or_upload(self):
+        for name in ("release-body.md", "synthetic.zip"):
+            with self.subTest(name=name):
+                self.output = self.root / ("after-push-" + name)
+                self.events.clear()
+                self.at_push = lambda: self.text_file(name)
+                with self.assertRaisesRegex(publisher.ReleaseError, "changed|mismatch"):
+                    self.publish()
+                self.assertEqual(["local-tag", "tag-push"], self.events)
+
+    def test_tag_file_swap_at_consumer_cannot_change_scanned_input(self):
+        saved = {}
+        def swap():
+            path = next(self.output.rglob("tag-message.txt"))
+            saved["path"], saved["raw"] = path, path.read_bytes()
+            path.write_bytes(b"AWF278_" + b"DENIED\n")
+        self.before_tag_read = swap
+        self.at_tag = lambda: saved["path"].write_bytes(saved["raw"])
+        result = self.publish()
+        self.assertEqual(result["tag_message"].encode(), self.tag_bytes)
+        self.assertEqual(result["provider_text_scans"]["tag_message"]["pr_body_sha256"],
+                         hashlib.sha256(self.tag_bytes).hexdigest())
+
+    def test_body_file_swap_at_consumer_cannot_change_scanned_input(self):
+        self.before_body_read = lambda: next(self.output.rglob("release-body.md")).write_bytes(
+            b"AWF278_" + b"DENIED\n")
+        result = self.publish()
+        self.assertEqual(result["release_body"].encode(), self.body_bytes)
+        self.assertEqual(result["provider_text_scans"]["release_body"]["pr_body_sha256"],
+                         hashlib.sha256(self.body_bytes).hexdigest())
+
+    def test_tag_readback_mismatch_refuses_push_and_names_owner_remedy(self):
+        for defect in ("message", "target", "malformed"):
+            with self.subTest(defect=defect):
+                self.output = self.root / ("tag-object-" + defect)
+                self.events.clear()
+                self.tag_object_edit = lambda raw: (
+                    raw + b"altered\n" if defect == "message" else
+                    raw.replace(self.commit.encode(), b"f" * 40, 1) if defect == "target" else b"invalid")
+                with self.assertRaisesRegex(publisher.ReleaseError, "local tag remains.*owner"):
+                    self.publish()
+                self.assertEqual(["local-tag"], self.events)
+
+    def test_push_is_bound_to_checked_tag_object(self):
+        self.publish()
+        raw = self.fake_git_run(self.repository, "cat-file", "tag", "v1.9.6").stdout
+        expected = hashlib.sha1(b"tag " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        self.assertEqual(expected, self.pushed_object)
+
+    def test_upload_read_boundary_replacement_is_refused_or_detected(self):
+        def replace(paths):
+            path = paths[0]
+            replacement = path.with_suffix(".replacement")
+            replacement.write_bytes(b"replaced before upload read\n")
+            replacement.replace(path)
+        self.before_asset_read = replace
+        if os.name == "nt":
+            with self.assertRaises(PermissionError):
+                self.publish()
+            self.assertFalse(hasattr(self, "upload_bytes"))
+        else:
+            with self.assertRaisesRegex(publisher.ReleaseError, "draft.*owner.*delete"):
+                self.publish()
+            self.assertIn("asset-readback", self.events)
+
+    def test_upload_read_boundary_in_place_write_is_refused_or_detected(self):
+        def modify(paths):
+            if os.name != "nt":
+                paths[0].chmod(0o600)  # A same-user POSIX process can undo read-only mode.
+            paths[0].write_bytes(b"changed before upload read\n")
+        self.before_asset_read = modify
+        with self.assertRaises((PermissionError, publisher.ReleaseError)):
+            self.publish()
+
+    def test_nonmandatory_lock_model_detects_same_user_replacement_in_draft(self):
+        # Exercise the POSIX readback defence on Windows too. This model removes
+        # mandatory sharing protection; the platform-specific test above runs
+        # the actual descriptor/mode policy on its native platform.
+        def replace(paths):
+            paths[0].chmod(0o600)
+            replacement = paths[0].with_suffix(".replacement")
+            replacement.write_bytes(b"same-user replacement before provider read\n")
+            replacement.replace(paths[0])
+        self.before_asset_read = replace
+        with patch.object(publisher, "hold_upload_assets", return_value=nullcontext()), \
+                self.assertRaisesRegex(publisher.ReleaseError, "draft.*owner.*delete"):
+            self.publish()
+        self.assertEqual(["local-tag", "tag-push", "release-create", "asset-readback"], self.events)
+
+    def test_download_mismatch_never_reports_draft_created(self):
+        self.download_edit = lambda paths: paths[0].write_bytes(b"provider mismatch\n")
+        with self.assertRaisesRegex(publisher.ReleaseError, "draft.*owner.*delete"):
+            self.publish()
+
+    def test_missing_or_extra_downloaded_assets_refused(self):
+        for defect in ("missing", "extra", "failure"):
+            with self.subTest(defect=defect):
+                self.output = self.root / ("download-" + defect)
+                def change(paths):
+                    if defect == "missing":
+                        paths[0].unlink()
+                    elif defect == "extra":
+                        (paths[0].parent / "extra.zip").write_bytes(b"unrecorded asset")
+                    else:
+                        raise OSError("synthetic download failure")
+                self.download_edit = change
+                with self.assertRaisesRegex(publisher.ReleaseError, "draft.*owner.*delete"):
+                    self.publish()
+
+    def test_push_uses_object_id_even_if_local_ref_changes(self):
+        oid = "f" * 40
+        plan = publisher.ReleaseTagPushPlan((), "git push origin refs/tags/v1.9.6", {})
+        # No ref is resolved by push_release_tag: the checked object is the
+        # refspec source even if another local writer has moved the tag ref.
+        with patch.object(publisher, "git_run", return_value=SimpleNamespace(stdout="")) as run:
+            # setUp replaces this function; call the retained implementation.
+            self.original_push(self.repository, "v1.9.6", gh="fake-gh", origin_url="unused", plan=plan, object_id=oid)
+        self.assertEqual(("push", "origin", oid + ":refs/tags/v1.9.6"), run.call_args.args[1:])
 
 
 if __name__ == "__main__":
