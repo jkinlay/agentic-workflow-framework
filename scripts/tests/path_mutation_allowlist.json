@@ -547,17 +547,6 @@
   {
     "path": ".agentic/lib/agentic/heavy_validation.py",
     "context": "_owner_only_descriptor_executable",
-    "line": 376,
-    "call": "os.open(staged, os.O_RDONLY)",
-    "fingerprint": "69a2fd93b828736f7865612dceb56ada32e67053df1318d38a60da9a5c38d221",
-    "object": "explicit call-site inventory",
-    "created_by_us": "see justification",
-    "disposition": "OUT-OF-SCOPE",
-    "justification": "Owner-controlled heavy_validation.py scratch, state or report writer; outside the assigned installation/runtime recovery mutation routes; no race-hardening claim."
-  },
-  {
-    "path": ".agentic/lib/agentic/heavy_validation.py",
-    "context": "_owner_only_descriptor_executable",
     "line": 377,
     "call": "os.unlink(staged)",
     "fingerprint": "d0acee34e0e25ac3d40c69171078922aadac19752d55161e3fed11357fab29cd",
@@ -730,17 +719,6 @@
     "created_by_us": "see justification",
     "disposition": "NON-MUTATING",
     "justification": "String/bytes or dataclass replacement at this exact expression; no pathname mutation."
-  },
-  {
-    "path": ".agentic/lib/agentic/heavy_validation_controller.py",
-    "context": "_fsync_directory",
-    "line": 925,
-    "call": "os.open(path, os.O_RDONLY)",
-    "fingerprint": "8a9fcabb080d53204ed71762818413300127bb71da603bb86c13e5de07951a91",
-    "object": "explicit call-site inventory",
-    "created_by_us": "see justification",
-    "disposition": "OUT-OF-SCOPE",
-    "justification": "Owner-controlled heavy_validation_controller.py scratch, state or report writer; outside the assigned installation/runtime recovery mutation routes; no race-hardening claim."
   },
   {
     "path": ".agentic/lib/agentic/heavy_validation_controller.py",
@@ -4156,5 +4134,27 @@
     "created_by_us": "see justification",
     "disposition": "NON-MUTATING",
     "justification": "Replaces text in a string value for reporting; no pathname mutation."
+  },
+  {
+    "path": ".agentic/lib/agentic/installer.py",
+    "context": "_validate_pending_new_journal",
+    "line": 330,
+    "call": "update_kind.replace('_', '-')",
+    "fingerprint": "818d12468e043c70d68b094090da39fd0c76a7adbe6d24756af19f67f1af6236",
+    "object": "explicit call-site inventory",
+    "created_by_us": "see justification",
+    "disposition": "NON-MUTATING",
+    "justification": "String/bytes or dataclass replacement at this exact expression; no pathname mutation."
+  },
+  {
+    "path": "scripts/safe_materialize.py",
+    "context": "_PosixWriter.file",
+    "line": 89,
+    "call": "os.open('.', flags, mode, dir_fd=parent_fd)",
+    "fingerprint": "27b4f3213835a4b0f8b36f40dc83fa1fea973900fc6530caa8e670608e5c86e5",
+    "object": "new anonymous O_TMPFILE inode in pinned parent",
+    "created_by_us": true,
+    "disposition": "SAFE",
+    "justification": "O_RDWR | O_TMPFILE creates an anonymous regular inode under the held parent descriptor; fstat requires regular type and nlink zero before writing, and publication uses linkat without replacing an occupied owner destination."
   }
 ]

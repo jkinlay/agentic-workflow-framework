@@ -1188,19 +1188,40 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
     return result
 
 
-def write_report(output, report, *, project, source=None):
-    output = Path(output).resolve()
+def preflight_report(output, *, project, source=None):
+    output = Path(output).absolute()
+    if output.exists() or output.is_symlink():
+        raise FileExistsError('Report output already exists: ' + str(output))
+    resolved = output.resolve()
     excluded_roots = {ROOT.resolve(), Path(project).resolve()}
     if source is not None:
         excluded_roots.add(Path(source).resolve())
     for excluded in excluded_roots:
-        if output == excluded or excluded in output.parents:
+        if resolved == excluded or excluded in resolved.parents:
             raise ValueError('Report output must be outside source and disposable project')
+    if not output.parent.is_dir():
+        raise ValueError('Report output parent must already exist: ' + str(output.parent))
+    return output
+
+
+def write_report(output, report, *, project, source=None):
+    output = preflight_report(output, project=project, source=source)
     # Exclusive creation retains prior evidence; never overwrite a report.
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write('\n')
+
+
+def publish_report(output, report, *, project, source=None):
+    try:
+        write_report(output, report, project=project, source=source)
+    except (OSError, ValueError):
+        # Publication can still fail after preflight. Preserve every probe path
+        # on stderr even when the report destination becomes unavailable.
+        print(json.dumps({key: value for key, value in report.items()
+            if key.startswith('retained_probe')}, sort_keys=True), file=sys.stderr)
+        raise
 
 
 def plan(source, project, expected_manifest_sha256, *, overrides=None):
@@ -1520,9 +1541,26 @@ def main(argv=None):
         expected_identity = None
         if args.journal:
             try:
-                journal = loads(args.journal.read_text(encoding='utf-8'))
+                with Tree(args.journal.absolute().parent) as journal_tree:
+                    journal_raw = journal_tree.read(args.journal.name, installation.MAX_DOCUMENT_BYTES)
+                journal = loads(journal_raw.decode('utf-8'))
                 installation._validate_transaction_journal(journal)
                 runtime = installation._validated_runtime_journal(journal)
+                # A preserved copy is trusted input only in marker-less recovery.
+                # For a live endpoint, require the marker's current journal
+                # digest and transaction identity. Normalize pending updates
+                # with the stage in place before authenticating quarantine.
+                marker_path = args.path.absolute().parent / 'INSTALLING.json'
+                if marker_path.exists() or marker_path.is_symlink():
+                    with Tree(marker_path.parent) as marker_tree:
+                        marker_raw = marker_tree.read(marker_path.name, installation.MAX_DOCUMENT_BYTES)
+                    marker = loads(marker_raw.decode('utf-8'))
+                    identity = installation._validate_journal_marker(marker, journal_raw)
+                    if identity != journal['transaction_id']:
+                        raise ValueError('Journal identity differs from its bound marker')
+                    if installation.sha256(journal_raw) != marker['journal_sha256']:
+                        raise ValueError('Journal copy differs from its bound marker journal_sha256; '
+                                         'normalize pending update with stage in place before quarantine')
             except (KeyError, TypeError) as exc:
                 raise ValueError('Invalid runtime authentication journal') from exc
             if (runtime is None or runtime.get('stage_identity') is None or
@@ -1540,10 +1578,12 @@ def main(argv=None):
         print(json.dumps(dict(format='awf-runtime-authentication-1', sha256=digest,
             expected_sha256=args.expected_sha256, matches=matches, execution_authority=False, **extra), sort_keys=True))
         return 0 if matches else 1
+    preflight_report(args.output, project=args.work_dir if args.command == 'installed' else args.project,
+                     source=getattr(args, 'source', None))
     if args.command == 'installed':
         delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
         report = qualify(args.source, args.work_dir, args.wheelhouse, allowed_delta=delta)
-        write_report(args.output, report, project=args.work_dir, source=args.source)
+        publish_report(args.output, report, project=args.work_dir, source=args.source)
         print(json.dumps(report, sort_keys=True))
         return 0 if report['status'] == 'QUALIFIED_DISPOSABLE_UPGRADE' else 1
     if args.command == 'snapshot':
@@ -1576,7 +1616,7 @@ def main(argv=None):
                 policy['started_at'] = 0
                 report = compare_upgrade(before, after, policy, args.project, allowed_delta=delta)
                 report.update({key: value for key, value in policy.items() if key.startswith('retained_probe')})
-    write_report(args.output, report, project=args.project, source=getattr(args, 'source', None))
+    publish_report(args.output, report, project=args.project, source=getattr(args, 'source', None))
     return 1 if report.get('preserved') is False else 0
 
 

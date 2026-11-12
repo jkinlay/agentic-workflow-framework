@@ -203,21 +203,25 @@ class PublishedRecoveryTests(unittest.TestCase):
             'unrecorded OR unprovable metadata stops',
             'owner-controlled same-filesystem rename outside PROJECT; preserve links/modes/ownership',
             "owner stops/checks every host's installers/agents/editors/schedulers/processes/leases",
-            'stop for 1=mismatch or 2=malformed/refused',
+            '1=mismatch or 2=malformed/refused enters PARKED',
             'Fresh-install rollback: confirm runtime/workflow/receipt absent;',
             'archive evidence/report uninstalled; checks unavailable.',
             'Retry requires recovery/resolution/owner authorization.',
         )
-        procedures = []
-        for relative in ('MIGRATION-v1.9.5-to-v1.9.6.md',
-                         '.agentic/docs/38-RELEASE-196-QUALIFICATION.md',
-                         'docs/runbook/19-runbook-journal-recovery.md'):
-            with self.subTest(document=relative):
-                text = (ROOT / relative).read_text(encoding='utf-8')
-                for clause in required:
-                    self.assertIn(clause, text)
-                procedures.append(text[text.index('1. No exclusivity-proof CLI:'):].split('\n\n', 1)[0])
-        self.assertEqual([procedures[0]] * 3, procedures)
+        canonical = 'docs/runbook/19-runbook-journal-recovery.md'
+        text = (ROOT / canonical).read_text(encoding='utf-8')
+        self.assertIn('### Owner recovery and retiring resolved diagnostics', text)
+        steps = text.split('1. No exclusivity-proof CLI:', 1)[1].split('#### Lock metadata preservation', 1)[0]
+        self.assertEqual(list(range(2, 9)), [int(line.split('.', 1)[0])
+            for line in steps.splitlines() if line[:1].isdigit()])
+        for clause in required:
+            self.assertIn(clause, text)
+        for relative, prefix in (('MIGRATION-v1.9.5-to-v1.9.6.md', ''),
+                ('.agentic/docs/38-RELEASE-196-QUALIFICATION.md', 'https://github.com/jkinlay/agentic-workflow-framework/blob/main/')):
+            summary = (ROOT / relative).read_text(encoding='utf-8')
+            self.assertIn('](' + prefix + canonical + '#owner-recovery-and-retiring-resolved-diagnostics)', summary)
+            self.assertNotIn('1. No exclusivity-proof CLI:', summary)
+
 
 
     @classmethod

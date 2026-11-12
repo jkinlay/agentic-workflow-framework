@@ -3,6 +3,7 @@ import ast
 from collections import Counter
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -84,10 +85,31 @@ def mutation_calls(path):
                             values.add(resolved)
                             changed = True
                         # Mutating aliases take precedence over nonmutating ones.
-                        if resolved.rsplit('.', 1)[-1] in METHODS | {'rename', 'remove', 'CreateFileW', 'CreateFileA', 'open'}:
+                        if resolved == 'os' or resolved.rsplit('.', 1)[-1] in METHODS | {'rename', 'remove', 'CreateFileW', 'CreateFileA', 'open'}:
                             imports[target.id] = resolved
         if not changed:
             break
+    assignments = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                if isinstance(target, ast.Name):
+                    assignments.setdefault(target.id, []).append(node.value)
+
+    def flags(node, seen=frozenset()):
+        resolved = name(node)
+        if resolved.startswith('os.O_'):
+            return getattr(os, resolved[3:], None)
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            left, right = flags(node.left, seen), flags(node.right, seen)
+            return None if left is None or right is None else left | right
+        if isinstance(node, ast.Name) and node.id not in seen and node.id in assignments:
+            values = [flags(value, seen | {node.id}) for value in assignments[node.id]]
+            return None if None in values else __import__('functools').reduce(int.__or__, values, 0)
+        return None
+
     calls = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -95,7 +117,12 @@ def mutation_calls(path):
         function = name(node.func)
         leaf = function.rsplit('.', 1)[-1]
         overwrite = False
-        if leaf == 'open':
+        if function == 'os.open':
+            argument = next((keyword.value for keyword in node.keywords if keyword.arg == 'flags'),
+                            node.args[1] if len(node.args) > 1 else ast.Constant(None))
+            value = flags(argument)
+            overwrite = value is None or bool(value & (os.O_WRONLY | os.O_RDWR | os.O_TRUNC | os.O_CREAT | os.O_APPEND))
+        elif leaf == 'open':
             mode_index = 1 if function in {'open', 'builtins.open', 'io.open'} else 0
             mode = next((keyword.value for keyword in node.keywords if keyword.arg == 'mode'),
                         node.args[mode_index] if len(node.args) > mode_index else ast.Constant('r'))
@@ -180,6 +207,21 @@ class PathMutationGuardTests(unittest.TestCase):
 
     def test_gap_plain_overwrite(self):
         self.assert_injection('from pathlib import Path\nimport builtins as b\nfrom io import open as writer\nopen("owner", "wb")\nPath("owner").open("w")\nPath("owner").write_bytes(b"data")\nPath("owner").write_text("data")\nb.open("file", "wb")\nwriter("file", "w")\n', 6)
+
+    def test_gap_os_open_mutating_flags_and_aliases(self):
+        for flag in ('O_WRONLY', 'O_RDWR', 'O_TRUNC', 'O_CREAT', 'O_APPEND'):
+            for source in (
+                f'import os\nos.open("victim", os.{flag})',
+                f'import os as native\nnative.open("victim", native.{flag})',
+                f'import os\nnative = os\nnative.open("victim", native.{flag})',
+                f'from os import open as writer, {flag} as flag\nwriter("victim", flag)',
+                f'import os\nwriter = os.open\nflag = os.{flag}\nwriter("victim", flag)',
+                f'import os\nflag = os.{flag} | os.O_RDONLY\nos.open("victim", flags=flag)',
+            ):
+                with self.subTest(flag=flag, source=source):
+                    self.assert_injection(source)
+        self.assert_injection('import os\nos.open("victim", os.O_WRONLY | os.O_TRUNC)')
+        self.assert_injection('import os\nos.open("victim", os.O_RDONLY)', 0)
 
     def test_shipped_calls_have_exact_reviewed_allowlist_entries(self):
         result = violations(ROOT, json.loads(ALLOWLIST.read_text(encoding='utf-8')))

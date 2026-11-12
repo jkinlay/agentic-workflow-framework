@@ -1486,6 +1486,51 @@
       "regression_id": "AWF243-OPERATOR-R1-POLICY",
       "source_finding_id": null,
       "test_id": "OwnerClosureIdentityTests.test_r1_reviewed_policy_edit_and_repeat_owner_observations_remain_idempotent"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": "scripts/tests/test_awf266_round1.py",
+      "name": "Executable custody capture distinguishes absent APIs from unreadable metadata",
+      "permanent": true,
+      "regression_id": "AWF266-R266-R1-M1",
+      "source_finding_id": "R266-R1-M1",
+      "test_id": "RecoveryDocumentationTests.test_posix_capture_handles_absent_apis_without_attribute_error"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_awf266_runtime.py",
+      "name": "Normalize a pending runtime-stage marker before authenticated quarantine and finish recovery",
+      "permanent": true,
+      "regression_id": "AWF266-R266-R1-M2",
+      "source_finding_id": "R266-R1-M2",
+      "test_id": "RuntimeCreationIdentityTests.test_pending_stage_normalization_then_authenticated_quarantine_finishes"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": "scripts/tests/test_awf266_round1.py",
+      "name": "Report publication refuses an occupied destination and still names the retained replica",
+      "permanent": true,
+      "regression_id": "AWF266-R266-R1-M3",
+      "source_finding_id": "R266-R1-M3",
+      "test_id": "ReportPublicationTests.test_destination_occupied_after_probe_preparation_reports_actual_retained_replica"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Every os.open mutation flag remains visible through module function and flag aliases",
+      "permanent": true,
+      "regression_id": "AWF266-R266-R1-M4",
+      "source_finding_id": "R266-R1-M4",
+      "test_id": "PathMutationGuardTests.test_gap_os_open_mutating_flags_and_aliases"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": "scripts/tests/test_awf266_round1.py",
+      "name": "Shipped qualification commands execute against the real argument parser",
+      "permanent": true,
+      "regression_id": "AWF266-R266-R1-M5",
+      "source_finding_id": "R266-R1-M5",
+      "test_id": "RecoveryDocumentationTests.test_shipped_plan_and_installed_examples_execute_with_real_parser"
     }
   ]
 }

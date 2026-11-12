@@ -327,7 +327,7 @@ def _validate_pending_new_journal(tree, journal, update_kind):
         stage = tree.root / runtime["stage"]
         if not (stage.exists() or stage.is_symlink()):
             raise ValidationError(
-                "Pending runtime-stage journal update has no staged runtime; journal retained")
+                "Pending " + update_kind.replace('_', '-') + " journal update has no staged runtime; journal retained")
         if runtime.get("stage_identity") is not None:
             if runtime_creation_identity(stage) != runtime["stage_identity"]:
                 raise ValidationError("Staged runtime creation identity changed; journal retained")
@@ -378,7 +378,11 @@ def _reconstruct_pending_old_journal(tree, journal, update_kind):
                 "stage_identity" in runtime and runtime["stage_identity"] is None and
                 runtime["new_sha256"] is None):
             _pending_transition_mismatch()
-        candidate["runtime"]["stage_identity"] = runtime_creation_identity(tree.root / runtime["stage"])
+        try:
+            candidate["runtime"]["stage_identity"] = runtime_creation_identity(tree.root / runtime["stage"])
+        except (OSError, ValidationError) as exc:
+            raise ValidationError(
+                "Pending runtime-creation journal update cannot prove staged runtime; journal retained") from exc
     elif update_kind == "runtime_stage":
         managed_after = (journal.get("managed_after_sha256") if _compact_journal(journal)
                          else journal.get("managed_after"))
@@ -1932,9 +1936,12 @@ def runtime_creation_identity(path):
                 kernel.CloseHandle(handle)
         with _Tree(path) as directory:
             info = os.fstat(directory._dirs[directory.root])
+            birth_ns = getattr(info, 'st_birthtime_ns', None)
+            if birth_ns is None and hasattr(info, 'st_birthtime'):
+                birth_ns = int(info.st_birthtime * 1_000_000_000)
             return dict(platform='posix', object=[format(info.st_dev, '032x'),
-                format(info.st_ino, '032x')], created=(format(info.st_birthtime_ns, '032x')
-                    if hasattr(info, 'st_birthtime_ns') else None))
+                format(info.st_ino, '032x')], created=(format(birth_ns, '032x')
+                    if birth_ns is not None else None))
 
 
 def _validate_runtime_creation_identity(identity):
@@ -2155,7 +2162,7 @@ def _validate_transaction_journal(journal):
                     for value in identity)):
             raise ValidationError("Invalid created-directory identity")
     if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}:
-        if journal["phase"] not in {"object_prepare", "active", "rollback_cleanup",
+        if not isinstance(journal["phase"], str) or journal["phase"] not in {"object_prepare", "active", "rollback_cleanup",
                                     "commit_cleanup", "commit_cleanup_authenticated"}:
             raise ValidationError("Invalid recovery journal phase")
         if journal["phase"] in {"object_prepare", "rollback_cleanup"} and not _compact_journal(journal):
