@@ -129,6 +129,3 @@ are removed case-insensitively before fixed isolation and replacement/lazy-fetch
 defences are added. Thus repository, worktree, object/config redirection and
 local replacement refs cannot substitute publisher, history or pinned workflow
 bytes. The review host hashes the binary workflow blob; LF and CRLF differ.
-
-
-[Releases](../../docs/release-consumer-bytes.md).
