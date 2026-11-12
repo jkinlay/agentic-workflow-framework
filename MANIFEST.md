@@ -772,7 +772,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/prompt_templates/critic.md` | `1ee8905a78bd23d64bb405da275ebf4cd366541e72d7ce55b335f82911fd8f78` |
 | `scripts/prompt_templates/specialist-reviewer.md` | `6d0993a94d4272b711fa8beec9d8fcccf2d2f739856f94f5f530801a2329ac92` |
 | `scripts/prompt_templates/worker.md` | `3f727448e713e52341c6a27aa061b79447869fde020fc0978f07eb25d7e26b79` |
-| `scripts/publish_catalog.py` | `af006a06aab5c8b99f825068ce9cab778f636e8a47ae83fc13596ea2afcdf3bf` |
+| `scripts/publish_catalog.py` | `08ac16f70f87960dc3a90f7532788d40eef28becb9283687c7591c8d50908dd9` |
 | `scripts/publish_release.py` | `1f95dd85c942a3015642c17d9ae01f3090ab311f6cdabbf2927595237b2495ca` |
 | `scripts/qualify_upgrade.py` | `dae6d22230650f4f8aa7852acb6985c619cf0551e81a39f056784b1c43d7cf97` |
 | `scripts/release_hygiene.py` | `6464bc40a969246566bc56ad39bb74cde23a3d0ab68e3cbd157324c422feb7bc` |
@@ -832,7 +832,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_validate_archive_report.py` | `5f80854db7f9fac07b2822ab1ba20cb0bdbf9feb78bec296de92d87ee2337caf` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
 | `scripts/tests/test_windows_unittest_shards.py` | `cb709d1be6a0daab257fea90ad0f8917460032cc4512e2742f7fee0f6c5f3049` |
-| `scripts/validate_archive.py` | `33aeb96f022671134dfd94f5bfc052eecdd6ddfcf83f098f998787c5c50799de` |
+| `scripts/validate_archive.py` | `0992d2db9febc2557a09a8305cce299c00fbde5d95b514cd9b399911641521a0` |
 | `scripts/validate_git_checkout.py` | `d8d9a2e85a611d16bfea7e5f67bc9666885a2b5c112aa6ea3ddad189b38c29bf` |
 | `tools/windows/Invoke-AC42.ps1` | `e3ff5069784a18400910674c430ab828c41cc0a0f14c18d297ea795464a5ba57` |
 | `tools/windows/pre-push-gate.ps1` | `57aa332dc71ba1921d5b293f1246b640dfedb43612f540f3832da6adfe584e47` |
