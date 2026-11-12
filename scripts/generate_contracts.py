@@ -877,6 +877,13 @@ def catalog(*, include_ticket_plan=True):
             "detail": const("Every supported value, including long hashes and paths, is passed as one literal argv element with PowerShell single-quote escaping. No generic JSON carrier or response-file transport is implemented.")}),
         "activation_summary": obj({"status": const("EXTENSION_POINT"), "detail": text()}),
         "execution_authority": FALSE})
+    # Runtime diagnostics are optional for older producers, but draft forms
+    # expose every property, including the healthy runtime's empty values.
+    schemas["doctor-output"]["properties"] = {
+        "warnings": {"type": "array", "items": text()},
+        "next_action": {"type": ["string", "null"], "minLength": 1},
+        **schemas["doctor-output"]["properties"],
+    }
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
                     for name in GATE_NAMES if name != "specialist_reviews"}}, "execution_authority": FALSE}}

@@ -523,6 +523,7 @@ def generate(output_root, source_root=ROOT):
             continue
         draft = {"template_for": name, "status": "UNFILLED", "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.", "record": sample(schema, schemas)}
         if name == "doctor-output":
+            draft["record"].update(warnings=[], next_action=None)
             for command, purpose in zip(draft["record"]["commands"],
                                         ("adoption", "verification", "validation", "status", "operating")):
                 command["purpose"] = purpose
