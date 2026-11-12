@@ -325,6 +325,29 @@ _HISTORICAL_SELF_REFERENCES = {
         # Line 71 (introduced at 67): synthetic invalid selection-path test vector.
         "c82f1a1b6007051ea0852bc0abf4fa53883fbd6b7b6bd1e1aa403cd64d04cc7f",
     }),
+    # AWF-266: audited escaped-newline strings in synthetic call fingerprints.
+    # Exact full-line identities only; changed lines, paths and detectors still block.
+    ("scripts/tests/path_mutation_allowlist.json", "builtin.unc_path"): frozenset({
+        "5e57f3a5d73e7cb3bb6bb9be63bdd3eb96cca8ae53ab2e066e5025e10e189a6e",
+        "e86018120f4ef62f0518ec117cc1e64051a6641dc14f4fcc18c1112f96993aa9",
+        "04d0e31cc33f85925daaa33475254f83400e9c9784877adbf3d98c1461340823",
+        "ef8a3c4eeedb07a3fe5729e26e239601bca427bd43ab6441d28ec719927087ee",
+        "e06006434b1997c0c851df19712cb95c79e1157910ac78a27e767d13cf0be12a",
+        "1e0306fa0d67dd7a9bd9cd4eaa94bdcbcaeb88a7b5c01af267c84dadb9f97177",
+        "fbec46d8eef7f325ae3f127cec53d91a9c56506d9afc9f53b905d18f0b6591e4",
+        "70873cc8e32ef2593b8015b7fff7fc28b29e537042bbac59f51791f961a9b9bd",
+        "510ea9a59ede9e42111bec69346aca9a2cd1edea4c4a804c9921e0b44ea8783a",
+        "5c077e2f4d92f86da36b16073c381862f2ee9ec867f10a816a56417f38131912",
+        "b42e7ee590d6be8db043d389a96f1e40695ddef9ff5a925360c75e7f5a3305b8",
+        "d3f4460f94902e9668f5ff98b6809b2fb104e5b73791a07c7d70334f631fba8f",
+        "dba53e096f34796a8b0962b422f56423be0f97b8378d2626e3b0f0f73d239679",
+        "3bc6ecfcc6c03a21bc21f8e3218f4ae23d1dcba872ca75970879ce63c832228c",
+        "d73d3371915702cc9a39aa958298913d4c4703feafda889d6c37eea38f2b6b38",
+        "e5197bf7b06f3bb460b5ea10cca76591f068f3f4ac87f8cfb4786a254d6cb394",
+        "ea5c29fff19b3b7d9d8cc9d2294be41f89f0f53be4ee5d2ecb45dd2f5dc82648",
+        "7c129d4878ad82e1fd584b056fa349e720f13ade67b3ce53eacb81a780e79892",
+        "410126ed9da9c7049076e0a20d94fefb4757e9297a30faf947a7d1b6f30ad4e4",
+    }),
 }
 
 # PR #34 initially used short Jira-shaped labels for synthetic controller test

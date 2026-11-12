@@ -150,7 +150,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/providers/github_review_host.py` | `53c3e27ecf653a8a4307d9d8cb9f43cf8805f34fff5ca8574a32f23ec97c4a59` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `2793563635ab8efdddec2cd29d742ccca206df1e1b8d10a3a413bab69e07d71e` |
-| `.agentic/lib/agentic/publication.py` | `10686bfda92bc042fd7984873261282f7a32ff61fc64630f20ef10a221e398fd` |
+| `.agentic/lib/agentic/publication.py` | `d857fd4bef0e9b037e6860eb1120e99243a09139d65541021abc787fc21bf699` |
 | `.agentic/lib/agentic/publication_readiness.py` | `cbc0a38cb74bc646bd77b81d914c088b7d2088ded6944c7d4a4cd631ca1e466e` |
 | `.agentic/lib/agentic/publication_sqlite_fixture.py` | `5d652443163f6ff2072b14eeb1c3ecf0b7b9a17cd81964cde66bb217261d4e0e` |
 | `.agentic/lib/agentic/release_trust.py` | `a8d468759d1c974b5a06ae3855b7bf17ea2e1a937edf4d0c1c76a7bef8988896` |
@@ -818,7 +818,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_path_mutation_guard.py` | `287d22cd78db9b57a42221d2933687eecd93b6341db3a427a5f42a3a32b174a3` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
-| `scripts/tests/test_publication_release_history.py` | `1570c0a22ea0bea1e2287cfd5c1bd6e52e8c2883864935d8d53391dfb663def0` |
+| `scripts/tests/test_publication_release_history.py` | `135abf25ed55db67370ac0734159b6635c8333cafcef4b26919a77dd69ccb79a` |
 | `scripts/tests/test_publish_catalog.py` | `8819957e524f852093bd483db2f92098e371b9ff0281bfefc764c8e3b06a1492` |
 | `scripts/tests/test_publish_release.py` | `0dc0d878d9ab99435c28a113eccffc9d0930693adc3af9070804cf73a2cad3eb` |
 | `scripts/tests/test_qualify_upgrade.py` | `8c2c284a84ad7029a99f35fa2540267fe209eaed89dcbca2217cf8f3a53d6384` |
