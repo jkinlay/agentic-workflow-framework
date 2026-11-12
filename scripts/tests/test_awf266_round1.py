@@ -131,8 +131,10 @@ class RecoveryDocumentationTests(unittest.TestCase):
                 arguments = [sys.executable, '-B', '-c', code, str(lock), str(output)]
                 result = subprocess.run(arguments, capture_output=True, timeout=30)
                 self.assertEqual(0, result.returncode, result.stderr)
+                capture = json.loads(output.read_bytes())
                 self.assertEqual(dict(hex=data.hex(), size=len(data), sha256=hashlib.sha256(data).hexdigest()),
-                                 json.loads(output.read_bytes()))
+                                 {key: value for key, value in capture.items() if key != 'path'})
+                self.assertEqual(str(lock.absolute()), capture['path'])
                 captured = output.read_bytes()
                 result = subprocess.run(arguments, capture_output=True, timeout=30)
                 self.assertNotEqual(0, result.returncode)
@@ -146,37 +148,73 @@ class RecoveryDocumentationTests(unittest.TestCase):
         line = next(line for line in document.splitlines() if line.startswith('PYTHON -c ') and 'listxattr' in line)
         code = shlex.split(line)[2]
         native_import = __import__
-        for view, expected in ((SimpleNamespace(), {'capture': 'APIS_UNAVAILABLE'}),
+        for view, expected in ((SimpleNamespace(), 'APIS_UNAVAILABLE'),
                 (SimpleNamespace(listxattr=Mock(return_value=[]), getxattr=Mock()), {}),
                 (SimpleNamespace(listxattr=Mock(return_value=['user.awf-temporary-custody']),
                     getxattr=Mock(return_value=b'custody')), {'user.awf-temporary-custody': b'custody'.hex()}),
                 (SimpleNamespace(listxattr=Mock(return_value=['user.awf-temporary-custody']),
                     getxattr=Mock(return_value=b'custody\x00\xff')), {'user.awf-temporary-custody': b'custody\x00\xff'.hex()})):
+            view.lstat = os.lstat
+            view.path = os.path
             def imports(name, *args, **kwargs):
                 return view if name == 'os' else native_import(name, *args, **kwargs)
             with tempfile.TemporaryDirectory() as temporary:
-                output = Path(temporary).resolve() / 'xattrs.json'
-                with patch('builtins.__import__', imports), patch.object(sys, 'argv', ['capture', 'LOCK', str(output)]):
+                root = Path(temporary).resolve()
+                lock, output = root / 'lock', root / 'xattrs.json'
+                lock.write_bytes(b'lock bytes')
+                with patch('builtins.__import__', imports), patch.object(sys, 'argv', ['capture', str(lock), str(output)]):
                     exec(compile(code, '<documented xattr capture>', 'exec'), {})
-                    self.assertEqual(expected, json.loads(output.read_bytes()))
+                    capture = json.loads(output.read_bytes())
+                    self.assertEqual(expected, capture['capture'])
+                    self.assertEqual(os.path.abspath(lock), capture['path'])
+                    self.assertEqual({'path', 'capture'}, set(capture))
                     previous = output.read_bytes()
                     with self.assertRaises(FileExistsError):
                         exec(compile(code, '<documented xattr capture>', 'exec'), {})
                     self.assertEqual(previous, output.read_bytes())
-        unreadable = SimpleNamespace(listxattr=lambda path: ['user.awf-temporary-custody'],
+        unreadable = SimpleNamespace(lstat=os.lstat, path=os.path,
+                                     listxattr=lambda path: ['user.awf-temporary-custody'],
                                      getxattr=Mock(side_effect=OSError('unreadable recorded custody')))
         with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary).resolve() / 'xattrs.json'
+            root = Path(temporary).resolve()
+            lock, output = root / 'lock', root / 'xattrs.json'
+            lock.write_bytes(b'lock bytes')
             with patch('builtins.__import__', lambda name, *a, **kw: unreadable if name == 'os' else native_import(name, *a, **kw)), \
-                    patch.object(sys, 'argv', ['capture', 'LOCK', str(output)]), self.assertRaises(OSError):
+                    patch.object(sys, 'argv', ['capture', str(lock), str(output)]), self.assertRaises(OSError):
                 exec(compile(code, '<documented xattr capture>', 'exec'), {})
             self.assertFalse(output.exists())
             unreadable.getxattr.side_effect = None
             unreadable.getxattr.return_value = b'corrected\x00bytes'
             with patch('builtins.__import__', lambda name, *a, **kw: unreadable if name == 'os' else native_import(name, *a, **kw)), \
-                    patch.object(sys, 'argv', ['capture', 'LOCK', str(output)]):
+                    patch.object(sys, 'argv', ['capture', str(lock), str(output)]):
                 exec(compile(code, '<documented xattr capture>', 'exec'), {})
-            self.assertEqual({'user.awf-temporary-custody': b'corrected\x00bytes'.hex()}, json.loads(output.read_bytes()))
+            capture = json.loads(output.read_bytes())
+            self.assertEqual({'user.awf-temporary-custody': b'corrected\x00bytes'.hex()}, capture['capture'])
+            self.assertEqual(os.path.abspath(lock), capture['path'])
+            self.assertEqual({'path', 'capture'}, set(capture))
+
+    def test_posix_capture_refuses_missing_lock_without_output_even_without_apis(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
+        line = next(line for line in document.splitlines() if line.startswith('PYTHON -c ') and 'listxattr' in line)
+        code = shlex.split(line)[2]
+        native_import = __import__
+        for available in (False, True):
+            with self.subTest(xattr_apis_available=available), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                lock, output = root / 'missing-lock', root / 'xattrs.json'
+                view = SimpleNamespace(lstat=os.lstat, path=os.path)
+                if available:
+                    view.listxattr = Mock(return_value=[])
+                    view.getxattr = Mock()
+                with patch('builtins.__import__', lambda name, *a, **kw: view if name == 'os' else native_import(name, *a, **kw)), \
+                        patch.object(sys, 'argv', ['capture', str(lock), str(output)]), self.assertRaises(FileNotFoundError):
+                    exec(compile(code, '<documented xattr capture>', 'exec'), {})
+                self.assertFalse(output.exists())
+                if available:
+                    view.listxattr.assert_not_called()
+                    view.getxattr.assert_not_called()
 
     @unittest.skipUnless(os.name == 'nt', 'WIN32_ADS: PowerShell stream capture is Windows-only')
     def test_windows_capture_preserves_ads_and_refuses_existing_output(self):
