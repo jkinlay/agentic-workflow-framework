@@ -42,7 +42,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `9ba85f949aceeb0b6276a897d2ba7426f2a74719d9680697ef85348c49711e65` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `501389c7d706862d0501f8b00b465d153190f2a68e19508a23c425e90e94ca0d` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `44cf0fed1a4ba1c31f8ec6ccc9924391f170aeced98efcd41ce89835a73a3d54` |
-| `.agentic/docs/32-RELEASE-PUBLISHING.md` | `7eee56eb3c8da96dbb3713e742f68bf38be78306c5d53e8ca9cb8ff69ca97a8c` |
+| `.agentic/docs/32-RELEASE-PUBLISHING.md` | `f344944a45654c713c0111347cff7879b523c774996427755c4c71410996713a` |
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `fe98eb7729184ad17697deee8fde4e996eb61d2de535e624aec767719b8d42d3` |
 | `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `1b2a8bf72aac20e78759b6a894d753149991352372bcb6ea3ab0f959fc973d42` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `eeb46dd15dbafdd209e9b4b745e617379f97d20ca0e2783d539849a345c14b16` |
@@ -765,7 +765,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/prompt_templates/specialist-reviewer.md` | `6d0993a94d4272b711fa8beec9d8fcccf2d2f739856f94f5f530801a2329ac92` |
 | `scripts/prompt_templates/worker.md` | `3f727448e713e52341c6a27aa061b79447869fde020fc0978f07eb25d7e26b79` |
 | `scripts/publish_catalog.py` | `99f3d44847a13f12a7cef24a6ad47f690ac0b03dead5f2c1939aa8ff72e6a590` |
-| `scripts/publish_release.py` | `a356e11b42c07199f0ba2d46158b7105e9ccbd3c2f95f5acdf4bafb43bcec3ea` |
+| `scripts/publish_release.py` | `f55e7480aad81cc41847806ce55662a0b728502f26e39c6e57f0368069fb13ef` |
 | `scripts/qualify_upgrade.py` | `cb9220f3c390dec88c67c207081f1fc6db570372622ad3fcb9707e8cdca967cb` |
 | `scripts/release_hygiene.py` | `6464bc40a969246566bc56ad39bb74cde23a3d0ab68e3cbd157324c422feb7bc` |
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
@@ -807,7 +807,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
 | `scripts/tests/test_publish_catalog.py` | `8819957e524f852093bd483db2f92098e371b9ff0281bfefc764c8e3b06a1492` |
-| `scripts/tests/test_publish_release.py` | `c4bb272aa42ff872c28ac3b1f063272cc17fd660fd58e39764f83f6bf5fd0e5d` |
+| `scripts/tests/test_publish_release.py` | `46dbade8caef15160ff8c4ba1f1b0e1b03742514abecd0ae4874b128bae9e8f5` |
 | `scripts/tests/test_qualify_upgrade.py` | `fef030be8692d113f18905d5ddcca13b4401fa2bec55feb5709bd2721e7249dc` |
 | `scripts/tests/test_qualify_upgrade_r1.py` | `6f568edf171b25649730de0431aa20639f2453e8e108656d097f82fbf72d46c5` |
 | `scripts/tests/test_release_hygiene.py` | `349ddb4ed2247235c70fe7ca48fb20697c0813818d9e15ba5f3c6fa972c16b37` |
