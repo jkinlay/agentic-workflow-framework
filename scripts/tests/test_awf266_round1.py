@@ -34,6 +34,13 @@ class RecoveryDocumentationTests(unittest.TestCase):
         document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
         step2 = next(line for line in document.splitlines() if line.startswith('2. '))
         self.assertIn('ROLLED_BACK/COMMITTED/COMMITTED_CLEANUP_PENDING: skip quarantine', step2)
+        step5 = next(line for line in document.splitlines() if line.startswith('5. '))
+        self.assertIn('ROLLED_BACK/COMMITTED/COMMITTED_CLEANUP_PENDING from step 2 or 4', step5)
+        self.assertIn('transaction_cleanup_failures/retained_directories/installation_recovery', step5)
+        self.assertIn('Committed endpoints: continue at step 6, then 7-8, ending at committed-1.9.6 checks', step5)
+        step6 = next(line for line in document.splitlines() if line.startswith('6. '))
+        self.assertIn('ROLLED_BACK/COMMITTED/COMMITTED_CLEANUP_PENDING OR backup refusal, resolve applicable rows', step6)
+        self.assertIn('never restore over committed runtime', step6)
         step8 = next(line for line in document.splitlines() if line.startswith('8. '))
         self.assertIn('Committed 1.9.6: require exit 0/integrity_valid=true/status=ACCEPTED; status is CONFIGURED unless ACTIVE is independently proved', step8)
 
@@ -41,7 +48,8 @@ class RecoveryDocumentationTests(unittest.TestCase):
         document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
         self.assertIn('Download requires a reachable package index or hash-verified mirror, including on air-gapped hosts.', document)
 
-    @unittest.skipUnless(shutil.which('bash'), 'POSIX_SHELL: shell evidence capture requires bash')
+    @unittest.skipUnless(any(shutil.which(shell) for shell in ('bash', 'zsh', 'dash')),
+                         'POSIX_SHELL: shell evidence capture requires bash, zsh or dash')
     def test_xattr_shell_capture_refuses_existing_evidence(self):
         document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
         block = next(block for block in re.findall(r'```(?:text|sh)\n(.*?)```', document, re.S)
@@ -53,14 +61,23 @@ class RecoveryDocumentationTests(unittest.TestCase):
             script = block.replace('PYTHON', shlex.quote(Path(sys.executable).as_posix()))
             script = script.replace('EXTERNAL_XATTRS', shlex.quote(output.as_posix()))
             script = script.replace('LOCK', shlex.quote(lock.as_posix()))
-            result = subprocess.run([shutil.which('bash'), '-c', script], capture_output=True, timeout=30)
-            self.assertEqual(0, result.returncode, result.stderr)
-            json.loads(output.read_bytes())
-            output.write_bytes(b'previous owner evidence')
-            result = subprocess.run([shutil.which('bash'), '-c', script], capture_output=True, timeout=30)
-            self.assertNotEqual(0, result.returncode, result.stderr)
-            self.assertEqual(b'previous owner evidence', output.read_bytes())
-            self.assertEqual(b'lock bytes', lock.read_bytes())
+            for shell in ('bash', 'zsh', 'dash'):
+                if not shutil.which(shell):
+                    continue
+                with self.subTest(shell=shell):
+                    result = subprocess.run([shutil.which(shell), '-c', script], capture_output=True, timeout=30)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    json.loads(output.read_bytes())
+                    output.write_bytes(b'previous owner evidence')
+                    result = subprocess.run([shutil.which(shell), '-c', script], capture_output=True, timeout=30)
+                    self.assertNotEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(b'previous owner evidence', output.read_bytes())
+                    self.assertEqual(b'lock bytes', lock.read_bytes())
+                    output.unlink()
+                    result = subprocess.run([shutil.which(shell), '-c', script + '\ncase $- in *C*) exit 19;; esac'],
+                                            capture_output=True, timeout=30)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    output.unlink()
 
     def test_named_limitation_is_unchanged_and_parked_provisioning_is_executable(self):
         for relative in ('MIGRATION-v1.9.5-to-v1.9.6.md', '.agentic/docs/38-RELEASE-196-QUALIFICATION.md'):
@@ -132,19 +149,34 @@ class RecoveryDocumentationTests(unittest.TestCase):
         for view, expected in ((SimpleNamespace(), {'capture': 'APIS_UNAVAILABLE'}),
                 (SimpleNamespace(listxattr=Mock(return_value=[]), getxattr=Mock()), {}),
                 (SimpleNamespace(listxattr=Mock(return_value=['user.awf-temporary-custody']),
-                    getxattr=Mock(return_value=b'custody')), {'user.awf-temporary-custody': b'custody'.hex()})):
-            output = io.StringIO()
+                    getxattr=Mock(return_value=b'custody')), {'user.awf-temporary-custody': b'custody'.hex()}),
+                (SimpleNamespace(listxattr=Mock(return_value=['user.awf-temporary-custody']),
+                    getxattr=Mock(return_value=b'custody\x00\xff')), {'user.awf-temporary-custody': b'custody\x00\xff'.hex()})):
             def imports(name, *args, **kwargs):
                 return view if name == 'os' else native_import(name, *args, **kwargs)
-            with patch('builtins.__import__', imports), patch.object(sys, 'argv', ['capture', 'LOCK']), \
-                    contextlib.redirect_stdout(output):
-                exec(compile(code, '<documented xattr capture>', 'exec'), {})
-            self.assertEqual(expected, json.loads(output.getvalue()))
+            with tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary).resolve() / 'xattrs.json'
+                with patch('builtins.__import__', imports), patch.object(sys, 'argv', ['capture', 'LOCK', str(output)]):
+                    exec(compile(code, '<documented xattr capture>', 'exec'), {})
+                    self.assertEqual(expected, json.loads(output.read_bytes()))
+                    previous = output.read_bytes()
+                    with self.assertRaises(FileExistsError):
+                        exec(compile(code, '<documented xattr capture>', 'exec'), {})
+                    self.assertEqual(previous, output.read_bytes())
         unreadable = SimpleNamespace(listxattr=lambda path: ['user.awf-temporary-custody'],
                                      getxattr=Mock(side_effect=OSError('unreadable recorded custody')))
-        with patch('builtins.__import__', lambda name, *a, **kw: unreadable if name == 'os' else native_import(name, *a, **kw)), \
-                patch.object(sys, 'argv', ['capture', 'LOCK']), self.assertRaises(OSError):
-            exec(compile(code, '<documented xattr capture>', 'exec'), {})
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / 'xattrs.json'
+            with patch('builtins.__import__', lambda name, *a, **kw: unreadable if name == 'os' else native_import(name, *a, **kw)), \
+                    patch.object(sys, 'argv', ['capture', 'LOCK', str(output)]), self.assertRaises(OSError):
+                exec(compile(code, '<documented xattr capture>', 'exec'), {})
+            self.assertFalse(output.exists())
+            unreadable.getxattr.side_effect = None
+            unreadable.getxattr.return_value = b'corrected\x00bytes'
+            with patch('builtins.__import__', lambda name, *a, **kw: unreadable if name == 'os' else native_import(name, *a, **kw)), \
+                    patch.object(sys, 'argv', ['capture', 'LOCK', str(output)]):
+                exec(compile(code, '<documented xattr capture>', 'exec'), {})
+            self.assertEqual({'user.awf-temporary-custody': b'corrected\x00bytes'.hex()}, json.loads(output.read_bytes()))
 
     @unittest.skipUnless(os.name == 'nt', 'WIN32_ADS: PowerShell stream capture is Windows-only')
     def test_windows_capture_preserves_ads_and_refuses_existing_output(self):
