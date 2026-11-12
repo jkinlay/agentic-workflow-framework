@@ -1,4 +1,5 @@
 """Pre-E12: declared populations and verified baseline events via real entry points."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 from contextlib import redirect_stdout
 import io
@@ -159,14 +160,17 @@ class E12Tests(unittest.TestCase):
         result = self.cycle(now)
         self.assertEqual([e['operation'] for e in result['errors']], ['reporting_sources'] if invalid_host else [])
 
+    @_logical_slow_calls
     def test_required_population_controls_daily_and_elapsed_metrics(self):
         self.adapters.update(source_ports(self))
         self.population_probe(self, self.run_checked)
 
+    @_logical_slow_calls
     def test_approved_baselines_report_once_across_restarts(self):
         self.adapters.update(source_ports(self, baseline=True))
         self.approval_probe(self, self.run_checked)
 
+    @_logical_slow_calls
     def test_unverified_and_foreign_baselines_cannot_report(self):
         self.adapters.update(source_ports(self, baseline=True))
         self.refusal_probe(self, self.run_checked)
@@ -200,12 +204,15 @@ class E12CliTests(unittest.TestCase):
             method(self, case, run)
         e6.CliTests.probe(self, lambda case, net: None, inspect)
 
+    @_logical_slow_calls
     def test_cli_required_population_controls_daily_and_elapsed_metrics(self):
         self.probe(E12Tests.population_probe)
 
+    @_logical_slow_calls
     def test_cli_approved_baselines_report_once_across_restarts(self):
         self.probe(E12Tests.approval_probe, baseline=True)
 
+    @_logical_slow_calls
     def test_cli_unverified_and_foreign_baselines_cannot_report(self):
         self.probe(E12Tests.refusal_probe, baseline=True)
 

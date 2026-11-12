@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import importlib.util
 import json
 import os
@@ -26,6 +28,19 @@ def command(args, cwd, env=None):
     if result.returncode:
         raise AssertionError(result.stdout + result.stderr)
     return result.stdout.strip()
+
+
+class PublishReleaseCliTests(unittest.TestCase):
+    def test_shard_failure_returns_rejected_json_and_exit_two(self):
+        from release_self_test import ShardFailure
+        with patch.object(publisher, 'publish', side_effect=ShardFailure('shard 3: timed out')), \
+                redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
+            code = publisher.main(['--commit', 'a' * 40, '--output-dir', 'unused-output',
+                                   '--clean-windows-check', 'unused-check.json',
+                                   '--expected-clean-windows-check-sha256', 'b' * 64])
+        self.assertEqual(2, code)
+        self.assertEqual('', stdout.getvalue())
+        self.assertEqual({'status': 'REJECTED', 'reason': 'shard 3: timed out'}, json.loads(stderr.getvalue()))
 
 
 class PublishReleaseTests(unittest.TestCase):

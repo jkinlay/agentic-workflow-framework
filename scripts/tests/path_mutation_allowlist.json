@@ -1,5 +1,16 @@
 [
   {
+    "path": "scripts/publish_release.py",
+    "context": "default_validations",
+    "line": 592,
+    "call": "tempfile.TemporaryDirectory(prefix='awf-release-installed-')",
+    "fingerprint": "ab71edf34da3a90842aec0293504c04dca55a183bb7f39707e2610eaad7b1519",
+    "object": "exclusive release acceptance scratch fixture",
+    "created_by_us": true,
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Creates and cleans only its exclusive temporary manifest-only installed acceptance fixture outside any adopter project; fixture installation retains installer transaction authority."
+  },
+  {
     "path": ".agentic/lib/agentic/adoption_config.py",
     "context": "_inspect_locked_wheel",
     "line": 285,
