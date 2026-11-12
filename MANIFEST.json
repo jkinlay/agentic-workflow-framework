@@ -775,7 +775,7 @@
     "scripts/tests/test_awf195_publication_docs.py": "2205023708e11a452fbd3e96be03c4f0fdcd95aadc6d9351498694f723f915b6",
     "scripts/tests/test_awf238_installed_document_links.py": "dac530537fb54810dc34005390445cd75aad526d3b2dfe180529ca8e468c8330",
     "scripts/tests/test_awf238_source_identity.py": "24c24c5f3f2fa738f65760b7e436b32bc8dd30d1a0549402f2cc2aa44694dd8b",
-    "scripts/tests/test_awf275_git_guard.py": "713161f6cdc958b26c2e887e87529599dd960e4edbc8d58804bbd245c8c98ff0",
+    "scripts/tests/test_awf275_git_guard.py": "5a536fbcd8f22a66aae0f4dda90822e74f6c041ddbe6ab616507f00657e4e307",
     "scripts/tests/test_awf36_controller_config_generation.py": "88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f",
     "scripts/tests/test_awf88_resource_ceilings.py": "593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7",
     "scripts/tests/test_build_release_adoptable_source.py": "c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae",
