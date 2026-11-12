@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from agentic.child_process import child_env, isolated_git_env
 from agentic import ValidationError
+from agentic import safeio
 from agentic.contracts import Contracts
 from agentic.safeio import relative_parts
 import safe_materialize
@@ -269,7 +270,7 @@ def _release_tag_push_plan(repository, tag, *, gh, origin_url):
         repository, tag, gh=gh, origin_url=origin_url, environment=environment)
 
 
-def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
+def push_release_tag(repository, tag, *, gh, origin_url, plan=None, object_id=None):
     """Push one release tag with the GitHub CLI credential helper only.
 
     Release Git commands normally cannot see a user's Git configuration.  Keep
@@ -286,15 +287,17 @@ def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
         # This path transports an already-created tag (including recovery). The
         # publication path supplies its pre-tag, blanket-validated frozen plan.
         plan = _tag_push_transport_plan(repository, tag, gh=gh, origin_url=origin_url)
+    refspec = f"refs/tags/{tag}" if object_id is None else f"{object_id}:refs/tags/{tag}"
+    recovery = plan.recovery.rsplit(" ", 1)[0] + " " + shlex.quote(refspec)
     try:
-        git_run(repository, *plan.arguments, "push", "origin", f"refs/tags/{tag}",
+        git_run(repository, *plan.arguments, "push", "origin", refspec,
                 environment=plan.environment)
     except (ReleaseError, subprocess.SubprocessError, OSError):
         raise ReleaseError(
             f"Release tag push failed for refs/tags/{tag}. The local annotated tag remains at "
             f"refs/tags/{tag}; the remote tag status is unknown and no GitHub release was created. "
             "Run `gh auth status`; after fixing authentication, retry exactly:\n"
-            f"{plan.recovery}") from None
+            f"{recovery}") from None
 
 
 def _tree_entries(repository, commit):
@@ -726,28 +729,109 @@ def verify_frozen_file(path, expected_sha256, label):
     return raw
 
 
-def freeze_files(destination, contents):
+def freeze_files(destination, contents, *, mode="100600"):
     """Use the existing exclusive no-follow writer for a new publication directory."""
     entries, blobs = [], {}
     for name, raw in contents.items():
         digest = hashlib.sha256(raw).hexdigest()
-        entries.append(TreeEntry(name, "100600", digest))
+        entries.append(TreeEntry(name, mode, digest))
         blobs[digest] = raw
     safe_materialize.materialize(destination, entries, blobs)
 
 
 def stage_release_assets(assets, recorded_hashes, destination):
-    """Copy verified bytes once; providers consume exclusively created copies.
-
-    Reusing the portable materializer avoids reopening the mutable build paths
-    for upload, without introducing a second platform-specific creation path.
-    """
+    """Create private staging; held handles and draft readback bind the upload."""
     if len(assets) != len(recorded_hashes) or {path.name for path in assets} != set(recorded_hashes):
         raise ReleaseError("release asset inventory mismatch; release refused")
     contents = {path.name: verify_frozen_file(path, recorded_hashes[path.name], "release asset")
                 for path in assets}
-    freeze_files(destination, contents)
+    private = Path(tempfile.mkdtemp(prefix="upload-assets-", dir=destination.parent))
+    destination = private / "files"
+    # Set POSIX read-only mode through the materializer's creating descriptor;
+    # a later pathname chmod could follow a same-user symlink substitution.
+    freeze_files(destination, contents, mode="100400")
     return [destination / path.name for path in assets]
+
+
+def _open_upload_asset(tree, path):
+    """Reuse safeio's deny-write/deny-delete Windows handle, without new FFI."""
+    parent, directory, name = tree.parent(path.name)
+    if os.name == "nt":
+        import msvcrt
+        handle = safeio.win_open(parent / name)
+        try:
+            fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+        except BaseException:
+            safeio.kernel.CloseHandle(handle)
+            raise
+    else:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        return os.fdopen(fd, "rb", buffering=0)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextlib.contextmanager
+def hold_upload_assets(paths, recorded_hashes):
+    """Keep verified descriptors (and directory ancestry) open through gh reads.
+
+    Windows sharing denies modification/replacement through the entire upload.
+    POSIX modes deter other users, but same-user races require draft readback.
+    """
+    with contextlib.ExitStack() as stack:
+        trees = {parent: stack.enter_context(safeio.Tree(parent)) for parent in {p.parent for p in paths}}
+        for path in paths:
+            stream = stack.enter_context(_open_upload_asset(trees[path.parent], path))
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise ReleaseError("release asset handle identity mismatch; release refused")
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            after = os.fstat(stream.fileno())
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_nlink)
+            if (not stat.S_ISREG(after.st_mode) or after.st_nlink != 1
+                    or identity(before) != identity(after) or digest != recorded_hashes[path.name]):
+                raise ReleaseError("release asset handle digest/identity mismatch; release refused")
+        yield
+
+
+def checked_tag_object(repository, tag, commit, message):
+    """Check stored bytes, returning the immutable object ID used by the push."""
+    remedy = (f"Release tag object mismatch or unavailable; local tag remains at refs/tags/{tag}; "
+              "owner must inspect and remove the mismatching local tag before retrying. No tag was pushed.")
+    try:
+        raw = git_run(repository, "cat-file", "tag", tag, text=False).stdout
+    except (ReleaseError, OSError, subprocess.SubprocessError):
+        raise ReleaseError(remedy) from None
+    header, separator, observed_message = raw.partition(b"\n\n")
+    lines = header.split(b"\n")
+    if (not separator or observed_message != message
+            or [line for line in lines if line.startswith(b"object ")] != [b"object " + commit.encode("ascii")]
+            or [line for line in lines if line.startswith(b"type ")] != [b"type commit"]
+            or [line for line in lines if line.startswith(b"tag ")] != [b"tag " + tag.encode("ascii")]):
+        raise ReleaseError(remedy)
+    framed = b"tag " + str(len(raw)).encode("ascii") + b"\0" + raw
+    return (hashlib.sha256(framed) if len(commit) == 64 else hashlib.sha1(framed)).hexdigest()
+
+
+def verify_draft_assets(repository, tag, release_repo, recorded_hashes, destination, *, gh):
+    """Read uploaded bytes back while the release created by this run is draft."""
+    remedy = ("Uploaded draft assets mismatch or could not be verified; draft stays unpublished; "
+              "owner must delete the draft release, inspect the retained tag, and retry.")
+    destination.mkdir(mode=0o700)
+    try:
+        run([gh, "release", "download", tag, "--repo", release_repo, "--dir", str(destination)], cwd=repository)
+        observed = {}
+        for path in destination.iterdir():
+            if path.name not in recorded_hashes:
+                raise ReleaseError(remedy)
+            raw = verify_frozen_file(path, recorded_hashes[path.name], "uploaded draft asset")
+            observed[path.name] = hashlib.sha256(raw).hexdigest()
+        if observed != recorded_hashes:
+            raise ReleaseError(remedy)
+    except (ReleaseError, OSError, subprocess.SubprocessError, ValidationError):
+        raise ReleaseError(remedy) from None
 
 
 def verify_publication_files(text_files, assets, upload_assets, recorded_hashes):
@@ -819,7 +903,8 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
                    "publication_scan": publication_scan, "provider_text_scans": provider_text_scans}
         if dry_run:
             upload_assets = stage_release_assets(assets, record["assets"], output / "upload-assets")
-            verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            with hold_upload_assets(upload_assets, record["assets"]):
+                verify_publication_files(text_files, assets, upload_assets, record["assets"])
             return result
         # Resolve and validate the release target before any local or remote mutation.
         release_repo = origin_repository(repository)
@@ -828,14 +913,21 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
             raise ReleaseError("origin push URL changed while resolving the release target; refusing to publish")
         push_plan = _release_tag_push_plan(repository, tag, gh=gh, origin_url=push_url)
         upload_assets = stage_release_assets(assets, record["assets"], output / "upload-assets")
-        verify_publication_files(text_files, assets, upload_assets, record["assets"])
-        git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
-                "--cleanup=verbatim", "-F", str(tag_file))
-        verify_publication_files(text_files, assets, upload_assets, record["assets"])
-        push_release_tag(repository, tag, gh=gh, origin_url=push_url, plan=push_plan)
-        verify_publication_files(text_files, assets, upload_assets, record["assets"])
-        run([gh, "release", "create", tag, *map(str, upload_assets), "--repo", release_repo, "--draft", "--verify-tag",
-             "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
+        with hold_upload_assets(upload_assets, record["assets"]):
+            verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
+                    "--cleanup=verbatim", "-F", "-", text=False, input_data=contents["tag-message.txt"])
+            object_id = checked_tag_object(repository, tag, commit, contents["tag-message.txt"])
+            verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            push_release_tag(repository, tag, gh=gh, origin_url=push_url, plan=push_plan, object_id=object_id)
+            verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            # gh has no local byte-exact draft body readback. Bind its input via
+            # stdin only; the frozen file is never reopened by the consumer.
+            run([gh, "release", "create", tag, *map(str, upload_assets), "--repo", release_repo, "--draft", "--verify-tag",
+                 "--title", f"AWF {version}", "--notes-file", "-"], cwd=repository,
+                text=False, input_data=contents["release-body.md"])
+            verify_draft_assets(repository, tag, release_repo, record["assets"],
+                                Path(raw_temp) / "uploaded-assets", gh=gh)
         return result
 
 
