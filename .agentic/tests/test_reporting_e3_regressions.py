@@ -1,4 +1,5 @@
 """Pre-E3: real controller, factory, adapters and outbox; network-only faults."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 import json
 import io
@@ -49,6 +50,7 @@ class ReportingE3Regressions(unittest.TestCase):
         Network.__init__(self.network)
         return self.network
 
+    @_logical_slow_calls
     def test_joined_delivery_finishes_ordinary_latency_without_inflight_work(self):
         net = self.slow_network()
         dispatch_seen = []
@@ -63,6 +65,7 @@ class ReportingE3Regressions(unittest.TestCase):
         self.assertTrue(all(not daemon for _, daemon in net.thread_observations))
         self.assertFalse(any(t.name.startswith('awf-report-') for t in threading.enumerate()))
 
+    @_logical_slow_calls
     def test_late_terminal_rejection_is_durable_and_allows_exactly_one_retry(self):
         net = self.slow_network()
         self.settings['mode'] = 'slack'
@@ -79,6 +82,7 @@ class ReportingE3Regressions(unittest.TestCase):
         self.cycle('2026-11-10T10:00:02Z')
         self.assertEqual(len(net.posts), 2)
 
+    @_logical_slow_calls
     def test_outage_history_cannot_starve_new_hourly_or_owner_alert(self):
         net = self.slow_network()
         net.outage = True
@@ -117,6 +121,7 @@ class ReportingE3Regressions(unittest.TestCase):
         self.assertEqual(daily['detail_metrics']['daily']['reconciliation_coverage']['status'], 'KNOWN')
         self.assertEqual(daily['delivered'], '0 reconciled today')
 
+    @_logical_slow_calls
     def test_elapsed_budget_leaves_unsent_work_pending_without_attempts(self):
         net = self.slow_network()
         net.latency = 2
@@ -169,6 +174,7 @@ class ReportingE3Regressions(unittest.TestCase):
         self.assertIn('CREDENTIAL_WITHHELD', process.stdout)
         self.assertEqual(self.helper.path.read_bytes(), before)
 
+    @_logical_slow_calls
     def test_retry_checks_after_verification_and_before_post(self):
         net = self.slow_network()
         net.latency = 0

@@ -5,12 +5,74 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import sys
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / '.agentic/lib'))
+from release_self_test import reconcile_installed_acceptance
+import validate_archive
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/validate_archive.py'
 
 
 class ArchiveReportTests(unittest.TestCase):
+    def run_final_stage(self, report, current_review):
+        # Execute validate()'s actual final review guard through report writing.
+        tree = ast.parse(SCRIPT.read_text(encoding='utf-8'), filename=str(SCRIPT))
+        validate = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'validate')
+        start = next(i for i, n in enumerate(validate.body) if isinstance(n, ast.If)
+                     and isinstance(n.test, ast.Compare) and isinstance(n.test.left, ast.Call)
+                     and ast.unparse(n.test.left.func) == 'review_source')
+        stage = ast.Module(body=validate.body[start:-1], type_ignores=[])
+        namespace = {**vars(validate_archive), 'SOURCE': Path('synthetic-source'),
+                     'MANIFEST': 'a' * 64, 'args': mock.Mock(), 'current_review': current_review,
+                     'report': report, 'checks': report['checks'], 'OUTPUT': Path('synthetic-report'),
+                     'RUN': Path('synthetic-run')}
+        with mock.patch.object(validate_archive, 'write_report') as write, \
+                mock.patch.object(validate_archive, 'review_source', return_value=current_review), \
+                mock.patch('builtins.print'):
+            namespace.update(write_report=write, review_source=validate_archive.review_source)
+            exec(compile(stage, str(SCRIPT), 'exec'), namespace)
+        write.assert_called_once_with(namespace['OUTPUT'], report)
+
+    def qualified_report(self):
+        review = {'status': 'PASS', 'release_qualified': True, 'manifest_sha256': 'a' * 64}
+        source = {**self.aggregate(False), 'current_review': review}
+        installed = self.aggregate(True)
+        return dict(current_review=review, manifest_sha256='a' * 64, checks=[],
+                    extracted_tests=source, installed_tests=installed,
+                    coverage_reconciliation=reconcile_installed_acceptance(source, installed))
+
+    def test_final_stage_accepts_only_same_review_reconciled_qualification(self):
+        report = self.qualified_report()
+        self.assertIs(report['extracted_tests']['release_qualified'], False)
+        self.assertIs(report['extracted_tests']['suite_complete'], False)
+        self.assertIs(report['coverage_reconciliation']['release_qualified'], True)
+        self.run_final_stage(report, report['current_review'])
+        self.assertIs(report['validation_complete'], True)
+
+    def test_final_stage_refuses_unreconciled_mismatched_or_unqualified_source(self):
+        def wrong_review(r):
+            r['extracted_tests']['current_review'] = {'status': 'PASS', 'release_qualified': True}
+        def unqualified(r):
+            r['current_review']['release_qualified'] = False
+            r['coverage_reconciliation'] = reconcile_installed_acceptance(r['extracted_tests'], r['installed_tests'])
+        mutations = [lambda r: r.pop('coverage_reconciliation'),
+                     lambda r: r['coverage_reconciliation'].update(release_qualified=False),
+                     lambda r: r['coverage_reconciliation'].update(source_plan_sha256='d' * 64),
+                     lambda r: r['installed_tests'].update(suite_complete=False),
+                     lambda r: r['extracted_tests'].update(release_qualified=True, suite_complete=True),
+                     lambda r: r.update(manifest_sha256='d' * 64), wrong_review, unqualified]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                report = self.qualified_report()
+                mutate(report)
+                with self.assertRaises((validate_archive.ValidationError, ValueError)):
+                    self.run_final_stage(report, report['current_review'])
+                self.assertNotIn('validation_complete', report)
+
     def assemble_report(self, source_tests, installed_tests):
         # Execute the real report stage with synthetic outputs from earlier stages.
         # This keeps installation, network and recursive self-tests out of the unit test.
@@ -34,18 +96,55 @@ class ArchiveReportTests(unittest.TestCase):
             (run / 'git-checkout.json').write_text('{"status":"PASS"}', encoding='utf-8')
             for name, tests in [('extracted', source_tests), ('installed', installed_tests)]:
                 (run / f'{name}-self-test.json').write_text(json.dumps({
-                    'status': 'PASS', 'tests': tests, 'test_log': 'transient log',
+                    **self.aggregate(name == 'installed'), 'tests': tests, 'test_log': 'transient log',
                 }), encoding='utf-8')
             namespace = dict(
                 json=json, hashlib=hashlib, RUN=run, ARCHIVE=archive,
                 VERSION='1.9.4', MANIFEST='a' * 64, current_review={'status': 'PASS'},
                 selected_self_test_timeout=600, checks=[], git_checkout={'status': 'PASS'},
-                default_checks={'tests': {'skipped': []}, 'test_log': 'transient log'},
+                default_checks={**self.aggregate(False), 'tests': {'skipped': []}, 'test_log': 'transient log'},
+                reconcile_installed_acceptance=reconcile_installed_acceptance,
                 first={}, adopted={}, second={}, unconfigured_status={},
                 configured_status={}, ci_enablement_refusal={}, missing_rules={'decision_codes': []},
             )
             exec(compile(stage, str(SCRIPT), 'exec'), namespace)
             return namespace['report']
+
+    def aggregate(self, installed):
+        return dict(status='PASS', scope='installed-suite' if installed else 'source-suite',
+                    source_manifest_sha256='a' * 64, plan_sha256=('b' if installed else 'c') * 64,
+                    suite_complete=installed, release_qualified=False, shard_count=9,
+                    shard_reports=[{'shard': n} for n in range(9)],
+                    tests=dict(run=5, failures=0, errors=0, skipped=[], successful=True),
+                    coverage_reconciliation=dict(status='PASS' if installed else 'PENDING_INSTALLED_ACCEPTANCE',
+                        deferred_coverage={} if installed else {
+                            'scripts/tests/test_installed_self_test.py': 'installed-acceptance'}))
+
+    def test_archive_binds_both_source_passes_to_installed_acceptance(self):
+        tests = dict(run=1, failures=0, errors=0, skipped=[], successful=True)
+        report = self.assemble_report(tests, tests)
+        for key in ('coverage_reconciliation', 'default_coverage_reconciliation'):
+            self.assertEqual('PASS', report[key]['status'])
+            self.assertEqual({'scripts/tests/test_installed_self_test.py': 'installed-acceptance'},
+                             report[key]['covered_by_installed_acceptance'])
+        for key in ('errors', 'failures'):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'installed acceptance'):
+                self.assemble_report(tests, {**tests, key: 1})
+
+    def test_archive_installed_acceptance_uses_sharded_runner_and_unchanged_timeout(self):
+        tree = ast.parse(SCRIPT.read_text(encoding='utf-8'))
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+        stages = [n for n in calls if n.func.id == 'sequential_self_test']
+        self.assertEqual(3, len(stages))
+        installed, = [n for n in stages if any(k.arg == 'installed_root' for k in n.keywords)]
+        self.assertEqual('ADOPTION', ast.unparse(next(k.value for k in installed.keywords if k.arg == 'installed_root')))
+        self.assertEqual('installed_stage_python(ADOPTION)',
+                         ast.unparse(next(k.value for k in installed.keywords if k.arg == 'interpreter')))
+        runner, = [n for n in calls if n.func.id == 'run_self_test']
+        self.assertEqual('selected_self_test_timeout', ast.unparse(next(k.value for k in runner.keywords if k.arg == 'timeout')))
+        option, = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and n.args
+                   and isinstance(n.args[0], ast.Constant) and n.args[0].value == '--self-test-timeout-seconds']
+        self.assertEqual(600, next(k.value.value for k in option.keywords if k.arg == 'default'))
 
     def test_external_operator_report_uses_source_and_installed_test_summaries(self):
         source = dict(run=7, failures=0, errors=0, skipped=[], successful=True)

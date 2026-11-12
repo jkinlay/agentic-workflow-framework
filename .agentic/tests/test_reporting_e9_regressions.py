@@ -1,4 +1,5 @@
 """Pre-E9 regressions through production cycles and the pinned CLI loader."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 from datetime import timedelta
 import time
@@ -82,9 +83,11 @@ class E9Tests(unittest.TestCase):
         self.assertEqual(len(case.network.posts), posts + 2)
         self.assertEqual(case.status()['deliveries'], list(states.values()))
 
+    @_logical_slow_calls
     def test_new_batch_observations_share_deadline_and_make_progress(self):
         self.budget_probe(self, self.cycle)
 
+    @_logical_slow_calls
     def test_ready_withdrawn_restored_is_presented_once_per_platform(self):
         self.restoration_probe(self, self.cycle)
 
@@ -95,9 +98,11 @@ class E9CliTests(unittest.TestCase):
             probe(self, case, lambda now: e7.E7CliTests.rerun(self, case, now))
         e6.CliTests.probe(self, lambda case, net: None, inspect)
 
+    @_logical_slow_calls
     def test_cli_new_batch_observations_share_deadline_and_make_progress(self):
         self.probe(E9Tests.budget_probe)
 
+    @_logical_slow_calls
     def test_cli_ready_withdrawn_restored_is_presented_once_per_platform(self):
         self.probe(E9Tests.restoration_probe)
 

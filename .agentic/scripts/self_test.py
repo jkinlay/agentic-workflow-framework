@@ -245,26 +245,32 @@ def main(argv=None):
     parser.add_argument('--report', type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--checks-only', action='store_true', help='Explicit default: component checks without release qualification; review remains NOT_PROVIDED')
-    mode.add_argument('--release', action='store_true', help='Require pinned current independent reviews and qualify source release acceptance')
+    mode.add_argument('--release', action='store_true', help='Run component checks and require pinned current independent reviews; never qualifies a release. Qualification requires scripts/release_self_test.py via scripts/validate_archive.py or scripts/publish_release.py')
     parser.add_argument('--expected-manifest-sha256')
     parser.add_argument('--reviews', type=Path)
     parser.add_argument('--expected-reviews-sha256')
     parser.add_argument('--review-required-paths', type=Path)
     parser.add_argument('--expected-review-required-paths-sha256')
-    parser.add_argument('--shard', type=int, choices=range(9))
+    parser.add_argument('--shard', type=int)
     parser.add_argument('--selection-file', type=Path)
     parser.add_argument('--expected-selection-sha256')
     args = parser.parse_args(argv)
     sharded = args.shard is not None
+    release_selection = False
+    if args.selection_file:
+        try:
+            release_selection = json.loads(args.selection_file.read_bytes()).get('format') == 'awf-release-selection-1'
+        except (OSError, ValueError, AttributeError):
+            pass  # The authoritative selection validator reports malformed bytes.
     selection_arguments = args.selection_file is not None or args.expected_selection_sha256 is not None
     review_arguments = (args.expected_manifest_sha256, args.reviews, args.expected_reviews_sha256,
                         args.review_required_paths, args.expected_review_required_paths_sha256)
     if sharded or selection_arguments:
-        if SOURCE_REPOSITORY:
+        if SOURCE_REPOSITORY and not release_selection:
             parser.error('Installed shards cannot run in the source repository')
         if not sharded or not args.selection_file or not args.expected_selection_sha256:
             parser.error('Use --shard, --selection-file and --expected-selection-sha256 together')
-        if args.release or any(value is not None for value in review_arguments):
+        if not release_selection and (args.release or any(value is not None for value in review_arguments)):
             parser.error('Installed shards cannot use release-qualification arguments')
     report_in_temp = False
     if args.report:
@@ -292,9 +298,11 @@ def main(argv=None):
             'balanced_model_routing', 'routing_budget_ledger', 'shadow_routing_evidence'],
         'created_at': datetime.now(timezone.utc).isoformat(), 'python': sys.version,
         'platform': platform.platform(), 'checks': {}, 'dependencies': {}, 'status': 'FAILED',
-        'release_qualified': False, 'current_review': {'status': 'NOT_PROVIDED'}}
+        'release_qualified': False,
+        'release_qualification_reason': 'Component checks never qualify a release, even with valid review pins. Only the sharded scripts/release_self_test.py path via scripts/validate_archive.py or scripts/publish_release.py can qualify after deferral and reconciliation.',
+        'current_review': {'status': 'NOT_PROVIDED'}}
     if sharded:
-        report.update(scope='installed-shard', suite_complete=False, shard=args.shard, shard_count=9,
+        report.update(scope='source-shard' if SOURCE_REPOSITORY else 'installed-shard', suite_complete=False, shard=args.shard, shard_count=9,
                       selection_sha256=args.expected_selection_sha256, isolation='FAILED',
                       selected_modules=[], discovered_modules=[], completed_modules=[], component_phases={},
                       tested_components=['installed_selected_tests'])
@@ -302,7 +310,8 @@ def main(argv=None):
         if sharded:
             from agentic.self_test_shards import (assert_isolation, installed_inventory,
                                                  validate_selection, InstalledLoader, COMPONENT_CHECKS)
-            report['isolation'] = assert_isolation(ROOT)
+            if not SOURCE_REPOSITORY:
+                report['isolation'] = assert_isolation(ROOT)
             progress.component_checks = report['checks']
             progress.component_check_names = COMPONENT_CHECKS
         if not sharded or args.shard == 0:
@@ -337,8 +346,17 @@ def main(argv=None):
                 raise ValueError('Source release qualification does not apply to installed component checks')
             report['current_review'] = {'status': 'NOT_APPLICABLE', 'reason': 'Installed component check; source release review is established separately by archive acceptance'}
         if sharded:
-            plan = validate_selection(args.selection_file.read_bytes(), args.expected_selection_sha256,
-                                      installed_inventory(ROOT), report['source_manifest_sha256'])
+            if release_selection:
+                from agentic.self_test_shards import validate_release_selection, source_inventory
+                plan = validate_release_selection(args.selection_file.read_bytes(), args.expected_selection_sha256,
+                    source_inventory(ROOT) if SOURCE_REPOSITORY else installed_inventory(ROOT),
+                    report['source_manifest_sha256'], 'source' if SOURCE_REPOSITORY else 'installed')
+            else:
+                plan = validate_selection(args.selection_file.read_bytes(), args.expected_selection_sha256,
+                                          installed_inventory(ROOT), report['source_manifest_sha256'])
+            report['shard_count'] = plan.get('shard_count', 9)
+            if args.shard not in range(report['shard_count']):
+                raise ValueError('shard outside selection plan')
             loader = InstalledLoader(ROOT, plan, args.shard)
             report['selected_modules'] = loader.selected
         if not sharded or args.shard == 0:
@@ -391,13 +409,13 @@ def main(argv=None):
                 raise ValueError('Incomplete form catalog')
             report['checks']['complete_unfilled_forms'] = len(forms)
             if sharded:
-                suite = loader.discover(str(ROOT / '.agentic/tests'), top_level_dir=str(ROOT / '.agentic/tests'))
+                suite = loader.discover_selected() if release_selection else loader.discover(str(ROOT / '.agentic/tests'), top_level_dir=str(ROOT / '.agentic/tests'))
             else:
                 suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
-            if SOURCE_REPOSITORY and (ROOT / 'global/awf/tests').is_dir():
+            if not sharded and SOURCE_REPOSITORY and (ROOT / 'global/awf/tests').is_dir():
                 suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
                 report['tested_components'].append('local_release_discovery')
-            if SOURCE_REPOSITORY and (ROOT / 'scripts/tests').is_dir():
+            if not sharded and SOURCE_REPOSITORY and (ROOT / 'scripts/tests').is_dir():
                 suite.addTests(unittest.TestLoader().discover(str(ROOT / 'scripts/tests')))
                 report['tested_components'].append('local_catalog_publication')
             progress.complete_phase('discovery')
@@ -454,9 +472,9 @@ def main(argv=None):
             progress.complete_phase('release_hygiene')
 
         else:
-            suite = loader.discover(str(ROOT / '.agentic/tests'), top_level_dir=str(ROOT / '.agentic/tests'))
+            suite = loader.discover_selected() if release_selection else loader.discover(str(ROOT / '.agentic/tests'), top_level_dir=str(ROOT / '.agentic/tests'))
 
-        if sharded:
+        if sharded and not SOURCE_REPOSITORY:
             report['isolation'] = assert_isolation(ROOT)
         progress.begin_phase('test_suite')
         result, test_log = execute_test_suite(suite, progress)
@@ -468,7 +486,8 @@ def main(argv=None):
         progress.complete_phase('test_suite')
         if sharded:
             loader.reconcile()
-            report['isolation'] = assert_isolation(ROOT)
+            if not SOURCE_REPOSITORY:
+                report['isolation'] = assert_isolation(ROOT)
             if verify_installed(ROOT) != report['source_manifest_sha256']:
                 raise ValueError('Installed manifest changed during execution')
             if any(not item['test'] or not item['reason'].strip() for item in report['tests']['skipped']):
@@ -481,7 +500,6 @@ def main(argv=None):
                 allow_source_checkout=(ROOT / '.git').exists())
             if final_review != report['current_review']:
                 raise ValueError('Current review inputs changed during source validation')
-        report['release_qualified'] = result.wasSuccessful() and report['current_review'].get('release_qualified') is True
     except (KeyboardInterrupt, TimeoutError) as exc:
         report['status'] = 'INTERRUPTED'
         report['release_qualified'] = False

@@ -16,6 +16,11 @@ FIXTURE_PREREQUISITES = {
 }
 SHARDS = tuple(range(9))
 UPGRADE_MATRIX = '.agentic/tests/test_upgrade_matrix.py'
+# Closed substitution: the release entry point must execute and reconcile the
+# installed acceptance separately. Never use CI exclusions as an open allowlist.
+INSTALLED_ACCEPTANCE_COVERAGE = {
+    'scripts/tests/test_installed_self_test.py': 'installed-acceptance',
+}
 COMPONENT_CHECKS = {
     'discovery': ('integrity', 'schema_catalog_and_workflow', 'host_loop_output_schemas',
                   'default_automatic_policy_unqualified_until_enrolled',
@@ -263,6 +268,62 @@ def installed_inventory(root):
     return inventory
 
 
+SOURCE_SUITES = ('.agentic/tests', 'global/awf/tests', 'scripts/tests')
+
+
+def source_inventory(root):
+    return sorted(p.relative_to(root).as_posix() for suite in SOURCE_SUITES
+                  for p in (Path(root) / suite).rglob('test_*.py'))
+
+
+def validate_release_selection(raw, digest, inventory, manifest_digest, scope):
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError('release selection digest mismatch')
+    plan = json.loads(raw, object_pairs_hook=_unique_object)
+    if (not isinstance(plan, dict) or set(plan) != {'format', 'scope', 'shard_count', 'allocation_policy',
+            'source_manifest_sha256', 'inventory', 'shards', 'split', 'zero_test_modules', 'deferred_coverage'}
+            or plan['format'] != 'awf-release-selection-1' or plan['scope'] != scope
+            or plan['source_manifest_sha256'] != manifest_digest
+            or type(plan['shard_count']) is not int or plan['shard_count'] <= 0):
+        raise ValueError('invalid release selection identity')
+    def paths(value):
+        if not isinstance(value, list) or any(not isinstance(p, str) for p in value):
+            raise ValueError('invalid release paths')
+        if value != sorted(set(value)):
+            raise ValueError('duplicate or unsorted release paths')
+        for p in value:
+            if not any(re.fullmatch(re.escape(suite) + r'/(?:[A-Za-z0-9_]+/)*test_[A-Za-z0-9_]+\.py', p)
+                       for suite in (SOURCE_SUITES if scope == 'source' else SOURCE_SUITES[:1])):
+                raise ValueError('foreign release path')
+        return set(value)
+    if paths(plan['inventory']) != set(inventory):
+        raise ValueError('release inventory mismatch')
+    deferred = {p: reason for p, reason in INSTALLED_ACCEPTANCE_COVERAGE.items() if p in inventory}
+    if plan['deferred_coverage'] != deferred:
+        raise ValueError('release coverage needs the closed installed acceptance entry')
+    if not isinstance(plan['shards'], dict) or set(plan['shards']) != {str(n) for n in range(plan['shard_count'])}:
+        raise ValueError('missing release shards')
+    counts = Counter()
+    for selected in plan['shards'].values():
+        if not paths(selected) <= set(inventory):
+            raise ValueError('foreign membership')
+        counts.update(selected)
+    if not isinstance(plan['split'], dict) or set(plan['split']) != ({UPGRADE_MATRIX} & set(inventory)):
+        raise ValueError('wrong split modules')
+    for path, spec in plan['split'].items():
+        if (not isinstance(spec, dict) or set(spec) != {'shards', 'first_half'}
+                or spec['shards'] != [1, 8] or not spec['first_half']
+                or any(not isinstance(n, str) or not re.fullmatch('test_[A-Za-z0-9_]+', n) for n in spec['first_half'])
+                or spec['first_half'] != sorted(set(spec['first_half']))
+                or [n for n in range(plan['shard_count']) if path in plan['shards'][str(n)]] != spec['shards']):
+            raise ValueError('wrong split coverage')
+    if counts != Counter({p: 2 if p in plan['split'] else 1 for p in inventory if p not in deferred}):
+        raise ValueError('duplicate or omitted membership')
+    if not paths(plan['zero_test_modules']) <= set(inventory):
+        raise ValueError('foreign zero-test module')
+    return plan
+
+
 def flatten(tests):
     for test in tests:
         if isinstance(test, unittest.TestSuite):
@@ -301,7 +362,8 @@ class InstalledLoader(unittest.TestLoader):
     def _find_test_path(self, full_path, pattern):
         relative = Path(full_path).relative_to(self.root).as_posix()
         if relative in self.selected:
-            if not Path(full_path).resolve().is_relative_to(self.root / '.agentic/tests'):
+            suites = SOURCE_SUITES if self.plan.get('scope') == 'source' else SOURCE_SUITES[:1]
+            if not any(Path(full_path).resolve().is_relative_to(self.root / suite) for suite in suites):
                 raise ValueError('test origin outside installed tests')
             load_fixture_prerequisites(self.root, relative)
         tests, recurse = super()._find_test_path(full_path, pattern)
@@ -330,3 +392,22 @@ class InstalledLoader(unittest.TestLoader):
         if (Counter(self.selected) != Counter(self.discovered)
                 or Counter(self.selected) != Counter(self.completed) or self.errors):
             raise ValueError('selected/discovered/completed mismatch or import errors')
+
+    def discover_selected(self):
+        """Fresh loader per suite avoids unittest's cached top-level directory."""
+        suite = unittest.TestSuite()
+        roots = SOURCE_SUITES if self.plan.get('scope') == 'source' else SOURCE_SUITES[:1]
+        for directory in roots:
+            if not (self.root / directory).is_dir():
+                continue
+            loader = InstalledLoader(self.root, self.plan, self.shard)
+            loader.completed = self.completed
+            start = str(self.root / directory)
+            suite.addTests(loader.discover(start, top_level_dir=start))
+            self.discovered.extend(loader.discovered)
+            self.errors.extend(loader.errors)
+            # RecordedSuite keeps its original loader alive until execution.
+            self.split_cases.update(loader.split_cases)
+            self.split_all_cases.update(loader.split_all_cases)
+            self.zero_test_modules.update(loader.zero_test_modules)
+        return suite

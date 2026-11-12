@@ -1,4 +1,5 @@
 """Pre-E13: approval withdrawal and observation-bounded actuals at real entry points."""
+from test_reporting_timing import _logical_slow_calls
 from copy import deepcopy
 import unittest
 
@@ -138,18 +139,22 @@ class E13Tests(unittest.TestCase):
         self.assertEqual(report['body']['data']['detail_metrics']['scope']['delivered'], 1)
         self.assertEqual(report['body']['data']['detail_metrics']['elapsed']['standard']['n'], 1)
 
+    @_logical_slow_calls
     def test_queued_baseline_withdrawal_survives_restart(self):
         self.adapters.update(source_ports(self, baseline=True))
         self.queued_probe(self, self.run_checked)
 
+    @_logical_slow_calls
     def test_delivered_baseline_corrected_once_on_original_threads(self):
         self.adapters.update(source_ports(self, baseline=True))
         self.delivered_probe(self, self.run_checked)
 
+    @_logical_slow_calls
     def test_partial_delivery_withdraws_queue_and_corrects_delivered_platform(self):
         self.adapters.update(source_ports(self, baseline=True))
         self.mixed_probe(self, self.run_checked)
 
+    @_logical_slow_calls
     def test_future_nested_actuals_are_unavailable(self):
         self.adapters.update(source_ports(self))
         self.future_probe(self, self.run_checked)
@@ -168,15 +173,19 @@ class E13CliTests(unittest.TestCase):
             method(self, case, lambda now: self.cycle(case, now))
         e6.CliTests.probe(self, lambda case, net: None, inspect)
 
+    @_logical_slow_calls
     def test_cli_queued_baseline_withdrawal_survives_restart(self):
         self.probe(E13Tests.queued_probe, baseline=True)
 
+    @_logical_slow_calls
     def test_cli_delivered_baseline_corrected_once_on_original_threads(self):
         self.probe(E13Tests.delivered_probe, baseline=True)
 
+    @_logical_slow_calls
     def test_cli_partial_delivery_withdraws_queue_and_corrects_delivered_platform(self):
         self.probe(E13Tests.mixed_probe, baseline=True)
 
+    @_logical_slow_calls
     def test_cli_future_nested_actuals_are_unavailable(self):
         self.probe(E13Tests.future_probe)
 

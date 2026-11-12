@@ -1,4 +1,5 @@
 from test_reporting_fixtures import reporting_policy_snapshot
+from test_reporting_timing import _logical_slow_calls
 """Terminal reporting ownership and input shapes through production entry points."""
 from copy import deepcopy
 from contextlib import redirect_stdout
@@ -65,6 +66,7 @@ class ExhaustionTests(unittest.TestCase):
         self.addCleanup(case.doCleanups)
         self.probe(case, lambda now: self.checked(case.cycle(now)))
 
+    @_logical_slow_calls
     def test_cli_terminal_reporting_across_restart_and_calendar(self):
         e6.CliTests.probe(self, lambda c, n: None,
             lambda c, r, o: self.probe(c, lambda now: e12.E12CliTests.cycle(self, c, now)))
@@ -112,6 +114,7 @@ class ExhaustionTests(unittest.TestCase):
                 self.addCleanup(case.doCleanups)
                 self.legacy_probe(case, lambda now: case.cycle(now), retained)
 
+    @_logical_slow_calls
     def test_cli_legacy_claim_recovery_cannot_replace_terminal_report(self):
         for retained in (False, True):
             with self.subTest(retained=retained):

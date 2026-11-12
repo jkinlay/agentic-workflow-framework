@@ -16,7 +16,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-import source_only
+from source_only import AWF_SOURCE_REPOSITORY, COMMITTED_GIT_REASON, ROOT, committed_git_tuple
 from agentic import ValidationError
 from agentic.canonical import canonical
 from agentic.reporting.runtime import reporting_cycle, reporting_status
@@ -151,9 +151,14 @@ class ReportingE2Regressions(unittest.TestCase):
                 def git(*argv):
                     return subprocess.run([shutil.which('git'),'-C',str(root),*argv],env=isolated_git_env(),check=True,capture_output=True)
                 if malformed:
+                    # Change the fetched default policy without moving the pinned
+                    # controller checkout; adopters can use a branch other than main.
+                    checkout_head = git('rev-parse', 'HEAD').stdout.decode().strip()
+                    default_branch = kwargs['planning_config']['github']['base_branch']
                     (root/'OPERATING_CONFIG.yaml').write_bytes(b'reporting: [')
                     git('add','OPERATING_CONFIG.yaml');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Malformed policy')
-                    git('update-ref','refs/remotes/origin/main','HEAD')
+                    git('update-ref', 'refs/remotes/origin/' + default_branch, 'HEAD')
+                    git('update-ref', 'HEAD', checkout_head)
                 else:
                     git('config','remote.origin.url','https://example.invalid/project.git')
                     git('symbolic-ref','--delete','refs/remotes/origin/HEAD')
@@ -223,10 +228,40 @@ class ReportingE2Regressions(unittest.TestCase):
         self.network.slow = True
         from agentic.reporting import runtime
         from agentic.reporting.bounded import DESTINATION_SECONDS, HTTP_TIMEOUT_SECONDS
+        from agentic.reporting import http_transport
+        from urllib.parse import unquote, urlsplit
+        pauses = []
+        original_init = http_transport.BaseTransport.__init__
+
+        def transport_init(transport, **kwargs):
+            original_init(transport, **kwargs)
+            original_pause = transport.pause
+            def pause(seconds):
+                pauses.append((transport.platform, seconds))
+                return original_pause(seconds)
+            transport.pause = pause
+
         timing = {}
         original_drain = runtime.drain
         original_http = ReportingNetwork.__call__
         original_finish = self.helper.store.finish_dispatch
+        teams_finished = threading.Event()
+        slack_delivered = threading.Event()
+        from agentic.reporting.delivery import DeliveryOutbox
+        original_advance = DeliveryOutbox.advance
+        original_wait = self.network.block.wait
+
+        def advance(outbox, delivery_id, provider, **kwargs):
+            state = original_advance(outbox, delivery_id, provider, **kwargs)
+            if provider.binding['platform'] == 'slack' and state['status'] == 'DELIVERED':
+                slack_delivered.set()
+            return state
+
+        def wait_for_slack(timeout=None):
+            # Keep this network request blocked until real durable delivery,
+            # then retain the fixture's existing five-second settle behavior.
+            timing['slack_completed_before_teams_settle'] = slack_delivered.wait(DESTINATION_SECONDS)
+            return original_wait(timeout)
 
         def finish_dispatch(*args, **kwargs):
             receipt = original_finish(*args, **kwargs)
@@ -241,22 +276,54 @@ class ReportingE2Regressions(unittest.TestCase):
             return original_drain(*args, **kwargs)
 
         def http(network, method, url, headers, payload):
-            response = original_http(network, method, url, headers, payload)
+            if 'slack.com' in url and method == 'POST':
+                # Order the fixture by request entry, independent of scheduling.
+                network.entered.wait(HTTP_TIMEOUT_SECONDS)
+            try:
+                response = original_http(network, method, url, headers, payload)
+            finally:
+                if 'graph.microsoft.com' in url and method == 'POST':
+                    timing['slack_delivered_while_blocked'] = (
+                        network.entered.is_set(), network.block.is_set(),
+                        {d['status'] for d in self.status()['deliveries']
+                         if d['platform'] == 'slack'})
+                    teams_finished.set()
             if 'slack.com' in url:
                 if method == 'POST' and 'Hourly progress' in str(payload):
-                    timing['slack_post'] = time.monotonic()
+                    timing['slack_post'] = (network.entered.is_set(), network.block.is_set(),
+                                            teams_finished.is_set())
                 if 'conversations.history' in url and 'slack_post' in timing:
-                    timing['slack_readback'] = time.monotonic()
+                    timing['slack_readback'] = (network.entered.is_set(), network.block.is_set(),
+                                                teams_finished.is_set())
             return response
 
         started = time.monotonic()
         with patch.object(self.helper.store, 'finish_dispatch', finish_dispatch), \
              patch.object(runtime, 'drain', drain), \
+             patch.object(DeliveryOutbox, 'advance', advance), \
+             patch.object(self.network.block, 'wait', wait_for_slack), \
+             patch.object(http_transport.BaseTransport, '__init__', transport_init), \
              patch.object(ReportingNetwork, '__call__', http):
             result = self.cycle('2026-11-07T18:00:00Z', [ticket('EX-2', 1, paths=['first.txt'])])
         self.assertEqual(len(result['dispatch_receipts']), 1)
+        self.assertTrue(timing['slack_completed_before_teams_settle'])
         for event in ('slack_post', 'slack_readback'):
-            self.assertLess(timing[event] - timing['delivery_start'], 1.5)
+            self.assertEqual((True, False, False), timing[event])
+        self.assertEqual((True, False, {'DELIVERED'}), timing['slack_delivered_while_blocked'])
+        self.assertEqual([('teams', 0.1), ('teams', 0.1)], pauses)
+        self.assertEqual(
+            {'slack': [('GET', 'auth.test'), ('GET', 'conversations.info'),
+                       ('POST', 'chat.postMessage'), ('GET', 'auth.test'),
+                       ('GET', 'conversations.info'), ('GET', 'conversations.history')],
+             'teams': [('GET', kind) for kind in
+                       ('me', 'organization', *TEAMS_DESTINATION.split('/'), 'members')]
+                      + [('POST', 'messages')] + [('GET', kind) for kind in
+                        ('me', 'organization', *TEAMS_DESTINATION.split('/'), 'members')]
+                      + [('GET', 'messages')] * 3},
+            {platform: [(method, unquote(urlsplit(url).path).rsplit('/', 1)[-1])
+                        for method, url in self.network.calls
+                        if ('slack.com' in url) == (platform == 'slack')]
+             for platform in ('slack', 'teams')})
         # Joined delivery may hold the next cycle, within the documented bound.
         self.assertGreaterEqual(time.monotonic() - timing['delivery_start'], 5)
         self.assertLess(time.monotonic() - started, DESTINATION_SECONDS + HTTP_TIMEOUT_SECONDS)
@@ -268,19 +335,7 @@ class ReportingE2Regressions(unittest.TestCase):
         self.assertEqual({d['status'] for d in self.status()['deliveries'] if d['platform'] == 'teams'}, {'UNKNOWN'})
         # Time the complete production cycle, including its Git admission.
         # The harness publishes/observes fixture inputs before entering it.
-        from agentic.reporting import http_transport
-        from urllib.parse import unquote, urlsplit
-        pauses = []
-        original_init = http_transport.BaseTransport.__init__
-
-        def transport_init(transport, **kwargs):
-            original_init(transport, **kwargs)
-            original_pause = transport.pause
-            def pause(seconds):
-                pauses.append((transport.platform, seconds))
-                return original_pause(seconds)
-            transport.pause = pause
-
+        pauses.clear()
         def before_controller():
             timing['next_cycle_start'] = time.monotonic()
             timing['next_cycle_calls'] = len(self.network.calls)
@@ -411,12 +466,9 @@ class ReportingE2Regressions(unittest.TestCase):
         exec(compile(raw, '<merge-base-controller>', 'exec'), module.__dict__)
         return module.ContinuousControllerStore
 
-    @source_only.skip_unless_source_repo(
-        'requires pre-reporting controller Git history absent from installed projects',
-        'scripts/build_release.py')
-    @unittest.skipIf(source_only.committed_git_tuple(source_only.ROOT) is None,
-                     source_only.COMMITTED_GIT_REASON)
     def test_rollback_merge_base_never_consumes_report_as_legacy_digest(self):
+        if not AWF_SOURCE_REPOSITORY or committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         self.cycle('2026-11-07T17:00:00Z')
         controller = self.merge_base_controller()
         older = controller(self.helper.path, ['A', 'B', 'C'], cadence_seconds=3600)
@@ -426,12 +478,9 @@ class ReportingE2Regressions(unittest.TestCase):
             older.acknowledge_digest(digest['delivery_id'], '2026-11-07T18:00:00Z')
         self.assertTrue(self.status()['reports'])
 
-    @source_only.skip_unless_source_repo(
-        'requires pre-reporting controller Git history absent from installed projects',
-        'scripts/build_release.py')
-    @unittest.skipIf(source_only.committed_git_tuple(source_only.ROOT) is None,
-                     source_only.COMMITTED_GIT_REASON)
     def test_pre_release_report_rows_relocate_additively_with_attempts_intact(self):
+        if not AWF_SOURCE_REPOSITORY or committed_git_tuple(ROOT) is None:
+            self.skipTest(COMMITTED_GIT_REASON)
         from agentic.continuous_controller import ContinuousControllerStore
         self.cycle('2026-11-07T17:00:00Z')
         report = next(r for r in self.status()['reports'] if r['kind'] == 'eod')
