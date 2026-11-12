@@ -944,7 +944,7 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
                     "inspect the retained tag, and reconcile local/remote tags before retrying.")
                 # Keep native Windows sharing refusals observable to callers.
                 if isinstance(exc, PermissionError):
-                    raise PermissionError(remedy) from None
+                    raise PermissionError(remedy) from exc
                 raise ReleaseError(remedy) from None
             verify_draft_assets(repository, tag, release_repo, record["assets"],
                                 Path(raw_temp) / "uploaded-assets", gh=gh)

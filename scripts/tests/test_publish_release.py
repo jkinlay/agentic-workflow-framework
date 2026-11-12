@@ -1541,6 +1541,22 @@ class PublicationBoundaryTests(unittest.TestCase):
                     self.publish()
                 self.assertEqual(["local-tag", "tag-push", "release-create"], self.events)
 
+    def test_create_permission_error_retains_original_detail_and_owner_remedy(self):
+        failure = PermissionError(13, "synthetic access denied", "synthetic-upload.zip")
+
+        def fail_create():
+            raise failure
+
+        self.before_body_read = fail_create
+        with self.assertRaisesRegex(PermissionError,
+                                    "pushed tag remains at refs/tags/v1.9.6.*partial draft.*owner.*delete.*inspect.*retry") as caught:
+            self.publish()
+        self.assertIs(failure, caught.exception.__cause__)
+        self.assertEqual(13, caught.exception.__cause__.errno)
+        self.assertEqual("synthetic access denied", caught.exception.__cause__.strerror)
+        self.assertEqual("synthetic-upload.zip", caught.exception.__cause__.filename)
+        self.assertEqual(["local-tag", "tag-push", "release-create"], self.events)
+
     def test_readback_directory_collision_names_draft_and_owner_remedy(self):
         original_materialize = publisher.materialize_commit
         def materialize(repository, commit, destination, **kwargs):
