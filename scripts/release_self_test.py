@@ -297,3 +297,20 @@ def reconcile_installed_acceptance(source, installed):
                 installed_plan_sha256=installed['plan_sha256'],
                 source_plan_sha256=source['plan_sha256'],
                 release_qualified=source.get('current_review', {}).get('release_qualified') is True)
+
+
+def require_reconciled_qualification(report, current_review):
+    """Recompute final qualification from the retained, same-review aggregates."""
+    source = report.get('extracted_tests', {})
+    if (report.get('current_review') != current_review
+            or source.get('current_review') != current_review
+            or source.get('source_manifest_sha256') != report.get('manifest_sha256')):
+        raise ValidationError('Reconciled source must bind the same current release review and manifest')
+    try:
+        coverage = reconcile_installed_acceptance(source, report.get('installed_tests', {}))
+    except (ValueError, KeyError) as exc:
+        raise ValidationError('Complete reconciled source and installed acceptance required') from exc
+    if (report.get('coverage_reconciliation') != coverage
+            or coverage.get('suite_complete') is not True
+            or coverage.get('release_qualified') is not True):
+        raise ValidationError('Reconciled acceptance did not qualify the current release review')
