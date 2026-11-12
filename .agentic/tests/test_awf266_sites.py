@@ -39,7 +39,7 @@ class SiteTests(unittest.TestCase):
         # Model POSIX fd identity on Windows as well; native proof is separate.
         for replacement in (False, True):
             with self.subTest(replacement=replacement), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                parent = Path(temporary)
+                parent = Path(temporary).resolve()
                 (parent / 'source').write_bytes(b'awf')
                 with safeio.Tree(parent) as tree:
                     expected = tree.entry_identity('source')
@@ -116,7 +116,7 @@ class SiteTests(unittest.TestCase):
     def test_rollback_created_file_retirement_checks_the_authenticated_leaf(self):
         for replacement in (False, True):
             with self.subTest(replacement=replacement), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                previous = self.root; self.root = Path(temporary)
+                previous = self.root; self.root = Path(temporary).resolve()
                 try:
                     source, project, pin, content = self.fixture()
                     relative = '.agentic/adopted-clone/file'
@@ -143,7 +143,7 @@ class SiteTests(unittest.TestCase):
     def test_journal_only_retirement_checks_the_authenticated_leaf(self):
         for replacement in (False, True):
             with self.subTest(replacement=replacement), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                project = Path(temporary)
+                project = Path(temporary).resolve()
                 journal = dict(format='awf-install-journal-3', transaction_id=str(uuid.uuid4()),
                     phase='active', files=[], runtime=None, managed_before=[], managed_after=[])
                 with installer.Tree(project) as tree:
@@ -166,7 +166,7 @@ class SiteTests(unittest.TestCase):
     def test_obsolete_managed_file_retirement_checks_the_authenticated_leaf(self):
         for replacement in (False, True):
             with self.subTest(replacement=replacement), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                previous = self.root; self.root = Path(temporary)
+                previous = self.root; self.root = Path(temporary).resolve()
                 try:
                     source, project, pin, content = self.fixture()
                     relative = '.agentic/adopted-clone/file'
@@ -201,7 +201,7 @@ class SiteTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
 
     def fixture(self):
         source, project = self.root / 'source', self.root / 'project'
@@ -242,7 +242,7 @@ class SiteTests(unittest.TestCase):
     def test_fresh_temporary_recovery_uses_stored_creating_identity_and_preserves_lock_bytes(self):
         for replacement in (False, True):
             with self.subTest(replacement=replacement), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 journal = {'format': 'awf-install-journal-4', 'transaction_id': str(uuid.uuid4()),
                            'temporary_files': 'sibling-uuid5-v2', 'files': []}
                 native_fdopen = os.fdopen
@@ -320,7 +320,7 @@ class SiteTests(unittest.TestCase):
         for target in (installer.MARKER, installer.JOURNAL):
             with self.subTest(target=target), tempfile.TemporaryDirectory(dir=self.root) as temporary:
                 previous = self.root
-                self.root = Path(temporary)
+                self.root = Path(temporary).resolve()
                 try:
                     source, project, pin, content = self.fixture()
                     native = safeio.Tree.unlink
@@ -341,7 +341,7 @@ class SiteTests(unittest.TestCase):
     def test_compact_rollback_marker_and_journal_keep_identity_after_update(self):
         for target in (installer.MARKER, installer.JOURNAL):
             with self.subTest(target=target), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                previous = self.root; self.root = Path(temporary)
+                previous = self.root; self.root = Path(temporary).resolve()
                 try:
                     source, project, pin, content = self.fixture()
                     native = safeio.Tree.unlink
@@ -377,7 +377,7 @@ class SiteTests(unittest.TestCase):
         # final unlink after the journal/marker update that formerly lost custody.
         for target in (installer.MARKER, installer.JOURNAL):
             with self.subTest(target=target), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                project = Path(temporary)
+                project = Path(temporary).resolve()
                 (project / '.agentic').mkdir(); (project / '.agentic-install').mkdir()
                 tx = str(uuid.uuid4())
                 runtime = installer._runtime_journal(project, tx) if target == installer.JOURNAL else None
@@ -427,7 +427,7 @@ class SiteTests(unittest.TestCase):
         from test_operating import governance
         for recovery in (False, True):
             with self.subTest(recovery=recovery), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                root = Path(temporary); (root / '.agentic').mkdir()
+                root = Path(temporary).resolve(); (root / '.agentic').mkdir()
                 policy = governance()
                 (root / operating.GOVERNANCE).write_bytes(operating._json(policy))
                 native = safeio.Tree.unlink
@@ -452,7 +452,7 @@ class SiteTests(unittest.TestCase):
     def test_stream_recovery_checks_created_files_and_journal_before_unlink(self):
         for target in (streams.PLAN, streams.MARKDOWN, streams.JOURNAL, None):
             with self.subTest(target=target), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 raw = {streams.PLAN: b'next plan', streams.MARKDOWN: b'next markdown'}
                 journal = installer.json_bytes({'previous': {name: None for name in raw},
                     'next_sha256': {name: hashlib.sha256(data).hexdigest() for name, data in raw.items()}})
@@ -488,7 +488,7 @@ class SiteTests(unittest.TestCase):
     def test_managed_write_checks_source_and_destination_after_stream_close(self):
         for side in ('source', 'destination'):
             with self.subTest(side=side), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 (root / 'managed').write_bytes(b'old')
                 native = os.fdopen
                 hits = []
@@ -511,7 +511,7 @@ class SiteTests(unittest.TestCase):
     def test_runtime_restore_checks_backup_and_destination_after_hash(self):
         for side in ('source', 'destination', 'normal'):
             with self.subTest(side=side), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 canonical = root / installer.RUNTIME
                 canonical.mkdir(parents=True); (canonical / 'old').write_bytes(b'old runtime')
                 runtime = installer._runtime_journal(root, str(uuid.uuid4()))
@@ -537,7 +537,7 @@ class SiteTests(unittest.TestCase):
     def test_partial_stage_relocation_checks_custody_after_inspection(self):
         for replace in (False, True):
             with self.subTest(replace=replace), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                root = Path(temporary); canonical = root / installer.RUNTIME
+                root = Path(temporary).resolve(); canonical = root / installer.RUNTIME
                 canonical.mkdir(parents=True); (canonical / 'old').write_bytes(b'old')
                 runtime = installer._runtime_journal(root, str(uuid.uuid4()))
                 stage = root / runtime['stage']; stage.mkdir(); (stage / 'partial').write_bytes(b'partial')

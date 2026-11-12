@@ -1,4 +1,8 @@
 """Bootstrap, qualification and ADS boundary regressions."""
+import contextlib
+import hashlib
+import io
+import json
 import os
 from pathlib import Path
 import runpy
@@ -23,6 +27,47 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
             self.test_assignment_normal_probe_and_repeated_state_publication()
             self.test_assignment_state_destination_substitution_after_close_is_preserved()
 
+    def test_public_bootstrap_canonicalizes_linked_project_parent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            real, alias = root / 'real', root / 'alias'
+            real.mkdir()
+            def link(target, path):
+                if os.name == 'nt':
+                    import _winapi
+                    _winapi.CreateJunction(str(target), str(path))
+                else:
+                    path.symlink_to(target, target_is_directory=True)
+            def unlink(path):
+                if os.name == 'nt':
+                    path.rmdir()
+                else:
+                    path.unlink()
+            link(real, alias)
+            try:
+                project = alias / 'project'
+                project.mkdir()
+                self.assertNotEqual(project, project.resolve())
+                pin = hashlib.sha256((ROOT / 'MANIFEST.json').read_bytes()).hexdigest()
+                # Real public parser and product calls; no path or installer mocks.
+                for arguments, status in ((['--recover'], 'NO_PENDING_INSTALL'),
+                        (['--dry-run', '--expected-manifest-sha256', pin], 'PLAN')):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        self.assertEqual(0, bootstrap.main(['--dest', str(project), *arguments]))
+                    self.assertEqual(status, json.loads(output.getvalue())['status'])
+                # Links below the canonical project root must still be refused.
+                inside = real / 'project/linked'
+                link(real, inside)
+                try:
+                    with self.assertRaises((ValidationError, OSError)):
+                        with safeio.Tree(project.resolve()) as tree:
+                            tree.parent('linked/owner')
+                finally:
+                    unlink(inside)
+            finally:
+                unlink(alias)
+
     def materialize_batch(self, destination):
         adapter = runpy.run_path(str(ROOT / '.agentic/scripts/merge_train.py'))
         function = adapter['_materialize']
@@ -36,14 +81,14 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
 
     def test_batch_materialization_declares_transaction_authority(self):
         with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary)
+            destination = Path(temporary).resolve()
             self.materialize_batch(destination)
             self.assertEqual(b'payload', (destination / 'fixture.txt').read_bytes())
 
     def test_batch_materialization_retains_unexpected_destination(self):
         original = safeio.Tree.rename_checked
         with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary)
+            destination = Path(temporary).resolve()
             def substitute(tree, source, target, *args, **kwargs):
                 (destination / target).write_bytes(b'owner replacement')
                 return original(tree, source, target, *args, **kwargs)
@@ -56,11 +101,11 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
     def test_owned_archive_fixture_declares_its_transaction_authority(self):
         import validate_archive
         with tempfile.TemporaryDirectory() as temporary:
-            source = Path(temporary) / 'source'
+            source = Path(temporary).resolve() / 'source'
             source.mkdir()
             (source / 'MANIFEST.json').write_bytes(b'{}')
             (source / 'MANIFEST.md').write_bytes(b'fixture manifest')
-            destination = Path(temporary) / 'owned-copy'
+            destination = Path(temporary).resolve() / 'owned-copy'
             content = {'AGENTS.md': b'fixture',
                        '.agentic/examples/OPERATING_CONFIG.yaml': b'current policy'}
             def seed(path):
@@ -76,14 +121,14 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
         from agentic import adoption_config
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(tempfile, 'TemporaryFile', side_effect=AssertionError('named fallback reached')):
-            result = adoption_config._post_command([sys.executable, '-B', '-c', 'print("{}")'], Path(temporary))
+            result = adoption_config._post_command([sys.executable, '-B', '-c', 'print("{}")'], Path(temporary).resolve())
         self.assertEqual(0, result['exit_code'])
         self.assertEqual({}, result['output'])
         self.assertIsNone(result['diagnostic'])
 
     def test_assignment_state_destination_substitution_after_close_is_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); state = root / 'state.json'
+            root = Path(temporary).resolve(); state = root / 'state.json'
             state.write_bytes(b'{"old":1}')
             native = os.fdopen
             hits = []
@@ -106,7 +151,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
 
     def test_assignment_freed_temporary_replacement_is_never_cleaned(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); state = root / 'state.json'
+            root = Path(temporary).resolve(); state = root / 'state.json'
             native = os.replace
             hits = []
             def replace(source, destination, *args, **kwargs):
@@ -123,7 +168,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
 
     def test_assignment_probe_replacement_after_close_is_never_deleted(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             native_open, native_close, native_mkstemp = os.fdopen, os.close, tempfile.mkstemp
             descriptors, hits = {}, []
             def substitute(path):
@@ -154,7 +199,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
 
     def test_assignment_normal_probe_and_repeated_state_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); state = root / 'state.json'
+            root = Path(temporary).resolve(); state = root / 'state.json'
             bootstrap._prepare_assignment_state_path(state, root / 'project')
             bootstrap._write_assignment_state(state, {'value': 1}, root / 'project')
             bootstrap._write_assignment_state(state, {'value': 2}, root / 'project')
@@ -167,7 +212,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
             return  # Native Linux must execute the following fd/xattr assertions.
         if not all(hasattr(os, name) for name in ('listxattr', 'getxattr', 'setxattr', 'removexattr')):
             with tempfile.TemporaryDirectory() as temporary:
-                parent = Path(temporary)
+                parent = Path(temporary).resolve()
                 before = parent.stat()
                 with self.assertRaisesRegex(ValidationError, 'lacks xattr APIs.*xattr-capable'):
                     qualification._posix_probe_parent(parent)
@@ -175,7 +220,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
                 self.assertEqual((before.st_ino, before.st_mode), (parent.stat().st_ino, parent.stat().st_mode))
             return  # Missing-API POSIX platforms refuse exact qualification.
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); parent = root / 'parent'; parent.mkdir(mode=0o755)
+            root = Path(temporary).resolve(); parent = root / 'parent'; parent.mkdir(mode=0o755)
             hits = []
             original = qualification._remember_permission_probe
             def substitute(path):
@@ -196,7 +241,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
     def test_qualification_seed_refuses_existing_hardlink(self):
         import upgrade_195_fixtures
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); host = root / '.agentic-state/routing/published-host.sqlite'
+            root = Path(temporary).resolve(); host = root / '.agentic-state/routing/published-host.sqlite'
             host.parent.mkdir(parents=True)
             owner = root / 'owner'; owner.write_bytes(b'owner bytes'); os.link(owner, host)
             source = root / 'budget-source'; source.write_bytes(b'qualification bytes')
@@ -207,7 +252,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
     def test_qualification_seed_normal_exclusive_publication(self):
         import upgrade_195_fixtures
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             (root / '.agentic-state/routing').mkdir(parents=True)
             source = root / 'budget-source'; source.write_bytes(b'qualification bytes')
             with patch.object(upgrade_195_fixtures, 'seed_legacy_accounting'):
@@ -219,7 +264,7 @@ class AuxiliaryBoundaryTests(unittest.TestCase):
             self.assertTrue(callable(safeio.validate_windows_metadata))
             return
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / 'created'; path.write_bytes(b'primary')
+            path = Path(temporary).resolve() / 'created'; path.write_bytes(b'primary')
             ads = str(path) + ':awf-owner:$DATA'
             with safeio._windows_stream(ads, 'wb') as stream: stream.write(b'owner stream')
             with self.assertRaises(OSError):

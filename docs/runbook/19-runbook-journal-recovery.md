@@ -31,7 +31,13 @@ Quarantine: owner-controlled same-filesystem rename outside PROJECT; preserve li
 
 #### Lock metadata preservation
 
-LOCK=PROJECT/.agentic-install/lock; outputs are new external owner files. Windows PowerShell captures every ADS as hex (empty array means absent):
+LOCK=PROJECT/.agentic-install/lock; outputs are new external owner files. On both platforms, capture the primary bytes, size and SHA-256 (hex preserves every byte, including an empty lock):
+
+```text
+PYTHON -c "import pathlib,sys,json,hashlib;data=pathlib.Path(sys.argv[1]).read_bytes();pathlib.Path(sys.argv[2]).open('x',encoding='utf-8').write(json.dumps(dict(hex=data.hex(),size=len(data),sha256=hashlib.sha256(data).hexdigest())))" LOCK EXTERNAL_LOCK
+```
+
+Exclusive output creation refuses existing evidence. Windows PowerShell captures every ADS as hex (empty array means absent):
 
 ```powershell
 ConvertTo-Json -InputObject @(Get-Item -LiteralPath $LOCK -Stream * -ErrorAction Stop | Where-Object Stream -ne ':$DATA' | ForEach-Object { $bytes=[byte[]](Get-Content -LiteralPath $LOCK -Stream $_.Stream -Encoding Byte -Raw -ErrorAction Stop); if ($null -eq $bytes) { $bytes=[byte[]]@() }; @{name=$_.Stream; hex=[BitConverter]::ToString($bytes).Replace('-','')} }) -Depth 4 | Out-File -LiteralPath $EXTERNAL_ADS -Encoding utf8 -NoClobber
@@ -54,7 +60,13 @@ git clone --no-hardlinks OWNER_REPOSITORY FRESH
 git -C FRESH checkout --detach PRE_UPGRADE_COMMIT
 ```
 
-In FRESH, provision from hash-verified WHEELS:
+WHEELS must contain exactly the wheel set locked by PRE_UPGRADE_COMMIT's `.agentic/requirements.lock`, one compatible wheel per dependency; a superset is refused. In FRESH, populate a new empty WHEELS using:
+
+```text
+python -m pip download --require-hashes --only-binary=:all: -r .agentic/requirements.lock --dest WHEELS
+```
+
+The shipped `scripts/qualify_upgrade.py installed` builds separate current/baseline wheelhouses; use `WORK/baseline-wheels` only when its baseline is PRE_UPGRADE_COMMIT. Never combine sets. In FRESH, provision from hash-verified WHEELS:
 
 ```text
 python -B -c "import sys; sys.path.insert(0, '.agentic/lib'); from agentic.adoption_config import ensure_installed_runtime; ensure_installed_runtime('.', wheelhouse='<hash-verified wheelhouse>')"

@@ -131,7 +131,7 @@ class CreatedDirectorySafetyTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
                 _transaction_temporary_paths(dict(journal, temporary_files=invalid))
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             existing = root / paths[target]
             existing.parent.mkdir()
             existing.write_bytes(b'synthetic preexisting adopter file\n')
@@ -147,8 +147,8 @@ class CreatedDirectorySafetyTests(unittest.TestCase):
     def test_cleanup_preserves_preexisting_and_refuses_unowned_directories(self):
         from agentic import ValidationError
         from agentic.installer import _cleanup_transaction_directories, _directory_identity
-        with tempfile.TemporaryDirectory() as temporary, Tree(temporary) as tree:
-            root = Path(temporary)
+        with tempfile.TemporaryDirectory() as temporary, Tree(Path(temporary).resolve()) as tree:
+            root = Path(temporary).resolve()
             (root / 'owner').mkdir()
             (root / 'created').mkdir()
             row = {'path': 'created', 'identity': _directory_identity(tree, 'created')}
@@ -217,7 +217,7 @@ class PublishedRecoveryTests(unittest.TestCase):
         for clause in required:
             self.assertIn(clause, text)
         for relative, prefix in (('MIGRATION-v1.9.5-to-v1.9.6.md', ''),
-                ('.agentic/docs/38-RELEASE-196-QUALIFICATION.md', 'https://github.com/jkinlay/agentic-workflow-framework/blob/main/')):
+                ('.agentic/docs/38-RELEASE-196-QUALIFICATION.md', 'https://github.com/jkinlay/agentic-workflow-framework/blob/v1.9.6/')):
             summary = (ROOT / relative).read_text(encoding='utf-8')
             self.assertIn('](' + prefix + canonical + '#owner-recovery-and-retiring-resolved-diagnostics)', summary)
             self.assertNotIn('1. No exclusivity-proof CLI:', summary)
@@ -228,7 +228,7 @@ class PublishedRecoveryTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temporary.cleanup)
-        cls.base = Path(cls.temporary.name)
+        cls.base = Path(cls.temporary.name).resolve()
         cls.source = materialize_published(ROOT, cls.base / 'published')
         cls.target = materialize_candidate(ROOT, cls.base / 'candidate')
         cls.baseline = cls.base / 'baseline'
@@ -240,7 +240,7 @@ class PublishedRecoveryTests(unittest.TestCase):
         from agentic import ValidationError
         from agentic.preservation_metadata import runtime_tree_sha256
         with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
+            base = Path(temporary).resolve()
             project = base / 'staged-project'
             shutil.copytree(self.baseline, project)
             # Step 1: a sole test writer owns this disposable project.
@@ -325,7 +325,7 @@ class PublishedRecoveryTests(unittest.TestCase):
 
     def test_atomic_write_temporary_recovers_in_fresh_bootstrap(self):
         with tempfile.TemporaryDirectory() as temporary:
-            project = Path(temporary) / 'project'
+            project = Path(temporary).resolve() / 'project'
             shutil.copytree(self.baseline, project)
             self.provision_fixture_runtime(project)
             from agentic.installer import _runtime_tree_sha256
@@ -381,10 +381,10 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
             cases.append(('.agentic/lib/agentic/operating_status.py', 'metadata'))
         for boundary, stage in cases:
             with self.subTest(boundary=boundary, stage=stage), tempfile.TemporaryDirectory() as temporary:
-                project = Path(temporary) / 'project'
+                project = Path(temporary).resolve() / 'project'
                 shutil.copytree(self.baseline, project)
                 before = inventory(project)
-                sentinel = Path(temporary) / 'outside.txt'
+                sentinel = Path(temporary).resolve() / 'outside.txt'
                 sentinel.write_bytes(b'synthetic outside sentinel\n')
                 self.interrupt_temporary(project, boundary, stage)
                 leftovers = list(project.rglob('.awf-*.tmp'))
@@ -422,7 +422,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
     def test_unrecorded_lookalike_and_unknown_extra_refuse_without_mutation(self):
         for name in ('.awf-' + 'f' * 32 + '.tmp', 'owner-note.txt'):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
-                project = Path(temporary) / 'project'
+                project = Path(temporary).resolve() / 'project'
                 shutil.copytree(self.baseline, project)
                 self.interrupt_temporary(project, '.agentic/lib/agentic/operating_status.py')
                 extra = project / '.agentic/lib/agentic' / name
@@ -438,7 +438,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
     def test_recovery_temporary_interruption_is_repeatable(self):
         for stage in ('created', 'partial', 'flushed', 'replace', 'replaced'):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
-                project = Path(temporary) / 'project'
+                project = Path(temporary).resolve() / 'project'
                 shutil.copytree(self.baseline, project)
                 before = inventory(project)
                 self.interrupt_temporary(project, '.agentic/lib/agentic/operating_status.py')
@@ -551,7 +551,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
 
     def test_receipt_provenance_and_committed_cleanup_recover_in_fresh_process(self):
         with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
+            base = Path(temporary).resolve()
             target, baseline, pin = self.target, self.baseline, self.pin
             original = Tree.write
             for boundary in (CONFIG, INSTALLED, PROVENANCE, '.agentic/SPECIFICATION.md',
@@ -594,7 +594,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
     def test_missing_and_tampered_objects_refuse_without_mutation(self):
         for damage in ('missing', 'tampered', 'unknown_phase', 'external_directory_content'):
             with self.subTest(damage=damage), tempfile.TemporaryDirectory() as temporary:
-                project = Path(temporary) / 'project'
+                project = Path(temporary).resolve() / 'project'
                 shutil.copytree(self.baseline, project)
                 original = Tree.write
 
@@ -642,7 +642,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
         # previous runtime has real fixture dependencies for owner step 8;
         # these disposable checks are not release qualification.
         with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
+            base = Path(temporary).resolve()
             baseline = base / 'baseline'
             shutil.copytree(self.baseline, baseline)
             self.provision_fixture_runtime(baseline)
@@ -886,7 +886,7 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
         # Execute the reachable refusal path rather than reporting an
         # unexecuted positive path as a skip. Full-path Linux work is above.
         with tempfile.TemporaryDirectory() as temporary:
-            project = Path(temporary) / 'backup-project'
+            project = Path(temporary).resolve() / 'backup-project'
             shutil.copytree(self.baseline, project)
             self.interrupt_temporary(project, 'backup')
             journal = json.loads((project / JOURNAL).read_bytes())
@@ -896,7 +896,7 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
             self.assertEqual(preserved, refusal_inventory(project))
         from agentic.preservation_metadata import _permissions, _named_streams
         with tempfile.TemporaryDirectory() as temporary:
-            project = Path(temporary) / 'backup-project'
+            project = Path(temporary).resolve() / 'backup-project'
             shutil.copytree(self.baseline, project)
             creation = {}
             original = Tree.write
@@ -956,7 +956,7 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
             after_refusal = refusal_inventory(project)
             self.assertEqual({k: v for k, v in before_refusal.items() if k != RETAINED_JOURNAL},
                              {k: v for k, v in after_refusal.items() if k != RETAINED_JOURNAL})
-            archive = Path(temporary) / 'owner-archive'
+            archive = Path(temporary).resolve() / 'owner-archive'
             archive.mkdir()
             shutil.copytree(project / '.agentic-install', archive / 'preserved-evidence')
             # Step 5 must run while every journal-listed FILE still exists.

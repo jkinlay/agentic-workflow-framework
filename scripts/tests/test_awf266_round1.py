@@ -32,7 +32,9 @@ class RecoveryDocumentationTests(unittest.TestCase):
         for clause in ('PROJECT/AWF-RECOVERY-PARKED.txt', 'Original stays quiescent/untouched',
                        'Digest snapshots cannot restore bytes', 'git clone --no-hardlinks',
                        'git -C FRESH checkout --detach PRE_UPGRADE_COMMIT', 'Run step 8 there',
-                       'All-empty backup tree: retain deliberately', 'combined retained records=RETAINED_DIRECTORIES'):
+                       'All-empty backup tree: retain deliberately', 'combined retained records=RETAINED_DIRECTORIES',
+                       "PRE_UPGRADE_COMMIT's `.agentic/requirements.lock`", 'a superset is refused',
+                       'WORK/baseline-wheels'):
             self.assertIn(clause, document)
         line = next(line for line in document.splitlines() if line.startswith('python -B -c '))
         from agentic import adoption_config
@@ -59,11 +61,32 @@ class RecoveryDocumentationTests(unittest.TestCase):
                     self.assertEqual(0, qualification.main(arguments))
                 called.assert_called_once()
 
+    def test_lock_primary_capture_preserves_bytes_size_digest_and_existing_evidence(self):
+        document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
+        line = next(line for line in document.splitlines()
+                    if line.startswith('PYTHON -c ') and 'hashlib' in line)
+        code = shlex.split(line)[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for index, data in enumerate((b'', b'lock\x00\xff\r\n')):
+                lock, output = root / ('lock' + str(index)), root / ('capture' + str(index))
+                lock.write_bytes(data)
+                arguments = [sys.executable, '-B', '-c', code, str(lock), str(output)]
+                result = subprocess.run(arguments, capture_output=True, timeout=30)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(dict(hex=data.hex(), size=len(data), sha256=hashlib.sha256(data).hexdigest()),
+                                 json.loads(output.read_bytes()))
+                captured = output.read_bytes()
+                result = subprocess.run(arguments, capture_output=True, timeout=30)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(captured, output.read_bytes())
+                self.assertEqual(data, lock.read_bytes())
+
     def test_posix_capture_handles_absent_apis_without_attribute_error(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
         document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
-        line = next(line for line in document.splitlines() if line.startswith('PYTHON -c '))
+        line = next(line for line in document.splitlines() if line.startswith('PYTHON -c ') and 'listxattr' in line)
         code = shlex.split(line)[2]
         native_import = __import__
         for view, expected in ((SimpleNamespace(), {'capture': 'APIS_UNAVAILABLE'}),

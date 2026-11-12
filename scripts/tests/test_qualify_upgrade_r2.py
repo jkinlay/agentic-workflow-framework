@@ -18,7 +18,7 @@ import qualify_upgrade as qualification
 class RetentionTests(unittest.TestCase):
     def test_retained_runtime_identity_is_derived_from_canonical_not_copied_from_journal(self):
         with tempfile.TemporaryDirectory() as temporary:
-            project = Path(temporary)
+            project = Path(temporary).resolve()
             canonical = project / qualification.installation.RUNTIME
             canonical.mkdir(parents=True)
             (canonical / 'runtime').write_bytes(b'synthetic runtime')
@@ -46,7 +46,7 @@ class RetentionTests(unittest.TestCase):
 
     def test_missing_xattr_apis_refuse_only_exact_qualification_before_creating_probes(self):
         with tempfile.TemporaryDirectory() as temporary:
-            parent = Path(temporary)
+            parent = Path(temporary).resolve()
             owner = parent / 'owner'
             owner.write_bytes(b'OWNER DATA')
             before = (owner.stat().st_ino, owner.stat().st_mode, owner.read_bytes())
@@ -70,7 +70,7 @@ class RetentionTests(unittest.TestCase):
 
     def test_compare_preparation_refusal_durably_reports_created_probes(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             for name in ('project', 'source', 'baseline'):
                 (root / name).mkdir()
             for name in ('before.json', 'after.json'):
@@ -95,7 +95,7 @@ class RetentionTests(unittest.TestCase):
 
     def test_retained_report_uses_creation_records_even_if_enumeration_is_denied(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             with qualification._permission_probe_collection() as roots:
                 roots.append(root)
                 with patch.object(Path, 'rglob', side_effect=PermissionError('copied ACL denies enumeration')):
@@ -117,7 +117,7 @@ class RetentionTests(unittest.TestCase):
         for clause in required:
             self.assertIn(clause, text)
         for relative, prefix in (('MIGRATION-v1.9.5-to-v1.9.6.md', ''),
-                ('.agentic/docs/38-RELEASE-196-QUALIFICATION.md', 'https://github.com/jkinlay/agentic-workflow-framework/blob/main/')):
+                ('.agentic/docs/38-RELEASE-196-QUALIFICATION.md', 'https://github.com/jkinlay/agentic-workflow-framework/blob/v1.9.6/')):
             summary = (ROOT / relative).read_text(encoding='utf-8')
             self.assertIn('](' + prefix + canonical + '#owner-recovery-and-retiring-resolved-diagnostics)', summary)
             self.assertNotIn('1. No exclusivity-proof CLI:', summary)
@@ -131,7 +131,7 @@ class RetentionTests(unittest.TestCase):
             self.assertTrue(callable(qualification._windows_probe_directory))
             return
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             parent = root / 'parent'
             parent.mkdir(mode=0o755)
             parent.chmod(0o755)

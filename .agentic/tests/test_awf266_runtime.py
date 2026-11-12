@@ -111,7 +111,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_runtime_stage_outside_root_is_refused_before_creation(self):
         with tempfile.TemporaryDirectory() as outside, ExitStack() as stack:
-            self.stage = Path(outside) / 'foreign-stage'
+            self.stage = Path(outside).resolve() / 'foreign-stage'
             self.inputs(stack)
             create = stack.enter_context(patch.object(adoption.venv.EnvBuilder, 'create'))
             with self.assertRaises((ValidationError, ValueError)):
@@ -122,7 +122,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
     def test_cleanup_evidence_outside_root_is_refused(self):
         with tempfile.TemporaryDirectory() as outside, installer.Tree(self.root) as tree:
             with self.assertRaises((ValidationError, ValueError)):
-                installer._record_cleanup_pending(tree, [Path(outside)], status='RECOVERY_REFUSED')
+                installer._record_cleanup_pending(tree, [Path(outside).resolve()], status='RECOVERY_REFUSED')
             self.assertFalse((self.root / installer.RETAINED_JOURNAL).exists())
 
     def test_configuration_creation_never_overwrites_injected_owner_hardlink(self):

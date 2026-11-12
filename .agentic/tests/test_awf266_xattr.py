@@ -78,7 +78,7 @@ class CustodyApiTests(unittest.TestCase):
     def test_interrupted_temporaries_and_substitutes_refuse_fresh_recovery_without_apis(self):
         for replacement in (False, True):
             with self.subTest(replacement=replacement), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 view = SimpleNamespace(**vars(os))
                 def stop(fd, mode='r', *args, **kwargs):
                     if 'w' in mode:
