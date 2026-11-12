@@ -1576,6 +1576,132 @@
       "regression_id": "AWF266-R266-R1-M5",
       "source_finding_id": "R266-R1-M5",
       "test_id": "RecoveryDocumentationTests.test_shipped_plan_and_installed_examples_execute_with_real_parser"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Augmented flags truncate the fixture and must be detected through direct and imported aliases",
+      "permanent": true,
+      "regression_id": "AWF266-R2-AUGMENTED-FLAGS",
+      "source_finding_id": "R266-R2-M1",
+      "test_id": "PathMutationGuardTests.test_gap_augmented_flags_truncation_repro_and_import_alias"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Function and lambda parameters cannot inherit a module read-only flag proof",
+      "permanent": true,
+      "regression_id": "AWF266-R2-PARAMETER-FLAGS",
+      "source_finding_id": "AWF266-SECOND-LOOK-MAJOR-1",
+      "test_id": "PathMutationGuardTests.test_gap_parameter_shadowing"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Reassigned imported read-only constants cannot conceal truncating flags",
+      "permanent": true,
+      "regression_id": "AWF266-R2-REBOUND-IMPORT",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_reassigned_imported_flag"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Loop context tuple walrus comprehension and exception bindings invalidate read-only inference",
+      "permanent": true,
+      "regression_id": "AWF266-R2-UNKNOWN-BINDINGS",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_non_assignment_flag_bindings"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "FileIO truncating constructors remain visible through import and assignment aliases",
+      "permanent": true,
+      "regression_id": "AWF266-R2-FILEIO",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_fileio"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Native truncate calls remain in the mutation inventory",
+      "permanent": true,
+      "regression_id": "AWF266-R2-TRUNCATE",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_truncate"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Writing appending and exclusive ZIP constructors remain visible through aliases",
+      "permanent": true,
+      "regression_id": "AWF266-R2-ZIPFILE",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_zipfile"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Shutil copy calls remain visible through aliases",
+      "permanent": true,
+      "regression_id": "AWF266-R2-COPY",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_copy"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Recursive renames remain visible through aliases",
+      "permanent": true,
+      "regression_id": "AWF266-R2-RENAMES",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_renames"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Recursive directory removal remains visible through aliases",
+      "permanent": true,
+      "regression_id": "AWF266-R2-REMOVEDIRS",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_gap_removedirs"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_path_mutation_guard.py",
+      "name": "Both maintainer ZIP outputs have exact reviewed out-of-scope entries",
+      "permanent": true,
+      "regression_id": "AWF266-R2-BUILD-ZIPS",
+      "source_finding_id": null,
+      "test_id": "PathMutationGuardTests.test_build_archives_have_exact_reviewed_entries"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": "scripts/tests/test_awf266_round1.py",
+      "name": "ADS evidence capture selects the supported PowerShell byte switch",
+      "permanent": true,
+      "regression_id": "AWF266-R2-ADS-CAPTURE",
+      "source_finding_id": "AWF266-SECOND-LOOK-MINOR-1",
+      "test_id": "RecoveryDocumentationTests.test_ads_capture_selects_the_supported_byte_switch"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": "scripts/tests/test_awf266_round1.py",
+      "name": "Committed cleanup pending skips quarantine and checks the installed current release",
+      "permanent": true,
+      "regression_id": "AWF266-R2-COMMITTED-RECOVERY",
+      "source_finding_id": "AWF266-SECOND-LOOK-MINOR-2",
+      "test_id": "RecoveryDocumentationTests.test_committed_cleanup_pending_skips_quarantine_and_checks_current_release"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": "scripts/tests/test_awf266_round1.py",
+      "name": "POSIX xattr evidence capture refuses existing owner evidence",
+      "permanent": true,
+      "regression_id": "AWF266-R2-XATTR-CAPTURE",
+      "source_finding_id": "AWF266-SECOND-LOOK-MINOR-3",
+      "test_id": "RecoveryDocumentationTests.test_xattr_shell_capture_refuses_existing_evidence"
     }
   ]
 }

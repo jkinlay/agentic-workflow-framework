@@ -38,7 +38,7 @@ class CompactInstallerJournalTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awf134-journal-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.fixture_index = 0
 
     def prepare_install(self, *, unchanged_files, changed_files, payload_size=None):

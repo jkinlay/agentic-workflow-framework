@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -12,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ALLOWLIST = Path(__file__).with_name('path_mutation_allowlist.json')
 ROOTS = ('.agentic/lib/agentic', 'scripts', 'global/awf-portable/scripts')
 METHODS = {'unlink', 'rmdir', 'rmtree', 'chmod', 'chown', 'utime',
+           'truncate', 'copy', 'renames', 'removedirs',
            'lchmod', 'setxattr', 'removexattr', 'copystat', 'copymode',
            'TemporaryDirectory', 'TemporaryFile', 'NamedTemporaryFile', 'mkdtemp', 'copy2', 'copyfile', 'copytree',
            'DeleteFileW', 'DeleteFileA', 'RemoveDirectoryW', 'RemoveDirectoryA',
@@ -85,18 +88,51 @@ def mutation_calls(path):
                             values.add(resolved)
                             changed = True
                         # Mutating aliases take precedence over nonmutating ones.
-                        if resolved == 'os' or resolved.rsplit('.', 1)[-1] in METHODS | {'rename', 'remove', 'CreateFileW', 'CreateFileA', 'open'}:
+                        if resolved == 'os' or resolved.rsplit('.', 1)[-1] in METHODS | {'rename', 'remove', 'CreateFileW', 'CreateFileA', 'open', 'FileIO', 'ZipFile'}:
                             imports[target.id] = resolved
         if not changed:
             break
     assignments = {}
+    simple_targets = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
                 if isinstance(target, ast.Name):
                     assignments.setdefault(target.id, []).append(node.value)
+                    simple_targets.add(id(target))
+
+    # This is a conservative whole-file inventory, not a scope/flow proof.
+    # Any other binding invalidates read-only inference, including parameters
+    # shadowing module constants and augmented assignments to imported flags.
+    unknown_bindings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            if id(node) not in simple_targets:
+                unknown_bindings.add(node.id)
+        elif isinstance(node, ast.arg):
+            unknown_bindings.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            unknown_bindings.add(node.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            unknown_bindings.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            unknown_bindings.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            unknown_bindings.add(node.rest)
 
     def flags(node, seen=frozenset()):
+        # Bindings precede import-name resolution: a reassigned imported
+        # O_RDONLY constant must not hide a possible write/truncate value.
+        if isinstance(node, ast.Name):
+            if node.id in unknown_bindings or node.id in seen:
+                return None
+            if node.id in assignments:
+                # An import and a reassignment are both possible bindings;
+                # do not discard a mutating imported value either.
+                if node.id in imports:
+                    return None
+                values = [flags(value, seen | {node.id}) for value in assignments[node.id]]
+                return None if None in values else __import__('functools').reduce(int.__or__, values, 0)
         resolved = name(node)
         if resolved.startswith('os.O_'):
             return getattr(os, resolved[3:], None)
@@ -105,9 +141,6 @@ def mutation_calls(path):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
             left, right = flags(node.left, seen), flags(node.right, seen)
             return None if left is None or right is None else left | right
-        if isinstance(node, ast.Name) and node.id not in seen and node.id in assignments:
-            values = [flags(value, seen | {node.id}) for value in assignments[node.id]]
-            return None if None in values else __import__('functools').reduce(int.__or__, values, 0)
         return None
 
     calls = []
@@ -122,12 +155,15 @@ def mutation_calls(path):
                             node.args[1] if len(node.args) > 1 else ast.Constant(None))
             value = flags(argument)
             overwrite = value is None or bool(value & (os.O_WRONLY | os.O_RDWR | os.O_TRUNC | os.O_CREAT | os.O_APPEND))
-        elif leaf == 'open':
-            mode_index = 1 if function in {'open', 'builtins.open', 'io.open'} else 0
+        elif leaf in {'open', 'FileIO', 'ZipFile'}:
+            mode_index = 1 if leaf in {'FileIO', 'ZipFile'} or function in {'open', 'builtins.open', 'io.open'} else 0
             mode = next((keyword.value for keyword in node.keywords if keyword.arg == 'mode'),
                         node.args[mode_index] if len(node.args) > mode_index else ast.Constant('r'))
-            overwrite = (not isinstance(mode, ast.Constant) or not isinstance(mode.value, str)
-                         or ('x' not in mode.value and any(flag in mode.value for flag in 'wa+')))
+            if leaf in {'FileIO', 'ZipFile'}:
+                overwrite = not isinstance(mode, ast.Constant) or mode.value not in ('r', 'rb')
+            else:
+                overwrite = (not isinstance(mode, ast.Constant) or not isinstance(mode.value, str)
+                             or ('x' not in mode.value and any(flag in mode.value for flag in 'wa+')))
         if leaf in {'CreateFileW', 'CreateFileA'}:
             disposition = node.args[4] if len(node.args) > 4 else None
             overwrite = not isinstance(disposition, ast.Constant) or disposition.value not in {1, 3, 4}
@@ -226,6 +262,111 @@ class PathMutationGuardTests(unittest.TestCase):
     def test_shipped_calls_have_exact_reviewed_allowlist_entries(self):
         result = violations(ROOT, json.loads(ALLOWLIST.read_text(encoding='utf-8')))
         self.assertEqual({'unreviewed': [], 'stale': []}, result)
+
+    def test_gap_augmented_flags_truncation_repro_and_import_alias(self):
+        for imports, initial, mutation, writer in (
+                ('import os', 'os.O_RDONLY', 'os.O_WRONLY | os.O_TRUNC', 'os.open'),
+                ('import os\nfrom os import O_RDONLY as READ, O_WRONLY as WRITE, O_TRUNC as TRUNC, open as writer',
+                 'READ', 'WRITE | TRUNC', 'writer')):
+            source = f'{imports}\nflags = {initial}\nflags |= {mutation}\nfd = {writer}("victim", flags)\nos.close(fd)\n'
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                (root / 'scripts').mkdir()
+                module = root / 'scripts/injected.py'
+                module.write_text(source, encoding='utf-8')
+                victim = root / 'victim'
+                victim.write_bytes(b'owner fixture bytes')
+                result = subprocess.run([sys.executable, '-B', str(module)], cwd=root,
+                                        capture_output=True, timeout=30)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(b'', victim.read_bytes(), 'the reviewer repro must actually truncate')
+                self.assertEqual(1, len(violations(root, [])['unreviewed']))
+
+    def test_gap_parameter_shadowing(self):
+        for parameter in ('flags', 'flags, /', '/, flags', '*, flags', '*flags', '**flags'):
+            with self.subTest(parameter=parameter):
+                self.assert_injection('import os\nflags = os.O_RDONLY\n'
+                    f'def w(path, {parameter}):\n    return os.open(path, flags)\n')
+        self.assert_injection('import os\nflags = os.O_RDONLY\nw = lambda path, flags: os.open(path, flags)\n')
+
+    def test_gap_reassigned_imported_flag(self):
+        self.assert_injection('import os\nfrom os import O_RDONLY as MODE\n'
+                              'MODE = os.O_WRONLY | os.O_TRUNC\nos.open("victim", MODE)\n')
+
+    def test_gap_non_assignment_flag_bindings(self):
+        bindings = (
+            'for flags in values:\n    pass',
+            'async def w():\n    async for flags in values:\n        pass',
+            'with source as flags:\n    pass',
+            'async def w():\n    async with source as flags:\n        pass',
+            'flags, other = values',
+            '[other, *flags] = values',
+            'if (flags := value):\n    pass',
+            '[flags for flags in values]',
+            'flags: int',
+            'try:\n    pass\nexcept OSError as flags:\n    pass',
+        )
+        for binding in bindings:
+            with self.subTest(binding=binding):
+                self.assert_injection('import os\nflags = os.O_RDONLY\n' + binding + '\nos.open("victim", flags)\n')
+
+    def test_gap_fileio(self):
+        for source in ('import io\nio.FileIO("victim", "w")\n',
+                       'from io import FileIO as writer\nwriter("victim", mode="w")\n',
+                       'import io\nwriter = io.FileIO\nwriter("victim", "w")\n'):
+            with self.subTest(source=source):
+                self.assert_injection(source)
+
+    def test_gap_truncate(self):
+        for source in ('import os\nos.truncate("victim", 0)\n',
+                       'from os import truncate as truncate_owner\ntruncate_owner("victim", 0)\n'):
+            with self.subTest(source=source):
+                self.assert_injection(source)
+
+    def test_gap_zipfile(self):
+        for mode in ('w', 'a', 'x'):
+            with self.subTest(mode=mode):
+                self.assert_injection(f'import zipfile\nzipfile.ZipFile("victim", "{mode}")\n')
+        for source in ('from zipfile import ZipFile as writer\nwriter("victim", mode="w")\n',
+                       'import zipfile\nwriter = zipfile.ZipFile\nwriter("victim", "w")\n'):
+            with self.subTest(source=source):
+                self.assert_injection(source)
+
+    def test_gap_copy(self):
+        for source in ('import shutil\nshutil.copy("source", "victim")\n',
+                       'from shutil import copy as writer\nwriter("source", "victim")\n'):
+            with self.subTest(source=source):
+                self.assert_injection(source)
+
+    def test_gap_renames(self):
+        for source in ('import os\nos.renames("source", "victim")\n',
+                       'from os import renames as move\nmove("source", "victim")\n'):
+            with self.subTest(source=source):
+                self.assert_injection(source)
+
+    def test_gap_removedirs(self):
+        for source in ('import os\nos.removedirs("victim")\n',
+                       'from os import removedirs as remove\nremove("victim")\n'):
+            with self.subTest(source=source):
+                self.assert_injection(source)
+
+    def test_read_only_constructor_modes_and_fail_safe_binop_are_retained(self):
+        self.assert_injection('import io\nimport zipfile\nio.FileIO("victim", "r")\n'
+                              'zipfile.ZipFile("victim")\n', 0)
+        self.assert_injection('import os\nos.open("victim", os.O_RDONLY | os.O_NOFOLLOW)\n')
+        self.assert_injection('from os import open, O_WRONLY as MODE\n'
+                              'open("victim", MODE)\nMODE = 0\n')
+
+    def test_build_archives_have_exact_reviewed_entries(self):
+        rows = json.loads(ALLOWLIST.read_text(encoding='utf-8'))
+        for relative in ('scripts/build_release.py', 'scripts/build_skill_distribution.py'):
+            calls = [call for call in mutation_calls(ROOT / relative)
+                     if call['call'].startswith('zipfile.ZipFile(output,')]
+            self.assertEqual(1, len(calls), relative)
+            reviewed = [row for row in rows if row['path'] == relative
+                        and row['fingerprint'] == calls[0]['fingerprint']]
+            self.assertEqual(1, len(reviewed), relative)
+            self.assertEqual('OUT-OF-SCOPE', reviewed[0]['disposition'])
 
     def test_scratch_copy_injected_deletion_is_red(self):
         # The injected call exists only in a scratch module, never product code.

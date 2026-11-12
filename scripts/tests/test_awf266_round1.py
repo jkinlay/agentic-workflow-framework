@@ -13,6 +13,7 @@ from unittest.mock import patch
 import uuid
 import shlex
 import subprocess
+import shutil
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -22,6 +23,45 @@ from agentic import installer, ValidationError
 
 
 class RecoveryDocumentationTests(unittest.TestCase):
+    def test_ads_capture_selects_the_supported_byte_switch(self):
+        document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
+        command = next(line for line in document.splitlines() if line.startswith('ConvertTo-Json -InputObject @(Get-Item '))
+        self.assertIn('if ($PSVersionTable.PSVersion.Major -ge 6)', command)
+        self.assertIn('-AsByteStream -Raw -ErrorAction Stop', command)
+        self.assertIn('else { Get-Content -LiteralPath $LOCK -Stream $_.Stream -Encoding Byte -Raw -ErrorAction Stop }', command)
+
+    def test_committed_cleanup_pending_skips_quarantine_and_checks_current_release(self):
+        document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
+        step2 = next(line for line in document.splitlines() if line.startswith('2. '))
+        self.assertIn('ROLLED_BACK/COMMITTED/COMMITTED_CLEANUP_PENDING: skip quarantine', step2)
+        step8 = next(line for line in document.splitlines() if line.startswith('8. '))
+        self.assertIn('Committed 1.9.6: require exit 0/integrity_valid=true/status=ACCEPTED; status is CONFIGURED unless ACTIVE is independently proved', step8)
+
+    def test_parked_wheel_download_names_index_or_verified_mirror(self):
+        document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
+        self.assertIn('Download requires a reachable package index or hash-verified mirror, including on air-gapped hosts.', document)
+
+    @unittest.skipUnless(shutil.which('bash'), 'POSIX_SHELL: shell evidence capture requires bash')
+    def test_xattr_shell_capture_refuses_existing_evidence(self):
+        document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
+        block = next(block for block in re.findall(r'```(?:text|sh)\n(.*?)```', document, re.S)
+                     if 'listxattr' in block)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            lock, output = root / 'lock', root / 'xattrs.json'
+            lock.write_bytes(b'lock bytes')
+            script = block.replace('PYTHON', shlex.quote(Path(sys.executable).as_posix()))
+            script = script.replace('EXTERNAL_XATTRS', shlex.quote(output.as_posix()))
+            script = script.replace('LOCK', shlex.quote(lock.as_posix()))
+            result = subprocess.run([shutil.which('bash'), '-c', script], capture_output=True, timeout=30)
+            self.assertEqual(0, result.returncode, result.stderr)
+            json.loads(output.read_bytes())
+            output.write_bytes(b'previous owner evidence')
+            result = subprocess.run([shutil.which('bash'), '-c', script], capture_output=True, timeout=30)
+            self.assertNotEqual(0, result.returncode, result.stderr)
+            self.assertEqual(b'previous owner evidence', output.read_bytes())
+            self.assertEqual(b'lock bytes', lock.read_bytes())
+
     def test_named_limitation_is_unchanged_and_parked_provisioning_is_executable(self):
         for relative in ('MIGRATION-v1.9.5-to-v1.9.6.md', '.agentic/docs/38-RELEASE-196-QUALIFICATION.md'):
             raw = (ROOT / relative).read_bytes()
@@ -108,6 +148,7 @@ class RecoveryDocumentationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'WIN32_ADS: PowerShell stream capture is Windows-only')
     def test_windows_capture_preserves_ads_and_refuses_existing_output(self):
+        self.assertIsNotNone(shutil.which('powershell'))
         document = (ROOT / 'docs/runbook/19-runbook-journal-recovery.md').read_text(encoding='utf-8')
         command = next(line for line in document.splitlines() if line.startswith('ConvertTo-Json -InputObject @(Get-Item '))
         with tempfile.TemporaryDirectory() as temporary:
@@ -122,19 +163,25 @@ class RecoveryDocumentationTests(unittest.TestCase):
             output = root / 'ads.json'
             environment = dict(os.environ, AWF_CAPTURE_LOCK=str(lock), AWF_CAPTURE_OUTPUT=str(output))
             script = "$LOCK=$env:AWF_CAPTURE_LOCK\n$EXTERNAL_ADS=$env:AWF_CAPTURE_OUTPUT\n$ErrorActionPreference='Stop'\n" + command
-            arguments = ['powershell', '-NoProfile', '-NonInteractive', '-Command', script]
-            result = subprocess.run(arguments, capture_output=True, text=True, timeout=30, env=environment)
-            self.assertEqual(0, result.returncode, result.stderr)
-            rows = json.loads(output.read_text(encoding='utf-8-sig'))
-            if isinstance(rows, dict):
-                rows = [rows]
-            self.assertEqual([dict(name='awf-temporary-custody', hex=b'custody\x00\xff'.hex().upper()),
-                              dict(name='empty-custody-fixture', hex='')], sorted(rows, key=lambda row: row['name']))
-            previous = output.read_bytes()
-            result = subprocess.run(arguments, capture_output=True, text=True, timeout=30, env=environment)
-            self.assertNotEqual(0, result.returncode)
-            self.assertEqual(previous, output.read_bytes())
-            self.assertEqual(b'0', lock.read_bytes())
+            for shell in ('powershell', 'pwsh'):
+                if not shutil.which(shell):
+                    continue
+                with self.subTest(shell=shell):
+                    shell_output = output.with_name(shell + '-ads.json')
+                    environment['AWF_CAPTURE_OUTPUT'] = str(shell_output)
+                    arguments = [shutil.which(shell), '-NoProfile', '-NonInteractive', '-Command', script]
+                    result = subprocess.run(arguments, capture_output=True, text=True, timeout=30, env=environment)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    rows = json.loads(shell_output.read_text(encoding='utf-8-sig'))
+                    if isinstance(rows, dict):
+                        rows = [rows]
+                    self.assertEqual([dict(name='awf-temporary-custody', hex=b'custody\x00\xff'.hex().upper()),
+                                      dict(name='empty-custody-fixture', hex='')], sorted(rows, key=lambda row: row['name']))
+                    previous = shell_output.read_bytes()
+                    result = subprocess.run(arguments, capture_output=True, text=True, timeout=30, env=environment)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(previous, shell_output.read_bytes())
+                    self.assertEqual(b'0', lock.read_bytes())
 
 
 class ReportPublicationTests(unittest.TestCase):

@@ -4167,5 +4167,82 @@
     "created_by_us": true,
     "disposition": "NON-MUTATING",
     "justification": "String replacement builds the scan report filename; METHODS collides with Path.replace. The actual report write is run_publication_scan and is already allowlisted."
+  },
+  {
+    "path": ".agentic/lib/agentic/protected_settings.py",
+    "context": "_refresh_lock",
+    "line": 373,
+    "call": "stream.truncate()",
+    "fingerprint": "fd2b34b4e568b4bc270329e96987583a2f691369b5700c40449811e79265a0eb",
+    "object": "controller default-policy refresh marker",
+    "created_by_us": "controller-managed marker",
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Outside the 1.9.6 install/upgrade namespace-publication limitation: controller policy refresh truncates its marker through the OS-locked handle after fstat/path identity and reclaim-age checks; this is not an installer owner-file or runtime recovery route."
+  },
+  {
+    "path": ".agentic/lib/agentic/reporting/runtime.py",
+    "context": "_preparation_senders",
+    "line": 66,
+    "call": "copy(sender)",
+    "fingerprint": "5185f189d0e92d1b3ae3258ce7b5662bec33d6ec575ca40146fc7bb0e81f4338",
+    "object": "in-memory reporting sender object",
+    "created_by_us": false,
+    "disposition": "NON-MUTATING",
+    "justification": "Imported copy.copy makes a shallow in-memory copy of the trusted sender port before binding credentials; this exact call has no filesystem source or destination."
+  },
+  {
+    "path": ".agentic/lib/agentic/reporting/runtime.py",
+    "context": "destination_work",
+    "line": 471,
+    "call": "copy(provider)",
+    "fingerprint": "d7d65e4e57ff8b710a7a6e204603c5128798daf4fc220b05cb16e3785cc6cd87",
+    "object": "in-memory reporting provider object",
+    "created_by_us": false,
+    "disposition": "NON-MUTATING",
+    "justification": "Imported copy.copy makes a shallow in-memory copy of the trusted provider port before binding references; this exact call has no filesystem source or destination."
+  },
+  {
+    "path": "scripts/build_release.py",
+    "context": "main",
+    "line": 225,
+    "call": "zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED)",
+    "fingerprint": "9bd3cb6f4cbd9f685c04ba64b6d5488af9a469bba08d782cd95faecc948296df",
+    "object": "maintainer source release ZIP output",
+    "created_by_us": false,
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Outside the 1.9.6 install/upgrade namespace-publication limitation: the maintainer builder truncates its explicitly supplied archive output outside the release source tree; it does not operate on adopter owner files or recovery endpoints. Existing archive output can be overwritten."
+  },
+  {
+    "path": "scripts/build_skill_distribution.py",
+    "context": "package",
+    "line": 69,
+    "call": "zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED)",
+    "fingerprint": "9bd3cb6f4cbd9f685c04ba64b6d5488af9a469bba08d782cd95faecc948296df",
+    "object": "maintainer skill or distribution ZIP output",
+    "created_by_us": false,
+    "disposition": "OUT-OF-SCOPE",
+    "justification": "Outside the 1.9.6 install/upgrade namespace-publication limitation: package writes the maintainer-selected build archive, which may overwrite an existing output; neither adopter owner files nor installer/runtime recovery endpoints are eligible inputs to this build route."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "context": "build_assets",
+    "line": 571,
+    "call": "os.environ.copy()",
+    "fingerprint": "b84d71e471a716bdc68167a5ecff9d24de394c80d3fb70042699793d7885d187",
+    "object": "in-memory build child environment",
+    "created_by_us": false,
+    "disposition": "NON-MUTATING",
+    "justification": "Copies the os.environ mapping into a new dictionary before setting build child variables; no pathname or file contents are copied or mutated."
+  },
+  {
+    "path": "scripts/publish_release.py",
+    "context": "publish",
+    "line": 871,
+    "call": "os.environ.copy()",
+    "fingerprint": "b84d71e471a716bdc68167a5ecff9d24de394c80d3fb70042699793d7885d187",
+    "object": "in-memory validation child environment",
+    "created_by_us": false,
+    "disposition": "NON-MUTATING",
+    "justification": "Copies the os.environ mapping into a new dictionary before setting validation child variables; no pathname or file contents are copied or mutated."
   }
 ]
