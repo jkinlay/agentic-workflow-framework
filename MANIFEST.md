@@ -697,7 +697,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `docs/runbook/16-runbook-pre-upgrade-checks-and-backup.md` | `667db3eb53cf2e41a211225ce9e7420def1eaa7e5cb2878d660084faacc3dbb8` |
 | `docs/runbook/17-runbook-upgrade-commands.md` | `60f94793adf9e72a285d0d8b3e1827a57e7952aec8daa1ec656f4e8f714b61fa` |
 | `docs/runbook/18-runbook-migration-behavior.md` | `c396184959ff8f1e627a6e5a0a518878f14d2dbfb32326a72c58502f4436b799` |
-| `docs/runbook/19-runbook-journal-recovery.md` | `b78880d94f4da6d6e3c499dd23447d8cf6fa8acb4273862b69dd5f957cc78182` |
+| `docs/runbook/19-runbook-journal-recovery.md` | `fbbb43dcdd1dcda603de2dd62af5fc4d59cf5538f8d2f87045240219443a5dc0` |
 | `docs/runbook/20-runbook-post-upgrade-verification-and-reactivation.md` | `4dcca36304857c1284cca7183dc0de19760229ef45d4dbbd2de09c163c1d3b13` |
 | `docs/runbook/21-runbook-upgrade-rollback.md` | `563c4e3f325067bc65c2aa6ec4f402dfc75a9fc01ed8679f1a7fc8defd5ce752` |
 | `docs/runbook/22-runbook-post-adoption-checks.md` | `4a5f9b2e91cf68c019e1120eb44593b5ff64d097282680c906607d3f4857f9ab` |
