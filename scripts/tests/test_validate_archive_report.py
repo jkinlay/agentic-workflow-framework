@@ -6,16 +6,73 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / '.agentic/lib'))
 from release_self_test import reconcile_installed_acceptance
+import validate_archive
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/validate_archive.py'
 
 
 class ArchiveReportTests(unittest.TestCase):
+    def run_final_stage(self, report, current_review):
+        # Execute validate()'s actual final review guard through report writing.
+        tree = ast.parse(SCRIPT.read_text(encoding='utf-8'), filename=str(SCRIPT))
+        validate = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'validate')
+        start = next(i for i, n in enumerate(validate.body) if isinstance(n, ast.If)
+                     and isinstance(n.test, ast.Compare) and isinstance(n.test.left, ast.Call)
+                     and ast.unparse(n.test.left.func) == 'review_source')
+        stage = ast.Module(body=validate.body[start:-1], type_ignores=[])
+        namespace = {**vars(validate_archive), 'SOURCE': Path('synthetic-source'),
+                     'MANIFEST': 'a' * 64, 'args': mock.Mock(), 'current_review': current_review,
+                     'report': report, 'checks': report['checks'], 'OUTPUT': Path('synthetic-report'),
+                     'RUN': Path('synthetic-run')}
+        with mock.patch.object(validate_archive, 'write_report') as write, \
+                mock.patch.object(validate_archive, 'review_source', return_value=current_review), \
+                mock.patch('builtins.print'):
+            namespace.update(write_report=write, review_source=validate_archive.review_source)
+            exec(compile(stage, str(SCRIPT), 'exec'), namespace)
+        write.assert_called_once_with(namespace['OUTPUT'], report)
+
+    def qualified_report(self):
+        review = {'status': 'PASS', 'release_qualified': True, 'manifest_sha256': 'a' * 64}
+        source = {**self.aggregate(False), 'current_review': review}
+        installed = self.aggregate(True)
+        return dict(current_review=review, manifest_sha256='a' * 64, checks=[],
+                    extracted_tests=source, installed_tests=installed,
+                    coverage_reconciliation=reconcile_installed_acceptance(source, installed))
+
+    def test_final_stage_accepts_only_same_review_reconciled_qualification(self):
+        report = self.qualified_report()
+        self.assertIs(report['extracted_tests']['release_qualified'], False)
+        self.assertIs(report['extracted_tests']['suite_complete'], False)
+        self.assertIs(report['coverage_reconciliation']['release_qualified'], True)
+        self.run_final_stage(report, report['current_review'])
+        self.assertIs(report['validation_complete'], True)
+
+    def test_final_stage_refuses_unreconciled_mismatched_or_unqualified_source(self):
+        def wrong_review(r):
+            r['extracted_tests']['current_review'] = {'status': 'PASS', 'release_qualified': True}
+        def unqualified(r):
+            r['current_review']['release_qualified'] = False
+            r['coverage_reconciliation'] = reconcile_installed_acceptance(r['extracted_tests'], r['installed_tests'])
+        mutations = [lambda r: r.pop('coverage_reconciliation'),
+                     lambda r: r['coverage_reconciliation'].update(release_qualified=False),
+                     lambda r: r['coverage_reconciliation'].update(source_plan_sha256='d' * 64),
+                     lambda r: r['installed_tests'].update(suite_complete=False),
+                     lambda r: r['extracted_tests'].update(release_qualified=True, suite_complete=True),
+                     lambda r: r.update(manifest_sha256='d' * 64), wrong_review, unqualified]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                report = self.qualified_report()
+                mutate(report)
+                with self.assertRaises((validate_archive.ValidationError, ValueError)):
+                    self.run_final_stage(report, report['current_review'])
+                self.assertNotIn('validation_complete', report)
+
     def assemble_report(self, source_tests, installed_tests):
         # Execute the real report stage with synthetic outputs from earlier stages.
         # This keeps installation, network and recursive self-tests out of the unit test.

@@ -23,7 +23,8 @@ from agentic.safeio import Tree
 from agentic.runtime_commands import installed_paths
 from release_review import add_review_arguments, review_arguments, review_source
 from release_modes import FORMAT as RAW_MODES_FORMAT, REGULAR_MODES
-from release_self_test import run_self_test, ShardFailure, reconcile_installed_acceptance
+from release_self_test import (run_self_test, ShardFailure, reconcile_installed_acceptance,
+                               require_reconciled_qualification)
 RELEASE_LINE = VERSION.removesuffix('.0')
 PREFIX = f'agentic-workflow-template-v{RELEASE_LINE}/'
 
@@ -792,8 +793,7 @@ def validate(argv=None):
     if review_source(SOURCE, MANIFEST, args.reviews, args.expected_reviews_sha256,
                      args.review_required_paths, args.expected_review_required_paths_sha256) != current_review:
         raise ValidationError('Current review inputs changed during acceptance')
-    if report['extracted_tests'].get('release_qualified') is not True or report['extracted_tests'].get('current_review') != current_review:
-        raise ValidationError('Fresh source self-test did not qualify the same current review')
+    require_reconciled_qualification(report, current_review)
     checks.append({'check':'Final review inputs and source remain bound after acceptance','status':'PASS'})
     report['validation_complete'] = True
     write_report(OUTPUT, report)
