@@ -83,6 +83,7 @@ PENDING_UPDATE_KINDS = frozenset({
     "directory_prepare",
     "activate",
     "managed_after",
+    "runtime_creation",
     "runtime_stage",
     "commit_cleanup",
     "commit_cleanup_authenticated",
@@ -297,6 +298,10 @@ def _validate_pending_new_journal(tree, journal, update_kind):
         valid = (journal["format"] == "awf-install-journal-4" and
                  journal["phase"] == "active" and
                  journal["managed_after_sha256"] is not None)
+    elif update_kind == "runtime_creation":
+        valid = (journal['format'] in {'awf-install-journal-3', 'awf-install-journal-4'} and
+                 journal["phase"] == "active" and runtime is not None and
+                 runtime.get("stage_identity") is not None and runtime["new_sha256"] is None)
     elif update_kind == "runtime_stage":
         managed_after = (journal.get("managed_after_sha256") if _compact_journal(journal)
                          else journal.get("managed_after"))
@@ -318,12 +323,15 @@ def _validate_pending_new_journal(tree, journal, update_kind):
         _capture_managed_after(tree, candidate)
         if json_bytes(candidate) != json_bytes(journal):
             _pending_digest_mismatch(update_kind)
-    elif update_kind == "runtime_stage":
+    elif update_kind in {"runtime_creation", "runtime_stage"}:
         stage = tree.root / runtime["stage"]
         if not (stage.exists() or stage.is_symlink()):
             raise ValidationError(
                 "Pending runtime-stage journal update has no staged runtime; journal retained")
-        if _runtime_tree_sha256(stage) != runtime["new_sha256"]:
+        if runtime.get("stage_identity") is not None:
+            if runtime_creation_identity(stage) != runtime["stage_identity"]:
+                raise ValidationError("Staged runtime creation identity changed; journal retained")
+        if update_kind == "runtime_stage" and _runtime_tree_sha256(stage) != runtime["new_sha256"]:
             raise ValidationError(
                 "Staged runtime does not prove the pending runtime-stage update; journal retained")
     elif update_kind == "commit_cleanup_authenticated" and runtime is not None:
@@ -339,7 +347,7 @@ def _validate_pending_new_journal(tree, journal, update_kind):
                 "identity": runtime["cleanup_identity"],
                 "members": runtime["cleanup_members"],
             })
-    if update_kind in {"managed_after", "runtime_stage"}:
+    if update_kind in {"managed_after", "runtime_creation", "runtime_stage"}:
         _load_recovery_objects(tree, journal)
 
 
@@ -365,6 +373,12 @@ def _reconstruct_pending_old_journal(tree, journal, update_kind):
                 journal["managed_after_sha256"] is None):
             _pending_transition_mismatch()
         _capture_managed_after(tree, candidate)
+    elif update_kind == "runtime_creation":
+        if not (journal["phase"] == "active" and runtime is not None and
+                "stage_identity" in runtime and runtime["stage_identity"] is None and
+                runtime["new_sha256"] is None):
+            _pending_transition_mismatch()
+        candidate["runtime"]["stage_identity"] = runtime_creation_identity(tree.root / runtime["stage"])
     elif update_kind == "runtime_stage":
         managed_after = (journal.get("managed_after_sha256") if _compact_journal(journal)
                          else journal.get("managed_after"))
@@ -376,6 +390,8 @@ def _reconstruct_pending_old_journal(tree, journal, update_kind):
         if not (stage.exists() or stage.is_symlink()):
             raise ValidationError(
                 "Pending runtime-stage journal update has no staged runtime; journal retained")
+        if runtime.get('stage_identity') is not None and runtime_creation_identity(stage) != runtime['stage_identity']:
+            raise ValidationError('Staged runtime creation identity changed; journal retained')
         candidate["runtime"]["new_sha256"] = _runtime_tree_sha256(stage)
     elif update_kind in {"commit_cleanup", "rollback_cleanup"}:
         if journal["phase"] != "active":
@@ -428,7 +444,7 @@ def _recover_pending_journal_update(tree, journal, journal_raw, marker, *, publi
                 "Staged runtime does not prove the pending runtime-stage update; journal retained")
         _pending_digest_mismatch(update_kind)
 
-    if update_kind in {"managed_after", "runtime_stage", "commit_cleanup",
+    if update_kind in {"managed_after", "runtime_creation", "runtime_stage", "commit_cleanup",
                        "rollback_cleanup"}:
         _load_recovery_objects(tree, journal)
 
@@ -440,7 +456,7 @@ def _recover_pending_journal_update(tree, journal, journal_raw, marker, *, publi
                 journal["transaction_id"], observed_digest)))
         return journal
 
-    if update_kind in {"runtime_stage", "commit_cleanup_authenticated"}:
+    if update_kind in {"runtime_creation", "runtime_stage", "commit_cleanup_authenticated"}:
         if publish:
             tree.write(JOURNAL, candidate_raw)
             tree.write(MARKER, json_bytes(_journal_marker(
@@ -1891,8 +1907,46 @@ def _runtime_journal(root, transaction_id):
         if target.exists() or target.is_symlink():
             raise ValidationError("Runtime transaction path already exists: " + relative)
     return {"path": RUNTIME, "previous_sha256": previous, "new_sha256": None,
-            "stage": stage, "backup": backup, "cleanup_identity": None,
+            "stage": stage, "backup": backup, "stage_identity": None, "cleanup_identity": None,
             "cleanup_members": None}
+
+
+def runtime_creation_identity(path):
+    """Read a no-follow directory identity; never grants cleanup authority.
+
+    POSIX ctime changes at rename and is not a creation time. Record birth time
+    only where stat supplies it. Windows uses the existing full FILE_ID_INFO
+    and creation FILETIME APIs, rather than Python's truncated stat identity.
+    """
+    path = Path(path).absolute()
+    with _Tree(path.parent) as parent:
+        parent.entry_identity(path.name, directory=True)  # reject links/reparses
+        if os.name == 'nt':
+            from .safeio import kernel, win_open, _windows_leaf_identity
+            handle = win_open(path, directory=True)
+            try:
+                identity = _windows_leaf_identity(handle)
+                return dict(platform='windows', object=[format(identity[0], '032x'),
+                    identity[1].hex()], created=format(identity[4] << 32 | identity[5], '032x'))
+            finally:
+                kernel.CloseHandle(handle)
+        with _Tree(path) as directory:
+            info = os.fstat(directory._dirs[directory.root])
+            return dict(platform='posix', object=[format(info.st_dev, '032x'),
+                format(info.st_ino, '032x')], created=(format(info.st_birthtime_ns, '032x')
+                    if hasattr(info, 'st_birthtime_ns') else None))
+
+
+def _validate_runtime_creation_identity(identity):
+    if (not isinstance(identity, dict) or set(identity) != {'platform', 'object', 'created'} or
+            identity['platform'] not in {'posix', 'windows'} or
+            not isinstance(identity['object'], list) or len(identity['object']) != 2 or
+            any(not isinstance(part, str) or re.fullmatch('[0-9a-f]{32}', part) is None
+                for part in identity['object']) or
+            not (identity['created'] is None and identity['platform'] == 'posix' or
+                 isinstance(identity['created'], str) and
+                 re.fullmatch('[0-9a-f]{32}', identity['created']) is not None)):
+        raise ValidationError('Invalid runtime creation identity')
 
 
 def _runtime_cleanup_path(root, runtime):
@@ -2000,9 +2054,12 @@ def _validated_runtime_journal(journal):
         return None
     base_runtime_keys = {"path", "previous_sha256", "new_sha256", "stage", "backup"}
     proof_keys = {"cleanup_identity", "cleanup_members"}
-    if not isinstance(runtime, dict) or frozenset(runtime) not in {frozenset(base_runtime_keys),
-                                                                   frozenset(base_runtime_keys | proof_keys)}:
+    if not isinstance(runtime, dict) or frozenset(runtime) not in {
+            frozenset(base_runtime_keys), frozenset(base_runtime_keys | proof_keys),
+            frozenset(base_runtime_keys | proof_keys | {'stage_identity'})}:
         raise ValidationError("Invalid runtime recovery journal")
+    if runtime.get('stage_identity') is not None:
+        _validate_runtime_creation_identity(runtime['stage_identity'])
     expected_stage = f".agentic/.venv.staging-{transaction_id}"
     expected_backup = f".agentic/.venv.backup-{transaction_id}"
     valid_digest = lambda value: value is None or (
@@ -2409,7 +2466,20 @@ class _RuntimeInstallTransaction:
         elif present:
             raise ValidationError("A canonical runtime appeared after fresh-install planning")
 
+    def record_runtime_creation(self):
+        proposed = runtime_creation_identity(self.stage)
+        if self.runtime.get('stage_identity') not in (None, proposed):
+            raise ValidationError('Staged runtime creation identity changed')
+        self.runtime['stage_identity'] = proposed
+        _write_bound_journal_update(self.tree, self.journal, 'runtime_creation')
+
     def record_staged_runtime(self):
+        # Third-party builders must also record before publication. The shipped
+        # builder records immediately after mkdir, before writing runtime files.
+        if self.runtime.get('stage_identity') is None:
+            self.record_runtime_creation()
+        if runtime_creation_identity(self.stage) != self.runtime['stage_identity']:
+            raise ValidationError('Staged runtime creation identity changed')
         proposed = _runtime_tree_sha256(self.stage)
         if self.runtime["new_sha256"] not in {None, proposed}:
             raise ValidationError("Staged canonical runtime identity changed")
@@ -2421,6 +2491,9 @@ class _RuntimeInstallTransaction:
         proposed = self.runtime["new_sha256"]
         if proposed is None or not self.runtime_root.exists() or _runtime_tree_sha256(self.runtime_root) != proposed:
             raise ValidationError("Canonical runtime commit cannot be proved")
+        if (self.runtime.get('stage_identity') is not None and
+                runtime_creation_identity(self.runtime_root) != self.runtime['stage_identity']):
+            raise ValidationError('Canonical runtime creation identity changed')
         if self.stage.exists() or self.stage.is_symlink():
             raise ValidationError("Staged runtime remains after canonical runtime commit")
         if self.had_previous:

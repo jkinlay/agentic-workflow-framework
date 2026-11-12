@@ -6,6 +6,7 @@ import stat
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -15,6 +16,34 @@ import qualify_upgrade as qualification
 
 
 class RetentionTests(unittest.TestCase):
+    def test_retained_runtime_identity_is_derived_from_canonical_not_copied_from_journal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            canonical = project / qualification.installation.RUNTIME
+            canonical.mkdir(parents=True)
+            (canonical / 'runtime').write_bytes(b'synthetic runtime')
+            identity = str(uuid.uuid4())
+            runtime = dict(path=qualification.installation.RUNTIME,
+                previous_sha256='0' * 64,
+                new_sha256=qualification.runtime_tree_sha256(canonical),
+                stage='.agentic/.venv.staging-' + identity,
+                backup='.agentic/.venv.backup-' + identity,
+                cleanup_identity=None, cleanup_members=None,
+                stage_identity=qualification.installation.runtime_creation_identity(canonical))
+            before = dict(files={}, directories={'.agentic-install/objects/': {}})
+            after = dict(files={}, runtime={'sha256': runtime['new_sha256']})
+            policy = dict(runtime_before={'sha256': runtime['previous_sha256']}, files={},
+                removed=set(), backup_sources={}, metadata_before={}, ownership_before={},
+                audit_before={'transactions': []})
+            journal = dict(format='awf-install-journal-4', transaction_id=identity,
+                temporary_files='sibling-uuid5-v2', runtime=runtime, files=[], created_directories=[])
+            qualification._authenticate_retained_journal(before, after, policy, project, journal)
+            canonical.rename(project / 'authentic-runtime')
+            canonical.mkdir()
+            (canonical / 'runtime').write_bytes(b'synthetic runtime')
+            with self.assertRaisesRegex(ValueError, 'runtime record differs'):
+                qualification._authenticate_retained_journal(before, after, policy, project, journal)
+
     def test_missing_xattr_apis_refuse_only_exact_qualification_before_creating_probes(self):
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
@@ -82,8 +111,8 @@ class RetentionTests(unittest.TestCase):
             text = (root / relative).read_text(encoding='utf-8')
             for required in ('step-2 journal copy', '`posix_ownership` records ORIGINALS only',
                              'installing effective UID', 'otherwise installing effective GID',
-                             'contemporaneous trusted evidence binding stage creation/identity to this transaction',
-                             'Require new_sha256/new_mode', 'Unknown/differing/unrecorded/unprovable metadata stops'):
+                             'require hash AND journal-recorded `runtime.stage_identity` match.',
+                             'Require new_sha256 AND new_mode', 'Unknown OR differing OR unrecorded OR unprovable metadata stops'):
                 self.assertIn(required, text)
             blocks.append(text[text.index('1. No exclusivity-proof CLI:'):].split('\n\n', 1)[0])
         self.assertEqual([blocks[0]] * 3, blocks)

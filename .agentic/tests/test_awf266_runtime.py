@@ -1,5 +1,7 @@
 """Standalone runtime lock, fresh-stage construction and both publication sites."""
 from contextlib import ExitStack
+import json
+import shutil
 import os
 from pathlib import Path
 import sys
@@ -8,8 +10,10 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import adoption_config as adoption, installer, safeio, ValidationError
+from source_only import skip_unless_source_repo
 
 
 @unittest.skipUnless(os.name == 'nt', 'WIN32_83_TEMP: real Windows short-name aliases required')
@@ -235,6 +239,130 @@ class RuntimeBoundaryTests(unittest.TestCase):
             stack.enter_context(patch.object(installer.Tree, 'rename_checked', publish))
             adoption.ensure_installed_runtime(self.root)
         self.assertEqual(1, len(hits))
+
+
+class RuntimeCreationIdentityTests(unittest.TestCase):
+    @skip_unless_source_repo('owner CLI is shipped in source releases', 'scripts/qualify_upgrade.py')
+    def test_malformed_runtime_journal_is_refused_before_comparison(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import qualify_upgrade
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / 'runtime'
+            runtime.mkdir()
+            (runtime / 'member').write_bytes(b'synthetic runtime')
+            digest = installer._runtime_tree_sha256(runtime)
+            journal = root / 'journal.json'
+            transaction = str(uuid.uuid4())
+            invalid_phase = dict(format='awf-install-journal-4', transaction_id=transaction,
+                phase=[], files=[], runtime=installer._runtime_journal(root, transaction),
+                managed_before_sha256='0' * 64, managed_after_sha256='0' * 64)
+            for malformed in ([], {}, {'format': 'awf-install-journal-4'}, invalid_phase):
+                with self.subTest(journal=malformed):
+                    journal.write_text(json.dumps(malformed), encoding='utf-8')
+                    with self.assertRaises(ValueError):
+                        qualify_upgrade.main(['runtime-hash', '--path', str(runtime),
+                            '--expected-sha256', digest, '--journal', str(journal)])
+
+    def test_creation_update_crashes_bind_both_sides_and_refuse_replacement(self):
+        class Crash(BaseException):
+            pass
+        for boundary in ('marker', 'journal'):
+            for substitute in (False, True):
+                with self.subTest(boundary=boundary, substitute=substitute), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    (root / '.agentic').mkdir()
+                    journal = dict(format='awf-install-journal-4', phase='active',
+                        transaction_id=str(uuid.uuid4()), files=[],
+                        managed_before_sha256=installer.sha256(installer.json_bytes([])),
+                        managed_after_sha256=installer.sha256(installer.json_bytes([])))
+                    journal['runtime'] = installer._runtime_journal(root, journal['transaction_id'])
+                    with installer.Tree(root) as tree, installer.install_lock(tree):
+                        installer._publish_initial_intent(tree, journal)
+                        tx = installer._RuntimeInstallTransaction(tree, journal)
+                        tx.stage.mkdir()
+                        native = tree.write
+                        selected = False
+                        def write(relative, data, **options):
+                            nonlocal selected
+                            result = native(relative, data, **options)
+                            if relative == installer.MARKER and json.loads(data).get('pending_update_kind') == 'runtime_creation':
+                                selected = True
+                                if boundary == 'marker':
+                                    raise Crash
+                            if selected and relative == installer.JOURNAL and boundary == 'journal':
+                                raise Crash
+                            return result
+                        with patch.object(tree, 'write', write), self.assertRaises(Crash):
+                            tx.record_runtime_creation()
+                        expected = journal['runtime']['stage_identity']
+                        if substitute:
+                            tx.stage.rename(root / 'original-stage')
+                            tx.stage.mkdir()
+                        current, raw, marker = installer._read_bound_journal(tree)
+                        before = [(root / path).read_bytes() for path in (installer.JOURNAL, installer.MARKER)]
+                        if substitute:
+                            with self.assertRaises(ValidationError):
+                                installer._recover_pending_journal_update(tree, current, raw, marker, publish=False)
+                        else:
+                            recovered = installer._recover_pending_journal_update(tree, current, raw, marker)
+                            self.assertEqual(expected, recovered['runtime']['stage_identity'])
+                            self.assertIsNone(recovered['runtime']['new_sha256'])
+                        if substitute:
+                            self.assertEqual(before, [(root / path).read_bytes()
+                                for path in (installer.JOURNAL, installer.MARKER)])
+
+    @skip_unless_source_repo('owner CLI is shipped in source releases', 'scripts/qualify_upgrade.py')
+    def test_active_post_swap_journal_identifies_canonical_and_refuses_substitute(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import qualify_upgrade
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.agentic/.venv').mkdir(parents=True)
+            (root / '.agentic/.venv/previous').write_bytes(b'old')
+            journal = dict(format='awf-install-journal-4', phase='active',
+                transaction_id=str(uuid.uuid4()), files=[],
+                managed_before_sha256='a' * 64, managed_after_sha256='b' * 64)
+            journal['runtime'] = installer._runtime_journal(root, journal['transaction_id'])
+            with installer.Tree(root) as tree:
+                tx = installer._RuntimeInstallTransaction(tree, journal)
+                tx.stage.mkdir()
+                # Model the durable journal seam; the published integration test
+                # also exercises the real marker/digest protocol and os._exit.
+                def publish(tree, current, kind):
+                    (root / 'journal-copy.json').write_bytes(installer.json_bytes(current))
+                with patch.object(installer, '_write_bound_journal_update', publish):
+                    tx.record_runtime_creation()
+                    (tx.stage / 'new').write_bytes(b'new')
+                    tx.record_staged_runtime()
+                tx.runtime_root.rename(tx.backup)
+                tx.stage.rename(tx.runtime_root)
+            recorded = json.loads((root / 'journal-copy.json').read_bytes())
+            self.assertEqual('active', recorded['phase'])
+            self.assertIsNotNone(recorded['runtime'].get('stage_identity'),
+                                 'T88: active post-swap journal has no runtime creation identity')
+            self.assertEqual(0, qualify_upgrade.main(['runtime-hash', '--path', str(tx.runtime_root),
+                '--expected-sha256', recorded['runtime']['new_sha256'],
+                '--journal', str(root / 'journal-copy.json')]))
+            tx.runtime_root.rename(root / 'real-new')
+            shutil.copytree(root / 'real-new', tx.runtime_root)
+            self.assertEqual(1, qualify_upgrade.main(['runtime-hash', '--path', str(tx.runtime_root),
+                '--expected-sha256', recorded['runtime']['new_sha256'],
+                '--journal', str(root / 'journal-copy.json')]))
+
+    def test_marker_without_journal_recover_refuses_without_payload_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.agentic').mkdir()
+            marker = root / installer.MARKER
+            marker.write_bytes(b'owner-preserved orphan marker\n')
+            owner = root / 'owner'
+            owner.write_bytes(b'owner bytes')
+            with self.assertRaisesRegex(ValidationError, 'marker has no journal; recovery failed closed'):
+                installer.recover(root)
+            self.assertEqual(b'owner-preserved orphan marker\n', marker.read_bytes())
+            self.assertEqual(b'owner bytes', owner.read_bytes())
+            self.assertFalse((root / installer.JOURNAL).exists())
 
 
 if __name__ == '__main__':

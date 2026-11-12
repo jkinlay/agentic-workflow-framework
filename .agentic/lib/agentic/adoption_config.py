@@ -675,6 +675,8 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
         else:
             os.mkdir(stage_name, 0o700, dir_fd=stage_fd)
         stage_identity = tree.entry_identity(stage_relative, directory=True)
+        if transaction is not None:
+            transaction.record_runtime_creation()
         _RuntimeBuilder(custody_tree=tree, stage_relative=stage_relative, stage_identity=stage_identity,
                         with_pip=False, system_site_packages=False, clear=False).create(stage)
         _verify_stage_links(stage)

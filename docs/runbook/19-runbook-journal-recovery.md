@@ -1,6 +1,6 @@
 ### Journal recovery
 
-Use the trusted external release/bootstrap interpreter, especially when installed files/runtime may be incomplete.
+Use trusted external release/bootstrap interpreter, especially when installed files/runtime may be incomplete.
 
 Windows:
 
@@ -14,8 +14,6 @@ macOS/Linux:
 '<install-dir>/bootstrap-venv/bin/python' -B '<install-dir>/release-cache/source/scripts/bootstrap_project.py' --dest '<repo-path>' --recover
 ```
 
-CLI recovery dispatch: `7fcaeece:scripts/bootstrap_project.py:181`.
-
 | Observed recovery condition | Supported behavior |
 |---|---|
 | No pending intent | Returns `NO_PENDING_INSTALL`. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1578`. |
@@ -26,24 +24,24 @@ CLI recovery dispatch: `7fcaeece:scripts/bootstrap_project.py:181`.
 | Missing/tampered recovery objects or external edits | Refuses and retains recovery evidence. Sources: `7fcaeece:.agentic/lib/agentic/installer.py:1238`; `7fcaeece:.agentic/lib/agentic/installer.py:1244`. |
 | POSIX directory removal | Identity-bound removal refuses; recovery is retained. Source: [.agentic/lib/agentic/installer.py](../../.agentic/lib/agentic/installer.py), `_cleanup_transaction_directories`. |
 
-Recovery phases are `object_prepare`, `active`, `rollback_cleanup`, `commit_cleanup`, and `commit_cleanup_authenticated`. They are transaction phases, not repository activation states. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1121`.
+Phases (not activation): `object_prepare`, `active`, `rollback_cleanup`, `commit_cleanup`, `commit_cleanup_authenticated`. Source: `7fcaeece:.agentic/lib/agentic/installer.py:1121`.
 
 The held installer lock retains temporary creating identities across crashes; missing or mismatched custody refuses cleanup. Preserve its bytes and metadata with recovery evidence. One active record uses POSIX user xattrs or Windows ADS; unsupported metadata refuses before payload publication. No lock bytes or inode are replaced.
 
-A stable installer lock may remain after successful rollback; its presence alone does not prove an active installer. Tests retain its inode. Source: [.agentic/lib/agentic/installer.py](../../.agentic/lib/agentic/installer.py), `install_lock`.
+Successful rollback may retain the stable lock inode; presence proves no active installer. Source: [.agentic/lib/agentic/installer.py](../../.agentic/lib/agentic/installer.py), `install_lock`.
 
 **Owner recovery and retiring resolved diagnostics:**
 
 Quarantine: owner-controlled same-filesystem rename outside PROJECT; preserve links/modes/ownership; no copy/delete fallback.
 
 1. No exclusivity-proof CLI: owner stops/checks every host's installers/agents/editors/schedulers/processes/leases. Lock presence proves nothing.
-2. Preserve journal copy/objects/endpoints/metadata. `PYTHON -B RELEASE/scripts/qualify_upgrade.py runtime-hash --path ENDPOINT --expected-sha256 DIGEST` requires 0/`matches:true`; stop for 1=mismatch or 2=malformed/refused. PYTHON=external bootstrap interpreter; RELEASE=verified journal-writing release; PROJECT=absolute project. Backup=recorded-path/`runtime.previous_sha256`.
-3. No backup/canonical `.agentic/.venv`=previous hash: quarantine stage only. Otherwise authenticate canonical/stage=`runtime.new_sha256`; quarantine authenticated runtimes, leaving canonical absent. Absent stage: canonical=swapped:new/unswapped:previous. Existing stage/null new_sha256: unauthenticated; retain diagnostics. Quarantine needs independent owner-verified creation evidence; otherwise stop. Meaning: contemporaneous trusted evidence binding stage creation/identity to this transaction.
-4. `PYTHON -B RELEASE/scripts/bootstrap_project.py --dest PROJECT --recover` restores provable managed files/receipt/provenance/backup.
-5. Legacy `.agentic-backup/<txid>`: use step-2 journal copy; authenticate existing journal-listed FILEs: `PYTHON -B RELEASE/scripts/qualify_upgrade.py file-hash --path FILE --expected-sha256 DIGEST` (new_sha256). Require new_sha256/new_mode. POSIX `posix_ownership` records ORIGINALS only; copy UID=installing effective UID (preserved); GID=parent's group if setgid, otherwise installing effective GID (preserved parent-inheritance evidence). Windows modes/ACLs/streams=journal/accepted baseline. Unknown/differing/unrecorded/unprovable metadata stops. Reject extras; quarantine exact directory/rerun recovery. Never edit journal/marker.
-6. Resolve rows: authenticated restoration/quarantine or deliberate retention. Canonical RECOVERY_REFUSED names restored runtime, never automatically adopted; use step 7. Never discard runtime/remove marker.
-7. Archive index/references/path-by-path resolutions; move only resolved `retained-journal.json` externally. No retirement CLI; preserve evidence objects/adoption audit.
-8. Previous installation: `RUNTIME -B -I WORKFLOW --root PROJECT`: `verify-installation`, `validate-config`, `status`. Absolute restored paths: RUNTIME=`.agentic/.venv/bin/python` (Windows: `.agentic/.venv/Scripts/python.exe`); WORKFLOW=`.agentic/scripts/workflow.py`. Restored 1.9.5 prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE. Fresh-install rollback: confirm runtime/workflow/receipt absent; archive evidence/report uninstalled; checks unavailable. Retry requires recovery/resolution/owner authorization.
+2. Preserve journal copy/objects/endpoints/lock metadata (Windows: ADS). LOCK=PROJECT/.agentic-install/lock. POSIX xattrs without getfattr: `PYTHON -c "import os,sys,json;print(json.dumps({n:os.getxattr(sys.argv[1],n).hex() for n in os.listxattr(sys.argv[1])}))" LOCK > EXTERNAL_XATTRS`. Unavailable capture: use step-3 parked path. `PYTHON -B RELEASE/scripts/qualify_upgrade.py runtime-hash --path ENDPOINT --expected-sha256 DIGEST`: require 0/`matches:true`; stop for 1=mismatch or 2=malformed/refused. PYTHON=external interpreter; RELEASE=verified journal-writing release; PROJECT=absolute. Authenticate backup against `runtime.previous_sha256`.
+3. If backup is absent AND canonical `.agentic/.venv` matches previous hash, keep canonical; quarantine stage only, if present. Otherwise, previous hash nonnull AND backup absent requires parked path below. Authenticate backup if present; quarantine present new canonical AND stage; leave canonical absent. Authenticate each new endpoint with step-2 runtime-hash AND `--journal JOURNAL_COPY`, using `runtime.new_sha256`: require hash AND journal-recorded `runtime.stage_identity` match. AWF records POSIX device AND inode (available birth-time, never ctime), or Windows volume AND file-ID AND creation-time. External observation unnecessary. Unknown endpoint OR null identity OR null digest OR unsupported capture: preserve everything, record PARKED_UNAUTHENTICATED; restore untouched pre-upgrade snapshot into another project, run step 8 there; original stays quiescent without retries.
+4. `PYTHON -B RELEASE/scripts/bootstrap_project.py --dest PROJECT --recover`: expect ROLLED_BACK; backup refusal leads to step 5.
+5. `.agentic-backup/<txid>`: journal-4 with created_directories AND legacy journals. If files remain, use step-2 journal copy; authenticate every listed FILE: `PYTHON -B RELEASE/scripts/qualify_upgrade.py file-hash --path FILE --expected-sha256 DIGEST`. Require new_sha256 AND new_mode; authenticate DIGEST=new_sha256 AND returned mode=new_mode. POSIX `posix_ownership` records ORIGINALS only; copy UID=installing effective UID; GID=parent's group if setgid, otherwise installing effective GID (preserved inheritance evidence). Windows mode=journal; ACLs AND streams=accepted baseline. Unknown OR differing OR unrecorded OR unprovable metadata stops; reject extras. Quarantine exact directory; rerun step 4: ROLLED_BACK. Empty directories: retain deliberately. Repeated --recover: combined records=RETAINED_DIRECTORIES; single legacy refusal=RECOVERY_REFUSED; single empty-directory record=ROLLED_BACK. Quarantined paths remain listed. Never edit journal OR marker.
+6. Resolve rows: authenticated restoration/quarantine or deliberate retention. Null-identity empty managed directories cannot authenticate: retain deliberately; acceptable restored-1.9.5 residue. Canonical RECOVERY_REFUSED names restored runtime, never automatically adopted. Never discard runtime/remove marker.
+7. Archive index/references/path-by-path resolutions; move only resolved `retained-journal.json` to owner-controlled same-filesystem storage outside PROJECT, preserving permissions. No retirement CLI; preserve objects/adoption audit. Confirm step-4 command returns NO_PENDING_INSTALL.
+8. Previous installation: `RUNTIME -B -I WORKFLOW --root PROJECT`: `verify-installation`, `validate-config`, `status`. Absolute paths: RUNTIME=`.agentic/.venv/bin/python` (Windows: `.agentic/.venv/Scripts/python.exe`); WORKFLOW=`.agentic/scripts/workflow.py`. Restored 1.9.5 prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE. Fresh-install rollback: confirm runtime/workflow/receipt absent; archive evidence/report uninstalled; checks unavailable. Retry requires recovery/resolution/owner authorization.
 
 A later successful transaction can instead adopt an existing managed directory it actually reuses, without creation/deletion. It records the source evidence and "adopted by transaction <id>" in `.agentic-install/directory-adoptions.json` before resolving that row; the installer retires the index only when all rows are adopted. Missing/quarantined paths are not automatically adopted.
 

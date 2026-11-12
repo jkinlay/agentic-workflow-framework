@@ -182,10 +182,10 @@ class SimulatedTermination(BaseException):
 class PublishedRecoveryTests(unittest.TestCase):
     def test_conditional_runtime_recovery_and_diagnostic_retirement_are_consistent(self):
         required = (
-            'No backup/canonical `.agentic/.venv`=previous hash: quarantine stage only.',
+            'If backup is absent AND canonical `.agentic/.venv` matches previous hash, keep canonical;',
             'No retirement CLI;',
-            'move only resolved `retained-journal.json` externally',
-            'Legacy `.agentic-backup/<txid>`',
+            'move only resolved `retained-journal.json` to owner-controlled same-filesystem storage outside PROJECT',
+            'journal-4 with created_directories AND legacy journals',
             'runtime-hash --path ENDPOINT --expected-sha256 DIGEST',
             'verified journal-writing release',
             'never automatically adopted',
@@ -193,10 +193,14 @@ class PublishedRecoveryTests(unittest.TestCase):
             'Restored 1.9.5 prints CONFIGURED; rollback proves no CONFIGURED/ACTIVE.',
             '`.agentic/.venv/bin/python` (Windows: `.agentic/.venv/Scripts/python.exe`)',
             '`.agentic/scripts/workflow.py`',
-            'Existing stage/null new_sha256: unauthenticated; retain diagnostics.',
-            'Quarantine needs independent owner-verified creation evidence; otherwise stop.',
+            'Unknown endpoint OR null identity OR null digest OR unsupported capture:',
+            'require hash AND journal-recorded `runtime.stage_identity` match.',
             'file-hash --path FILE --expected-sha256 DIGEST',
-            'unrecorded/unprovable metadata stops',
+            'PARKED_UNAUTHENTICATED',
+            'Null-identity empty managed directories cannot authenticate: retain deliberately;',
+            'Confirm step-4 command returns NO_PENDING_INSTALL.',
+            'os.getxattr(sys.argv[1],n).hex()',
+            'unrecorded OR unprovable metadata stops',
             'owner-controlled same-filesystem rename outside PROJECT; preserve links/modes/ownership',
             "owner stops/checks every host's installers/agents/editors/schedulers/processes/leases",
             'stop for 1=mismatch or 2=malformed/refused',
@@ -263,11 +267,16 @@ class PublishedRecoveryTests(unittest.TestCase):
             for endpoint, digest in ((runtime['path'], previous),
                                      (runtime['stage'], runtime['new_sha256'])):
                 checked = subprocess.run([sys.executable, '-B', str(self.target / 'scripts/qualify_upgrade.py'),
-                    'runtime-hash', '--path', str(project / endpoint), '--expected-sha256', digest],
+                    'runtime-hash', '--path', str(project / endpoint), '--expected-sha256', digest,
+                    *(['--journal', str(project / JOURNAL)] if endpoint == runtime['stage'] else [])],
                     capture_output=True, text=True, env=child_env(), timeout=60)
                 self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
-                self.assertEqual(dict(format='awf-runtime-authentication-1', sha256=digest,
-                    expected_sha256=digest, matches=True, execution_authority=False), json.loads(checked.stdout))
+                observation = json.loads(checked.stdout)
+                self.assertTrue(observation['matches'])
+                self.assertEqual(digest, observation['sha256'])
+                if endpoint == runtime['stage']:
+                    self.assertTrue(observation['identity_matches'])
+                    self.assertEqual(runtime['stage_identity'], observation['identity'])
             self.assertEqual(preserved, refusal_inventory(project))
             stage = project / runtime['stage']
             stage.rename(archive / 'quarantined-stage')
@@ -359,10 +368,11 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
 
     def test_temporary_creation_write_and_coordination_boundaries(self):
         cases = [(boundary, 'replace') for boundary in (
-            JOURNAL, MARKER, 'object', 'backup', 'journal_update',
+            JOURNAL, MARKER, INSTALLED, 'object', 'backup', 'journal_update',
             'marker_pending', 'marker_stable', '.agentic/lib/agentic/operating_status.py')]
         cases += [('.agentic/lib/agentic/operating_status.py', stage)
                   for stage in ('created', 'partial', 'flushed')]
+        cases.append((INSTALLED, 'replaced'))
         if os.name == 'nt':
             cases.append(('.agentic/lib/agentic/operating_status.py', 'metadata'))
         for boundary, stage in cases:
@@ -374,7 +384,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                 sentinel.write_bytes(b'synthetic outside sentinel\n')
                 self.interrupt_temporary(project, boundary, stage)
                 leftovers = list(project.rglob('.awf-*.tmp'))
-                self.assertEqual(1, len(leftovers))
+                self.assertEqual(0 if stage == 'replaced' else 1, len(leftovers))
                 expected = deepcopy(before)
                 if boundary == JOURNAL:
                     relative = leftovers[0].relative_to(project).as_posix()
@@ -642,7 +652,7 @@ install(sys.argv[2], sys.argv[3], sys.argv[4], mode='upgrade', configure=True, d
                     result = install(self.target, project, self.pin, mode='upgrade',
                                      configure=True, discover=False, defer_runtime=True)
                     code = """
-import os, sys, venv
+import os, sys, venv, shutil
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import agentic.installer as installer
@@ -651,8 +661,12 @@ def stop():
     os._exit(73)
 def builder(transaction):
     if boundary == 'before_stage': stop()
+    transaction.stage.mkdir()
+    transaction.record_runtime_creation()
     venv.EnvBuilder(with_pip=False).create(transaction.stage)
     if boundary == 'partial_stage': stop()
+    packages = 'Lib/site-packages' if os.name == 'nt' else f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages'
+    shutil.copytree(transaction.runtime_root / packages, transaction.stage / packages, dirs_exist_ok=True)
     transaction.record_staged_runtime()
     if boundary == 'staged': stop()
     os.replace(transaction.runtime_root, transaction.backup)
@@ -665,13 +679,16 @@ if boundary == 'commit_cleanup':
 installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
 """
                     stopped = subprocess.run([sys.executable, '-B', '-c', code,
-                        str(ROOT / '.agentic/lib'), str(project),
+                        str(self.target / '.agentic/lib'), str(project),
                         result['_runtime_transaction_id'], boundary], capture_output=True,
                         text=True, env=child_env(), timeout=120)
                     self.assertEqual(73, stopped.returncode, stopped.stdout + stopped.stderr)
                     before = refusal_inventory(project)
                     journal = json.loads((project / JOURNAL).read_bytes())
                     runtime = journal['runtime']
+                    if boundary == 'runtime_swap':
+                        self.assertIsNotNone(runtime.get('stage_identity'),
+                            'T88: active post-swap journal must retain stage creation identity')
                     if boundary in ('staged', 'backup_swap', 'runtime_swap'):
                         blocked = [runtime['path'] if boundary == 'runtime_swap' else runtime['stage']]
                         self.assertEqual(REFUSAL, self.recover_refused(project, forbid_mutation=True)['diagnostic'])
@@ -735,6 +752,15 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
                                          installer._runtime_tree_sha256(project / runtime['backup']))
                         self.assertFalse((project / JOURNAL).exists())
                         self.assertFalse((project / MARKER).exists())
+                        # P3: execute the installed CLI while retained-journal
+                        # remains present; valid diagnostics cannot block integrity.
+                        python = project / installer.RUNTIME / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+                        checked = subprocess.run([str(python), '-B', '-I',
+                            str(project / '.agentic/scripts/workflow.py'), '--root', str(project),
+                            'verify-installation'], capture_output=True, text=True, env=child_env(), timeout=60)
+                        self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+                        self.assertTrue(json.loads(checked.stdout)['integrity_valid'])
+                        self.assertTrue((project / RETAINED_JOURNAL).exists())
                         from agentic.providers.github_status import project_status, render_status
                         from unittest.mock import Mock
                         status = project_status(project, gh=Mock())
@@ -768,9 +794,13 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
         for endpoint, digest in ((runtime['backup'], runtime['previous_sha256']),
                                  (new_path, runtime['new_sha256'])):
             checked = self.owner_command('qualify_upgrade.py', 'runtime-hash',
-                '--path', project / endpoint, '--expected-sha256', digest)
-            self.assertEqual(dict(format='awf-runtime-authentication-1', sha256=digest,
-                expected_sha256=digest, matches=True, execution_authority=False), checked)
+                '--path', project / endpoint, '--expected-sha256', digest,
+                *(['--journal', project / JOURNAL] if endpoint == new_path else []))
+            self.assertTrue(checked['matches'])
+            self.assertEqual(digest, checked['sha256'])
+            if endpoint == new_path:
+                self.assertTrue(checked['identity_matches'])
+                self.assertEqual(runtime['stage_identity'], checked['identity'])
         self.assertEqual(preserved, refusal_inventory(project))
         # Step 3: backup is authenticated; quarantine ONLY the new endpoint,
         # preserving metadata with a same-filesystem rename, never copy/delete.
@@ -787,6 +817,9 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
         for relative, raw in originals.items():
             self.assertEqual(raw, (project / relative).read_bytes())
         self.assertEqual(runtime['previous_sha256'], installer._runtime_tree_sha256(project / runtime['path']))
+        # P3: retained diagnostics do not block restored installed integrity.
+        self.assertTrue((project / RETAINED_JOURNAL).exists())
+        self.assert_canonical_restored(project)
         # Steps 6-7: explicitly resolve every retained row, preserve references
         # and resolutions, and move only the resolved diagnostic index externally.
         status = installer.retained_directory_status(project)
@@ -907,6 +940,37 @@ installer.complete_runtime_transaction(sys.argv[2], sys.argv[3], builder)
             finally:
                 first.chmod(mode)
             self.assertEqual(preserved, refusal_inventory(project))
+            # U2: emit a legacy journal-4 fixture through the bound writer. This
+            # models a writer predating created_directories; owner recovery
+            # below never edits its journal or marker.
+            journal.pop('created_directories')
+            with installer.Tree(project) as tree, installer.install_lock(tree):
+                installer._write_bound_journal_update(tree, journal, 'managed_after')
+            original_receipt = (self.baseline / INSTALLED).read_bytes()
+            before_refusal = refusal_inventory(project)
+            self.assertEqual(REFUSAL, self.recover_refused(project)['diagnostic'])
+            after_refusal = refusal_inventory(project)
+            self.assertEqual({k: v for k, v in before_refusal.items() if k != RETAINED_JOURNAL},
+                             {k: v for k, v in after_refusal.items() if k != RETAINED_JOURNAL})
+            archive = Path(temporary) / 'owner-archive'
+            archive.mkdir()
+            shutil.copytree(project / '.agentic-install', archive / 'preserved-evidence')
+            # Step 5 must run while every journal-listed FILE still exists.
+            self.assertEqual(set(records), set(self.authenticate_backup_rows(project, journal, creation)))
+            backup = project / '.agentic-backup' / journal['transaction_id']
+            backup.rename(archive / 'quarantined-file-backup')
+            recovered = self.owner_command('bootstrap_project.py', '--dest', project, '--recover')
+            self.assertEqual('ROLLED_BACK', recovered['status'])
+            self.assertEqual(original_receipt, (project / INSTALLED).read_bytes())
+            retained = self.owner_command('bootstrap_project.py', '--dest', project, '--recover')
+            self.assertEqual('RECOVERY_REFUSED', retained['status'])
+            self.assertIn(backup.relative_to(project).as_posix(), retained['retained_directories'])
+            (archive / 'resolutions.json').write_bytes(json_bytes({
+                path: ('authenticated backup quarantined' if path == backup.relative_to(project).as_posix()
+                       else 'deliberately retained') for path in retained['retained_directories']}))
+            (project / RETAINED_JOURNAL).rename(archive / 'resolved-retained-journal.json')
+            self.assertEqual({'status': 'NO_PENDING_INSTALL'},
+                             self.owner_command('bootstrap_project.py', '--dest', project, '--recover'))
 
     def recover_refused(self, project, *, forbid_mutation=False):
         code = """

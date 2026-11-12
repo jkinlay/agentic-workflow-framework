@@ -801,6 +801,7 @@ def _authenticate_retained_journal(before, after, policy, project, journal):
         new_sha256=(after.get('runtime') or {}).get('sha256'),
         stage='.agentic/.venv.staging-' + identity,
         backup='.agentic/.venv.backup-' + identity,
+        stage_identity=installation.runtime_creation_identity(Path(project) / installation.RUNTIME),
         cleanup_identity=None, cleanup_members=None)
     if not baseline or journal['runtime'] != expected_runtime:
         raise ValueError('Retained transaction runtime record differs from baseline policy')
@@ -1458,6 +1459,8 @@ def main(argv=None):
     authentication = sub.add_parser('runtime-hash', help='read-only runtime endpoint authentication against a journal digest')
     authentication.add_argument('--path', type=Path, required=True)
     authentication.add_argument('--expected-sha256', required=True)
+    authentication.add_argument('--journal', type=Path,
+        help='preserved transaction journal: require stage creation identity AND new runtime digest')
     file_authentication = sub.add_parser('file-hash', help='read-only journal file authentication and metadata capture')
     file_authentication.add_argument('--path', type=Path, required=True)
     file_authentication.add_argument('--expected-sha256', required=True)
@@ -1513,10 +1516,29 @@ def main(argv=None):
                 expected_sha256=args.expected_sha256, matches=digest == args.expected_sha256,
                 execution_authority=False, **metadata), sort_keys=True))
             return 0 if digest == args.expected_sha256 else 1
+        before = installation.runtime_creation_identity(args.path) if args.journal else None
+        expected_identity = None
+        if args.journal:
+            try:
+                journal = loads(args.journal.read_text(encoding='utf-8'))
+                installation._validate_transaction_journal(journal)
+                runtime = installation._validated_runtime_journal(journal)
+            except (KeyError, TypeError) as exc:
+                raise ValueError('Invalid runtime authentication journal') from exc
+            if (runtime is None or runtime.get('stage_identity') is None or
+                    runtime['new_sha256'] is None or runtime['new_sha256'] != args.expected_sha256):
+                raise ValueError('Journal has no usable runtime creation identity/digest; preserve endpoints and park recovery')
+            expected_identity = runtime['stage_identity']
         digest = runtime_tree_sha256(args.path)
         matches = digest == args.expected_sha256
+        extra = {}
+        if args.journal:
+            after = installation.runtime_creation_identity(args.path)
+            identity_matches = before == after == expected_identity
+            matches = matches and identity_matches
+            extra = dict(identity=after, expected_identity=expected_identity, identity_matches=identity_matches)
         print(json.dumps(dict(format='awf-runtime-authentication-1', sha256=digest,
-            expected_sha256=args.expected_sha256, matches=matches, execution_authority=False), sort_keys=True))
+            expected_sha256=args.expected_sha256, matches=matches, execution_authority=False, **extra), sort_keys=True))
         return 0 if matches else 1
     if args.command == 'installed':
         delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
