@@ -702,7 +702,20 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		record = {'pid': 1234, 'launch_nonce': 'delayed-nonce', 'startup_proof_path': str(startup_proof), 'terminal_proof_path': str(self.root / 'delayed.terminal.json')}
 
 		def write_failure():
-			startup_proof.write_text(json.dumps({'pid': 1234, 'launch_nonce': 'delayed-nonce', 'status': 'FAILED', 'terminal': False, 'diagnostic': 'SANDBOX_SETUP_CONFIG_ERROR', 'config_source': 'AWF isolated CODEX_HOME/config.toml'}), encoding='utf-8')
+			raw = json.dumps({'pid': 1234, 'launch_nonce': 'delayed-nonce', 'status': 'FAILED', 'terminal': False, 'diagnostic': 'SANDBOX_SETUP_CONFIG_ERROR', 'config_source': 'AWF isolated CODEX_HOME/config.toml'}).encode('utf-8')
+			# Publish a complete record to the polling reader, as the watcher does.
+			fd, temporary = tempfile.mkstemp(prefix='.awf-durable-', dir=startup_proof.parent)
+			try:
+				with os.fdopen(fd, 'wb') as stream:
+					stream.write(raw)
+					stream.flush()
+					os.fsync(stream.fileno())
+				os.replace(temporary, startup_proof)
+			finally:
+				try:
+					os.unlink(temporary)
+				except FileNotFoundError:
+					pass
 		timer = threading.Timer(0.05, write_failure)
 		timer.start()
 		try:

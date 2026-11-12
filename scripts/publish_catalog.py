@@ -14,6 +14,7 @@ from agentic.canonical import loads, sha256
 from agentic.installer import install_lock, verify_release
 from agentic.safeio import Tree
 from release_review import add_review_arguments, review_source
+from release_self_test import require_reconciled_qualification
 
 
 def read_validation_report(path):
@@ -55,10 +56,7 @@ def publish(source, archive, validation_report, catalog, reviews=None, reviews_s
         raise ValidationError('Catalog publication requires passing final validation for these exact release bytes')
     current_review = review_source(source, manifest_digest, reviews, reviews_sha256,
                                   required_paths, required_paths_sha256)
-    if (report.get('current_review') != current_review
-            or report.get('extracted_tests', {}).get('current_review') != current_review
-            or report.get('extracted_tests', {}).get('release_qualified') is not True):
-        raise ValidationError('Catalog publication requires independently rechecked current release review')
+    require_reconciled_qualification(report, current_review)
     for name in ['extracted_tests', 'installed_tests']:
         tests = report.get(name, {})
         result = tests.get('tests', {})
