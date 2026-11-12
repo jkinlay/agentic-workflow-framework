@@ -649,11 +649,15 @@ def _publication_scan_command(command, *, cwd):
                           text=False, timeout=3600, check=False)
 
 
-def run_publication_scan(repository, scanner_source, base, head, report_path, *, command_runner=None):
+def run_publication_scan(repository, scanner_source, base, head, report_path, *, command_runner=None,
+                         provider_text=None, expected_sha256=None):
     """Run the shipped publication-scan CLI and bind its exact JSON bytes."""
     command = [sys.executable, "-B", str(Path(scanner_source) / ".agentic/scripts/workflow.py"),
                "--root", str(repository), "publication-scan",
                "--base", base, "--head", head, "--json"]
+    if provider_text is not None:
+        verify_frozen_file(provider_text, expected_sha256, "provider text")
+        command.extend(("--pr-body", str(provider_text)))
     runner = command_runner or _publication_scan_command
     try:
         result = runner(command, cwd=repository)
@@ -695,8 +699,62 @@ def run_publication_scan(repository, scanner_source, base, head, report_path, *,
             f"publication scan command failed before release mutation with exit {result.returncode}")
     if blocking or unscanned:
         raise ReleaseError("publication scan PASS contradicts blocking or unscanned counts; release refused")
-    return {"status": status, "base_sha": base, "head_sha": head,
-            "sha256": hashlib.sha256(raw).hexdigest()}
+    receipt = {"status": status, "base_sha": base, "head_sha": head,
+               "sha256": hashlib.sha256(raw).hexdigest()}
+    if provider_text is not None:
+        if (report.get("pr_body_sha256") != expected_sha256
+                or report.get("coverage", {}).get("pr_bodies") is not True
+                or report.get("additional_pr_body_sha256") != []):
+            raise ReleaseError("publication scan provider text digest/coverage mismatch; release refused")
+        verify_frozen_file(provider_text, expected_sha256, "provider text")
+        receipt["pr_body_sha256"] = expected_sha256
+    return receipt
+
+
+def verify_frozen_file(path, expected_sha256, label):
+    """Re-read the consumed file, refusing aliases and changed or missing bytes."""
+    try:
+        info = Path(path).lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or getattr(info, "st_file_attributes", 0) & 0x400):
+            raise ReleaseError(f"{label} changed file identity; release refused")
+        raw = Path(path).read_bytes()
+    except OSError:
+        raise ReleaseError(f"{label} changed or became unavailable; release refused") from None
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ReleaseError(f"{label} digest mismatch; release refused")
+    return raw
+
+
+def freeze_files(destination, contents):
+    """Use the existing exclusive no-follow writer for a new publication directory."""
+    entries, blobs = [], {}
+    for name, raw in contents.items():
+        digest = hashlib.sha256(raw).hexdigest()
+        entries.append(TreeEntry(name, "100600", digest))
+        blobs[digest] = raw
+    safe_materialize.materialize(destination, entries, blobs)
+
+
+def stage_release_assets(assets, recorded_hashes, destination):
+    """Copy verified bytes once; providers consume exclusively created copies.
+
+    Reusing the portable materializer avoids reopening the mutable build paths
+    for upload, without introducing a second platform-specific creation path.
+    """
+    if len(assets) != len(recorded_hashes) or {path.name for path in assets} != set(recorded_hashes):
+        raise ReleaseError("release asset inventory mismatch; release refused")
+    contents = {path.name: verify_frozen_file(path, recorded_hashes[path.name], "release asset")
+                for path in assets}
+    freeze_files(destination, contents)
+    return [destination / path.name for path in assets]
+
+
+def verify_publication_files(text_files, assets, upload_assets, recorded_hashes):
+    for path, digest in text_files.items():
+        verify_frozen_file(path, digest, "provider text")
+    for path in [*assets, *upload_assets]:
+        verify_frozen_file(path, recorded_hashes[path.name], "release asset")
 
 
 def render_record(commit, manifest_sha256, assets, validations, windows_check, publication_scan):
@@ -743,11 +801,25 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         body = (changelog_notes(source, version) + "\n\n### Reproducible release record\n\n"
                 + "```json\n" + json.dumps(record, indent=2, sort_keys=True) + "\n```\n\n"
                 + "This release is a draft. The owner publishes it after review.\n")
+        # Encode once. Receipts stay outside these texts to avoid self-reference.
+        text_dir = output / "provider-text"
+        contents = {"tag-message.txt": tag_message.encode("utf-8"),
+                    "release-body.md": body.encode("utf-8")}
+        freeze_files(text_dir, contents)
+        text_files = {text_dir / name: hashlib.sha256(raw).hexdigest() for name, raw in contents.items()}
+        tag_file, body_file = text_dir / "tag-message.txt", text_dir / "release-body.md"
+        provider_text_scans = {}
+        for label, path in (("tag_message", tag_file), ("release_body", body_file)):
+            provider_text_scans[label] = run_publication_scan(
+                repository, source, base, commit, output / (label.replace("_", "-") + "-scan.json"),
+                command_runner=scan_command_runner, provider_text=path, expected_sha256=text_files[path])
         result = {"status": "DRY_RUN" if dry_run else "DRAFT_CREATED", "tag": tag,
                   "record": record, "tag_message": tag_message, "release_body": body,
                    "assets": [str(path) for path in assets], "remote_changes": not dry_run,
-                   "publication_scan": publication_scan}
+                   "publication_scan": publication_scan, "provider_text_scans": provider_text_scans}
         if dry_run:
+            upload_assets = stage_release_assets(assets, record["assets"], output / "upload-assets")
+            verify_publication_files(text_files, assets, upload_assets, record["assets"])
             return result
         # Resolve and validate the release target before any local or remote mutation.
         release_repo = origin_repository(repository)
@@ -755,14 +827,14 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         if _parse_repository_url(push_url) != release_repo:
             raise ReleaseError("origin push URL changed while resolving the release target; refusing to publish")
         push_plan = _release_tag_push_plan(repository, tag, gh=gh, origin_url=push_url)
-        tag_file = output / "tag-message.txt"
-        body_file = output / "release-body.md"
-        tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
-        body_file.write_text(body, encoding="utf-8", newline="\n")
+        upload_assets = stage_release_assets(assets, record["assets"], output / "upload-assets")
+        verify_publication_files(text_files, assets, upload_assets, record["assets"])
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
-                "-F", str(tag_file))
+                "--cleanup=verbatim", "-F", str(tag_file))
+        verify_publication_files(text_files, assets, upload_assets, record["assets"])
         push_release_tag(repository, tag, gh=gh, origin_url=push_url, plan=push_plan)
-        run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
+        verify_publication_files(text_files, assets, upload_assets, record["assets"])
+        run([gh, "release", "create", tag, *map(str, upload_assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result
 

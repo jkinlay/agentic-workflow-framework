@@ -764,7 +764,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/prompt_templates/specialist-reviewer.md` | `6d0993a94d4272b711fa8beec9d8fcccf2d2f739856f94f5f530801a2329ac92` |
 | `scripts/prompt_templates/worker.md` | `3f727448e713e52341c6a27aa061b79447869fde020fc0978f07eb25d7e26b79` |
 | `scripts/publish_catalog.py` | `edcade1a8b59ff546527e11925997555aa9e646def09e2e82ef97b2934879dcc` |
-| `scripts/publish_release.py` | `1f95dd85c942a3015642c17d9ae01f3090ab311f6cdabbf2927595237b2495ca` |
+| `scripts/publish_release.py` | `41648619d26bb1a322ee064dd510e9f1d729f43242b53c2b913c96d9a27fe926` |
 | `scripts/qualify_upgrade.py` | `cb9220f3c390dec88c67c207081f1fc6db570372622ad3fcb9707e8cdca967cb` |
 | `scripts/release_hygiene.py` | `6464bc40a969246566bc56ad39bb74cde23a3d0ab68e3cbd157324c422feb7bc` |
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
@@ -806,7 +806,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
-| `scripts/tests/test_publish_release.py` | `0dc0d878d9ab99435c28a113eccffc9d0930693adc3af9070804cf73a2cad3eb` |
+| `scripts/tests/test_publish_release.py` | `b14be3ba7d5f66b30550a00a731cc6ff52d9430bfa23783fa77dfdb79902c6ba` |
 | `scripts/tests/test_qualify_upgrade.py` | `fef030be8692d113f18905d5ddcca13b4401fa2bec55feb5709bd2721e7249dc` |
 | `scripts/tests/test_qualify_upgrade_r1.py` | `6f568edf171b25649730de0431aa20639f2453e8e108656d097f82fbf72d46c5` |
 | `scripts/tests/test_release_hygiene.py` | `349ddb4ed2247235c70fe7ca48fb20697c0813818d9e15ba5f3c6fa972c16b37` |
