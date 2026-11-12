@@ -32,11 +32,15 @@ import test_release_trust  # noqa: E402
 import test_skill_distribution_ordering  # noqa: E402
 import test_awf243_review_regressions  # noqa: E402
 import test_awf243_operator_recovery  # noqa: E402
+import test_awf266_runtime  # noqa: E402
+import test_awf266_round1  # noqa: E402
+import test_path_mutation_guard  # noqa: E402
 
 
 INVENTORY_MODULES = {
     ".agentic/tests/test_awf243_operator_recovery.py": test_awf243_operator_recovery,
     ".agentic/tests/test_awf243_review_regressions.py": test_awf243_review_regressions,
+    ".agentic/tests/test_awf266_runtime.py": test_awf266_runtime,
     ".agentic/tests/test_bootstrap_configuration.py": test_bootstrap_configuration,
     ".agentic/tests/test_continuous_controller.py": test_continuous_controller,
     ".agentic/tests/test_five_slot_acceleration.py": test_five_slot_acceleration,
@@ -53,6 +57,8 @@ INVENTORY_MODULES = {
     ".agentic/tests/test_release_trust.py": test_release_trust,
     "scripts/tests/test_publish_release.py": test_publish_release,
     "scripts/tests/test_skill_distribution_ordering.py": test_skill_distribution_ordering,
+    "scripts/tests/test_awf266_round1.py": test_awf266_round1,
+    "scripts/tests/test_path_mutation_guard.py": test_path_mutation_guard,
 }
 
 

@@ -780,7 +780,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/release_review.py` | `e2b452f19c52a4f61671bd6b47342d3385f98e109e5663a1d4162f577d95e089` |
 | `scripts/release_self_test.py` | `d85897367a23a0c1fac73bd9b0e2a3fbc3a9b950b62d34b5332f9b293a9f28ed` |
 | `scripts/run_installed_self_test_shard.py` | `afee6d98210a2858e6af8527c605489d0dafc1b3b8c81075ffa210246781467d` |
-| `scripts/run_publication_pre_controller.py` | `a1fe82f65ad6a3b135f2a18ac0d69d4bebbabd8a1b76241556f97b3b2474c297` |
+| `scripts/run_publication_pre_controller.py` | `a3432a4a36eb3838e04f614c4293913d5c0d676a284d525b24be6360fd1cd67c` |
 | `scripts/run_windows_unittests.py` | `bac924e8e129b3f43d45146a034e2cb1b819bb084d6a0aa8cf08ceccd7ee6283` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
