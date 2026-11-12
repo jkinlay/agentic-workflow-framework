@@ -357,7 +357,10 @@ def _load_locked_wheels(wheelhouse, requirements):
         total += len(raw)
         if total > _MAX_DEPENDENCY_BYTES:
             raise ValidationError("Offline runtime wheelhouse exceeds the runtime copy limit")
-        artifact = _inspect_locked_wheel(path.name, raw, requirements)
+        try:
+            artifact = _inspect_locked_wheel(path.name, raw, requirements)
+        except ValidationError as exc:
+            raise ValidationError(str(exc) + ': ' + path.name) from exc
         if artifact["name"] in artifacts:
             raise ValidationError("Offline runtime wheelhouse contains multiple artifacts for: " + artifact["display_name"])
         artifacts[artifact["name"]] = artifact
@@ -393,32 +396,37 @@ def prevalidate_runtime_wheelhouse(source, expected_manifest_sha256, wheelhouse)
     return _PreparedRuntimeWheelhouse(source_manifest_sha256, lock_sha256, dependencies, artifacts)
 
 
-def _extract_locked_wheels(artifacts, target):
-    copied, folded, total = {}, {}, 0
+def _locked_runtime_files(artifacts):
+    """Derive one exact installed inventory for both reuse and extraction."""
+    files, folded, total = {}, set(), 0
     for name in sorted(artifacts):
-        artifact = artifacts[name]
-        for relative_text, raw in sorted(artifact["files"].items()):
-            relative = PurePosixPath(relative_text)
-            previous = copied.get(relative_text)
-            digest = hashlib.sha256(raw).digest()
-            previous_folded = folded.get(relative_text.casefold())
-            if previous is not None or previous_folded is not None:
+        for relative_text, raw in sorted(artifacts[name]["files"].items()):
+            if relative_text in files or relative_text.casefold() in folded:
                 raise ValidationError("Locked wheels contain a conflicting runtime file: " + relative_text)
             total += len(raw)
             if total > _MAX_DEPENDENCY_BYTES:
                 raise ValidationError("Locked dependencies exceed the runtime extraction limit")
-            destination = target.joinpath(*relative.parts)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                with destination.open("xb") as stream:
-                    stream.write(raw)
-                os.chmod(destination, 0o600)
-            except OSError as exc:
-                raise ValidationError("Canonical runtime dependency extraction failed: " + relative_text) from exc
-            if _file_sha256(destination) != digest:
-                raise ValidationError("Canonical runtime dependency extraction failed verification: " + relative_text)
-            copied[relative_text] = digest
-            folded[relative_text.casefold()] = relative_text
+            files[relative_text] = raw
+            folded.add(relative_text.casefold())
+    return files
+
+
+def _extract_locked_wheels(artifacts, target):
+    copied = {}
+    for relative_text, raw in _locked_runtime_files(artifacts).items():
+        relative = PurePosixPath(relative_text)
+        digest = hashlib.sha256(raw).digest()
+        destination = target.joinpath(*relative.parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with destination.open("xb") as stream:
+                stream.write(raw)
+            os.chmod(destination, 0o600)
+        except OSError as exc:
+            raise ValidationError("Canonical runtime dependency extraction failed: " + relative_text) from exc
+        if _file_sha256(destination) != digest:
+            raise ValidationError("Canonical runtime dependency extraction failed verification: " + relative_text)
+        copied[relative_text] = digest
     return copied
 
 
@@ -517,11 +525,18 @@ def _builder_owns_backup_cleanup(transaction):
 
 
 def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None,
-                             transaction=None):
-    """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
+                             transaction=None, runtime_only=False):
+    """Build a hash-bound offline runtime and atomically replace the canonical runtime.
+
+    runtime_only preserves clone receipts and all non-runtime paths: report
+    retained siblings to the caller instead of writing installation journals.
+    Existing bootstrap/upgrade transactions keep their journal behavior.
+    """
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
     from .installer import Tree, _retained_directory_result, _record_cleanup_pending
+    if runtime_only and transaction is not None:
+        raise ValidationError('Runtime-only provisioning cannot join an installation transaction')
     with Tree(root) as tree:
         _retained_directory_result(tree)
     runtime_root = root / ".agentic" / ".venv"
@@ -546,7 +561,28 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
                 dependencies != prepared_wheelhouse.dependencies):
             raise ValidationError("Installed runtime dependency lock changed after wheelhouse prevalidation")
         artifacts = prepared_wheelhouse.artifacts
+    if runtime_only:
+        from .runtime_tags import validate_host_tags
+        validate_host_tags(artifacts)
     expected_versions = {name: dependencies[name]["version"] for name in sorted(dependencies)}
+    expected_files = {path: hashlib.sha256(raw).digest()
+                      for path, raw in _locked_runtime_files(artifacts).items()}
+    result = {"interpreter": str(interpreter), "entry_point": str(entry_point),
+              "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
+              "requirements_lock_sha256": lock_sha256,
+              "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
+              "artifact_sha256": {artifacts[name]["display_name"]: artifacts[name]["artifact_sha256"] for name in sorted(artifacts)},
+              "verified_dependency_files": len(expected_files)}
+    if runtime_only and interpreter.is_file() and entry_point.is_file():
+        try:
+            _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files)
+        except (ValidationError, OSError):
+            # An invalid or different runtime follows the existing stage/swap
+            # route. No staging name or directory exists before this check.
+            pass
+        else:
+            return {**result, "runtime_unchanged": True, "transaction_cleanup": "COMPLETE",
+                    "transaction_cleanup_failures": []}
     if transaction is None:
         stage = _transaction_sibling(runtime_root, "staging")
         backup = _transaction_sibling(runtime_root, "backup")
@@ -590,24 +626,25 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
             retained = [path for path in candidates
                         if path.exists() or path.is_symlink()]
             if retained:
-                with Tree(root) as tree:
-                    _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')
-                original.add_note('Runtime cleanup pending; inspect retained-journal.json before owner recovery')
+                if runtime_only:
+                    original.add_note('Runtime recovery directories retained: ' + ', '.join(map(str, retained)))
+                else:
+                    with Tree(root) as tree:
+                        _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')
+                    original.add_note('Runtime cleanup pending; inspect retained-journal.json before owner recovery')
         except BaseException as diagnostic_error:
             original.add_note('Retained cleanup diagnostic could not be written: ' + type(diagnostic_error).__name__)
         raise
     cleanup = []
     if transaction is None and (backup.exists() or backup.is_symlink()):
-        with Tree(root) as tree:
-            cleanup = _record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
-    return {"interpreter": str(interpreter), "entry_point": str(entry_point),
+        if runtime_only:
+            cleanup = [{'path': str(backup), 'reason': 'Previous runtime retained for owner recovery'}]
+        else:
+            with Tree(root) as tree:
+                cleanup = _record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
+    return {**result, "runtime_unchanged": False,
             "transaction_cleanup": "COMMITTED_CLEANUP_PENDING" if cleanup else "COMPLETE",
-            "transaction_cleanup_failures": cleanup,
-            "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
-            "requirements_lock_sha256": lock_sha256,
-            "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
-            "artifact_sha256": {artifacts[name]["display_name"]: artifacts[name]["artifact_sha256"] for name in sorted(artifacts)},
-            "verified_dependency_files": len(expected_files)}
+            "transaction_cleanup_failures": cleanup}
 
 
 def unresolved(value):

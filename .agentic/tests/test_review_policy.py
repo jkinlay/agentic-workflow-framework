@@ -49,6 +49,8 @@ def sealed_runtime(folder):
     It exited 3 with ``Missing dependency: No module named 'jsonschema'. Install
     .agentic/requirements.lock with --require-hashes.``; the focused unittest
     exited 1 with ``AssertionError: 2 != 3`` before dependency seeding was added.
+    AWF-286 keeps this dependency-free reproduction but now prints the
+    provision-runtime recovery command instead of the historical install advice.
     """
     import hashlib
     import importlib.util
@@ -61,8 +63,9 @@ def sealed_runtime(folder):
     pre_fix_command = [sys.executable, "-B", "-I", "-S", str(runtime / ".agentic/scripts/workflow.py"),
                        "validate-record", "ticket-contract", str(Path(folder) / "contract.json")]
     pre_fix = subprocess.run(pre_fix_command, capture_output=True, text=True)
-    expected_error = ("Missing dependency: No module named 'jsonschema'. Install "
-                      ".agentic/requirements.lock with --require-hashes.\n")
+    from agentic.runtime_commands import provision_command
+    expected_error = ("Missing dependency: No module named 'jsonschema'. Run with a matching host Python: "
+                      + provision_command(runtime) + "\n")
     if (pre_fix.returncode, pre_fix.stdout, pre_fix.stderr) != (3, "", expected_error):
         raise AssertionError(
             "AWF-100 pre-fix reproduction changed: "

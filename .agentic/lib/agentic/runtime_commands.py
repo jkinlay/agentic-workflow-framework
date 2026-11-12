@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import sys
 from pathlib import Path
 
 from . import VERSION
@@ -30,6 +32,34 @@ def powershell_command(interpreter, entry_point, root, arguments):
     return " ".join(fields)
 
 
+def provision_command(root):
+    root, _, entry_point = installed_paths(root)
+    return powershell_command(sys.executable, entry_point, root,
+                              ['provision-runtime', '--wheelhouse', 'ABS_WHEELHOUSE'])
+
+
+def runtime_backup_warning(path):
+    """Render owner-only cleanup advice; never execute a cleanup operation."""
+    path = str(path)
+    return ("WARNING: Retained runtime directory: " + path +
+            ". Once satisfied with the replacement, remove this backup yourself. "
+            "This directory is not ignored by Git and must not be committed.\n"
+            "PowerShell: Remove-Item -LiteralPath " + powershell_quote(path) + " -Recurse -Force\n"
+            "POSIX sh: rm -rf -- " + shlex.quote(path))
+
+
+def runtime_backup_warnings(root):
+    """Observe runtime siblings without traversing or changing retained bytes."""
+    parent = Path(root).resolve() / '.agentic'
+    try:
+        paths = sorted(path for path in parent.iterdir() if path.name.startswith('.venv.backup-'))
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return ['WARNING: Runtime backup inventory unavailable; inspect .agentic/.venv.backup-* under owner control.']
+    return [runtime_backup_warning(path) for path in paths]
+
+
 def command_catalog(root, *, platform=None):
     root, interpreter, entry_point = installed_paths(root, platform=platform)
     commands = [
@@ -50,6 +80,7 @@ def command_catalog(root, *, platform=None):
             "entry_point_exists": entry_point.is_file(),
         },
         "shell": "powershell",
+        "warnings": runtime_backup_warnings(root),
         "commands": [
             {"purpose": purpose,
              "command": powershell_command(interpreter, entry_point, root, arguments),
@@ -66,6 +97,7 @@ def command_catalog(root, *, platform=None):
             "detail": "Activation-blocker aggregation is supplied by status, not this command.",
         },
         "execution_authority": False,
+        "next_action": provision_command(root) if not interpreter.is_file() else None,
     }
 
 
@@ -76,5 +108,8 @@ def render_doctor(report):
         "Entry point: " + report["runtime"]["entry_point"],
     ]
     lines.extend(item["purpose"] + ": " + item["command"] for item in report["commands"])
+    lines.extend(report.get("warnings", []))
     lines.append("Activation summary: EXTENSION_POINT (status owns activation blockers)")
+    if report.get("next_action"):
+        lines.append("Next: " + report["next_action"])
     return "\n".join(lines) + "\n"

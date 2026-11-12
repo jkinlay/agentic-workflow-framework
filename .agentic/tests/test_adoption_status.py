@@ -134,6 +134,14 @@ class AdoptionStatusTests(unittest.TestCase):
         git('-c', 'user.name=AWF Synthetic Fixture', '-c', 'user.email=awf@example.invalid', 'commit', '-m', 'Synthetic adoption fixture')
         git('checkout-index', '-f', '--', '.github/CODEOWNERS')
         cls.head = git('rev-parse', 'HEAD')
+        # Provider-acceptance cases model a runnable installation. AWF-286
+        # gives missing-runtime recovery priority in next_action; these tests
+        # never execute the interpreter, so use an explicitly inert sentinel.
+        from agentic.runtime_commands import installed_paths
+        runtime = installed_paths(cls.root)[1]
+        runtime.parent.mkdir(parents=True)
+        runtime.write_bytes(b'AWF provider-status fixture; not executable\n')
+        (cls.root / '.git/info/exclude').write_bytes(b'.agentic/.venv/\n')
         cls.pr_head = 'd' * 40
         cls.base = 'repos/fixture/example'
         repository_identity = {'id': 101, 'node_id': 'R_fixture', 'full_name': 'fixture/example'}
