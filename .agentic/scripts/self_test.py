@@ -245,7 +245,7 @@ def main(argv=None):
     parser.add_argument('--report', type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--checks-only', action='store_true', help='Explicit default: component checks without release qualification; review remains NOT_PROVIDED')
-    mode.add_argument('--release', action='store_true', help='Run component checks and require pinned current independent reviews; never qualifies a release. Qualification requires scripts/release_self_test.py via scripts/validate_archive.py or scripts/publish_release.py')
+    mode.add_argument('--release', action='store_true', help='Run component checks and require pinned current independent reviews; never qualifies a release. Qualification requires sharded scripts/release_self_test.py with current review pins and source/installed deferral reconciliation, as scripts/validate_archive.py uses it. scripts/publish_release.py default validations supply no review arguments and cannot qualify')
     parser.add_argument('--expected-manifest-sha256')
     parser.add_argument('--reviews', type=Path)
     parser.add_argument('--expected-reviews-sha256')
@@ -299,7 +299,7 @@ def main(argv=None):
         'created_at': datetime.now(timezone.utc).isoformat(), 'python': sys.version,
         'platform': platform.platform(), 'checks': {}, 'dependencies': {}, 'status': 'FAILED',
         'release_qualified': False,
-        'release_qualification_reason': 'Component checks never qualify a release, even with valid review pins. Only the sharded scripts/release_self_test.py path via scripts/validate_archive.py or scripts/publish_release.py can qualify after deferral and reconciliation.',
+        'release_qualification_reason': 'Component checks never qualify a release, even with valid review pins. Qualification requires sharded scripts/release_self_test.py with current review pins and source/installed deferral reconciliation, as scripts/validate_archive.py uses it. scripts/publish_release.py default validations supply no review arguments and cannot qualify.',
         'current_review': {'status': 'NOT_PROVIDED'}}
     if sharded:
         report.update(scope='source-shard' if SOURCE_REPOSITORY else 'installed-shard', suite_complete=False, shard=args.shard, shard_count=9,
