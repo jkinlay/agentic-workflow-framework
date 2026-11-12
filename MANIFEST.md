@@ -288,7 +288,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/rules_activation.py` | `4c0d2f6fec46caac39ff5f97a3c47cbf898122ba6e4f2901a90348d488dc7495` |
 | `.agentic/scripts/run_heavy_validation.py` | `3b5b3f571a2c4443ade9967b3326cb0adfa7d59320c32e748367dd1cb7a136f7` |
 | `.agentic/scripts/scheduled_tick.py` | `b3394cec9f48cbd4a8012be9e40eeefbba0befdcadd2dab63268c7c849899a3e` |
-| `.agentic/scripts/self_test.py` | `375c60c974a6a363247a9e518bdb395f4103880aee06a27a2e85c585ab183179` |
+| `.agentic/scripts/self_test.py` | `5f06ad2e414ca95b86ebc9d54293d92669084e2bbfede1f3d4a0519e6391bbee` |
 | `.agentic/scripts/validate_config.py` | `527a8c219ec19f1c7b669476788a50dcc4bce829050c63eba297df6d74b86fc7` |
 | `.agentic/scripts/workflow.py` | `a69f0672a170097e05fc044d3423bb994ba2428e6d83c68faa386b4b1f1072ac` |
 | `.agentic/templates/activation-status.yaml` | `22e16493101cddd369309f08c06639b2af1e53bbf43333b5ed76c0132308bbc1` |
@@ -654,7 +654,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `NOTICE` | `778aa28d13e57cd0626adeb12099588fe0cf5e3eaa40e059b2409e855931ac57` |
 | `OPERATING_CONFIG.yaml` | `bf0bec942d708a7ce3cdbdacd5328d7f0afee8b5a519a15c277e499ee2fc5893` |
 | `PUBLISHER.json` | `721657a4273781e068d71a7365644a09ba152a00bd0b97ab1789843c3086f481` |
-| `README.md` | `7d8a934268e50cedcad6ce52a87f4ae4a036ead89a9d9af90b36e15734fe67ab` |
+| `README.md` | `72bdc65c87215466b6a89cce4b017030c9bd7fb75b9ae3e8b5d347e4c0de798f` |
 | `RED-TEAM-DISPOSITION-v1.8.1.md` | `6d48090d6c3372a1eb8017573ab41c1afd5f11e4230ad309087844e4bde5f084` |
 | `RED-TEAM-DISPOSITION-v1.8.2.md` | `50b16e15fa959cc4391157b6642aa49cb831b4b85f76bbbc70809154a4110a39` |
 | `RED-TEAM-DISPOSITION-v1.8.3.md` | `6722c30e02300a4db6a5bb32012a419aba543822541d7c865e669a515dc3343c` |
