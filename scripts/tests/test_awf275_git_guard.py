@@ -329,26 +329,87 @@ def source_git_tests(sources):
                     pending.extend(ast.iter_child_nodes(part))
             return False
 
-        def git_command(node, seen=frozenset(), assignments=assignments, scope=scope, tree=tree):
+        def command_text(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.JoinedStr):
+                # Keep literal order without joining tokens across interpolation.
+                return ''.join(command_text(value) if isinstance(value, ast.Constant) else '\0'
+                               for value in node.values)
+            return ''
+
+        def shell_git_tails(node):
+            text = command_text(node)
+            return [re.split(r'[;|&()]', text[match.end():], maxsplit=1)[0]
+                    for match in re.finditer(
+                        r'(?:^|[\s;|&(])(?:[^\s;|&()]*[/\\])?git(?:\.exe)?(?=\s|$|[;|&()])', text)]
+
+        def launcher_command(elements, seen):
+            # Only known launchers can precede the command. Stop at the first
+            # ordinary executable: its later 'git' arguments may just be data.
+            option_values = {
+                'env': {'-u', '--unset', '-C', '--chdir', '-S', '--split-string'},
+                'timeout': {'-k', '--kill-after', '-s', '--signal'},
+                'nice': {'-n', '--adjustment'},
+                'ionice': {'-c', '--class', '-n', '--classdata', '-p', '--pid',
+                           '-P', '--pgid', '-u', '--uid'},
+                'sudo': {'-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt',
+                         '-C', '--close-from', '-T', '--command-timeout', '-R', '--chroot',
+                         '-D', '--chdir', '-r', '--role', '-t', '--type'},
+                'nohup': set(),
+                'stdbuf': {'-i', '--input', '-o', '--output', '-e', '--error'},
+                'xargs': {'-a', '--arg-file', '-E', '-I', '-L', '--max-lines',
+                          '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars',
+                          '--eof', '--replace', '--process-slot-var'},
+            }
+            index = 0
+            while index < len(elements):
+                text = command_text(elements[index])
+                if re.match(r'^[A-Za-z_][A-Za-z_0-9]*=', text):
+                    index += 1
+                    continue
+                launcher = re.split(r'[/\\]', text)[-1]
+                if launcher not in option_values:
+                    return git_command(elements[index], seen)
+                index += 1
+                while index < len(elements):
+                    option = command_text(elements[index])
+                    if option == '--':
+                        index += 1
+                        break
+                    if not option.startswith('-') or option == '-':
+                        break
+                    index += 2 if option in option_values[launcher] else 1
+                if launcher == 'timeout':
+                    index += 1  # Mandatory duration follows timeout's options.
+            return False
+
+        def git_command(node, seen=frozenset(), shell=False,
+                        assignments=assignments, scope=scope, tree=tree):
             if node in seen:
                 return False
             seen = seen | {node}
             if isinstance(node, ast.Name):
                 values = assignments.get((scope(node), node.id),
                                          assignments.get((tree, node.id), ()))
-                return node.id == 'git' or any(git_command(value, seen) for value in values)
+                return node.id == 'git' or any(git_command(value, seen, shell) for value in values)
             if isinstance(node, ast.Attribute):
                 return node.attr == 'git'
             if isinstance(node, (ast.List, ast.Tuple)):
-                return bool(node.elts) and git_command(node.elts[0], seen)
+                return launcher_command(node.elts, seen)
+            if isinstance(node, ast.IfExp):
+                return git_command(node.body, seen, shell) or git_command(node.orelse, seen, shell)
             if isinstance(node, ast.Starred):
-                return git_command(node.value, seen)
+                return git_command(node.value, seen, shell)
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-                return git_command(node.left, seen)
+                return git_command(node.left, seen, shell)
             if isinstance(node, ast.JoinedStr):
-                return bool(node.values) and git_command(node.values[0], seen)
+                return (bool(shell_git_tails(node)) if shell else
+                        bool(node.values) and git_command(node.values[0], seen))
             if isinstance(node, ast.Call) and terminal(node.func) == 'which' and node.args:
                 return git_command(node.args[0], seen)
+            if shell and isinstance(node, ast.Constant):
+                return bool(shell_git_tails(node))
             return (isinstance(node, ast.Constant) and isinstance(node.value, str) and
                     bool(re.match(r'^(?:[^\s]*[/\\])?git(?:\.exe)?(?:\s|$)', node.value)))
 
@@ -359,7 +420,9 @@ def source_git_tests(sources):
             if not isinstance(node, ast.Call) or node in inert_calls:
                 continue
             targets = [*node.args, *(kw.value for kw in node.keywords)]
-            commands = [target for target in targets if git_command(target)]
+            shell_mode = any(kw.arg == 'shell' and isinstance(kw.value, ast.Constant)
+                             and kw.value.value is True for kw in node.keywords)
+            commands = [target for target in targets if git_command(target, shell=shell_mode)]
             if not commands:
                 continue
             owner = scope(node)
@@ -374,6 +437,11 @@ def source_git_tests(sources):
             for command in commands:
                 shell = ' '.join(part.value for part in expanded(command)
                                  if isinstance(part, ast.Constant) and isinstance(part.value, str))
+                if shell_mode and not git_command(command):
+                    # For newly detected shell prefixes, only Git's own trailing
+                    # tokens can establish an implicit history read.
+                    shell = ' '.join(tail for part in expanded(command)
+                                     for tail in shell_git_tails(part))
                 explicit_directory = explicit_cwd or bool(re.search(
                     r'(?:^|\s)(?:-C|--git-dir)(?:\s|=|$)', shell))
                 implicit_checkout |= not explicit_directory and bool(re.search(
@@ -489,6 +557,54 @@ def stale_exceptions(sources):
 
 
 class SourceGitGuardTests(unittest.TestCase):
+    def test_form_a_conditional_argv(self):
+        for command in (
+                "['git','show','HEAD:LICENSE'] if sys.platform != 'win32' else ['git.exe','show','HEAD:LICENSE']",
+                "['echo', 'data'] if condition else ['git', 'show', 'HEAD:LICENSE']",
+                "['git', 'show', 'HEAD:LICENSE'] if condition else ['echo', 'data']"):
+            with self.subTest(command=command):
+                self.assert_missing('subprocess.run(' + command + ', cwd=ROOT, check=True)')
+
+    def test_form_b_launcher_prefixed_argv(self):
+        prefixes = (
+            "'env', 'GIT_PAGER=cat',", "'env', '-u', 'PAGER', '--', 'GIT_PAGER=cat',",
+            "'timeout', '--signal', 'TERM', '-k', '2', '10',",
+            "'nice', '-n', '5',", "'ionice', '-c', '2', '-n', '7',",
+            "'sudo', '-u', 'nobody', '--',", "'nohup',",
+            "'stdbuf', '-o', 'L',", "'xargs', '-n', '1',",
+            "'env', 'GIT_PAGER=cat', 'timeout', '10', 'nice', '-5',",
+            "'GIT_PAGER=cat',",
+        )
+        for prefix in prefixes:
+            for executable in ("'git'", 'git', 'program'):
+                with self.subTest(prefix=prefix, executable=executable):
+                    self.assert_missing("program = 'git.exe'\nsubprocess.run([" + prefix +
+                                        executable + ", 'log', '-1'], cwd=ROOT, check=True)")
+        for prefix in ("'echo',", "'env', 'echo',", "'sudo', '-u', 'git', 'echo',"):
+            source = ('def test_data():\n    subprocess.run([' + prefix +
+                      "'git', 'show', 'HEAD:LICENSE'], cwd=ROOT, check=True)\n")
+            with self.subTest(data_prefix=prefix):
+                self.assertEqual({}, source_git_tests({'test_fixture.py': source}))
+
+    def test_form_c_shell_git_after_prefix(self):
+        for command in ("f'cd {ROOT} && git show HEAD:LICENSE'",
+                        "f'cd {tmp} && git show HEAD:LICENSE'",
+                        "'true;git show HEAD:LICENSE'", "'false||git log -1'",
+                        "'true|git rev-parse HEAD'", "'(git show HEAD:LICENSE)'",
+                        "'true && /usr/bin/git show HEAD:LICENSE'",
+                        "f'echo {value}; git show HEAD:LICENSE'"):
+            with self.subTest(command=command):
+                self.assert_missing('subprocess.run(' + command + ', shell=True, check=True)')
+        for command in ("'cd tmp && git init repo'", "'show; echo git-data'",
+                        "'true;notgit show HEAD:LICENSE'"):
+            source = ('def test_data():\n    subprocess.run(' + command +
+                      ', shell=True, check=True)\n')
+            with self.subTest(non_history=command):
+                self.assertEqual({}, source_git_tests({'test_fixture.py': source}))
+        source = ("def test_data():\n    subprocess.run('echo && git show HEAD:LICENSE', "
+                  'cwd=ROOT, shell=False)\n')
+        self.assertEqual({}, source_git_tests({'test_fixture.py': source}))
+
     def test_f1_executing_assertions_are_ordinary_calls(self):
         for name in ('assertRaises', 'assertRaisesRegex', 'assertWarns',
                      'assertWarnsRegex', 'assertLogs', 'assert_git_ok', 'assertGitOk'):
