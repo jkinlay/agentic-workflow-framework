@@ -812,6 +812,7 @@
     "scripts/tests/test_path_mutation_guard.py": "287d22cd78db9b57a42221d2933687eecd93b6341db3a427a5f42a3a32b174a3",
     "scripts/tests/test_pre_controller_registry.py": "0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af",
     "scripts/tests/test_pre_push_gate_portable.py": "26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553",
+    "scripts/tests/test_publication_release_history.py": "1570c0a22ea0bea1e2287cfd5c1bd6e52e8c2883864935d8d53391dfb663def0",
     "scripts/tests/test_publish_catalog.py": "8819957e524f852093bd483db2f92098e371b9ff0281bfefc764c8e3b06a1492",
     "scripts/tests/test_publish_release.py": "0dc0d878d9ab99435c28a113eccffc9d0930693adc3af9070804cf73a2cad3eb",
     "scripts/tests/test_qualify_upgrade.py": "8c2c284a84ad7029a99f35fa2540267fe209eaed89dcbca2217cf8f3a53d6384",
