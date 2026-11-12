@@ -314,6 +314,17 @@ _HISTORICAL_SELF_REFERENCES = {
         "78581231c44e5c1a15d7bb629cdd20414f1513729fbf484d9221ba387c9a9cae",
         "547f782b98c9385876a1c483caecddc3f8adec35dc4708a91f98b2a075f78599",
     }),
+    # Audited 1.9.6 identities, using the same path + detector + full-line digest.
+    (".agentic/tests/test_bootstrap_configuration.py", "builtin.windows_absolute"): frozenset({
+        # Line 49: synthetic short-path alias in the mocked retained-stage test.
+        "e059da2a49d3c2859d5cb07446e7b79089da9e6439c7ea657d0feb4e231192fc",
+        # Line 50: synthetic expanded alias for the same mocked destination.
+        "ddf78f0200e1992ac4aed760dae42c6117a8e0d31a21acd8b6c986e7553e719e",
+    }),
+    ("scripts/tests/test_installed_self_test_shards.py", "builtin.windows_absolute"): frozenset({
+        # Line 71 (introduced at 67): synthetic invalid selection-path test vector.
+        "c82f1a1b6007051ea0852bc0abf4fa53883fbd6b7b6bd1e1aa403cd64d04cc7f",
+    }),
 }
 
 # PR #34 initially used short Jira-shaped labels for synthetic controller test
