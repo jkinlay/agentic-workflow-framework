@@ -3,6 +3,7 @@
 Lesson 2.6: tests that git-init their own temporary repositories need no source
 Git guard. Trace source-root targets and helper callers, not the word ``git``.
 The scan is static and never invokes Git or imports the inspected test modules.
+Argv returned from a helper or builder, including a same-module record constructor, is a named limitation tracked as AWF-283.
 """
 import ast
 from pathlib import Path
@@ -206,9 +207,20 @@ def data_calls(tree):
         targets = resolve(receiver)
         return bool(targets) and all(inert(target, seen) for target in targets)
 
+    comparison_assertions = {
+        'assertEqual', 'assertNotEqual', 'assertIn', 'assertNotIn', 'assertTrue', 'assertFalse',
+        'assertIs', 'assertIsNot', 'assertIsNone', 'assertIsNotNone', 'assertIsInstance',
+        'assertNotIsInstance', 'assertRegex', 'assertNotRegex', 'assertCountEqual',
+        'assertSequenceEqual', 'assertListEqual', 'assertTupleEqual', 'assertSetEqual',
+        'assertDictEqual', 'assertMultiLineEqual', 'assertGreater', 'assertGreaterEqual',
+        'assertLess', 'assertLessEqual', 'assertAlmostEqual', 'assertNotAlmostEqual',
+    }
+    # A project definition with a unittest spelling is still an ordinary callee.
+    project_definitions = {name for (_, name) in bindings}
     return {call for call in ast.walk(tree) if isinstance(call, ast.Call) and (
         (isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name)
-         and call.func.value.id == 'self' and call.func.attr.startswith('assert'))
+         and call.func.value.id == 'self' and call.func.attr in comparison_assertions
+         and call.func.attr not in project_definitions)
         or proven(call.func))}
 
 
@@ -324,7 +336,9 @@ def source_git_tests(sources):
             if isinstance(node, ast.Name):
                 values = assignments.get((scope(node), node.id),
                                          assignments.get((tree, node.id), ()))
-                return any(git_command(value, seen) for value in values)
+                return node.id == 'git' or any(git_command(value, seen) for value in values)
+            if isinstance(node, ast.Attribute):
+                return node.attr == 'git'
             if isinstance(node, (ast.List, ast.Tuple)):
                 return bool(node.elts) and git_command(node.elts[0], seen)
             if isinstance(node, ast.Starred):
@@ -406,9 +420,9 @@ def source_git_tests(sources):
             for function in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
                 needed = function in direct
                 parameters = {arg.arg for arg in function.args.args} - {'self', 'cls'}
-                for call in (n for n in ast.walk(function) if isinstance(n, ast.Call) and n not in inert_calls):
+                for call in (n for n in ast.walk(function) if isinstance(n, ast.Call)):
                     name = terminal(call.func)
-                    arguments = wrapper_arguments(call)
+                    arguments = [] if call in inert_calls else wrapper_arguments(call)
                     key = reference(call.func)
                     is_wrapper = key in wrappers or name in builtin_wrappers
                     needed |= key in source_helpers or (is_wrapper and
@@ -438,9 +452,10 @@ def source_git_tests(sources):
         def needs_source(function):
             return function in direct or any(
                 reference(call.func) in source_helpers or
-                ((reference(call.func) in wrappers or terminal(call.func) in builtin_wrappers)
+                (call not in inert_calls
+                 and (reference(call.func) in wrappers or terminal(call.func) in builtin_wrappers)
                  and any(source_root(arg) for arg in wrapper_arguments(call)))
-                for call in ast.walk(function) if isinstance(call, ast.Call) and call not in inert_calls)
+                for call in ast.walk(function) if isinstance(call, ast.Call))
         for function in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                          and n.name.startswith('test_')):
             ancestors = []
@@ -474,6 +489,73 @@ def stale_exceptions(sources):
 
 
 class SourceGitGuardTests(unittest.TestCase):
+    def test_f1_executing_assertions_are_ordinary_calls(self):
+        for name in ('assertRaises', 'assertRaisesRegex', 'assertWarns',
+                     'assertWarnsRegex', 'assertLogs', 'assert_git_ok', 'assertGitOk'):
+            with self.subTest(assertion=name):
+                self.assert_missing(
+                    'self.' + name + "(subprocess.CalledProcessError, subprocess.run, "
+                    "['git', '-C', str(ROOT), 'show', 'HEAD:no-such-file'], check=True)")
+        self.assert_missing("self.assertRaises(subprocess.CalledProcessError, "
+                            "subprocess.check_output, ['git', 'show', 'HEAD:missing'])")
+        self.assert_missing("with self.assertRaises(subprocess.CalledProcessError):\n"
+                            "    subprocess.run(['git', 'show', 'HEAD:missing'])")
+
+    def test_f2_assertion_helpers_propagate_callee_dependencies(self):
+        for helper in ('assert_committed', 'assertCommitted', 'assertEqual'):
+            source = ('class Tests:\n    def ' + helper + '(self, name):\n'
+                      "        committed = subprocess.check_output(['git', 'show', f'HEAD:{name}'], cwd=ROOT)\n"
+                      '        self.assertTrue(committed)\n'
+                      '    def test_license_is_committed(self):\n'
+                      '        self.' + helper + "('LICENSE')\n")
+            with self.subTest(helper=helper):
+                self.assertEqual({('test_fixture.py', 'Tests.test_license_is_committed'): False},
+                                 source_git_tests({'test_fixture.py': source}))
+        source = ("class Tests:\n    def assert_git_ok(self, argv):\n"
+                  "        subprocess.run(argv, cwd=ROOT, check=True)\n"
+                  "    def test_license(self):\n"
+                  "        self.assert_git_ok(['git', 'show', 'HEAD:LICENSE'])\n")
+        self.assertEqual({('test_fixture.py', 'Tests.test_license'): False},
+                         source_git_tests({'test_fixture.py': source}))
+        # Even a comparison-exempt call must follow an imported callee alias.
+        sources = {
+            'test_helper.py': "def history(name):\n    subprocess.run(['git', 'show', name], cwd=ROOT)\n",
+            'test_fixture.py': 'from test_helper import history\nclass Tests:\n'
+                               '    assertEqual = history\n'
+                               '    def test_license(self):\n        self.assertEqual("LICENSE")\n',
+        }
+        self.assertEqual({('test_fixture.py', 'Tests.test_license'): False}, source_git_tests(sources))
+
+    def test_f4_git_executable_names_and_attributes_are_detected(self):
+        for binding in ("git = shutil.which('git') or 'git'",
+                        "git = 'git.exe' if os.name == 'nt' else 'git'",
+                        "git = os.environ.get('GIT', 'git')",
+                        'git = executable'):
+            with self.subTest(binding=binding):
+                self.assert_missing(binding + "\nsubprocess.run([git, '-C', str(ROOT), 'show', 'HEAD:LICENSE'])")
+        for executable in ('git', 'self.git', 'cls.git', 'obj.git'):
+            with self.subTest(executable=executable):
+                self.assert_missing('subprocess.run([' + executable +
+                                    ", '-C', str(ROOT), 'show', 'HEAD:LICENSE'])")
+        for source in (
+                "def test_history(git):\n    subprocess.run([git, 'show', 'HEAD:LICENSE'])\n",
+                "def test_history():\n    for git in executables:\n        subprocess.run([git, 'show', 'HEAD:LICENSE'])\n",
+                "def test_history():\n    with executable() as git:\n        subprocess.run([git, 'show', 'HEAD:LICENSE'])\n",
+                "def factory(git):\n    def test_history():\n        subprocess.run([git, 'show', 'HEAD:LICENSE'])\n"):
+            with self.subTest(binding=source):
+                self.assertEqual({('test_fixture.py', 'test_history'): False},
+                                 source_git_tests({'test_fixture.py': source}))
+        path = '.agentic/tests/test_adoption_status.py'
+        source = (ROOT / path).read_text(encoding='utf-8')
+        tree = ast.parse(source)
+        function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                        and n.name == 'test_ac34_installed_host_skill_establishes_durable_trust_and_active')
+        function.decorator_list = []
+        function.body = [n for n in function.body if not isinstance(n, ast.If)]
+        self.assertIn((path, 'AdoptionStatusTests.' + function.name),
+                      missing_declarations({path: ast.unparse(tree)}))
+        self.assertEqual([], missing_declarations({path: source}))
+
     def assert_missing(self, body, prefix=''):
         source = prefix + '\nclass Tests:\n    def test_history(self):\n' + ''.join(
             '        ' + line + '\n' for line in body.splitlines())
