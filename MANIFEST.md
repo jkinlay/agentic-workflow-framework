@@ -534,7 +534,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_reporting_e15_regressions.py` | `51370c0d466a5d3587a56ce31eb8747e75a33427c91bc3c1dcf6f8a8d60ff18c` |
 | `.agentic/tests/test_reporting_e16_regressions.py` | `5f261cba8b591625d98dcac01dc0d92a6556b3cbf8033b6e7dd92f9196a3a283` |
 | `.agentic/tests/test_reporting_e17_regressions.py` | `db96695a0cd3fa47eada73de6c6cd84de805119584da67b21c797fcae423d230` |
-| `.agentic/tests/test_reporting_e2_regressions.py` | `062a5120ae783cece3dfe5c3373621610a1b9df31e351889f1a42129d8fc7a64` |
+| `.agentic/tests/test_reporting_e2_regressions.py` | `5c5afb51f70ba27a77c5b8a583c72be602f0a6ebb0e7a22cbc22b0c51c4902d9` |
 | `.agentic/tests/test_reporting_e3_regressions.py` | `7675dd62800c46b00dfd13a2c610f034f6c32ccbde2bfdbcc9153b44b861568c` |
 | `.agentic/tests/test_reporting_e4_regressions.py` | `56caaacaaf8add18b96d6b09c0411468181b16b72dbc3b9aec0c7a2995709fca` |
 | `.agentic/tests/test_reporting_e5_regressions.py` | `9e819a4b150ba163bc4c79d1f63090a69d50c7e8efdc0a39212ddfbb65396911` |
@@ -589,13 +589,13 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_streams.py` | `95c395c7609b7a5cddb9a3e3491d5939ec2c454a94efda1c0ca769c33b730c27` |
 | `.agentic/tests/test_twelve_streams.py` | `82fdf151b4e23514377eb4f7e6079467f6660028d34a35d35e2c448674e8442e` |
 | `.agentic/tests/test_upgrade_194.py` | `9ed7a20ce999c7253c4c1f3db1121e7b4888b332afafcce452f0d01e6c4c7b7c` |
-| `.agentic/tests/test_upgrade_195.py` | `fec59067f854a1aecf42c09b835ad546ccdc3fcccbcc347cf1a376fdd2f890ff` |
+| `.agentic/tests/test_upgrade_195.py` | `f691da7082a0fd7c7c1c550dcafca366362fca513f94353d5092a9e32523e81d` |
 | `.agentic/tests/test_upgrade_195_preservation.py` | `ecba06e928d0a38ad1f2b50585eac7a62cc86e79f0aebb54006c9bfed664a587` |
 | `.agentic/tests/test_upgrade_195_recovery.py` | `4f3bf4e881e3d5825e6db195abe68a9a8b0a45bed1f03853f7ac438f20088132` |
 | `.agentic/tests/test_upgrade_196.py` | `3829f9852f85f106f2f894566cf00115a4111670da3e3236e75c763c6a8c5a9d` |
 | `.agentic/tests/test_upgrade_196_archives.py` | `3fbeaeacdba1f3f59def003b10691d1d2378f725a0576aebd16dbd9305bac2f1` |
 | `.agentic/tests/test_upgrade_196_budgeting.py` | `82e25f5e7d7fc8432e8989dc8694f63c1c4e8c110fbffc83b7b90f77fadb3903` |
-| `.agentic/tests/test_upgrade_journal.py` | `3338f6e74f8bf58b0a70be38b623abf80d47ee0c9010356a22563c800c502eaa` |
+| `.agentic/tests/test_upgrade_journal.py` | `1e286c03f5face9929c81a0967468b5147e35dd16f872854423cd4bec61345d6` |
 | `.agentic/tests/test_upgrade_matrix.py` | `34e2dd50ff6a32098d72298ea9109362b8bf14efc5fecab540d3f70f6dab34f7` |
 | `.agentic/tests/test_upgrade_pycache.py` | `35cf97c639c3e62c9eed297dff05973ae807e15d5c914db34e5494d83e09c2b7` |
 | `.agentic/tests/test_upgrade_receipts.py` | `812a0d2b512d86336366ad427bb3701ce681373ed6a55b4441222251fed35eb9` |
@@ -781,7 +781,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_awf195_publication_docs.py` | `2205023708e11a452fbd3e96be03c4f0fdcd95aadc6d9351498694f723f915b6` |
 | `scripts/tests/test_awf238_installed_document_links.py` | `dac530537fb54810dc34005390445cd75aad526d3b2dfe180529ca8e468c8330` |
 | `scripts/tests/test_awf238_source_identity.py` | `24c24c5f3f2fa738f65760b7e436b32bc8dd30d1a0549402f2cc2aa44694dd8b` |
-| `scripts/tests/test_awf275_git_guard.py` | `5a536fbcd8f22a66aae0f4dda90822e74f6c041ddbe6ab616507f00657e4e307` |
+| `scripts/tests/test_awf275_git_guard.py` | `62c2586d1ef44c632786bcad17945da88fbb0aa16aaed76cad12f66eb1aaabe8` |
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
 | `scripts/tests/test_awf88_resource_ceilings.py` | `593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae` |

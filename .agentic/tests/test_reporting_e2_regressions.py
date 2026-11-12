@@ -414,6 +414,8 @@ class ReportingE2Regressions(unittest.TestCase):
     @source_only.skip_unless_source_repo(
         'requires pre-reporting controller Git history absent from installed projects',
         'scripts/build_release.py')
+    @unittest.skipIf(source_only.committed_git_tuple(source_only.ROOT) is None,
+                     source_only.COMMITTED_GIT_REASON)
     def test_rollback_merge_base_never_consumes_report_as_legacy_digest(self):
         self.cycle('2026-11-07T17:00:00Z')
         controller = self.merge_base_controller()
@@ -427,6 +429,8 @@ class ReportingE2Regressions(unittest.TestCase):
     @source_only.skip_unless_source_repo(
         'requires pre-reporting controller Git history absent from installed projects',
         'scripts/build_release.py')
+    @unittest.skipIf(source_only.committed_git_tuple(source_only.ROOT) is None,
+                     source_only.COMMITTED_GIT_REASON)
     def test_pre_release_report_rows_relocate_additively_with_attempts_intact(self):
         from agentic.continuous_controller import ContinuousControllerStore
         self.cycle('2026-11-07T17:00:00Z')

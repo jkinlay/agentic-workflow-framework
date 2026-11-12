@@ -58,7 +58,10 @@ def declarations(tree, source_root):
                     and missing_tuple(deco.args[0])
                     and terminal(deco.args[1]) == 'COMMITTED_GIT_REASON'):
                 return True
-            if isinstance(deco, ast.Call) and terminal(deco.func) == 'skip_unless_source_repo':
+            if (isinstance(deco, ast.Call) and terminal(deco.func) == 'skip_unless_source_repo'
+                    and not any(isinstance(arg, ast.Starred) for arg in deco.args)
+                    and any(isinstance(path, ast.Constant) and path.value == '.git'
+                            for path in deco.args[1:])):
                 return True
         if not isinstance(node, ast.FunctionDef):
             return False
@@ -638,7 +641,7 @@ class Tests:
         forms = (
             '@unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)\ndef test_history():\n' + read,
             '@source_only.skip_unless_source_repo("needs source history", ".git")\ndef test_history():\n' + read,
-            '@skip_unless_source_repo()\nclass Tests:\n    def test_history(self):\n    ' + read,
+            '@skip_unless_source_repo("needs source history", ".git")\nclass Tests:\n    def test_history(self):\n    ' + read,
             'def test_history(self):\n    if committed_git_tuple(ROOT) is None:\n        self.skipTest(COMMITTED_GIT_REASON)\n' + read,
             'def test_history(self):\n    if not AWF_SOURCE_REPOSITORY or committed_git_tuple(ROOT) is None:\n        self.skipTest(COMMITTED_GIT_REASON)\n' + read,
             'SOURCE_GIT_TUPLE = committed_git_tuple(ROOT)\ndef setUpModule():\n    if SOURCE_GIT_TUPLE is None:\n        raise unittest.SkipTest("needs HEAD")\ndef test_history():\n' + read,
@@ -648,6 +651,25 @@ class Tests:
             with self.subTest(source=source):
                 self.assertTrue(source_git_tests({'test_fixture.py': source}))
                 self.assertEqual([], missing_declarations({'test_fixture.py': source}))
+
+    def test_source_file_decorators_do_not_declare_git_history(self):
+        for decorator in ('@skip_unless_source_repo()',
+                          '@source_only.skip_unless_source_repo("needs history")',
+                          '@skip_unless_source_repo(".git", "scripts/build_release.py")',
+                          '@skip_unless_source_repo(*(), ".git")',
+                          '@skip_unless_source_repo("needs history", "scripts/generate_examples.py")'):
+            for form in ('function', 'class', 'helper'):
+                read = "    subprocess.run(['git', 'show', 'HEAD:file'], cwd=ROOT)\n"
+                if form == 'class':
+                    source = decorator + '\nclass Tests:\n    def test_history(self):\n    ' + read
+                elif form == 'helper':
+                    source = decorator + '\ndef history():\n' + read + 'def test_history():\n    history()\n'
+                else:
+                    source = decorator + '\ndef test_history():\n' + read
+                with self.subTest(decorator=decorator, form=form):
+                    found = source_git_tests({'test_fixture.py': source})
+                    self.assertEqual(1, len(found))
+                    self.assertEqual([False], list(found.values()))
 
     def test_gated_helper_protects_its_callers(self):
         source = ('@skip_unless_source_repo("needs HEAD", ".git")\n'
