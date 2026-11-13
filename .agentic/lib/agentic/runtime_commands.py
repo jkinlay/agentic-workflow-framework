@@ -11,6 +11,11 @@ from pathlib import Path
 from . import VERSION
 
 
+_POWERSHELL_QUOTE_TRANSLATION = {
+    ord(quote): quote * 2 for quote in ("'", "\u2018", "\u2019", "\u201a", "\u201b")
+}
+
+
 def installed_paths(root, *, platform=None):
     root = Path(root).resolve()
     windows = (platform or os.name) == "nt"
@@ -23,9 +28,9 @@ def installed_paths(root, *, platform=None):
 def powershell_quote(value):
     """Quote one literal PowerShell argument without Markdown or backslash escapes."""
     value = str(value)
-    if "\x00" in value or "\r" in value or "\n" in value:
+    if str.__contains__(value, "\x00") or str.__contains__(value, "\r") or str.__contains__(value, "\n"):
         raise ValueError("PowerShell command arguments must fit on one line")
-    return "'" + value.replace("'", "''") + "'"
+    return "'" + str.translate(value, _POWERSHELL_QUOTE_TRANSLATION) + "'"
 
 
 def powershell_command(interpreter, entry_point, root, arguments):

@@ -20,6 +20,7 @@ from .provider_identity import github_identity_preflight
 from .safeio import require_record_bytes
 from .publication_readiness import _eligible_branch
 from .providers.github import branch_name, repository_name
+from .runtime_commands import powershell_quote
 
 
 APPLICATION_ID = 0x41574650
@@ -59,7 +60,7 @@ def _check_json_fields(row, *columns):
 def _literal(value):
     _require(isinstance(value, str) and value and not any(ord(char) < 32 for char in value),
              "Owner command arguments must be nonempty single-line literals")
-    return "'" + value.replace("'", "''") + "'"
+    return powershell_quote(value)
 
 
 def _request(config, request):
