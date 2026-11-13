@@ -3,17 +3,23 @@ from __future__ import annotations
 
 import json
 import base64
+import hashlib
+import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / '.agentic/tests'))
+from source_only import skip_unless_source_repo
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
-from agentic.runtime_commands import command_catalog, installed_paths
+from agentic.runtime_commands import command_catalog, installed_paths, provision_command
 from agentic import ValidationError
 from agentic.runtime_tags import validate_host_tags
 
@@ -23,7 +29,13 @@ class RecoveryAdviceTests(unittest.TestCase):
         from agentic.providers.github_status import project_status
         with tempfile.TemporaryDirectory() as raw:
             report = project_status(raw)
-            self.assertIn('provision-runtime', report['next_action'])
+            expected = ('Restore access to the installed AWF files; run workflow.py verify-installation, '
+                        'then workflow.py status again. Then provision the runtime after restoring the verified AWF files: '
+                        + provision_command(raw))
+            preflight = report.get('host_preflight', {}).get('next_action')
+            if preflight:
+                expected += ' Host preflight WARN: ' + preflight
+            self.assertEqual(expected, report['next_action'])
             self.assertIn(str(Path(raw).resolve()), report['next_action'])
             self.assertEqual(report['next_action'], report['activation']['next_command'])
 
@@ -71,8 +83,154 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         self.assertEqual(2, result.returncode, result.stderr)
         self.assertIn('Offline runtime wheelhouse is unavailable', result.stderr)
 
+    def test_import_error_uses_host_outside_virtual_and_canonical_runtimes(self):
+        code = """
+import importlib.abc, runpy, sys
+class Block(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'agentic.cli':
+            raise ImportError('damaged runtime')
+sys.meta_path.insert(0, Block())
+script, root, executable, prefix, base, host = sys.argv[1:]
+sys.executable, sys.prefix, sys.base_prefix, sys._base_executable = executable, prefix, base, host
+sys.argv = [script, '--root', root, 'doctor']
+runpy.run_path(script, run_name='__main__')
+"""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            canonical = installed_paths(root)[1]
+            base_host = str(Path(sys._base_executable).resolve())
+            for executable, prefix, base, host, expected in (
+                    (root / 'other-venv/python', 'venv', 'base', base_host, base_host),
+                    (root / 'other-venv/python', 'same', 'same', base_host, base_host),
+                    (canonical, 'same', 'same', base_host, base_host),
+                    (canonical, 'venv', 'base', root / 'missing-host', 'HOST_PYTHON'),
+                    (canonical, 'venv', 'base', canonical, 'HOST_PYTHON')):
+                with self.subTest(executable=executable, host=host):
+                    result = subprocess.run([sys.executable, '-B', '-I', '-c', code,
+                        str(ROOT / '.agentic/scripts/workflow.py'), str(root), str(executable),
+                        prefix, base, str(host)], capture_output=True, text=True, timeout=30)
+                    self.assertEqual(3, result.returncode, result.stderr)
+                    self.assertIn("PowerShell: & '" + expected + "'", result.stderr)
+                    self.assertIn('POSIX sh: ' + shlex.quote(expected) + ' -B -I ', result.stderr)
+                    self.assertNotIn(str(executable), result.stderr)
+
+    def test_posix_provision_advice_is_shell_labelled(self):
+        with tempfile.TemporaryDirectory() as raw, \
+                patch('agentic.runtime_commands.sys.executable', '/usr/bin/python3'), \
+                patch('agentic.runtime_commands.sys._base_executable', '/usr/bin/python3'), \
+                patch('agentic.runtime_commands.sys.prefix', '/usr'), \
+                patch('agentic.runtime_commands.sys.base_prefix', '/usr'):
+            command = provision_command(raw)
+        self.assertIn("PowerShell: & '/usr/bin/python3' -B -I ", command)
+        self.assertIn('POSIX sh: /usr/bin/python3 -B -I ', command)
+
+    def test_missing_runtime_preserves_preflight_suffix(self):
+        from agentic.providers.github_status import project_status
+        with tempfile.TemporaryDirectory() as raw, \
+                patch('agentic.host_preflight.preflight', return_value={'next_action': 'fixture remedy'}):
+            report = project_status(raw)
+        self.assertTrue(report['next_action'].endswith(' Host preflight WARN: fixture remedy'))
+
+    def test_installed_missing_runtime_names_provision_command(self):
+        from test_bootstrap_configuration import ConfiguredInstallerTests
+        from agentic.providers.github_status import project_status
+        fixture = ConfiguredInstallerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.perform()
+        with patch('agentic.host_preflight.preflight', return_value={'next_action': None}):
+            report = project_status(fixture.dest)
+        self.assertTrue(report['integrity_valid'], report)
+        self.assertEqual(provision_command(fixture.dest), report['next_action'])
+        self.assertEqual(report['next_action'], report['activation']['next_command'])
+
 
 class RuntimeReuseTests(unittest.TestCase):
+    def assert_anomaly(self, root, path):
+        from agentic.providers.github_status import project_status
+        for report in (command_catalog(root), project_status(root)):
+            warning = '\n'.join(report['warnings'])
+            self.assertIn('WARNING', warning)
+            self.assertIn('anomaly', warning)
+            self.assertIn(repr(str(path)), warning)
+            self.assertNotIn('Remove-Item', warning)
+            self.assertNotIn('rm -rf', warning)
+            self.assertTrue(path.exists() or path.is_symlink())
+
+    def test_backup_regular_file_is_anomaly_without_cleanup_command(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            path = root / ('.agentic/.venv.backup-' + 'a' * 32)
+            path.parent.mkdir()
+            path.write_bytes(b'tracked or owner file')
+            self.assert_anomaly(root, path)
+            self.assertEqual(b'tracked or owner file', path.read_bytes())
+
+    def test_backup_non_hex_suffix_is_anomaly_without_cleanup_command(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            path = root / '.agentic/.venv.backup-not-a-transaction'
+            path.mkdir(parents=True)
+            self.assert_anomaly(root, path)
+
+    def test_backup_symlink_is_anomaly_without_cleanup_command(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            target = root / 'owner-data'
+            target.mkdir()
+            marker = target / 'marker'
+            marker.write_bytes(b'preserve')
+            path = root / ('.agentic/.venv.backup-' + 'b' * 32)
+            path.parent.mkdir()
+            try:
+                path.symlink_to(target, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest('backup symlink creation unavailable: ' + type(exc).__name__)
+            self.assert_anomaly(root, path)
+            self.assertEqual(b'preserve', marker.read_bytes())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction regression')
+    def test_backup_junction_is_anomaly_without_cleanup_command(self):
+        import _winapi
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            target = root / 'owner-data'
+            target.mkdir()
+            path = root / ('.agentic/.venv.backup-' + 'c' * 32)
+            path.parent.mkdir()
+            try:
+                _winapi.CreateJunction(str(target), str(path))
+            except OSError as exc:
+                self.skipTest('backup junction creation unavailable: ' + type(exc).__name__)
+            self.assert_anomaly(root, path)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX newline filename regression')
+    def test_backup_newline_name_does_not_fail_doctor_or_status(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            path = root / '.agentic/.venv.backup-bad\nname'
+            path.mkdir(parents=True)
+            self.assert_anomaly(root, path)
+
+    def test_bad_entry_does_not_hide_other_retained_directories(self):
+        from agentic.runtime_commands import runtime_backup_warnings
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            paths = [root / ('.agentic/.venv.backup-' + char * 32) for char in ('a', 'b')]
+            for path in paths:
+                path.mkdir(parents=True)
+            from agentic.runtime_commands import runtime_backup_warning
+            def render(path):
+                if path == paths[0]:
+                    raise ValueError('unquotable entry')
+                return runtime_backup_warning(path)
+            with patch('agentic.runtime_commands.runtime_backup_warning', side_effect=render):
+                warnings = runtime_backup_warnings(root)
+            self.assertEqual(2, len(warnings))
+            self.assertIn('anomaly', warnings[0])
+            self.assertIn('Remove-Item', warnings[1])
+
     def test_current_runtime_uses_fresh_build_validator_without_allocating_stage(self):
         from agentic import adoption_config as adoption
         with tempfile.TemporaryDirectory() as raw:
@@ -129,7 +287,9 @@ class RuntimeReuseTests(unittest.TestCase):
 
 class RuntimeTagTests(unittest.TestCase):
     def validate(self, tag):
-        validate_host_tags({'fixture': {'filename': 'fixture-1.0-' + tag + '.whl'}})
+        from itertools import product
+        tags = {'-'.join(parts) for parts in product(*(part.split('.') for part in tag.split('-')))}
+        validate_host_tags({'fixture': {'filename': 'fixture-1.0-' + tag + '.whl', 'wheel_tags': tags}})
 
     def test_exact_cpython_and_portable_tags(self):
         tag = 'cp' + ''.join(map(str, sys.version_info[:2]))
@@ -183,6 +343,15 @@ class CloneRuntimeTests(unittest.TestCase):
         cls.fixture.setUp()
         cls.addClassCleanup(cls.fixture.doCleanups)
         cls.wheelhouse = cls.fixture.prepare_runtime_source()
+        # Repacked installed distributions retain their original WHEEL tags;
+        # their fixture filenames must carry that same complete tag set.
+        for wheel in cls.wheelhouse.glob('*.whl'):
+            with zipfile.ZipFile(wheel) as archive:
+                metadata = next(name for name in archive.namelist() if name.endswith('.dist-info/WHEEL'))
+                tags = [line[5:].strip().split('-') for line in archive.read(metadata).decode().splitlines()
+                        if line.startswith('Tag: ')]
+            tag = '-'.join('.'.join(sorted({fields[index] for fields in tags})) for index in range(3))
+            wheel.rename(wheel.with_name(wheel.name.rsplit('-', 3)[0] + '-' + tag + '.whl'))
         cls.fixture.perform()
         cls.adopted = cls.fixture.dest
         cls.git = shutil.which('git')
@@ -409,6 +578,40 @@ with patch.object(status, 'host_executable', side_effect=lambda name, root: git 
         stages = list((self.root / '.agentic').glob('.venv.staging-*'))
         self.assertEqual(1, len(stages))
         self.assertIn(str(stages[0]), '\n'.join(error.exception.__notes__))
+        self.assert_cleanup_warning('\n'.join(error.exception.__notes__), stages[0])
+        from agentic.runtime_commands import render_doctor
+        from agentic.providers.github_status import project_status, render_status
+        self.assert_cleanup_warning(render_doctor(command_catalog(self.root)), stages[0])
+        self.assert_cleanup_warning(render_status(project_status(self.root)), stages[0])
+
+    def test_renamed_foreign_wheel_refuses_before_staging(self):
+        from test_bootstrap_configuration import synthetic_wheel
+        from agentic.adoption_config import _load_locked_wheels, _locked_dependencies
+        lock = self.root / '.agentic/requirements.lock'
+        dependencies, _ = _locked_dependencies(lock)
+        artifacts = _load_locked_wheels(self.wheelhouse, dependencies)
+        artifact = artifacts['attrs']
+        wheels = Path(self.temp.name) / 'renamed-foreign'
+        shutil.copytree(self.wheelhouse, wheels)
+        raw = synthetic_wheel('attrs', artifact['version'], additions={
+            'attrs-' + artifact['version'] + '.dist-info/WHEEL':
+                b'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-foreign_platform\n'})
+        (wheels / artifact['filename']).write_bytes(raw)
+        lock.write_bytes(lock.read_bytes().replace(artifact['artifact_sha256'].encode(),
+                                                   hashlib.sha256(raw).hexdigest().encode()))
+        before = self.snapshot()
+        result = self.provision(wheels)
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn(artifact['filename'], result.stderr)
+        self.assertIn('WHEEL Tag', result.stderr)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual([], list((self.root / '.agentic').glob('.venv*')))
+
+    @skip_unless_source_repo('Fresh-clone runbook is source-only', 'docs/runbook/41-runbook-fresh-adopted-clone.md')
+    def test_runbook_names_both_release_trust_bases(self):
+        text = (ROOT / 'docs/runbook/41-runbook-fresh-adopted-clone.md').read_text(encoding='utf-8')
+        self.assertIn('`--release-source` with `--expected-manifest-sha256`', text)
+        self.assertIn('installed host skill receipt', text)
 
     def test_invalid_wheelhouses_refuse_by_name_before_staging(self):
         for fault in ('stray', 'hash', 'platform', 'minor', 'ambiguous'):
@@ -424,7 +627,7 @@ with patch.object(status, 'host_executable', side_effect=lambda name, root: git 
                 else:
                     tag = {'platform': 'py3-none-other_platform', 'minor': 'cp399-cp399-any',
                            'ambiguous': 'cp312.cp313-cp312-any'}[fault]
-                    new = path.with_name(path.name.replace('py3-none-any', tag))
+                    new = path.with_name(path.name.rsplit('-', 3)[0] + '-' + tag + '.whl')
                     path.rename(new)
                     path = new
                 before = self.snapshot()

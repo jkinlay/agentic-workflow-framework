@@ -726,12 +726,16 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
     observed_at = result.get('observed_at') or now_text()
     result['capabilities'] = build_capability_matrix(result['project_state'], result['checks'], config,
                                                      capability_observations, observed_at=observed_at)
+    from ..runtime_commands import installed_paths, provision_command, runtime_backup_warnings
+    missing_runtime = not installed_paths(root)[1].is_file()
+    if missing_runtime:
+        provision = provision_command(root)
+        result['next_action'] = (provision if result['integrity_valid'] else
+            result['next_action'] + ' Then provision the runtime after restoring the verified AWF files: ' + provision)
     preflight_next = (result.get('host_preflight') or {}).get('next_action')
     if preflight_next:
         result['next_action'] = ((result['next_action'] + ' ') if result.get('next_action') else '') + 'Host preflight WARN: ' + preflight_next
-    from ..runtime_commands import installed_paths, provision_command, runtime_backup_warnings
-    if not installed_paths(root)[1].is_file():
-        result['next_action'] = provision_command(root)
+    if missing_runtime:
         result['next_command'] = result['next_action']
     result['warnings'] = runtime_backup_warnings(root)
     result['activation'] = activation_summary(result)

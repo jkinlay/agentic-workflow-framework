@@ -58,3 +58,4 @@ Use the printed interpreter with `-B -I`, the printed entry point, and
 are `verify-installation`, `validate-config`, `doctor` and `git status --porcelain`.
 `ACTIVE` still requires independent release trust and observed accepted default
 branch bytes; unrelated missing provider evidence is not repaired by provisioning.
+Supply trust through `--release-source` with `--expected-manifest-sha256`, or an installed host skill receipt.

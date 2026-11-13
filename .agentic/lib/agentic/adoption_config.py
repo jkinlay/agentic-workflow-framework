@@ -324,7 +324,7 @@ def _inspect_locked_wheel(filename, raw, requirements):
         installed[key] = data
     return {"name": canonical_name, "display_name": requirement["name"],
             "version": observed_version, "artifact_sha256": artifact_sha256,
-            "filename": filename, "files": installed}
+            "filename": filename, "files": installed, "wheel_tags": set(map(str, wheel_tags))}
 
 
 def _load_locked_wheels(wheelhouse, requirements):
@@ -627,7 +627,9 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
                         if path.exists() or path.is_symlink()]
             if retained:
                 if runtime_only:
-                    original.add_note('Runtime recovery directories retained: ' + ', '.join(map(str, retained)))
+                    from .runtime_commands import runtime_backup_warning
+                    for path in retained:
+                        original.add_note(runtime_backup_warning(path))
                 else:
                     with Tree(root) as tree:
                         _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')

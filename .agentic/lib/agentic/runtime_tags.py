@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+from itertools import product
 import re
 import sys
 import sysconfig
@@ -52,6 +53,10 @@ def validate_host_tags(artifacts):
             raise ValidationError(f'Host Python {host[0]}.{host[1]} cannot resolve '
                                   'ambiguous wheelhouse tag: ' + filename)
         _, python_tag, abi, platforms = parts
+        filename_tags = {'-'.join(fields) for fields in product(
+            python_tag.split('.'), abi.split('.'), platforms.split('.'))}
+        if filename_tags != artifact['wheel_tags']:
+            raise ValidationError('Wheel filename tags differ from hash-bound WHEEL Tag set: ' + filename)
         compatible = False
         match = re.fullmatch(r'cp(\d)(\d+)', python_tag)
         if match:
