@@ -548,6 +548,28 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
     if transaction is not None:
         return _ensure_installed_runtime(destination, wheelhouse,
             prepared_wheelhouse=prepared_wheelhouse, transaction=transaction, tree=transaction.tree)
+    if runtime_only:
+        from .runtime_commands import installed_paths
+        from .runtime_tags import validate_host_tags
+        root = installed_paths(destination)[0]
+        dependencies, lock_sha256 = _locked_dependencies(root / '.agentic/requirements.lock')
+        if set(dependencies) != set(_RUNTIME_IMPORTS):
+            raise ValidationError("Canonical runtime dependency lock and reviewed import invariant disagree")
+        if prepared_wheelhouse is None:
+            source = wheelhouse if wheelhouse is not None else root / '.agentic/wheelhouse'
+            artifacts = _load_locked_wheels(source, dependencies)
+        else:
+            if wheelhouse is not None or not isinstance(prepared_wheelhouse, _PreparedRuntimeWheelhouse):
+                raise ValidationError("Canonical runtime received an invalid prevalidated wheelhouse")
+            if (lock_sha256 != prepared_wheelhouse.requirements_lock_sha256 or
+                    dependencies != prepared_wheelhouse.dependencies):
+                raise ValidationError("Installed runtime dependency lock changed after wheelhouse prevalidation")
+            artifacts = prepared_wheelhouse.artifacts
+        validate_host_tags(artifacts)
+        _locked_runtime_files(artifacts)
+        # Refuse invalid inputs before even creating the installer lock. Keep
+        # the existing reads/checks below under custody to catch input changes
+        # between this read-only preflight and lock acquisition.
     with Tree(destination) as tree, install_lock(tree):
         return _ensure_installed_runtime(destination, wheelhouse,
             prepared_wheelhouse=prepared_wheelhouse, tree=tree, runtime_only=runtime_only)

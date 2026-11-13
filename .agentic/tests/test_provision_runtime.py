@@ -83,6 +83,30 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         self.assertEqual(2, result.returncode, result.stderr)
         self.assertIn('Offline runtime wheelhouse is unavailable', result.stderr)
 
+    def test_absent_wheelhouse_refuses_without_changing_adopted_project(self):
+        from test_bootstrap_configuration import ConfiguredInstallerTests
+        fixture = ConfiguredInstallerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.perform()
+        root = (fixture.base / 'adopted-clone').resolve()
+        # Git does not copy the installer's ignored local lock into a clone.
+        shutil.copytree(fixture.dest, root, ignore=shutil.ignore_patterns('.agentic-install'))
+        def snapshot():
+            return {path.relative_to(root).as_posix():
+                    ('file', path.read_bytes()) if path.is_file() else ('directory', None)
+                    for path in root.rglob('*')}
+        before = snapshot()
+        self.assertFalse((root / '.agentic-install').exists())
+        result = subprocess.run([sys.executable, '-B', '-I',
+                                 str(root / '.agentic/scripts/workflow.py'), '--root', str(root),
+                                 'provision-runtime', '--wheelhouse', str(fixture.base / 'absent')],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn('Offline runtime wheelhouse is unavailable', result.stderr)
+        self.assertFalse((root / '.agentic-install').exists())
+        self.assertEqual(before, snapshot())
+
     def test_import_error_uses_host_outside_virtual_and_canonical_runtimes(self):
         code = """
 import importlib.abc, runpy, sys

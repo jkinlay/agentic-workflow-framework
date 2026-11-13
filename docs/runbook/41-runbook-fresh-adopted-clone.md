@@ -33,7 +33,8 @@ as doctor does. Invalid input exits 2 with the refusal text. Provisioning builds
 and validates offline, then atomically replaces a missing, invalid or different runtime.
 A repeat provision is a no-op when the runtime is current: it exits 0, preserves
 the runtime directory identity and creates no staging directory or backup. It writes
-only `.agentic/.venv` and its staging/backup siblings. Replacement retains the
+only `.agentic/.venv`, its staging/backup siblings and the Git-ignored installer
+lock `.agentic-install/lock`. Replacement retains the
 previous runtime in a named backup sibling. Provisioning prints a stderr
 WARNING naming that exact path; doctor and status repeat this advisory warning
 without changing CONFIGURED/ACTIVE decisions. The backup is not ignored by Git
