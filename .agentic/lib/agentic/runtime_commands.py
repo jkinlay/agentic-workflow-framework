@@ -21,7 +21,9 @@ def powershell_quote(value):
     value = str(value)
     if "\x00" in value or "\r" in value or "\n" in value:
         raise ValueError("PowerShell command arguments must fit on one line")
-    return "'" + value.replace("'", "''") + "'"
+    for quote in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):
+        value = value.replace(quote, quote * 2)
+    return "'" + value + "'"
 
 
 def powershell_command(interpreter, entry_point, root, arguments):

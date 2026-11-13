@@ -134,7 +134,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/operating_calendar.py` | `94309dbda57cdd5c6523f0ed1ffb11041efc6dc681fee7d0a7588d73a83cbc82` |
 | `.agentic/lib/agentic/operating_status.py` | `a70229f955af3859a3986f4d98f38b69c0b4b3ac7cce64cb1a347a450bc14666` |
 | `.agentic/lib/agentic/output.py` | `f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b` |
-| `.agentic/lib/agentic/owner_publication.py` | `ce282e1ad9f98ab2a0b6b6dca65bc885a46e0e5c5fcfc847ed0585c5e507e49f` |
+| `.agentic/lib/agentic/owner_publication.py` | `9979b8b9b984e52a33ecd263fde7e303db58b2001920fbfd6439dd7feabdae4c` |
 | `.agentic/lib/agentic/path_containment.py` | `cd1747ad478c701ddf156ef242ee4a5b879f8ee6fb00ea7b64eb593551204a56` |
 | `.agentic/lib/agentic/planning.py` | `be009b12137ba906045bc4049de64de7ca9b2b07bf380fbff1d10dd2e9ba5443` |
 | `.agentic/lib/agentic/planning_graph.py` | `c16ecb51b8ce16ec24508ab728af3bcb55be6d358e6962a545a8236fde8a6239` |
@@ -182,7 +182,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/review_qualification.py` | `1553979fca05280633b887681e420be0d69d461fac4160e02b5ac2171883c445` |
 | `.agentic/lib/agentic/review_tiers.py` | `84ad6eae1053e303390c26858dd7d369282f73d7e311a0e2925fe1b30312faac` |
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
-| `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
+| `.agentic/lib/agentic/runtime_commands.py` | `2d12c4209010d36f97c2b84f5a527dad6df8c2bdd5f0dbc44ba6e4c121a6f4d7` |
 | `.agentic/lib/agentic/safeio.py` | `5d77ac39cf68d87a098cc8c1786d1c0be4283210543d603d5093d2ac47574f5d` |
 | `.agentic/lib/agentic/self_test_shards.py` | `87c3976c4ff0619a169960dc600ae3de2c7ad2c3d48cef527afba88e6b51bd3b` |
 | `.agentic/lib/agentic/status_report.py` | `e1125f60932ecfbcec14417c10b89049c480f97b8d5d70b3b1902db4f2a08b22` |
@@ -573,6 +573,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routing_cli.py` | `c168308567d0259a4ac4cbd8b8658738bfa32f388f158f7e48c8633931d7eab5` |
 | `.agentic/tests/test_routing_integration.py` | `1a4da8c5c10c9208181562518f8659b6d50b61f057c6e97c99c886506a05e4d6` |
 | `.agentic/tests/test_rules_activation.py` | `a80728328f2f8ec76369c1431e31270ecaf7c82055288496d65d8da0e03aeb85` |
+| `.agentic/tests/test_runtime_commands_quoting.py` | `81d2886a18f9ff3016fd047b9b8932fc5a3baa9d3090831a04da91741ec909f0` |
 | `.agentic/tests/test_safeio_canonical_load.py` | `929e54fb98da77c36b261a4b244c18907143bc71e92cbfd6c0072fd2b85bcc0e` |
 | `.agentic/tests/test_safeio_channels.py` | `df344cd57d5996235048a298de461fdde8f2d20335775fced7002a3638c0e107` |
 | `.agentic/tests/test_safeio_cli_channels.py` | `0672aa09a82bb1627ed25a2859f7bff77349acf7af595a9ab37a2f15b4e76dac` |
