@@ -112,11 +112,11 @@ def example_configuration_fixture(source, destination):
         _, content = verify_release(tree, allow_source_checkout=True)
         content.update({name: tree.read(name) for name in ('MANIFEST.json', 'MANIFEST.md')})
     destination.mkdir()
-    with Tree(destination) as tree:
+    with Tree(destination, mutation_authority='transaction') as tree:
         for name, raw in content.items():
             tree.write(name, raw)
     seed_source_configuration(destination)
-    with Tree(destination) as tree:
+    with Tree(destination, mutation_authority='transaction') as tree:
         tree.write('OPERATING_CONFIG.yaml', content['.agentic/examples/OPERATING_CONFIG.yaml'])
     return destination / '.agentic/examples/PROJECT_CONFIG.yaml'
 

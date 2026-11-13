@@ -1286,7 +1286,7 @@ class PlanPublicationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="awf-stream-")
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.project = self.base / "project"
         self.project.mkdir()
         self.runtime = self.base / "runtime"
@@ -1485,7 +1485,7 @@ class PlannerCliTests(unittest.TestCase):
 
     def test_cli_applies_configured_limit_and_records_observed_host_capacity(self):
         with tempfile.TemporaryDirectory(prefix="awf-cap-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             project = root / "project"
             project.mkdir()
             configuration = operating_governance()
@@ -1515,7 +1515,7 @@ class PlannerCliTests(unittest.TestCase):
     def test_external_runtime_defaults_to_actual_target_configuration(self):
         for limit, enabled, expected in [(1, True, 1), (2, True, 2), (3, False, 0)]:
             with self.subTest(limit=limit, enabled=enabled), tempfile.TemporaryDirectory(prefix="awf-target-") as temporary:
-                project = Path(temporary)
+                project = Path(temporary).resolve()
                 (project / ".agentic").mkdir()
                 governing = operating_governance()
                 policy = governing["execution"]
@@ -1536,7 +1536,7 @@ class PlannerCliTests(unittest.TestCase):
 
     def test_cli_redaction_option_sanitizes_absolute_ownership_worktree(self):
         with tempfile.TemporaryDirectory(prefix="awf-redact-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             project = root / "project"
             project.mkdir()
             (project / ".agentic").mkdir()

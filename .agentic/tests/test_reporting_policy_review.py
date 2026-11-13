@@ -268,7 +268,9 @@ class PolicyReviewTests(unittest.TestCase):
         case.publish(value)
         proposed = replace(op.validate_operating(case.value, case.gov),
             _provenance_json=canonical({'path': str(case.root / op.CONFIG)}))
-        (case.root / op.CONFIG).unlink()
+        with op.Tree(case.root, mutation_authority='transaction') as tree:
+            tree.read(op.CONFIG, maximum=op.MAX_BYTES)
+            tree.unlink(op.CONFIG)
         snapshot = accepted_budget_snapshot(case.root, case.gov, proposed)
         self.assertEqual(value['reporting'], snapshot.config['reporting'])
         binding = {k: destination[k] for k in ('project', 'repository', 'scope_revision')}

@@ -15,7 +15,8 @@ _missing = [name for name in ("yaml", "jsonschema") if importlib.util.find_spec(
 if _missing:
     raise SystemExit("BOOTSTRAP REJECTED: missing locked dependencies (" + ", ".join(_missing) + "). Install them first: "
                      "python -m pip install --require-hashes --only-binary=:all: -r .agentic/requirements.lock")
-from agentic.installer import complete_runtime_transaction, install, recover
+from agentic.installer import complete_runtime_transaction, install, recover, install_lock
+from agentic.safeio import Tree
 from agentic import ValidationError
 from agentic.canonical import now_text
 from agentic.adoption_config import (ensure_installed_runtime, post_install_checks,
@@ -40,36 +41,38 @@ def _load_json(path, description):
     return value
 
 
-def _prepare_assignment_state_path(path, dest):
-    path = Path(path).expanduser().resolve()
+def _prepare_assignment_state_path(path, dest, *, tree=None):
+    path = Path(os.path.abspath(Path(path).expanduser()))
     dest = Path(dest).expanduser().resolve()
-    if path == dest or path.is_relative_to(dest):
+    # Compare canonical spellings, retaining the supplied pathname for Tree's
+    # no-follow checks. abspath alone preserves Windows 8.3 ancestor aliases.
+    if path.resolve().is_relative_to(dest):
         raise ValidationError("Assignment state must remain outside the adopted repository/worktree")
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.parent.is_dir():
         raise ValidationError("Assignment state parent must be a writable directory")
-    descriptor, probe = tempfile.mkstemp(prefix=path.name + ".", suffix=".probe", dir=path.parent)
-    os.close(descriptor)
-    os.unlink(probe)
+    import uuid
+    if tree is None:
+        with Tree(path.parent) as tree, install_lock(tree, '.' + path.name + '.lock'):
+            return _prepare_assignment_state_path(path, dest, tree=tree)
+    probe = path.name + '.' + uuid.uuid4().hex + '.probe'
+    tree.write_exclusive(probe, b'')
+    tree.unlink(probe)
     return path
 
 
-def _write_assignment_state(path, state, dest):
-    path = _prepare_assignment_state_path(path, dest)
-    descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(state, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+def _write_assignment_state(path, state, dest, *, tree=None):
+    path = Path(os.path.abspath(Path(path).expanduser()))
+    if tree is None:
+        with Tree(path.parent, mutation_authority='transaction') as tree, install_lock(tree, '.' + path.name + '.lock'):
+            tree.inspect(path.name)
+            return _write_assignment_state(path, state, dest, tree=tree)
+    path = _prepare_assignment_state_path(path, dest, tree=tree)
+    tree.write(path.name, (json.dumps(state, indent=2, sort_keys=True) + '\n').encode('utf-8'),
+               authority='transaction')
 
 
-def _run_assignment_path(args, jira_client, owner_source_verifier, store=None):
+def _run_assignment_path(args, jira_client, owner_source_verifier, store=None, *, _state_tree=None):
     requested = (args.project_start_inventory is not None or args.ticket_intake is not None
                  or args.assignment_change is not None)
     if not requested:
@@ -87,12 +90,15 @@ def _run_assignment_path(args, jira_client, owner_source_verifier, store=None):
         raise ValidationError("Installed project configuration must be an object")
     # Refuse invalid or unwritable controller-state destinations before an
     # assignment can perform any Jira read-modify-write operation.
-    state_path = _prepare_assignment_state_path(args.assignment_state, args.dest)
+    state_path = _prepare_assignment_state_path(args.assignment_state, args.dest, tree=_state_tree)
+    if _state_tree is None:
+        with Tree(state_path.parent, mutation_authority='transaction') as tree, install_lock(tree, '.' + state_path.name + '.lock'):
+            return _run_assignment_path(args, jira_client, owner_source_verifier, store, _state_tree=tree)
     store = store if store is not None else getattr(jira_client, 'controller_store', None)
     if store is not None:
         from agentic.controller_state import protected_state_path
         protected_state_path(store.path, (*store.worktree_roots, args.dest))
-    state = _load_json(state_path, "Assignment state") if state_path.exists() else {}
+    state = json.loads(_state_tree.read(state_path.name, maximum=16 * 1024 * 1024)) if _state_tree.inspect(state_path.name) is not None else {}
     if not isinstance(state, dict):
         raise ValidationError("Assignment state must be an object")
     from agentic.intake_assignment import load_runtime_assignments
@@ -133,7 +139,7 @@ def _run_assignment_path(args, jira_client, owner_source_verifier, store=None):
             records = {change["ticket_key"]: record}
     finally:
         # Unknown/mismatched Jira outcomes must survive even when assignment raises.
-        _write_assignment_state(state_path, state, args.dest)
+        _write_assignment_state(state_path, state, args.dest, tree=_state_tree)
     return {key: {"assignment_id": record["assignment_id"],
                   "assignment_sha256": record["assignment_sha256"],
                   "tier": record["tier"], "round_cap": record["round_cap"]}
