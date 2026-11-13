@@ -1412,17 +1412,6 @@
     "justification": "String/bytes or dataclass replacement at this exact expression; no pathname mutation."
   },
   {
-    "path": ".agentic/lib/agentic/owner_publication.py",
-    "context": "_literal",
-    "line": 62,
-    "call": "value.replace(\"'\", \"''\")",
-    "fingerprint": "92ef532ffb3e3fea6790fdaad7e404015b39f2a706b78f630205160770343459",
-    "object": "explicit call-site inventory",
-    "created_by_us": "see justification",
-    "disposition": "NON-MUTATING",
-    "justification": "String/bytes or dataclass replacement at this exact expression; no pathname mutation."
-  },
-  {
     "path": ".agentic/lib/agentic/preservation_metadata.py",
     "context": "_runtime_file_record",
     "line": 310,
@@ -2103,17 +2092,6 @@
     "created_by_us": "yes (scratch or transaction-created)",
     "disposition": "OUT-OF-SCOPE",
     "justification": "Qualification-test-only synthetic markers in an owner-controlled disposable checkout."
-  },
-  {
-    "path": ".agentic/lib/agentic/runtime_commands.py",
-    "context": "powershell_quote",
-    "line": 24,
-    "call": "value.replace(\"'\", \"''\")",
-    "fingerprint": "92ef532ffb3e3fea6790fdaad7e404015b39f2a706b78f630205160770343459",
-    "object": "explicit call-site inventory",
-    "created_by_us": "see justification",
-    "disposition": "NON-MUTATING",
-    "justification": "String/bytes or dataclass replacement at this exact expression; no pathname mutation."
   },
   {
     "path": ".agentic/lib/agentic/safeio.py",
