@@ -7,6 +7,11 @@ from pathlib import Path
 from . import VERSION
 
 
+_POWERSHELL_QUOTE_TRANSLATION = {
+    ord(quote): quote * 2 for quote in ("'", "\u2018", "\u2019", "\u201a", "\u201b")
+}
+
+
 def installed_paths(root, *, platform=None):
     root = Path(root).resolve()
     windows = (platform or os.name) == "nt"
@@ -21,9 +26,7 @@ def powershell_quote(value):
     value = str(value)
     if "\x00" in value or "\r" in value or "\n" in value:
         raise ValueError("PowerShell command arguments must fit on one line")
-    for quote in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):
-        value = value.replace(quote, quote * 2)
-    return "'" + value + "'"
+    return "'" + value.translate(_POWERSHELL_QUOTE_TRANSLATION) + "'"
 
 
 def powershell_command(interpreter, entry_point, root, arguments):
