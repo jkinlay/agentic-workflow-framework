@@ -324,7 +324,7 @@ def _inspect_locked_wheel(filename, raw, requirements):
         installed[key] = data
     return {"name": canonical_name, "display_name": requirement["name"],
             "version": observed_version, "artifact_sha256": artifact_sha256,
-            "filename": filename, "files": installed}
+            "filename": filename, "files": installed, "wheel_tags": set(map(str, wheel_tags))}
 
 
 def _load_locked_wheels(wheelhouse, requirements):
@@ -357,7 +357,10 @@ def _load_locked_wheels(wheelhouse, requirements):
         total += len(raw)
         if total > _MAX_DEPENDENCY_BYTES:
             raise ValidationError("Offline runtime wheelhouse exceeds the runtime copy limit")
-        artifact = _inspect_locked_wheel(path.name, raw, requirements)
+        try:
+            artifact = _inspect_locked_wheel(path.name, raw, requirements)
+        except ValidationError as exc:
+            raise ValidationError(str(exc) + ': ' + path.name) from exc
         if artifact["name"] in artifacts:
             raise ValidationError("Offline runtime wheelhouse contains multiple artifacts for: " + artifact["display_name"])
         artifacts[artifact["name"]] = artifact
@@ -391,6 +394,21 @@ def prevalidate_runtime_wheelhouse(source, expected_manifest_sha256, wheelhouse)
         raise ValidationError("Canonical runtime dependency lock and reviewed import invariant disagree")
     artifacts = _load_locked_wheels(wheelhouse, dependencies)
     return _PreparedRuntimeWheelhouse(source_manifest_sha256, lock_sha256, dependencies, artifacts)
+
+
+def _locked_runtime_files(artifacts):
+    """Derive a read-only installed inventory for runtime-only reuse validation."""
+    files, folded, total = {}, set(), 0
+    for name in sorted(artifacts):
+        for relative_text, raw in sorted(artifacts[name]["files"].items()):
+            if relative_text in files or relative_text.casefold() in folded:
+                raise ValidationError("Locked wheels contain a conflicting runtime file: " + relative_text)
+            total += len(raw)
+            if total > _MAX_DEPENDENCY_BYTES:
+                raise ValidationError("Locked dependencies exceed the runtime extraction limit")
+            files[relative_text] = raw
+            folded.add(relative_text.casefold())
+    return files
 
 
 def _extract_locked_wheels(artifacts, target):
@@ -522,14 +540,39 @@ def _builder_owns_backup_cleanup(transaction):
 
 
 def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None,
-                             transaction=None):
+                             transaction=None, runtime_only=False):
+    """Keep runtime-only recovery under the same installation lock and custody."""
     from .installer import Tree, install_lock
+    if runtime_only and transaction is not None:
+        raise ValidationError('Runtime-only provisioning cannot join an installation transaction')
     if transaction is not None:
         return _ensure_installed_runtime(destination, wheelhouse,
             prepared_wheelhouse=prepared_wheelhouse, transaction=transaction, tree=transaction.tree)
+    if runtime_only:
+        from .runtime_commands import installed_paths
+        from .runtime_tags import validate_host_tags
+        root = installed_paths(destination)[0]
+        dependencies, lock_sha256 = _locked_dependencies(root / '.agentic/requirements.lock')
+        if set(dependencies) != set(_RUNTIME_IMPORTS):
+            raise ValidationError("Canonical runtime dependency lock and reviewed import invariant disagree")
+        if prepared_wheelhouse is None:
+            source = wheelhouse if wheelhouse is not None else root / '.agentic/wheelhouse'
+            artifacts = _load_locked_wheels(source, dependencies)
+        else:
+            if wheelhouse is not None or not isinstance(prepared_wheelhouse, _PreparedRuntimeWheelhouse):
+                raise ValidationError("Canonical runtime received an invalid prevalidated wheelhouse")
+            if (lock_sha256 != prepared_wheelhouse.requirements_lock_sha256 or
+                    dependencies != prepared_wheelhouse.dependencies):
+                raise ValidationError("Installed runtime dependency lock changed after wheelhouse prevalidation")
+            artifacts = prepared_wheelhouse.artifacts
+        validate_host_tags(artifacts)
+        _locked_runtime_files(artifacts)
+        # Refuse invalid inputs before even creating the installer lock. Keep
+        # the existing reads/checks below under custody to catch input changes
+        # between this read-only preflight and lock acquisition.
     with Tree(destination) as tree, install_lock(tree):
         return _ensure_installed_runtime(destination, wheelhouse,
-            prepared_wheelhouse=prepared_wheelhouse, tree=tree)
+            prepared_wheelhouse=prepared_wheelhouse, tree=tree, runtime_only=runtime_only)
 
 
 class _RuntimeBuilder(venv.EnvBuilder):
@@ -621,7 +664,7 @@ def _verify_stage_links(stage):
 
 
 def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None,
-                              transaction=None, tree):
+                              transaction=None, tree, runtime_only=False):
     """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
@@ -653,6 +696,27 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
             raise ValidationError("Installed runtime dependency lock changed after wheelhouse prevalidation")
         artifacts = prepared_wheelhouse.artifacts
     expected_versions = {name: dependencies[name]["version"] for name in sorted(dependencies)}
+    if runtime_only:
+        from .runtime_tags import validate_host_tags
+        validate_host_tags(artifacts)
+        expected_files = {path: hashlib.sha256(raw).digest()
+                          for path, raw in _locked_runtime_files(artifacts).items()}
+        result = {"interpreter": str(interpreter), "entry_point": str(entry_point),
+                  "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
+                  "requirements_lock_sha256": lock_sha256,
+                  "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
+                  "artifact_sha256": {artifacts[name]["display_name"]: artifacts[name]["artifact_sha256"] for name in sorted(artifacts)},
+                  "verified_dependency_files": len(expected_files)}
+        if runtime_only and interpreter.is_file() and entry_point.is_file():
+            try:
+                _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files)
+            except (ValidationError, OSError):
+                # An invalid or different runtime follows the existing stage/swap
+                # route. No staging name or directory exists before this check.
+                pass
+            else:
+                return {**result, "runtime_unchanged": True, "transaction_cleanup": "COMPLETE",
+                        "transaction_cleanup_failures": []}
     if transaction is None:
         stage = _transaction_sibling(runtime_root, "staging")
         backup = _transaction_sibling(runtime_root, "backup")
@@ -709,15 +773,23 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
             retained = [path for path in candidates
                         if path.exists() or path.is_symlink()]
             if retained:
-                _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')
-                original.add_note('Runtime cleanup pending; inspect retained-journal.json before owner recovery')
+                if runtime_only:
+                    from .runtime_commands import runtime_backup_warning
+                    for path in retained:
+                        original.add_note(runtime_backup_warning(path))
+                else:
+                    _record_cleanup_pending(tree, retained, status='RECOVERY_REFUSED')
+                    original.add_note('Runtime cleanup pending; inspect retained-journal.json before owner recovery')
         except BaseException as diagnostic_error:
             original.add_note('Retained cleanup diagnostic could not be written: ' + type(diagnostic_error).__name__)
         raise
     cleanup = []
     if transaction is None and (backup.exists() or backup.is_symlink()):
-        cleanup = _record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
-    return {"interpreter": str(interpreter), "entry_point": str(entry_point),
+        if runtime_only:
+            cleanup = [{'path': str(backup), 'reason': 'Previous runtime retained for owner recovery'}]
+        else:
+            cleanup = _record_cleanup_pending(tree, [backup], status='COMMITTED_CLEANUP_PENDING')
+    result = {"interpreter": str(interpreter), "entry_point": str(entry_point),
             "transaction_cleanup": "COMMITTED_CLEANUP_PENDING" if cleanup else "COMPLETE",
             "transaction_cleanup_failures": cleanup,
             "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
@@ -725,6 +797,9 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
             "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
             "artifact_sha256": {artifacts[name]["display_name"]: artifacts[name]["artifact_sha256"] for name in sorted(artifacts)},
             "verified_dependency_files": len(expected_files)}
+    if runtime_only:
+        result["runtime_unchanged"] = False
+    return result
 
 
 def unresolved(value):

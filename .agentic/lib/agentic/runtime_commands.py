@@ -1,7 +1,11 @@
-"""Canonical installed runtime paths and copy/paste-safe PowerShell commands."""
+"""Canonical installed runtime paths and copy/paste-safe shell commands."""
 from __future__ import annotations
 
 import os
+import re
+import shlex
+import stat
+import sys
 from pathlib import Path
 
 from . import VERSION
@@ -35,6 +39,73 @@ def powershell_command(interpreter, entry_point, root, arguments):
     return " ".join(fields)
 
 
+def provision_command(root):
+    root, _, entry_point = installed_paths(root)
+    runtime = root / '.agentic' / '.venv'
+    executable = Path(sys.executable).resolve()
+    base = getattr(sys, '_base_executable', None)
+    host = sys.executable
+    # Before Python 3.14, -S can hide a venv in sys.prefix; the base
+    # executable still identifies its host interpreter.
+    if (sys.prefix != sys.base_prefix or executable.is_relative_to(runtime) or
+            (base and Path(base).resolve() != executable)):
+        host = 'HOST_PYTHON'
+        if base:
+            candidate = Path(base).resolve()
+            if (candidate.is_file() and not candidate.is_relative_to(runtime) and
+                    (sys.prefix == sys.base_prefix or not candidate.is_relative_to(Path(sys.prefix).resolve()))):
+                host = str(candidate)
+    arguments = ['provision-runtime', '--wheelhouse', 'ABS_WHEELHOUSE']
+    posix = [str(host), '-B', '-I', str(entry_point), '--root', str(root), *arguments]
+    return ('PowerShell: ' + powershell_command(host, entry_point, root, arguments) +
+            '\nPOSIX sh: ' + shlex.join(posix))
+
+
+def _runtime_anomaly(path):
+    return ('WARNING: Runtime recovery anomaly: ' + repr(str(path)) +
+            '. Inspect under owner control; no cleanup command is safe to recommend. '
+            'This entry is not ignored by Git and must not be committed.')
+
+
+def runtime_backup_warning(path):
+    """Render owner-only cleanup advice; never execute a cleanup operation."""
+    path = Path(path)
+    try:
+        metadata = os.lstat(path)
+        reparse = getattr(metadata, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+        if (re.fullmatch(r'\.venv\.(?:backup|staging)-[0-9a-f]{32}', path.name) is None or
+                not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or reparse):
+            return _runtime_anomaly(path)
+        quoted = powershell_quote(path)
+    except (OSError, ValueError):
+        return _runtime_anomaly(path)
+    path = str(path)
+    return ("WARNING: Retained runtime directory: " + path +
+            ". Once satisfied with recovery, remove this retained directory yourself. "
+            "This directory is not ignored by Git and must not be committed.\n"
+            "PowerShell: Remove-Item -LiteralPath " + quoted + " -Recurse -Force\n"
+            "POSIX sh: rm -rf -- " + shlex.quote(path))
+
+
+def runtime_backup_warnings(root):
+    """Observe runtime siblings without traversing or changing retained bytes."""
+    parent = Path(root).resolve() / '.agentic'
+    try:
+        paths = sorted(path for path in parent.iterdir()
+                       if path.name.startswith(('.venv.backup-', '.venv.staging-')))
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return ['WARNING: Runtime recovery inventory unavailable; inspect .agentic/.venv.backup-* and .venv.staging-* under owner control.']
+    warnings = []
+    for path in paths:
+        try:
+            warnings.append(runtime_backup_warning(path))
+        except (OSError, ValueError):
+            warnings.append(_runtime_anomaly(path))
+    return warnings
+
+
 def command_catalog(root, *, platform=None):
     root, interpreter, entry_point = installed_paths(root, platform=platform)
     commands = [
@@ -55,6 +126,7 @@ def command_catalog(root, *, platform=None):
             "entry_point_exists": entry_point.is_file(),
         },
         "shell": "powershell",
+        "warnings": runtime_backup_warnings(root),
         "commands": [
             {"purpose": purpose,
              "command": powershell_command(interpreter, entry_point, root, arguments),
@@ -71,6 +143,7 @@ def command_catalog(root, *, platform=None):
             "detail": "Activation-blocker aggregation is supplied by status, not this command.",
         },
         "execution_authority": False,
+        "next_action": provision_command(root) if not interpreter.is_file() else None,
     }
 
 
@@ -81,5 +154,8 @@ def render_doctor(report):
         "Entry point: " + report["runtime"]["entry_point"],
     ]
     lines.extend(item["purpose"] + ": " + item["command"] for item in report["commands"])
+    lines.extend(report.get("warnings", []))
     lines.append("Activation summary: EXTENSION_POINT (status owns activation blockers)")
+    if report.get("next_action"):
+        lines.append("Next: " + report["next_action"])
     return "\n".join(lines) + "\n"

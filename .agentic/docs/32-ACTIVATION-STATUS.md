@@ -2,6 +2,8 @@
 
 Version 1.9.6. `workflow.py status` is a read-only observation. It creates no directory or lock and evaluates independent stages into `checks`. Each row has a stable `code`, `stage`, `state`, `evidence`, `remedy` and `observed_at`.
 
+Host-Python `workflow.py --root PROJECT provision-runtime --wheelhouse ABS_PATH` preserves receipts; repeating with a current runtime is a no-op. Replacement retains backups; stderr, doctor/status warn with PowerShell/POSIX cleanup commands. Once satisfied, clean the printed path: Git doesn't ignore it; never commit it.
+
 Check states are `PASS`, `INVALID`, `MISMATCH`, `UNAVAILABLE`, `UNOBSERVED` and `NOT_APPLICABLE`. An unavailable later observation never lowers a state already established by earlier stages. Text output lists every blocker before one `Next command`; JSON uses the [activation-status schema](../schemas/activation-status.schema.json).
 
 Every GitHub REST request uses the centrally defined API version `2022-11-28`, which GitHub documents as supported through March 2028 in its [REST API version documentation](https://docs.github.com/en/rest/about-the-rest-api/api-versions). The trusted `gh` child projects each adoption-PR file page through a controller-owned expression to exactly `filename`, `status` and immutable blob `sha` before stdout enters verifier byte accounting; patch text and other provider fields are neither accepted nor recorded. Pagination remains complete within five 100-entry requests: every filename is unique, every row is typed, and the fifth page must be partial (at most 499 files). A missing page, a full fifth page, malformed output, or a missing exact added/modified receipt fails closed.

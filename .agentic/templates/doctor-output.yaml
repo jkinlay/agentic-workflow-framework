@@ -3,6 +3,8 @@
   "status": "UNFILLED",
   "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
   "record": {
+    "warnings": [],
+    "next_action": null,
     "format": "awf-doctor-1",
     "template_version": "1.9.6",
     "root": "UNFILLED",
