@@ -1,6 +1,6 @@
 # Release publication
 
-Version 1.9.6. Owners publish the exact clean commit. Release publishing and `verify-release` run on Linux and Windows. Linux and macOS differ: macOS lacks Linux's `O_TMPFILE`, so both operations fail closed at materialization; publish from Linux or Windows.
+Version 1.9.6. Owners publish the exact clean commit. Release publishing and `verify-release` run on Linux and Windows. On macOS both fail closed at materialization (no `O_TMPFILE`); publish from Linux or Windows.
 
 ## Preconditions
 
@@ -8,7 +8,7 @@ Version 1.9.6. Owners publish the exact clean commit. Release publishing and `ve
 
 Before tagging, pushing or hosted-release calls, the publisher invokes the materialized commit's `workflow.py publication-scan` for the exact release commit. The base is the highest earlier canonical `vMAJOR.MINOR.PATCH` tag reachable from that commit; absence refuses. Require exit zero and UTF-8 JSON `PASS` bound to base/commit, zero blocking/unscanned entries. `BLOCKED`, command errors, malformed output, mismatched identities, contradictory counts and nonzero PASS exits refuse before release-target resolution or mutation.
 
-Require an independently pinned `awf-clean-windows-portable-check-1` record for the same commit: PASS for portable build, host-skill installation and verification. Absence refuses; evidence grants no publication authority.
+Supply an independently pinned `awf-clean-windows-portable-check-1` record for the same commit: PASS for portable build, host-skill installation and verification. Absence refuses; evidence grants no publication authority.
 
 ```text
 python -B scripts/publish_release.py --commit SHA --output-dir <new-external-output> --clean-windows-check <record.json> --expected-clean-windows-check-sha256 SHA256 --dry-run
@@ -16,7 +16,7 @@ python -B scripts/publish_release.py --commit SHA --output-dir <new-external-out
 
 Dry-run reports the scan without remote changes; both modes preserve exact external `publication-scan.json`, `tag-message-scan.json` and `release-body-scan.json` bytes. Real runs validate the target and freeze the credential-isolated push plan before mutation. HTTPS tag push alone receives a command-scoped credential-free URL and `gh auth git-credential` helper. Visible `http.extraHeader` keys or inconclusive inspection refuse before tagging; diagnostics contain only key, scope and origin. Push/recovery reset generic, URL-scoped and included-local headers/helpers. Git configuration/credentials are never persisted or included in release output.
 
-Both modes scan frozen tag and body provider text before mutation; consumers receive verified stdin bytes; uploads use verified staging copies. Tag-object mismatch leaves the local tag: owner inspects/removes it before retry. Changed files after tagging/pushing refuse: inspect/remove the local tag or reconcile the pushed tag before retry. Real runs create owner-controlled draft releases. Failed creation may leave a partial draft: delete it and inspect/reconcile retained tags. Post-upload draft readback refuses mismatched/unavailable assets. Windows locks staged copies against modification/deletion. Linux POSIX limitation: a same-user process can alter staged copies during upload; detection precedes `DRAFT_CREATED`. The draft stays unpublished; owner must delete it and inspect the retained tag before retrying. Protection excludes same-user readback/publisher tampering; independent owner review required.
+Both modes scan frozen tag and body provider text before mutation; consumers receive verified stdin bytes; uploads use verified staging copies. Tag-object mismatch leaves the local tag: owner inspects/removes it before retry. Changed files after tagging/pushing refuse: inspect/remove the local tag or reconcile the pushed tag before retry. Real runs create owner-controlled draft releases. Failed creation may leave a partial draft: delete it and inspect/reconcile retained tags. Post-upload draft readback refuses mismatched/unavailable assets. Windows locks staged copies against modification/deletion. Linux POSIX limitation: a same-user process can alter staged copies during upload; detection precedes `DRAFT_CREATED`. The draft stays unpublished; owner must delete it and inspect the retained tag before retrying. POSIX protection excludes same-user readback/publisher tampering; independent owner review required.
 
 Push failure retains the local annotated tag, leaves remote status unknown, and creates no GitHub release. Errors suppress raw Git output to protect credential-bearing URLs, instruct checking `gh auth status`, and say "after fixing authentication, retry exactly:" (substitute reported origin, object ID and tag):
 
