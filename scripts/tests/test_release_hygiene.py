@@ -31,7 +31,8 @@ class ReleaseBuildTraversalTests(unittest.TestCase):
                 target.write_bytes(b'evidence')
                 evidence.append(relative)
                 self.assertFalse(release_member(relative))
-            paths = build_release.release_paths(Tree(root))
+            with Tree(root) as tree:
+                paths = build_release.release_paths(tree)
             inventory = {path: 'digest' for path in paths}
             self.assertTrue(set(evidence).isdisjoint(paths))
             self.assertTrue(set(evidence).isdisjoint(inventory))

@@ -160,7 +160,7 @@ class AuthenticBaselineTests(unittest.TestCase):
 
     def test_adoption_evidence_is_an_exact_preservation_output(self):
         from agentic import installer
-        from agentic.safeio import Tree
+        from agentic.installer import Tree
         import uuid
         project = self.base / 'adoption-evidence-upgrade'
         install_baseline(self.source, project)
@@ -290,7 +290,7 @@ class AuthenticBaselineTests(unittest.TestCase):
 
     def test_adoption_audit_cannot_rebind_the_upgrade_transaction(self):
         from agentic import installer
-        from agentic.safeio import Tree
+        from agentic.installer import Tree
         import uuid
         project = self.base / 'adoption-transaction-binding'
         install_baseline(self.source, project)

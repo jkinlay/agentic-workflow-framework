@@ -592,7 +592,7 @@ def collect_qualification(config, driver, store, *, confirm_disposable_pr,
     evidence = _evidence_path(config, config["state_dir"])
     state = Path(config["state_dir"]).resolve(strict=True)
     with Tree(state) as tree:
-        tree.write(evidence.name, encoded)
+        tree.write(evidence.name, encoded, authority='transaction')
     return {
         "status": "QUALIFICATION_EVIDENCE_RECORDED",
         "result": result,

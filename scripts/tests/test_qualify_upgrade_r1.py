@@ -80,22 +80,48 @@ class RoundOneTests(unittest.TestCase):
     def test_probe_directory_is_not_reopened_to_claim_a_replacement(self):
         project = self.root / 'project'
         project.mkdir()
-        original = Path.mkdir
         replacements = []
-        def mkdir(path, *args, **kwargs):
-            result = original(path, *args, **kwargs)
-            if path.name.startswith('.awf-permission-probe-'):
-                path.rename(path.with_name(path.name + '-original'))
-                original(path)
-                replacements.append(path)
-            return result
-        with patch.object(Path, 'mkdir', mkdir):
+        hits = []
+        if os.name == 'nt':
+            original = qualification._windows_probe_directory
+            def create(parent, name):
+                handle = original(parent, name)
+                hits.append(name)
+                path = project / name
+                try:
+                    path.rename(path.with_name(path.name + '-original'))
+                    path.mkdir()
+                    replacements.append(path)
+                except PermissionError:
+                    pass  # The actual creating handle denies replacement.
+                return handle
+            seam = patch.object(qualification, '_windows_probe_directory', create)
+        else:
+            original = os.mkdir
+            def create(path, *args, **kwargs):
+                result = original(path, *args, **kwargs)
+                if Path(path).name.startswith('.awf-permission-probe-'):
+                    hits.append(path)
+                    parent = os.dup(kwargs['dir_fd'])
+                    self.addCleanup(os.close, parent)
+                    os.rename(path, str(path) + '-original', src_dir_fd=parent, dst_dir_fd=parent)
+                    original(path, dir_fd=parent)
+                    replacements.append((parent, path, os.stat(path, dir_fd=parent).st_ino))
+                return result
+            seam = patch.object(os, 'mkdir', create)
+        with seam:
             try:
                 qualification._creation_state(project, 'new/', directory=True)
             except (ValueError, OSError):
                 pass
+        self.assertTrue(hits, 'the actual directory creation seam was never exercised')
         for path in replacements:
-            self.assertTrue(path.exists(), 'directory reopen claimed and deleted an owner replacement')
+            if os.name == 'nt':
+                self.assertTrue(path.exists(), 'directory reopen claimed and deleted an owner replacement')
+            else:
+                parent, name, inode = path
+                self.assertEqual(inode, os.stat(name, dir_fd=parent, follow_symlinks=False).st_ino,
+                                 'directory reopen claimed and deleted an owner replacement')
 
     def test_large_unicode_empty_directory_hashes_share_one_encoding(self):
         runtime = self.root / 'runtime'

@@ -40,7 +40,7 @@ class WindowsProbeTests(unittest.TestCase):
 
         with safeio.Tree(self.root) as tree, patch.object(safeio, '_apply_windows_metadata', substitute):
             try:
-                tree.write('managed', b'new managed')
+                tree.write('managed', b'new managed', authority='transaction')
             except ValidationError:
                 pass
         self.assertEqual(b'OWNER STREAM', owner_stream.read_bytes())
@@ -54,8 +54,8 @@ class WindowsProbeTests(unittest.TestCase):
 
         def captured(path, **kwargs):
             result = original(path, **kwargs)
-            if path.name == 'probe':
-                parent = path.parent
+            if path.name.startswith('awf-metadata-probe-'):
+                parent = path
                 try:
                     parent.rename(parent.with_name(parent.name + '-original'))
                     parent.mkdir()
@@ -92,7 +92,7 @@ class WindowsProbeTests(unittest.TestCase):
             return original(path, **kwargs)
 
         with safeio.Tree(self.root) as tree, patch.object(safeio, '_windows_metadata', captured):
-            tree.write('managed', b'replacement')
+            tree.write('managed', b'replacement', authority='transaction')
         self.assertEqual(['pinned'], events)
         self.assertEqual(b'owner content', owner.read_bytes())
 

@@ -771,16 +771,16 @@ class InstallerTests(unittest.TestCase):
         from agentic.installer import _journal_marker
         journal_raw = json_bytes(journal)
         with Tree(self.dest) as tree:
-            tree.write(JOURNAL, journal_raw)
-            tree.write(MARKER, b"{}")
-            tree.write("AGENTS.md", new)
+            tree.write(JOURNAL, journal_raw, authority='transaction')
+            tree.write(MARKER, b"{}", authority='transaction')
+            tree.write("AGENTS.md", new, authority='transaction')
         with self.assertRaises(ValidationError):
             ensure_usable(self.dest)
         # Recovery authority must be bound to the exact journal; a bare marker fails closed.
         with self.assertRaisesRegex(ValidationError, "Invalid installation recovery marker"):
             recover(self.dest)
         with Tree(self.dest) as tree:
-            tree.write(MARKER, json_bytes(_journal_marker(journal["transaction_id"], sha256(journal_raw))))
+            tree.write(MARKER, json_bytes(_journal_marker(journal["transaction_id"], sha256(journal_raw))), authority='transaction')
         with self.assertRaises(ValidationError):
             ensure_usable(self.dest)
         self.assertEqual(recover(self.dest)["status"], "ROLLED_BACK")

@@ -265,8 +265,8 @@ def runtime_inventory(path):
                 capture(child, child.name if not relative else relative + '/' + child.name)
         elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
             with Tree(node.parent) as tree:
-                raw = tree.read(node.name)
-            entries[relative] = dict(state, sha256=hashlib.sha256(raw).hexdigest(), size=len(raw))
+                size, digest = _runtime_file_record(tree, node.name, info)
+            entries[relative] = dict(state, sha256=digest, size=size)
         elif stat.S_ISLNK(info.st_mode) and _contained_cleanup_link(relative, os.readlink(node)):
             entries[relative] = dict(state, link=os.readlink(node))
         else:

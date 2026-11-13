@@ -23,6 +23,106 @@ class InstallError(ValueError):
     pass
 
 
+class Publication:
+    """Pinned parents and final identity checks under the installer lease.
+
+    Requires owner-established quiescence; doc 38 names the final namespace race.
+    """
+    def __init__(self):
+        from contextlib import ExitStack
+        self.stack = ExitStack()
+        self.parents = {}
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            self.ctypes = ctypes
+            self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            self.kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            self.kernel.CreateFileW.restype = wintypes.HANDLE
+            self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            self.kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                ctypes.c_void_p, wintypes.DWORD]
+
+    def pin(self, directory):
+        directory = Path(os.path.abspath(directory))
+        if directory in self.parents:
+            return self.parents[directory]
+        parent = self.pin(directory.parent) if directory.parent != directory else None
+        if os.name == 'nt':
+            safe_path(directory)
+            # Include FILE_LIST_DIRECTORY: metadata-only handles do not enforce
+            # the denied delete-sharing lease needed to pin this parent.
+            handle = self.kernel.CreateFileW(str(directory), 0x81, 3, None, 3, 0x02200000, None)
+            if handle == self.ctypes.c_void_p(-1).value:
+                raise self.ctypes.WinError(self.ctypes.get_last_error())
+            self.stack.callback(self.kernel.CloseHandle, handle)
+        else:
+            handle = os.open(str(directory) if parent is None else directory.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                **({} if parent is None else {'dir_fd': parent}))
+            self.stack.callback(os.close, handle)
+        self.parents[directory] = handle
+        return handle
+
+    def identity(self, path):
+        path = Path(path)
+        parent = self.pin(path.parent)
+        try:
+            info = os.lstat(path) if os.name == 'nt' else os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISDIR(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise InstallError('Unsafe publication directory; retained: ' + str(path))
+        if os.name != 'nt':
+            return (info.st_dev, info.st_ino)
+        ctypes = self.ctypes
+        handle = self.kernel.CreateFileW(str(path), 0x80, 3, None, 3, 0x02200000, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            class FileId(ctypes.Structure):
+                _fields_ = [('volume', ctypes.c_ulonglong), ('file_id', ctypes.c_ubyte * 16)]
+            identity = FileId()
+            if not self.kernel.GetFileInformationByHandleEx(handle, 18, ctypes.byref(identity), ctypes.sizeof(identity)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return (identity.volume, bytes(identity.file_id))
+        finally:
+            self.kernel.CloseHandle(handle)
+
+    def check(self, path, expected):
+        if os.name != 'nt':
+            for directory, descriptor in self.parents.items():
+                parent = self.parents.get(directory.parent)
+                current = (os.stat(directory.name, dir_fd=parent, follow_symlinks=False)
+                           if parent is not None and directory.parent != directory else os.lstat(directory))
+                held = os.fstat(descriptor)
+                if (not stat.S_ISDIR(current.st_mode) or
+                        (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)):
+                    raise InstallError('Publication parent identity changed; no mutation; evidence retained: ' + str(directory))
+        observed = self.identity(path)
+        if observed != expected:
+            raise InstallError('Publication ' + ('unexpected occupancy' if expected is None else 'identity changed')
+                + '; no mutation; retained: ' + str(path) + '; expected=' + repr(expected) + '; observed=' + repr(observed))
+
+    def replace(self, source, destination, expected):
+        if expected is None:
+            raise InstallError('Publication source identity missing; no mutation; retained: ' + str(source))
+        source_fd, target_fd = self.pin(source.parent), self.pin(destination.parent)
+        self.check(source, expected)
+        self.check(destination, None)
+        if os.name == 'nt':
+            os.replace(source, destination)
+        else:
+            os.replace(source.name, destination.name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+            os.fsync(source_fd)
+            if target_fd != source_fd:
+                os.fsync(target_fd)
+
+    def close(self):
+        self.stack.close()
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -276,7 +376,7 @@ def recorded_local_files(dest, wanted):
     return validate_local_files(receipt.get("preserved_local_files", []), set(wanted) | set(receipt["files"]))
 
 
-def publish_cleanup_diagnostic(path, record):
+def publish_exclusive(path, raw, mode=0o600, metadata=None):
     """Create once through pinned, non-following parents; never replace a leaf."""
     from contextlib import ExitStack
     path = Path(os.path.abspath(path))
@@ -315,9 +415,172 @@ def publish_cleanup_diagnostic(path, record):
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise InstallError('Unsafe cleanup diagnostic file')
-            stream.write((json.dumps(record, indent=2) + '\n').encode('utf-8'))
+            if isinstance(raw, bytes):
+                stream.write(raw)
+            else:
+                while block := raw.read(1024 * 1024):
+                    stream.write(block)
             stream.flush()
+            if os.name == 'nt':
+                import msvcrt
+                class BasicInformation(ctypes.Structure):
+                    _fields_ = [('created', ctypes.c_longlong), ('accessed', ctypes.c_longlong),
+                                ('written', ctypes.c_longlong), ('changed', ctypes.c_longlong),
+                                ('attributes', wintypes.DWORD)]
+                kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                    ctypes.c_void_p, wintypes.DWORD]
+                accessed = written = 0
+                flags = 0x80 if mode & stat.S_IWRITE else 1
+                if metadata is not None:
+                    accessed = metadata['atime_ns'] // 100 + 116444736000000000
+                    written = metadata['mtime_ns'] // 100 + 116444736000000000
+                    flags = metadata['attributes'] & (1 | 2 | 4 | 0x20) or flags
+                attributes = BasicInformation(0, accessed, written, 0, flags)
+                if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(stream.fileno()),
+                        0, ctypes.byref(attributes), ctypes.sizeof(attributes)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            else:
+                if metadata is not None:
+                    os.utime(stream.fileno(), ns=(metadata['atime_ns'], metadata['mtime_ns']))
+                    if metadata['xattrs'] and not hasattr(os, 'setxattr'):
+                        raise InstallError('This POSIX Python cannot preserve source xattrs; use '
+                                           'a Python with setxattr support')
+                    for name, value in metadata['xattrs'].items():
+                        os.setxattr(stream.fileno(), name, value)
+                os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
+
+
+def publish_cleanup_diagnostic(path, record):
+    publish_exclusive(path, (json.dumps(record, indent=2) + '\n').encode('utf-8'))
+
+
+def copy_exclusive(source, target):
+    """Never copy onto a name that already exists, including an owner hard link."""
+    source, target = Path(source), Path(target)
+    safe_path(source)
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise InstallError('Stage source must be an independent regular file')
+    flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(source, flags)
+    with os.fdopen(fd, 'rb') as stream:
+        current = os.fstat(stream.fileno())
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_nlink)
+        if identity(info) != identity(current) or not stat.S_ISREG(current.st_mode):
+            raise InstallError('Stage source changed before opening; no destination published')
+        metadata = dict(atime_ns=current.st_atime_ns, mtime_ns=current.st_mtime_ns,
+                        attributes=getattr(current, 'st_file_attributes', 0), xattrs={})
+        # Like stdlib copy2 on POSIX builds without xattr APIs, preserve the
+        # supported mode/times. This never affects exclusive creation/custody.
+        # Exact inheritance qualification separately refuses unavailable APIs.
+        if os.name != 'nt' and all(hasattr(os, name) for name in ('listxattr', 'getxattr')):
+            metadata['xattrs'] = {name: os.getxattr(stream.fileno(), name)
+                                  for name in os.listxattr(stream.fileno())}
+            if metadata['xattrs'] and not hasattr(os, 'setxattr'):
+                raise InstallError('This POSIX Python cannot preserve source xattrs; use a Python '
+                                   'with listxattr/getxattr/setxattr support')
+        publish_exclusive(target, stream, stat.S_IMODE(current.st_mode), metadata)
+        if identity(current) != identity(os.fstat(stream.fileno())):
+            raise InstallError('Stage source changed while copying; no destination published')
+
+
+def create_stage_directory(source, target):
+    """Request source permissions atomically; never chmod a reopened directory."""
+    safe_path(source)
+    mode = stat.S_IMODE(source.lstat().st_mode)
+    target.mkdir(mode=mode)
+    safe_path(target)
+    if stat.S_IMODE(target.lstat().st_mode) != mode:
+        raise InstallError('Stage directory creation mode differs; no destination published')
+    if os.name != 'nt' and all(hasattr(os, name) for name in ('listxattr', 'getxattr')):
+        descriptors = []
+        try:
+            for path in (source, target):
+                descriptors.append(os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+            attributes = [{name: os.getxattr(fd, name) for name in os.listxattr(fd)} for fd in descriptors]
+            if attributes[0] != attributes[1]:
+                raise InstallError('Stage directory inherited attributes differ; no destination published')
+        finally:
+            for fd in descriptors:
+                os.close(fd)
+
+
+def copy_stage(source, stage):
+    """Build a new tree without copytree's pathname copystat or copy2 writers."""
+    create_stage_directory(source, stage)
+    publication = Publication()
+    try:
+        identity = publication.identity(stage)
+    finally:
+        publication.close()
+    for parent, directories, files in os.walk(source, followlinks=False):
+        relative = Path(parent).resolve().relative_to(Path(source).resolve())
+        for name in directories:
+            safe_path(Path(parent) / name)
+            create_stage_directory(Path(parent) / name, stage / relative / name)
+        for name in files:
+            copy_exclusive(Path(parent) / name, stage / relative / name)
+    return identity
+
+
+def create_install_lock(path):
+    if os.name != 'nt':
+        import fcntl
+        # Lease the existing parent inode instead of creating a named lock
+        # which POSIX cannot safely dispose. Legacy/unknown locks still refuse.
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise FileExistsError('Another installer holds the directory lease') from error
+            try:
+                os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return fd
+            raise FileExistsError('Legacy or unknown installer lock exists')
+        except BaseException:
+            os.close(fd)
+            raise
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel.CreateFileW(str(path), 0x10000 | 0xC0000000, 3, None, 1,
+                                0x00200000 | 0x04000000, None)  # CREATE_NEW, DELETE_ON_CLOSE
+    if handle == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        if error in (80, 183):
+            raise FileExistsError('Installer lock exists')
+        raise ctypes.WinError(error)
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+    except BaseException:
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle(handle)
+        raise
+
+
+def dispose_install_lock(fd):
+    """Dispose the Windows creating handle or close the POSIX directory lease."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                ctypes.c_void_p, wintypes.DWORD]
+            disposition = wintypes.BOOL(True)
+            if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(fd), 4,
+                    ctypes.byref(disposition), ctypes.sizeof(disposition)):
+                raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        os.close(fd)
 
 
 def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_run=False, project=None, preserve_relative=()):
@@ -378,22 +641,23 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
     safe_path(dest.parent)
     lock = dest.parent / ".awf-install.lock"
     try:
-        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        lock_fd = create_install_lock(lock)
     except FileExistsError as error:
         raise InstallError(f"Another installer may be active; lock exists: {lock}") from error
     stage = dest.parent / f".awf-stage-{uuid.uuid4().hex}"
     backup = backup_root / f"awf-{previous or 'new'}-{uuid.uuid4().hex}"
     moved = False
+    publication = Publication()
     try:
-        os.close(lock_fd)
+        previous_identity = publication.identity(dest)
         if (inventory(dest) if dest.exists() else None) != before:
             raise InstallError("Destination changed during installation planning")
-        shutil.copytree(source, stage)
+        stage_identity = copy_stage(source, stage)
         verify_package(stage, expected_manifest_sha256)
         for rel in result["preserved"]:
             target = stage / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(dest / rel, target)
+            copy_exclusive(dest / rel, target)
         preserved_inventory = {relative: digest(stage / relative) for relative in result["preserved"]}
         receipt = {"format": "awf-host-skill-trust-1", "schema_version": 1, "name": "awf",
                    "version": manifest["version"], "manifest_sha256": expected_manifest_sha256.lower(),
@@ -401,7 +665,7 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
                    "preserved_local_files": result["preserved"],
                    "preserved_local_inventory": preserved_inventory,
                    "previous_backup": str(backup) if previous else None}
-        (stage / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        publish_exclusive(stage / RECEIPT, (json.dumps(receipt, indent=2) + "\n").encode('utf-8'))
         verify_package(stage, expected_manifest_sha256, local | {RECEIPT})
         if (inventory(dest) if dest.exists() else None) != before:
             raise InstallError("Destination changed while staging installation")
@@ -409,13 +673,13 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
             backup_root.mkdir(parents=True, exist_ok=True)
             safe_path(backup_root)
             # Rename, not copy-and-delete: cross-filesystem backups fail safely here.
-            os.replace(dest, backup)
+            publication.replace(dest, backup, previous_identity)
             moved = True
         try:
-            os.replace(stage, dest)
+            publication.replace(stage, dest, stage_identity)
         except OSError:
             if moved:
-                os.replace(backup, dest)
+                publication.replace(backup, dest, previous_identity)
                 moved = False
             raise
         result.update(status="upgraded" if previous else "installed", backup=str(backup) if moved else None)
@@ -435,7 +699,8 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
                 if primary is None:
                     raise
                 primary.add_note('Stage retained; cleanup diagnostic unavailable: ' + type(error).__name__)
-        lock.unlink()
+        dispose_install_lock(lock_fd)
+        publication.close()
 
 
 def main(argv=None):

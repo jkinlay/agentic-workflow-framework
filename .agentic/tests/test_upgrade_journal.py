@@ -123,6 +123,8 @@ class SafeIoWindowsTests(unittest.TestCase):
         with patch.object(safeio, "_win_set_file_information",
                           side_effect=crash_at_disposition):
             with Tree(base) as tree, self.assertRaises(SimulatedCrash):
+                self.assertEqual(b"marker", tree.read(MARKER))
+                self.assertEqual(b"journal", tree.read(JOURNAL))
                 rollback(tree, journal)
 
         self.assertTrue(injected["crashed"])
@@ -132,6 +134,8 @@ class SafeIoWindowsTests(unittest.TestCase):
         else:
             self.assertFalse(archive.exists())
         with Tree(base) as tree:
+            self.assertEqual(b"marker", tree.read(MARKER))
+            self.assertEqual(b"journal", tree.read(JOURNAL))
             rollback(tree, journal)
         self.assertFalse(archive.exists())
 
@@ -156,7 +160,7 @@ class SafeIoWriteTests(unittest.TestCase):
         target.chmod(0o640)
 
         with Tree(base) as tree:
-            tree.write("managed.txt", b"same")
+            tree.write("managed.txt", b"same", authority='transaction')
 
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
 

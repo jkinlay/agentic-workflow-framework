@@ -50,7 +50,7 @@ class WindowsInheritedMetadataTests(unittest.TestCase):
         self.assertTrue(streams['verified'])
         with Tree(root) as tree:
             tree.windows_metadata('config', preflight=True)
-            tree.write('config', b'replacement')
+            tree.write('config', b'replacement', authority='transaction')
         self.assertEqual(b'replacement', target.read_bytes())
         self.assertEqual(permissions, _permissions(target))
         self.assertEqual(streams, _named_streams(target))

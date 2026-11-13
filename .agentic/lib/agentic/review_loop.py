@@ -248,7 +248,7 @@ class LoopStore:
             self.db.execute('ROLLBACK')
             raise
         with Tree(self.directory) as tree:
-            tree.write(relative, (f'Recorded at: {state["reported_at"]}\n\n'+render_markdown(state)).encode('utf-8'))
+            tree.write(relative, (f'Recorded at: {state["reported_at"]}\n\n'+render_markdown(state)).encode('utf-8'), authority='transaction')
 
 
 def enroll(store, config, snapshot, *, first_draft_run=False):
