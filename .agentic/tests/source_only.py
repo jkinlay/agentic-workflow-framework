@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -61,6 +62,31 @@ COMMITTED_GIT_REASON = (
     "requires a Git repository with a committed HEAD; "
     "commitless installed runtimes and verified closed source archives have no Git tuple"
 )
+
+
+REFTABLE_MIGRATION_REASON = (
+    "AWF275_REFTABLE_REQUIRES_GIT_2_48: "
+    "Git < 2.48 cannot migrate repositories with reflogs"
+)
+
+
+def require_reftable_migration(git) -> None:
+    """Query the test's own Git runner; unknown capability must run and fail.
+
+    Reflog migration first shipped in Git 2.48.0:
+    https://github.com/git/git/blob/v2.48.0/Documentation/RelNotes/2.48.0.txt
+    """
+    try:
+        output = git('--version')
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return
+    if not isinstance(output, str):
+        return
+    version = re.fullmatch(
+        r'git version ([0-9]+)\.([0-9]+)\.([0-9]+)(?:[.-][A-Za-z0-9]+)*',
+        output.strip())
+    if version and tuple(map(int, version.groups())) < (2, 48, 0):
+        raise unittest.SkipTest(REFTABLE_MIGRATION_REASON)
 
 
 def skip_unless_source_repo(reason: str = SOURCE_ONLY_REASON, *paths: str):

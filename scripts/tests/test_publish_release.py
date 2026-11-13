@@ -1206,6 +1206,67 @@ print('password=repository-secret')
         self.assertFalse(log.exists() and log.read_text(encoding="utf-8").strip())
 
 
+class ReleasePublicationGuidanceTests(unittest.TestCase):
+    def test_installed_retry_uses_the_checked_object_refspec(self):
+        text = (ROOT / ".agentic/docs/32-RELEASE-PUBLISHING.md").read_text(encoding="utf-8")
+        self.assertIn("push origin <object-id>:refs/tags/vX.Y.Z", text)
+        self.assertNotIn("push origin refs/tags/vX.Y.Z", text)
+
+    def test_installed_guidance_covers_consumer_bytes_and_owner_recovery(self):
+        text = (ROOT / ".agentic/docs/32-RELEASE-PUBLISHING.md").read_text(encoding="utf-8")
+        for phrase in ("frozen tag and body", "stdin", "verified staging copies", "draft readback",
+                       "local tag", "pushed tag", "partial draft", "delete", "inspect", "retry",
+                       "POSIX", "Linux and macOS", "same-user process", "DRAFT_CREATED", "unpublished"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+        self.assertLessEqual(len(text.split()), 800)
+
+
+class QualifiedTagReadbackTests(unittest.TestCase):
+    def test_shadow_ref_cannot_substitute_a_different_tag_object(self):
+        with tempfile.TemporaryDirectory(prefix="awf-tag-shadow-") as raw:
+            repository = Path(raw)
+            command(["git", "init", "--bare"], repository)
+
+            def git_bytes(*args, data=None):
+                return publisher.git_run(repository, *args, text=False, input_data=data).stdout
+
+            tree = git_bytes("hash-object", "-w", "-t", "tree", "--stdin", data=b"").strip()
+            commit = git_bytes("hash-object", "-w", "-t", "commit", "--stdin", data=(
+                b"tree " + tree + b"\nauthor Synthetic <test@example.invalid> 1234567890 +0000\n"
+                b"committer Synthetic <test@example.invalid> 1234567890 +0000\n\nfixture\n")).strip().decode()
+            message = b"synthetic release message\n"
+            objects = []
+            for tagger in (b"Synthetic", b"Mallory"):
+                objects.append(git_bytes("mktag", data=(
+                    b"object " + commit.encode() + b"\ntype commit\ntag v9.9.9\ntagger "
+                    + tagger + b" <test@example.invalid> 1234567890 +0000\n\n" + message)).strip().decode())
+            own, shadow = objects
+            git_bytes("update-ref", "refs/tags/v9.9.9", own)
+            git_bytes("update-ref", "refs/v9.9.9", shadow)
+            self.assertNotEqual(own, shadow)
+            # Native Git proves the unqualified read selects Mallory's object.
+            self.assertIn(b"tagger Mallory ", git_bytes("cat-file", "tag", "v9.9.9"))
+            self.assertEqual(own, publisher.checked_tag_object(repository, "v9.9.9", commit, message))
+
+    def test_scan_base_resolves_the_qualified_tag_ref(self):
+        with patch.object(publisher, "git", side_effect=["v1.9.5\n", "a" * 40]) as git:
+            self.assertEqual(("v1.9.5", "a" * 40),
+                             publisher.publication_scan_base(ROOT, "b" * 40, "1.9.6"))
+        self.assertEqual((ROOT, "rev-parse", "--verify", "refs/tags/v1.9.5^{commit}"),
+                         git.call_args.args)
+
+    def test_release_verification_resolves_the_qualified_tag_ref(self):
+        with tempfile.TemporaryDirectory(prefix="awf-verify-tag-") as raw, \
+                patch.object(publisher, "tag_record", return_value={"commit": "a" * 40}), \
+                patch.object(publisher, "git", return_value="b" * 40) as git, \
+                self.assertRaisesRegex(publisher.ReleaseError, "tag target differs"):
+            repository = (Path(raw) / "repository").resolve()
+            publisher.verify_tag(repository, "v1.9.6", Path(raw) / "output")
+        self.assertEqual((repository, "rev-list", "-n", "1", "refs/tags/v1.9.6"),
+                         git.call_args.args)
+
+
 class PublicationBoundaryTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="awf-278-")
@@ -1450,6 +1511,62 @@ class PublicationBoundaryTests(unittest.TestCase):
                 with self.assertRaisesRegex(publisher.ReleaseError, "changed|mismatch"):
                     self.publish()
                 self.assertEqual(["local-tag"], self.events)
+
+    def test_recheck_after_local_tag_names_existing_tag_and_owner_remedy(self):
+        self.at_tag = lambda: self.text_file("release-body.md")
+        with self.assertRaisesRegex(publisher.ReleaseError,
+                                    "(?:changed|mismatch).*local tag remains at refs/tags/v1.9.6.*owner.*inspect.*remove.*retry.*No tag was pushed"):
+            self.publish()
+        self.assertEqual(["local-tag"], self.events)
+
+    def test_recheck_after_push_names_pushed_tag_and_owner_remedy(self):
+        self.at_push = lambda: self.text_file("release-body.md")
+        with self.assertRaisesRegex(publisher.ReleaseError,
+                                    "(?:changed|mismatch).*pushed tag remains at refs/tags/v1.9.6.*owner.*inspect.*retry.*No draft was created"):
+            self.publish()
+        self.assertEqual(["local-tag", "tag-push"], self.events)
+
+    def test_create_failure_names_pushed_tag_possible_draft_and_owner_remedy(self):
+        for failure in (publisher.ReleaseError("synthetic create failure"),
+                        OSError("synthetic launch failure"),
+                        subprocess.TimeoutExpired("fake-gh", 1)):
+            with self.subTest(failure=type(failure).__name__):
+                self.output = self.root / type(failure).__name__
+                self.events.clear()
+                def fail_create():
+                    raise failure
+                self.before_body_read = fail_create
+                with self.assertRaisesRegex(publisher.ReleaseError,
+                                            "pushed tag remains at refs/tags/v1.9.6.*partial draft.*owner.*delete.*inspect.*retry"):
+                    self.publish()
+                self.assertEqual(["local-tag", "tag-push", "release-create"], self.events)
+
+    def test_create_permission_error_retains_original_detail_and_owner_remedy(self):
+        failure = PermissionError(13, "synthetic access denied", "synthetic-upload.zip")
+
+        def fail_create():
+            raise failure
+
+        self.before_body_read = fail_create
+        with self.assertRaisesRegex(PermissionError,
+                                    "pushed tag remains at refs/tags/v1.9.6.*partial draft.*owner.*delete.*inspect.*retry") as caught:
+            self.publish()
+        self.assertIs(failure, caught.exception.__cause__)
+        self.assertEqual(13, caught.exception.__cause__.errno)
+        self.assertEqual("synthetic access denied", caught.exception.__cause__.strerror)
+        self.assertEqual("synthetic-upload.zip", caught.exception.__cause__.filename)
+        self.assertEqual(["local-tag", "tag-push", "release-create"], self.events)
+
+    def test_readback_directory_collision_names_draft_and_owner_remedy(self):
+        original_materialize = publisher.materialize_commit
+        def materialize(repository, commit, destination, **kwargs):
+            # Collide with the readback directory in the private temporary root.
+            (destination.parent / "uploaded-assets").mkdir()
+            return original_materialize(repository, commit, destination, **kwargs)
+        with patch.object(publisher, "materialize_commit", side_effect=materialize), \
+                self.assertRaisesRegex(publisher.ReleaseError, "draft.*unpublished.*owner.*delete.*inspect.*retry"):
+            self.publish()
+        self.assertEqual(["local-tag", "tag-push", "release-create"], self.events)
 
     def test_staged_asset_replacement_is_refused_before_remote_mutation(self):
         self.at_tag = lambda: next(self.output.rglob("upload-assets*/**/synthetic.zip")).write_bytes(b"staged replacement\n")

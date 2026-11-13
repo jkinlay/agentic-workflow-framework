@@ -24,7 +24,7 @@ import agentic.safeio as safeio  # noqa: E402
 from agentic import installer
 from retained_directory_expectations import assert_rollback_evidence
 from agentic.safeio import Tree  # noqa: E402
-from source_only import skip_unless_source_repo  # noqa: E402
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import file_tree, materialize, verify_materialized  # noqa: E402
 
 
@@ -165,6 +165,7 @@ class SafeIoWriteTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
 
 
+@unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
 @skip_unless_source_repo(
     "historical upgrade fixtures are intentionally excluded from portable releases",
     ".agentic/tests/fixtures/upgrades/versions.json")

@@ -26,7 +26,7 @@ from agentic.contracts import Contracts  # noqa: E402
 from agentic.model_routing import RoutingLedger  # noqa: E402
 from agentic.upgrade import (_insert_unbound_jira_identity, load_known_versions,  # noqa: E402
                              state_schema)
-from source_only import skip_unless_source_repo  # noqa: E402
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import (BLOB_ROOT, FIXTURE_ROOT, NEXT, advance_one_fixture_step,  # noqa: E402
     file_tree, fixture_blob, fixture_index, fixture_manifest, fixture_storage_statistics,
     managed_tree_from_receipt, materialize, verify_materialized)
@@ -113,6 +113,7 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertEqual(fixture_manifest("1.8.3")["managed_files"]["AGENTS.md"]["sha256"],
                          "c8e353add76d17bb6967e99f0f64540d6db47b10bfc53c058b6af60a8223fc8b")
 
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_fixture_blobs_are_stored_byte_exactly_by_git(self):
         blobs = sorted(path for path in BLOB_ROOT.iterdir() if path.is_file())
         relatives = [path.relative_to(ROOT).as_posix() for path in blobs]
