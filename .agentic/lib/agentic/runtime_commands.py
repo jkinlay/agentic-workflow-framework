@@ -24,9 +24,9 @@ def installed_paths(root, *, platform=None):
 def powershell_quote(value):
     """Quote one literal PowerShell argument without Markdown or backslash escapes."""
     value = str(value)
-    if "\x00" in value or "\r" in value or "\n" in value:
+    if str.__contains__(value, "\x00") or str.__contains__(value, "\r") or str.__contains__(value, "\n"):
         raise ValueError("PowerShell command arguments must fit on one line")
-    return "'" + value.translate(_POWERSHELL_QUOTE_TRANSLATION) + "'"
+    return "'" + str.translate(value, _POWERSHELL_QUOTE_TRANSLATION) + "'"
 
 
 def powershell_command(interpreter, entry_point, root, arguments):

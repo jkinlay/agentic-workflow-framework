@@ -48,6 +48,37 @@ class PowerShellQuotingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     powershell_quote("data" + control + "x")
 
+    def test_str_subclass_overrides_cannot_change_literal_or_refusal(self):
+        class Text(str):
+            def __str__(self):
+                return self
+
+            def translate(self, table):
+                raise RuntimeError("translate override")
+
+            def replace(self, old, new, count=-1):
+                raise RuntimeError("replace override")
+
+            def __contains__(self, item):
+                return False
+
+        class Value:
+            def __init__(self, text):
+                self.text = text
+
+            def __str__(self):
+                return Text(self.text)
+
+        for wrapper in (Text, Value):
+            with self.subTest(wrapper=wrapper.__name__):
+                self.assertEqual("'normal'", powershell_quote(wrapper("normal")))
+                self.assertEqual("'" + "".join(quote * 2 for quote in QUOTES) + "'",
+                                 powershell_quote(wrapper("".join(QUOTES))))
+                for control in ("\x00", "\r", "\n"):
+                    with self.subTest(control=repr(control)):
+                        with self.assertRaises(ValueError):
+                            powershell_quote(wrapper("data" + control + "x"))
+
     def require_engine(self, engine):
         executable = shutil.which(engine)
         if executable is None:
