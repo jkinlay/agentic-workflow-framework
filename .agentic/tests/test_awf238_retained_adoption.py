@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / '.agentic/lib'), str(ROOT / '.agentic/tests')]
 from agentic import installer, ValidationError
 from agentic.canonical import sha256
-from agentic.safeio import Tree
+from agentic.installer import Tree
 from agentic import safeio
 import test_awf134_installer_journal as fixtures
 from retained_directory_expectations import assert_rollback_evidence

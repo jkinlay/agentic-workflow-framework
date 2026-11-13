@@ -6,6 +6,7 @@ import json
 import os
 import runpy
 import unittest
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple
 import uuid
 from unittest.mock import patch
 
@@ -161,6 +162,7 @@ class OperatorRecoveryTests(unittest.TestCase):
         self.assertEqual(1, len(self.posted))
 
     @regressions.skip_unless_source_repo()
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_genuine_f71_pending_identity_recheck_does_not_rollback_healthy_adoption(self):
         self.fixture()
         # Execute the historical producer to create its real pre-pin database.
@@ -218,6 +220,7 @@ class OperatorRecoveryTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_adopted_done_counts_after_policy_edit(self):
         self.fixture()
         self.before_status, self.after_status = '10119', '10120'
@@ -242,6 +245,7 @@ class OperatorRecoveryTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_owner_hold_observes_external_done_and_counts_without_post(self):
         self.fixture()
         self.labels = ['awf-fixture', 'release-1.9.6']
@@ -294,6 +298,7 @@ class OperatorRecoveryTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_count_rechecks_owner_transition_without_post(self):
         self.fixture()
         self.labels = ['awf-fixture', 'release-1.9.6']
@@ -307,6 +312,7 @@ class OperatorRecoveryTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_rejected_done_abandon_then_owner_closure_counts_without_replay(self):
         self.fixture()
         self.before_status, self.after_status = '10119', '10120'
@@ -440,6 +446,7 @@ class OwnerClosureIdentityTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_r1_owner_only_history_refuses_count_after_identity_drift(self):
         for kind in self.identities:
             with self.subTest(identity=kind):
@@ -461,6 +468,7 @@ class OwnerClosureIdentityTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_r1_reviewed_policy_edit_and_repeat_owner_observations_remain_idempotent(self):
         case = self.held()
         case.edit_config()

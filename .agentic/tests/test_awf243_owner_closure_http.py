@@ -3,6 +3,7 @@ import copy
 import json
 import threading
 import unittest
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -171,6 +172,7 @@ class OwnerClosureHttpTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(regressions.scope_fixture.ROOT) is None, COMMITTED_GIT_REASON)
     def test_owner_done_counts_after_history_recheck_and_two_search_traversals(self):
         case, server = self.fixture()
         self.close_by_owner(case, server)
@@ -199,6 +201,7 @@ class OwnerClosureHttpTests(unittest.TestCase):
 
     @regressions.skip_unless_source_repo(
         "Git closeout fixture requires the AWF source repository's committed HEAD and LICENSE", "LICENSE")
+    @unittest.skipIf(committed_git_tuple(regressions.scope_fixture.ROOT) is None, COMMITTED_GIT_REASON)
     def test_count_refuses_when_owner_history_changes_after_reconciliation(self):
         case, server = self.fixture()
         self.close_by_owner(case, server)

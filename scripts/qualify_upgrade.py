@@ -19,7 +19,8 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
@@ -35,6 +36,43 @@ from agentic.preservation_metadata import (FORMAT, EXCLUDED, inventory,
 
 REQUIRED_CHECKS = ('source_managed_membership', 'historical_state_continuity', 'named_streams')
 QUALIFICATION_LEDGER = '.agentic-state/routing/ledger.sqlite'
+_PERMISSION_PROBES = ContextVar('permission_probes', default=None)
+
+
+class _PermissionProbeRoots(list):
+    def __init__(self):
+        super().__init__()
+        self.created_paths = []
+
+    def append(self, root):
+        super().append(root)
+        self.remember(root)
+
+    def remember(self, path):
+        # Record successful creations while their descriptors are still owned.
+        # Replicated ACLs can later make pathname enumeration unavailable.
+        self.created_paths.append(str(path))
+
+
+def _remember_permission_probe(path):
+    roots = _PERMISSION_PROBES.get()
+    if roots is not None:
+        roots.remember(path)
+
+
+@contextmanager
+def _permission_probe_collection():
+    roots = _PermissionProbeRoots()
+    token = _PERMISSION_PROBES.set(roots)
+    try:
+        yield roots
+    finally:
+        _PERMISSION_PROBES.reset(token)
+
+
+def _retained_probe_report(roots):
+    return dict(retained_probe_roots=[str(root) for root in roots], retained_probes=list(roots.created_paths),
+        retained_probe_owner_action='Keep private wrappers intact; inspect under exclusive owner control, preserve required evidence, then arrange owner-controlled cleanup')
 
 
 def source_identity(source):
@@ -130,11 +168,31 @@ def _posix_probe_parent(parent):
     ownership/mode/xattrs (including default ACLs), or refuse. Never approximate
     inheritance or exempt retained probes from the project inventory.
     """
-    external = Path(tempfile.mkdtemp(prefix='awf-permission-probe-'))
+    if not all(hasattr(os, name) for name in ('listxattr', 'getxattr', 'setxattr', 'removexattr')):
+        raise safeio.ValidationError('This POSIX Python lacks xattr APIs; exact permission-inheritance '
+            'qualification is unavailable; use an xattr-capable Python/platform for qualification. '
+            'Installation, bootstrap and upgrade do not require permission replicas.')
+    wrapper = Path(tempfile.mkdtemp(prefix='awf-permission-probe-'))
+    roots = _PERMISSION_PROBES.get()
+    if roots is not None:
+        roots.append(wrapper)
+    external = wrapper / 'replica'
     with Tree(parent) as tree:
         source = tree._dirs[tree.root]
-        fd = os.open(external, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        # Never copy the project's mode, xattrs or default ACL onto the wrapper.
+        # Its unchanged 0700 mode protects the entire replicated inheritance tree.
+        with Tree(wrapper) as private:
+            wrapper_fd = private._dirs[private.root]
+            if stat.S_IMODE(os.fstat(wrapper_fd).st_mode) != 0o700:
+                raise ValueError('Permission probe wrapper is not private; retained externally')
+            os.mkdir('replica', 0o700, dir_fd=wrapper_fd)
+            created = os.stat('replica', dir_fd=wrapper_fd, follow_symlinks=False)
+            creating_identity = (created.st_dev, created.st_ino)
+            _remember_permission_probe(external)
+            fd = os.open('replica', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=wrapper_fd)
         try:
+            if (os.fstat(fd).st_dev, os.fstat(fd).st_ino) != creating_identity:
+                raise ValueError('Permission replica identity changed; no metadata changed; probes retained externally')
             before = os.fstat(source)
             if os.fstat(fd).st_dev != before.st_dev:
                 raise ValueError('Permission probes need external temporary storage on the project filesystem; probes retained')
@@ -268,6 +326,7 @@ def _creation_state(project, relative, *, directory=False, readonly=False):
                     # mkdir/open relative to pinned descriptors, never through
                     # a substituted POSIX ancestor. Retain the entire replica.
                     _, parent_handle, _ = probe_tree.parent('/'.join(components + ['.pin']), create=True)
+                    _remember_permission_probe(current)
         elif os.name != 'nt':
             parent_handle = probe_tree._dirs[probe_tree.root]
         if directory:
@@ -288,6 +347,7 @@ def _creation_state(project, relative, *, directory=False, readonly=False):
                 fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW,
                              0o600, dir_fd=parent_handle)
                 probe = current / name
+                _remember_permission_probe(probe)
                 pins.callback(os.close, fd)
             if readonly:
                 if os.name == 'nt':
@@ -534,6 +594,21 @@ def check_budget_import(baseline, sources, canonical):
 
 
 def prepare_upgrade(source, project, pin, before):
+    with _permission_probe_collection() as roots:
+        try:
+            result = _prepare_upgrade(source, project, pin, before)
+        except ValueError as error:
+            error.retained_probe_report = _retained_probe_report(roots)
+            raise
+        except OSError as error:
+            failure = ValueError('Permission preservation probe refused: ' + type(error).__name__)
+            failure.retained_probe_report = _retained_probe_report(roots)
+            raise failure from error
+        result.update(_retained_probe_report(roots))
+        return result
+
+
+def _prepare_upgrade(source, project, pin, before):
     """Derive a closed migration policy from verified release and baseline bytes.
 
     This is deliberately the 1.9.5 -> 1.9.6 policy. A future state/configuration
@@ -726,6 +801,7 @@ def _authenticate_retained_journal(before, after, policy, project, journal):
         new_sha256=(after.get('runtime') or {}).get('sha256'),
         stage='.agentic/.venv.staging-' + identity,
         backup='.agentic/.venv.backup-' + identity,
+        stage_identity=installation.runtime_creation_identity(Path(project) / installation.RUNTIME),
         cleanup_identity=None, cleanup_members=None)
     if not baseline or journal['runtime'] != expected_runtime:
         raise ValueError('Retained transaction runtime record differs from baseline policy')
@@ -1112,19 +1188,40 @@ def compare_upgrade(before, after, policy, project, *, allowed_delta=None):
     return result
 
 
-def write_report(output, report, *, project, source=None):
-    output = Path(output).resolve()
+def preflight_report(output, *, project, source=None):
+    output = Path(output).absolute()
+    if output.exists() or output.is_symlink():
+        raise FileExistsError('Report output already exists: ' + str(output))
+    resolved = output.resolve()
     excluded_roots = {ROOT.resolve(), Path(project).resolve()}
     if source is not None:
         excluded_roots.add(Path(source).resolve())
     for excluded in excluded_roots:
-        if output == excluded or excluded in output.parents:
+        if resolved == excluded or excluded in resolved.parents:
             raise ValueError('Report output must be outside source and disposable project')
+    if not output.parent.is_dir():
+        raise ValueError('Report output parent must already exist: ' + str(output.parent))
+    return output
+
+
+def write_report(output, report, *, project, source=None):
+    output = preflight_report(output, project=project, source=source)
     # Exclusive creation retains prior evidence; never overwrite a report.
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write('\n')
+
+
+def publish_report(output, report, *, project, source=None):
+    try:
+        write_report(output, report, project=project, source=source)
+    except (OSError, ValueError):
+        # Publication can still fail after preflight. Preserve every probe path
+        # on stderr even when the report destination becomes unavailable.
+        print(json.dumps({key: value for key, value in report.items()
+            if key.startswith('retained_probe')}, sort_keys=True), file=sys.stderr)
+        raise
 
 
 def plan(source, project, expected_manifest_sha256, *, overrides=None):
@@ -1279,10 +1376,12 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             report['before'] = inventory(project)
             try:
                 migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
-            except ValueError:
+            except ValueError as error:
                 report['failed_stage'] = 'migration_policy'
-                report['diagnostic'] = 'Preservation migration policy refused; upgrade not executed'
+                report['diagnostic'] = 'Preservation migration policy refused; upgrade not executed: ' + str(error)
+                report.update(getattr(error, 'retained_probe_report', {}))
                 return report
+            report.update({key: value for key, value in migration_policy.items() if key.startswith('retained_probe')})
         else:
             report['after'] = inventory(project)
             report['preservation'] = compare_upgrade(report['before'], report['after'],
@@ -1321,8 +1420,9 @@ def exercised_ledger_migration(preservation):
 def _seed_qualification_state(historical, project, budget_baseline):
     from upgrade_195_fixtures import seed_legacy_accounting
     seed_legacy_accounting(historical, project)
-    host = project / '.agentic-state/routing/published-host.sqlite'
-    host.write_bytes(budget_baseline['sources']['host']['path'].read_bytes())
+    host_relative = '.agentic-state/routing/published-host.sqlite'
+    with Tree(project, mutation_authority='transaction') as tree:
+        tree.write_exclusive(host_relative, budget_baseline['sources']['host']['path'].read_bytes())
 
 
 def _prepare_qualification_budget(historical, project, work_dir):
@@ -1380,6 +1480,8 @@ def main(argv=None):
     authentication = sub.add_parser('runtime-hash', help='read-only runtime endpoint authentication against a journal digest')
     authentication.add_argument('--path', type=Path, required=True)
     authentication.add_argument('--expected-sha256', required=True)
+    authentication.add_argument('--journal', type=Path,
+        help='preserved transaction journal: require stage creation identity AND new runtime digest')
     file_authentication = sub.add_parser('file-hash', help='read-only journal file authentication and metadata capture')
     file_authentication.add_argument('--path', type=Path, required=True)
     file_authentication.add_argument('--expected-sha256', required=True)
@@ -1435,15 +1537,53 @@ def main(argv=None):
                 expected_sha256=args.expected_sha256, matches=digest == args.expected_sha256,
                 execution_authority=False, **metadata), sort_keys=True))
             return 0 if digest == args.expected_sha256 else 1
+        before = installation.runtime_creation_identity(args.path) if args.journal else None
+        expected_identity = None
+        if args.journal:
+            try:
+                with Tree(args.journal.absolute().parent) as journal_tree:
+                    journal_raw = journal_tree.read(args.journal.name, installation.MAX_DOCUMENT_BYTES)
+                journal = loads(journal_raw.decode('utf-8'))
+                installation._validate_transaction_journal(journal)
+                runtime = installation._validated_runtime_journal(journal)
+                # A preserved copy is trusted input only in marker-less recovery.
+                # For a live endpoint, require the marker's current journal
+                # digest and transaction identity. Normalize pending updates
+                # with the stage in place before authenticating quarantine.
+                marker_path = args.path.absolute().parent / 'INSTALLING.json'
+                if marker_path.exists() or marker_path.is_symlink():
+                    with Tree(marker_path.parent) as marker_tree:
+                        marker_raw = marker_tree.read(marker_path.name, installation.MAX_DOCUMENT_BYTES)
+                    marker = loads(marker_raw.decode('utf-8'))
+                    identity = installation._validate_journal_marker(marker, journal_raw)
+                    if identity != journal['transaction_id']:
+                        raise ValueError('Journal identity differs from its bound marker')
+                    if installation.sha256(journal_raw) != marker['journal_sha256']:
+                        raise ValueError('Journal copy differs from its bound marker journal_sha256; '
+                                         'normalize pending update with stage in place before quarantine')
+            except (KeyError, TypeError) as exc:
+                raise ValueError('Invalid runtime authentication journal') from exc
+            if (runtime is None or runtime.get('stage_identity') is None or
+                    runtime['new_sha256'] is None or runtime['new_sha256'] != args.expected_sha256):
+                raise ValueError('Journal has no usable runtime creation identity/digest; preserve endpoints and park recovery')
+            expected_identity = runtime['stage_identity']
         digest = runtime_tree_sha256(args.path)
         matches = digest == args.expected_sha256
+        extra = {}
+        if args.journal:
+            after = installation.runtime_creation_identity(args.path)
+            identity_matches = before == after == expected_identity
+            matches = matches and identity_matches
+            extra = dict(identity=after, expected_identity=expected_identity, identity_matches=identity_matches)
         print(json.dumps(dict(format='awf-runtime-authentication-1', sha256=digest,
-            expected_sha256=args.expected_sha256, matches=matches, execution_authority=False), sort_keys=True))
+            expected_sha256=args.expected_sha256, matches=matches, execution_authority=False, **extra), sort_keys=True))
         return 0 if matches else 1
+    preflight_report(args.output, project=args.work_dir if args.command == 'installed' else args.project,
+                     source=getattr(args, 'source', None))
     if args.command == 'installed':
         delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
         report = qualify(args.source, args.work_dir, args.wheelhouse, allowed_delta=delta)
-        write_report(args.output, report, project=args.work_dir, source=args.source)
+        publish_report(args.output, report, project=args.work_dir, source=args.source)
         print(json.dumps(report, sort_keys=True))
         return 0 if report['status'] == 'QUALIFIED_DISPOSABLE_UPGRADE' else 1
     if args.command == 'snapshot':
@@ -1463,12 +1603,20 @@ def main(argv=None):
             report['preserved'] = False
             report['checks'] = {name: 'NOT_RUN' for name in REQUIRED_CHECKS}
         else:
-            policy = prepare_upgrade(args.source, args.baseline_project, args.expected_manifest_sha256, before)
-            # This post-hoc comparison proves preservation only. Its unchanged
-            # baseline predates the operation, but it cannot attest cohort time.
-            policy['started_at'] = 0
-            report = compare_upgrade(before, after, policy, args.project, allowed_delta=delta)
-    write_report(args.output, report, project=args.project, source=getattr(args, 'source', None))
+            try:
+                policy = prepare_upgrade(args.source, args.baseline_project, args.expected_manifest_sha256, before)
+            except ValueError as error:
+                report = dict(format='awf-upgrade-comparison-1', preserved=False, changes={},
+                    violations=['Preservation migration policy refused: ' + str(error)],
+                    checks={name: 'NOT_RUN' for name in REQUIRED_CHECKS}, execution_authority=False,
+                    evidence_scope='PRESERVATION_COMPARISON_ONLY',
+                    **getattr(error, 'retained_probe_report', {}))
+            else:
+                # Post-hoc comparison proves preservation only, not cohort time.
+                policy['started_at'] = 0
+                report = compare_upgrade(before, after, policy, args.project, allowed_delta=delta)
+                report.update({key: value for key, value in policy.items() if key.startswith('retained_probe')})
+    publish_report(args.output, report, project=args.project, source=getattr(args, 'source', None))
     return 1 if report.get('preserved') is False else 0
 
 

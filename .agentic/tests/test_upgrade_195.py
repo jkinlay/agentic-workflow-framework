@@ -27,6 +27,7 @@ from agentic.safeio import run_bounded
 
 
 
+@unittest.skipIf(source_only.committed_git_tuple(ROOT) is None, source_only.COMMITTED_GIT_REASON)
 @source_only.skip_unless_source_repo("requires the published historical Git source and real locked wheels", "scripts/publish_release.py")
 class Published195UpgradeTests(unittest.TestCase):
     @classmethod

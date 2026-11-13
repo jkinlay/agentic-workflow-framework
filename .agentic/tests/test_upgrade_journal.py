@@ -24,7 +24,7 @@ import agentic.safeio as safeio  # noqa: E402
 from agentic import installer
 from retained_directory_expectations import assert_rollback_evidence
 from agentic.safeio import Tree  # noqa: E402
-from source_only import skip_unless_source_repo  # noqa: E402
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import file_tree, materialize, verify_materialized  # noqa: E402
 
 
@@ -123,6 +123,8 @@ class SafeIoWindowsTests(unittest.TestCase):
         with patch.object(safeio, "_win_set_file_information",
                           side_effect=crash_at_disposition):
             with Tree(base) as tree, self.assertRaises(SimulatedCrash):
+                self.assertEqual(b"marker", tree.read(MARKER))
+                self.assertEqual(b"journal", tree.read(JOURNAL))
                 rollback(tree, journal)
 
         self.assertTrue(injected["crashed"])
@@ -132,6 +134,8 @@ class SafeIoWindowsTests(unittest.TestCase):
         else:
             self.assertFalse(archive.exists())
         with Tree(base) as tree:
+            self.assertEqual(b"marker", tree.read(MARKER))
+            self.assertEqual(b"journal", tree.read(JOURNAL))
             rollback(tree, journal)
         self.assertFalse(archive.exists())
 
@@ -156,11 +160,12 @@ class SafeIoWriteTests(unittest.TestCase):
         target.chmod(0o640)
 
         with Tree(base) as tree:
-            tree.write("managed.txt", b"same")
+            tree.write("managed.txt", b"same", authority='transaction')
 
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
 
 
+@unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
 @skip_unless_source_repo(
     "historical upgrade fixtures are intentionally excluded from portable releases",
     ".agentic/tests/fixtures/upgrades/versions.json")

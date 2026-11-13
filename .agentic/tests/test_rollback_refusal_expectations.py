@@ -43,6 +43,9 @@ class RollbackRefusalPlatformTests(unittest.TestCase):
         operating.O_BINARY = getattr(os, 'O_BINARY', 0)
         lock = root / installer.LOCK
         tree = Mock()
+        tree.root = root
+        tree._authenticated = {}
+        tree._custody_transaction = None
         tree.parent.return_value = lock.parent, 71, lock.name
         fcntl = SimpleNamespace(LOCK_EX=2, LOCK_NB=4, LOCK_UN=8, flock=Mock())
         msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0,
@@ -58,8 +61,22 @@ class RollbackRefusalPlatformTests(unittest.TestCase):
             self.assertEqual(root / installer.LOCK, path)
             self.assertTrue(lock)
             return os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_BINARY', 0))
+        def lock_identity(fd):
+            # This platform model has CRT descriptors, not native Win32 handles.
+            info = os.fstat(fd)
+            return info.st_dev, info.st_ino.to_bytes(16, 'little')
+        @contextmanager
+        def custody_metadata(actual_tree, relative, fd):
+            self.assertIs(tree, actual_tree)
+            self.assertEqual(installer.LOCK, relative)
+            self.assertGreaterEqual(fd, 0)
+            save = Mock(side_effect=AssertionError('Lock-only model must not write custody metadata'))
+            yield None, save
+            save.assert_not_called()
         with patch.object(installer, 'os', operating):
             with patch.dict(sys.modules, fcntl=fcntl, msvcrt=msvcrt), \
+                    patch.object(installer, '_windows_lock_identity', side_effect=lock_identity), \
+                    patch.object(installer, '_temporary_custody_metadata', custody_metadata), \
                     patch.object(safeio, 'win_open', side_effect=win_open, create=True) as windows_open:
                 with installer.install_lock(tree):
                     pass

@@ -502,6 +502,7 @@ class SecondLookTests(unittest.TestCase):
                     self.assertEqual(2, self.show()[0])
 
     def test_reftable_reads_policy_through_git(self):
+        source_only.require_reftable_migration(self.git)
         self.publish(self.enabled())
         self.git('refs', 'migrate', '--ref-format=reftable')
         self.write(self.value)
@@ -562,6 +563,7 @@ class SecondLookTests(unittest.TestCase):
             self.assertIn(phrase, doc)
 
     @source_only.skip_unless_source_repo("requires genuine published 1.9.5 Git objects", "scripts/publish_release.py")
+    @unittest.skipIf(source_only.committed_git_tuple(source_only.ROOT) is None, source_only.COMMITTED_GIT_REASON)
     def test_legacy_event_chain_survives_merged_block(self):
         legacy = deepcopy(self.value)
         legacy.pop('budgeting')
