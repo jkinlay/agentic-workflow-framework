@@ -823,7 +823,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_pre_push_gate_portable.py` | `26b165c8be6b9e8f403744d87935c6b3cd96755e8e59e9205009f3a58902b553` |
 | `scripts/tests/test_publication_release_history.py` | `135abf25ed55db67370ac0734159b6635c8333cafcef4b26919a77dd69ccb79a` |
 | `scripts/tests/test_publish_catalog.py` | `8819957e524f852093bd483db2f92098e371b9ff0281bfefc764c8e3b06a1492` |
-| `scripts/tests/test_publish_release.py` | `020c4679e2b1550d2b7ac2cdb9a467058aeeee3afa91a94ce3173141d0ab2d59` |
+| `scripts/tests/test_publish_release.py` | `53e65843e9c38a319d841a498d9541016ddb5fd16e2e7788154edc8d6bb0fc6c` |
 | `scripts/tests/test_qualify_upgrade.py` | `8c2c284a84ad7029a99f35fa2540267fe209eaed89dcbca2217cf8f3a53d6384` |
 | `scripts/tests/test_qualify_upgrade_r1.py` | `bae57f2874ef72d39848505eaf5d3e4268ac3ad5de61f85787976c090710e014` |
 | `scripts/tests/test_qualify_upgrade_r2.py` | `f1b154531349b270b89669a9af301b4985acdcbfe4f2e8730038b550867b0972` |

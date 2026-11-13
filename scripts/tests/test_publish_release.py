@@ -1216,7 +1216,7 @@ class ReleasePublicationGuidanceTests(unittest.TestCase):
         text = (ROOT / ".agentic/docs/32-RELEASE-PUBLISHING.md").read_text(encoding="utf-8")
         for phrase in ("frozen tag and body", "stdin", "verified staging copies", "draft readback",
                        "local tag", "pushed tag", "partial draft", "delete", "inspect", "retry",
-                       "POSIX", "Linux and macOS", "same-user process", "DRAFT_CREATED", "unpublished"):
+                       "POSIX", "Linux and Windows", "On macOS both fail closed at materialization", "same-user process", "DRAFT_CREATED", "unpublished"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
         self.assertLessEqual(len(text.split()), 800)
