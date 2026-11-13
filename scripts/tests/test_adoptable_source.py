@@ -95,6 +95,7 @@ class AdoptableSourceTests(unittest.TestCase):
             self.assertTrue(install_owned_path(relative), relative)
         self.assertFalse(install_owned_path(".github/CODEOWNERS"))
 
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_adopted_clone_keeps_release_manifest_and_hygiene_green(self):
         self.prepare_clone()
         self.command("scripts/build_release.py", "--manifest-only")

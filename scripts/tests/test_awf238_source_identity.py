@@ -12,9 +12,12 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import qualify_upgrade
+sys.path.insert(0, str(ROOT / '.agentic/tests'))
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple
 
 
 class SourceIdentityTests(unittest.TestCase):
+    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_dirty_source_refuses_before_creating_cohort(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / 'source'
