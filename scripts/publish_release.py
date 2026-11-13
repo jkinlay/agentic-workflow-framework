@@ -643,7 +643,7 @@ def publication_scan_base(repository, commit, version):
         raise ReleaseError(
             "publication scan has no earlier semantic-version release tag reachable from the release commit")
     _numeric, tag = max(candidates)
-    base = git(repository, "rev-parse", "--verify", f"{tag}^{{commit}}").strip()
+    base = git(repository, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}").strip()
     return tag, base
 
 
@@ -801,7 +801,7 @@ def checked_tag_object(repository, tag, commit, message):
     remedy = (f"Release tag object mismatch or unavailable; local tag remains at refs/tags/{tag}; "
               "owner must inspect and remove the mismatching local tag before retrying. No tag was pushed.")
     try:
-        raw = git_run(repository, "cat-file", "tag", tag, text=False).stdout
+        raw = git_run(repository, "cat-file", "tag", f"refs/tags/{tag}", text=False).stdout
     except (ReleaseError, OSError, subprocess.SubprocessError):
         raise ReleaseError(remedy) from None
     header, separator, observed_message = raw.partition(b"\n\n")
@@ -819,8 +819,8 @@ def verify_draft_assets(repository, tag, release_repo, recorded_hashes, destinat
     """Read uploaded bytes back while the release created by this run is draft."""
     remedy = ("Uploaded draft assets mismatch or could not be verified; draft stays unpublished; "
               "owner must delete the draft release, inspect the retained tag, and retry.")
-    destination.mkdir(mode=0o700)
     try:
+        destination.mkdir(mode=0o700)
         run([gh, "release", "download", tag, "--repo", release_repo, "--dir", str(destination)], cwd=repository)
         observed = {}
         for path in destination.iterdir():
@@ -918,14 +918,34 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
             git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                     "--cleanup=verbatim", "-F", "-", text=False, input_data=contents["tag-message.txt"])
             object_id = checked_tag_object(repository, tag, commit, contents["tag-message.txt"])
-            verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            try:
+                verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            except ReleaseError as exc:
+                raise ReleaseError(
+                    f"{exc}; local tag remains at refs/tags/{tag}; owner must inspect and remove "
+                    "the local tag before retrying. No tag was pushed.") from None
             push_release_tag(repository, tag, gh=gh, origin_url=push_url, plan=push_plan, object_id=object_id)
-            verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            try:
+                verify_publication_files(text_files, assets, upload_assets, record["assets"])
+            except ReleaseError as exc:
+                raise ReleaseError(
+                    f"{exc}; pushed tag remains at refs/tags/{tag}; owner must inspect the retained "
+                    "tag and reconcile local/remote tags before retrying. No draft was created.") from None
             # gh has no local byte-exact draft body readback. Bind its input via
             # stdin only; the frozen file is never reopened by the consumer.
-            run([gh, "release", "create", tag, *map(str, upload_assets), "--repo", release_repo, "--draft", "--verify-tag",
-                 "--title", f"AWF {version}", "--notes-file", "-"], cwd=repository,
-                text=False, input_data=contents["release-body.md"])
+            try:
+                run([gh, "release", "create", tag, *map(str, upload_assets), "--repo", release_repo, "--draft", "--verify-tag",
+                     "--title", f"AWF {version}", "--notes-file", "-"], cwd=repository,
+                    text=False, input_data=contents["release-body.md"])
+            except (ReleaseError, OSError, subprocess.SubprocessError) as exc:
+                remedy = (
+                    f"Release creation failed; pushed tag remains at refs/tags/{tag}; a partial draft "
+                    "may exist and stays unpublished; owner must inspect and delete any partial draft, "
+                    "inspect the retained tag, and reconcile local/remote tags before retrying.")
+                # Keep native Windows sharing refusals observable to callers.
+                if isinstance(exc, PermissionError):
+                    raise PermissionError(remedy) from exc
+                raise ReleaseError(remedy) from None
             verify_draft_assets(repository, tag, release_repo, record["assets"],
                                 Path(raw_temp) / "uploaded-assets", gh=gh)
         return result
@@ -945,7 +965,7 @@ def verify_tag(repository, tag, output_dir, *, gh="gh"):
     if output_dir == repository or output_dir.is_relative_to(repository) or output_dir.exists():
         raise ReleaseError("verification output directory must be new and outside the repository")
     record = tag_record(repository, tag)
-    commit = git(repository, "rev-list", "-n", "1", tag).strip()
+    commit = git(repository, "rev-list", "-n", "1", f"refs/tags/{tag}").strip()
     if record.get("commit") != commit:
         raise ReleaseError("tag target differs from its release record")
     epoch = int(git(repository, "show", "-s", "--format=%ct", commit).strip())
