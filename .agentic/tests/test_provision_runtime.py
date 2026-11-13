@@ -246,8 +246,7 @@ class RuntimeReuseTests(unittest.TestCase):
             dependencies = {name: {'name': name, 'version': '1.0'} for name in adoption._RUNTIME_IMPORTS}
             artifacts = {name: {'files': {name + '.py': b'fixture'}, 'display_name': name,
                                 'artifact_sha256': 'a' * 64} for name in dependencies}
-            with patch('agentic.installer.Tree'), \
-                    patch('agentic.installer._retained_directory_result', return_value=None), \
+            with patch('agentic.installer._retained_directory_result', return_value=None), \
                     patch.object(adoption, '_locked_dependencies', return_value=(dependencies, 'b' * 64)), \
                     patch.object(adoption, '_load_locked_wheels', return_value=artifacts), \
                     patch('agentic.runtime_tags.validate_host_tags'), \

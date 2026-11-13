@@ -324,7 +324,7 @@ def _inspect_locked_wheel(filename, raw, requirements):
         installed[key] = data
     return {"name": canonical_name, "display_name": requirement["name"],
             "version": observed_version, "artifact_sha256": artifact_sha256,
-            "filename": filename, "files": installed}
+            "filename": filename, "files": installed, "wheel_tags": set(map(str, wheel_tags))}
 
 
 def _load_locked_wheels(wheelhouse, requirements):
@@ -357,7 +357,10 @@ def _load_locked_wheels(wheelhouse, requirements):
         total += len(raw)
         if total > _MAX_DEPENDENCY_BYTES:
             raise ValidationError("Offline runtime wheelhouse exceeds the runtime copy limit")
-        artifact = _inspect_locked_wheel(path.name, raw, requirements)
+        try:
+            artifact = _inspect_locked_wheel(path.name, raw, requirements)
+        except ValidationError as exc:
+            raise ValidationError(str(exc) + ': ' + path.name) from exc
         if artifact["name"] in artifacts:
             raise ValidationError("Offline runtime wheelhouse contains multiple artifacts for: " + artifact["display_name"])
         artifacts[artifact["name"]] = artifact

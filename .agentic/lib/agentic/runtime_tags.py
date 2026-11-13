@@ -13,7 +13,7 @@ from . import ValidationError
 def _platform_matches(tag):
     if tag == 'any':
         return True
-    native = sysconfig.get_platform().replace('-', '_').replace('.', '_')
+    native = sysconfig.get_platform().translate(str.maketrans('-.', '__'))
     if tag == native:
         return True
     machine = platform.machine().lower()
