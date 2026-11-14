@@ -837,10 +837,11 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_self_test_review.py` | `41b61961dc5d12a097065261ce88a2c1f204348dd381045c5de5e9f3b0bc1869` |
 | `scripts/tests/test_skill_distribution_launcher.py` | `26fcfe891d4be5a7fbaa638f0b6dbbfe418f6831d1973f889ebc97fe6a6dc64c` |
 | `scripts/tests/test_skill_distribution_ordering.py` | `4897f1406db51a786ccf4179363c93b50e1d99578c28f51a947154e448366955` |
+| `scripts/tests/test_validate_archive_defaults.py` | `c9424940cb2c7f052f9a7744bc146bdea2e9cf345cdb88729d2c17dab01685fa` |
 | `scripts/tests/test_validate_archive_report.py` | `5f80854db7f9fac07b2822ab1ba20cb0bdbf9feb78bec296de92d87ee2337caf` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
 | `scripts/tests/test_windows_unittest_shards.py` | `cb709d1be6a0daab257fea90ad0f8917460032cc4512e2742f7fee0f6c5f3049` |
-| `scripts/validate_archive.py` | `0992d2db9febc2557a09a8305cce299c00fbde5d95b514cd9b399911641521a0` |
+| `scripts/validate_archive.py` | `595e82a69ba16b3b9a60649f7b4ee7a6d467f119cec177925ba3e410c6281ed2` |
 | `scripts/validate_git_checkout.py` | `d8d9a2e85a611d16bfea7e5f67bc9666885a2b5c112aa6ea3ddad189b38c29bf` |
 | `tools/windows/Invoke-AC42.ps1` | `e3ff5069784a18400910674c430ab828c41cc0a0f14c18d297ea795464a5ba57` |
 | `tools/windows/pre-push-gate.ps1` | `57aa332dc71ba1921d5b293f1246b640dfedb43612f540f3832da6adfe584e47` |
