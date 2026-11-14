@@ -40,15 +40,17 @@ class SequentialReleaseTests(unittest.TestCase):
         self.report = self.work / 'stage.json'
         self.calls = []
         self.mutate = lambda report: None
-        # Release shards have already imported the real split module. Let this
-        # synthetic root own its cache entry, then restore the surrounding suite.
-        split_name = Path(UPGRADE_MATRIX).stem
-        existing_split = sys.modules.pop(split_name, None)
-        def restore_split():
-            sys.modules.pop(split_name, None)
-            if existing_split is not None:
-                sys.modules[split_name] = existing_split
-        self.addCleanup(restore_split)
+        # Unsharded discovery may already have imported any of these real
+        # modules. Let the synthetic root own all its names for this test, then
+        # restore the surrounding suite's exact entries (including None).
+        module_names = {Path(path).stem for path in paths}
+        existing_modules = {name: sys.modules.pop(name) for name in module_names
+                            if name in sys.modules}
+        def restore_modules():
+            for name in module_names:
+                sys.modules.pop(name, None)
+            sys.modules.update(existing_modules)
+        self.addCleanup(restore_modules)
 
     def test_split_module_origin_mismatch_refuses_foreign_cached_module(self):
         plan = planner.build_release_plan(self.root)
@@ -463,6 +465,41 @@ class SequentialReleaseTests(unittest.TestCase):
         for field, value in [('errors', 1), ('failures', 1), ('successful', False)]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 release.reconcile_installed_acceptance(source, {**installed, 'tests': {**installed['tests'], field: value}})
+
+
+class ModuleCacheIsolationTests(unittest.TestCase):
+    def test_real_cached_modules_survive_synthetic_selected_discovery(self):
+        original_path = sys.path[:]
+        original_modules = dict(sys.modules)
+        self.addCleanup(lambda: setattr(sys, 'path', original_path))
+        def restore_modules():
+            for name in set(sys.modules) - set(original_modules):
+                sys.modules.pop(name, None)
+            sys.modules.update(original_modules)
+        self.addCleanup(restore_modules)
+
+        # Use unittest's real imports and discovery paths, as the unsharded
+        # source self-test does. test_global exists only in the synthetic tree.
+        real_paths = ('.agentic/tests/test_adoption_status.py',
+                      'scripts/tests/test_installed_self_test.py', UPGRADE_MATRIX)
+        for path in real_paths:
+            with self.subTest(path=path):
+                source = ROOT / path
+                loader = unittest.TestLoader()
+                loader.discover(str(source.parent), pattern=source.name,
+                                top_level_dir=str(source.parent))
+                self.assertEqual([], loader.errors)
+                module = sys.modules[source.stem]
+                self.assertEqual(source.resolve(), Path(module.__file__).resolve())
+
+                before_discovery = dict(sys.modules)
+                case = SequentialReleaseTests('test_real_selected_discovery_executes_complete_source_union')
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+                self.assertEqual(set(before_discovery), set(sys.modules))
+                for name, module in before_discovery.items():
+                    self.assertIs(module, sys.modules[name], name)
 
 
 if __name__ == '__main__':

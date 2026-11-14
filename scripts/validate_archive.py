@@ -591,7 +591,7 @@ def validate(argv=None):
         'auto_resume_amendments', 'auto_transition_jira'))
     assert installed_configuration['controller']['status_cadence_seconds'] == 600
     assert uuid.UUID(installed_configuration['project']['id']).version == 4
-    assert installed_configuration['jira']['enabled'] is False
+    assert installed_configuration['jira']['enabled'] is True
     assert installed_configuration['jira']['site'] is None and installed_configuration['jira']['project_key'] is None
     assert installed_configuration['validation']['required_ci_checks'] == []
     assert installed_configuration['merge_gate']['trusted_owner_ids'] == []
@@ -602,7 +602,7 @@ def validate(argv=None):
     unconfigured_status = json.loads(installed_command([workflow,'--root',DEST,'status','--json'],cwd=DEST,
         name='Installed status names unconfigured paths and never claims active'))
     assert unconfigured_status['project_state']=='INSTALLED' and unconfigured_status['integrity_valid'] is True
-    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED - streams 12/12'
+    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED (configuration REJECTED) - streams 12/12'
     assert unconfigured_status['ci_gate']=='NOT_CONFIGURED' and unconfigured_status['accepted_checkout']=='UNOBSERVED'
     assert {item['path'] for item in unconfigured_status['configuration']['unresolved']}==expected_residue
     assert all(path in unconfigured_status['next_action'] for path in expected_residue)
