@@ -1,4 +1,4 @@
-"""Authentic published baseline; synthetic owner customization is not CMC evidence."""
+"""Authentic published baseline; synthetic owner customization is not adopter evidence."""
 import json
 from pathlib import Path
 import sys
@@ -517,7 +517,7 @@ class AuthenticBaselineTests(unittest.TestCase):
                 self.assertEqual(101, config['github']['repository_id'])
                 self.assertFalse(result['live_automation_enabled'])
                 owner = project / 'PROJECT_INSTRUCTIONS.md'
-                owner.write_bytes(b'synthetic owner customization; not CMC evidence\n')
+                owner.write_bytes(b'synthetic owner customization; not adopter evidence\n')
                 before = inventory(project)
                 planned = plan(self.candidate, project, self.pin)
                 self.assertTrue(planned['preservation']['preserved'])

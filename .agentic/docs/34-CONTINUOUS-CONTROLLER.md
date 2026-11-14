@@ -2,9 +2,7 @@
 
 ## Cycle
 
-```text
-python .agentic/scripts/workflow.py controller --help
-```
+`python .agentic/scripts/workflow.py controller --help`: required arguments; [cycle/preconditions](39-AWF-32-WINDOWS-SMOKE.md).
 
 Do not use `python -B -I .agentic/scripts/workflow.py controller ...` today:
 fails under isolated mode (AWF-207). Invoke without `-I`; `-B` may be

@@ -24,7 +24,7 @@ Attach doctor and preflight evidence.
 | --- | --- | --- | --- |
 | TO_RECORD, or None after actual validation | TO_RECORD | TO_RECORD | TO_RECORD |
 
-Record preserved versus derived project identity, repository metadata, test command, specialist identities and overrides. New Jira is configured by site/key or disabled with null site/key; record scope and provisional-ID handling. Preserve existing Jira mappings. Record `ci_gate`, required checks (with `verifies_history` and `checkout_depth`) and trusted merge-owner configuration; missing CI/owners are adoption warnings. List project tests actually executed with exit codes, or the concrete reason not run.
+Record preserved versus derived project identity, repository metadata, test command, specialist identities and overrides. Fresh Jira defaults ON/unbound/empty-scope (fail-closed); record site/key binding or disabled/null-site/key; record scope and provisional-ID handling. Preserve existing Jira mappings. Record `ci_gate`, required checks (with `verifies_history` and `checkout_depth`) and trusted merge-owner configuration; missing CI/owners are adoption warnings. List project tests actually executed with exit codes, or the concrete reason not run.
 
 ## Host preflight
 

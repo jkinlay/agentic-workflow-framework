@@ -25,8 +25,6 @@ def main(argv=None, *, root):
         return 2
     print('Interpreter: ' + result['interpreter'])
     print('Entry point: ' + result['entry_point'])
-    if result['runtime_unchanged']:
-        print('Runtime is already current and unchanged.')
     from .runtime_commands import runtime_backup_warning
     for row in result['transaction_cleanup_failures']:
         print(runtime_backup_warning(row['path']), file=sys.stderr)

@@ -48,4 +48,4 @@ Each part is capped at 1,200 words by release hygiene. The parts may be rejoined
 
 Additional AWF 1.9.6 recovery page: [Fresh clone of an adopted project](41-runbook-fresh-adopted-clone.md). It is separate from the historical 41-part joined identity below.
 
-**Current joined-content identity:** SHA-256 f2183d1b8246039a4b25eb018364b684c0a374befdef462bb733d307eb9ac8ae, 81,260 bytes. Join all 41 parts in the order above, each with exactly one terminal LF; exclude INDEX itself. This content identity does not establish release qualification.
+**Current joined-content identity:** SHA-256 69dcc9af09a1b54ca047256c5f243899c846699afc53fb1ce8a149113e26ed1f, 91,670 bytes. Join all 41 parts in the order above, each with exactly one terminal LF; exclude INDEX itself. This content identity does not establish release qualification.

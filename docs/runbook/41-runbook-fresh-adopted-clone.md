@@ -30,9 +30,9 @@ python3.12 -B -I .agentic/scripts/workflow.py --root '/absolute/project' provisi
 
 Success exits 0 and prints `Interpreter:` and `Entry point:` absolute paths,
 as doctor does. Invalid input exits 2 with the refusal text. Provisioning builds
-and validates offline, then atomically replaces a missing, invalid or different runtime.
-A repeat provision is a no-op when the runtime is current: it exits 0, preserves
-the runtime directory identity and creates no staging directory or backup. It writes
+and validates offline, then atomically replaces the runtime on every run.
+Each repeat provision exits 0 after rebuilding through a fresh stage and swapping
+it into place, retaining the previous runtime as a backup; use the printed cleanup command. It writes
 only `.agentic/.venv`, its staging/backup siblings and the Git-ignored installer
 lock `.agentic-install/lock`. Replacement retains the
 previous runtime in a named backup sibling. Provisioning prints a stderr

@@ -701,22 +701,6 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
         validate_host_tags(artifacts)
         expected_files = {path: hashlib.sha256(raw).digest()
                           for path, raw in _locked_runtime_files(artifacts).items()}
-        result = {"interpreter": str(interpreter), "entry_point": str(entry_point),
-                  "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
-                  "requirements_lock_sha256": lock_sha256,
-                  "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
-                  "artifact_sha256": {artifacts[name]["display_name"]: artifacts[name]["artifact_sha256"] for name in sorted(artifacts)},
-                  "verified_dependency_files": len(expected_files)}
-        if runtime_only and interpreter.is_file() and entry_point.is_file():
-            try:
-                _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files)
-            except (ValidationError, OSError):
-                # An invalid or different runtime follows the existing stage/swap
-                # route. No staging name or directory exists before this check.
-                pass
-            else:
-                return {**result, "runtime_unchanged": True, "transaction_cleanup": "COMPLETE",
-                        "transaction_cleanup_failures": []}
     if transaction is None:
         stage = _transaction_sibling(runtime_root, "staging")
         backup = _transaction_sibling(runtime_root, "backup")
@@ -797,8 +781,6 @@ def _ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhou
             "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
             "artifact_sha256": {artifacts[name]["display_name"]: artifacts[name]["artifact_sha256"] for name in sorted(artifacts)},
             "verified_dependency_files": len(expected_files)}
-    if runtime_only:
-        result["runtime_unchanged"] = False
     return result
 
 

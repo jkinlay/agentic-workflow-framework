@@ -8,8 +8,8 @@ grant any merge authority.
 
 ## Capacity and independence
 
-Native work starts with three active streams within the reviewed ceiling of
-six. Each active stream has one separately scoped Codex reviewer context.
+Fresh native work defaults to twelve active streams within the reviewed ceiling of
+twelve; upgrades preserve reviewed settings, including legacy three/six settings. Each active stream has one separately scoped Codex reviewer context.
 Workers and reviewers must not share a context, write lease, or owned path.
 The host's observed capacity is authoritative; the configuration ceiling is
 not evidence that those reviewers launched. Increase or reduce active streams

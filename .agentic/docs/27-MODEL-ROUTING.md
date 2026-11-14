@@ -53,7 +53,7 @@ Policy/host model capabilities require current observations: host ID, software/v
 
 Token-only hosts permit null reservation/settlement costs only with all effective
 monetary ceilings null; token/run ceilings apply. Integer caps require known
-reserved/actual costs. New adoptions: 2M tokens/16 runs/ticket; 30M tokens/250
+reserved/actual costs. Legacy caps: 2M tokens/16 runs/ticket; 30M tokens/250
 runs/project-day. Upgrades retain reviewed configuration until governance PR.
 For cap *N*: `WARN` at `ceil(.75N)`, `NEEDS_DISPOSITION` at `ceil(.90N)`;
 crossing succeeds; only caps refuse. `summary --ticket T` groups runs/tokens
