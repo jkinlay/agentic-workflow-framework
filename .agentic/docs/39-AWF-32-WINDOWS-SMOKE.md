@@ -22,8 +22,15 @@ production state database.
 2. Put one disposable, eligible ticket in the GitHub inventory endpoint and
    prepare a matching inventory binding. Use the real repository head/tree and
    an empty or disposable stream set appropriate to the smoke.
-3. Run one `cycle` using the exact command shape in
-   `34-CONTINUOUS-CONTROLLER.md`. Confirm JSON has complete inventory,
+3. Run one `cycle` using this command shape, with protected state outside every
+   worktree; pin intent and never reissue unresolved mutations. Preserve the
+   AWF-207 `-I` warning in [controller guidance](34-CONTINUOUS-CONTROLLER.md).
+
+   ```text
+   python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE --project-config PROJECT_CONFIG --adapter-module REVIEWED_ADAPTER.py --adapter-sha256 PIN --adapter-config ADAPTER_CONFIG cycle --inventory-binding INVENTORY_BINDING --repository-root ABSOLUTE_REPOSITORY --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now TIME --host-capacity N
+   ```
+
+   Confirm JSON has complete inventory,
    repository-bound publication readiness, one nonce-bound dispatch receipt,
    `status_delivery.status` equal to `DELIVERED`, and
    `execution_authority: false`. Confirm the outbox record can be read back.

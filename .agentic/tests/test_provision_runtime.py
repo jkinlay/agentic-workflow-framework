@@ -255,7 +255,7 @@ class RuntimeReuseTests(unittest.TestCase):
             self.assertIn('anomaly', warnings[0])
             self.assertIn('Remove-Item', warnings[1])
 
-    def test_current_runtime_uses_fresh_build_validator_without_allocating_stage(self):
+    def test_current_runtime_allocates_stage_before_any_runtime_validation(self):
         from agentic import adoption_config as adoption
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw).resolve()
@@ -275,13 +275,11 @@ class RuntimeReuseTests(unittest.TestCase):
                     patch.object(adoption, '_load_locked_wheels', return_value=artifacts), \
                     patch('agentic.runtime_tags.validate_host_tags'), \
                     patch.object(adoption, '_validate_runtime') as validate, \
-                    patch.object(adoption, '_transaction_sibling', side_effect=AssertionError('stage allocated')):
-                result = adoption.ensure_installed_runtime(root, wheelhouse=root, runtime_only=True)
-            validate.assert_called_once()
-            self.assertEqual((interpreter, root, runtime), validate.call_args.args[:3])
-            self.assertEqual({name: '1.0' for name in dependencies}, validate.call_args.args[3])
-            self.assertEqual(len(dependencies), len(validate.call_args.args[4]))
-            self.assertTrue(result['runtime_unchanged'])
+                    patch.object(adoption, '_transaction_sibling', side_effect=RuntimeError('stage allocation reached')) as allocate:
+                with self.assertRaisesRegex(RuntimeError, 'stage allocation reached'):
+                    adoption.ensure_installed_runtime(root, wheelhouse=root, runtime_only=True)
+            allocate.assert_called_once_with(runtime, 'staging')
+            validate.assert_not_called()
 
     def test_backup_warning_is_advisory_and_quotes_both_shells(self):
         from agentic.runtime_commands import render_doctor
@@ -528,22 +526,125 @@ with patch.object(status, 'host_executable', side_effect=lambda name, root: git 
         self.assertEqual('ACTIVE', report['project_state'], report)
         self.assertEqual(receipt_commit, report['adoption_receipt_commit_sha'])
 
-    def test_second_and_third_provision_leave_current_runtime_unchanged(self):
+    def test_second_and_third_provision_rebuild_and_retain_each_previous_runtime(self):
+        from agentic.installer import INSTALLED
         self.assertEqual(0, self.provision().returncode)
         runtime = self.root / '.agentic/.venv'
-        identity = (runtime.stat().st_dev, runtime.stat().st_ino)
+        receipt = (self.root / INSTALLED).read_bytes()
         before = self.snapshot()
+        retained = set()
         for run in (2, 3):
             with self.subTest(run=run):
+                identity = (runtime.stat().st_dev, runtime.stat().st_ino)
                 result = self.provision(blocked=True)
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertIn('Interpreter: ' + str(installed_paths(self.root)[1]), result.stdout)
-                self.assertIn('already current and unchanged', result.stdout)
-                self.assertEqual(identity, (runtime.stat().st_dev, runtime.stat().st_ino))
-                self.assertEqual([], list(runtime.parent.glob('.venv.backup-*')))
+                self.assertIn('Entry point: ' + str(installed_paths(self.root)[2]), result.stdout)
+                self.assertNotIn('already current and unchanged', result.stdout)
+                self.assertNotEqual(identity, (runtime.stat().st_dev, runtime.stat().st_ino))
+                backups = set(runtime.parent.glob('.venv.backup-*'))
+                self.assertTrue(retained.issubset(backups))
+                self.assertEqual(1, len(backups - retained))
+                backup = (backups - retained).pop()
+                self.assertEqual(identity, (backup.stat().st_dev, backup.stat().st_ino))
+                self.assert_cleanup_warning(result.stderr, backup)
+                retained = backups
                 self.assertEqual([], list(runtime.parent.glob('.venv.staging-*')))
                 self.assertEqual(before, self.snapshot())
-                self.assertEqual('', self.git_run(self.root, 'status', '--porcelain'))
+                self.assertEqual(receipt, (self.root / INSTALLED).read_bytes())
+                self.assertEqual('', self.git_run(self.root, 'status', '--porcelain', '--untracked-files=no'))
+                self.assertEqual(
+                    {'?? ' + path.relative_to(self.root).as_posix() + '/' for path in retained},
+                    set(self.git_run(self.root, 'status', '--porcelain').splitlines()))
+                self.assert_valid_runtime()
+        # Model the owner's explicit cleanup only after proving retention.
+        for backup in retained:
+            shutil.rmtree(backup)
+        self.assertEqual('', self.git_run(self.root, 'status', '--porcelain'))
+        self.assertEqual({'!! .agentic/.venv/'},
+                         set(self.git_run(self.root, 'status', '--porcelain', '--ignored').splitlines()))
+
+    def assert_valid_runtime(self):
+        for command, key, expected in [('verify-installation', 'integrity_valid', True),
+                                       ('validate-config', 'status', 'ACCEPTED')]:
+            check = subprocess.run([str(installed_paths(self.root)[1]), '-B', '-I',
+                                    str(installed_paths(self.root)[2]), '--root', str(self.root), command],
+                                   capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, check.returncode, check.stderr + check.stdout)
+            self.assertEqual(expected, json.loads(check.stdout)[key])
+
+    def assert_existing_payload_not_executed(self, fault):
+        from agentic.installer import INSTALLED
+        first = self.provision()
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assert_valid_runtime()
+        runtime = self.root / '.agentic/.venv'
+        identity = (runtime.stat().st_dev, runtime.stat().st_ino)
+        marker = Path(self.temp.name) / (fault + '-executed')
+        payload = 'from pathlib import Path; Path(' + repr(str(marker)) + ').write_text("executed")\n'
+        site = next(runtime.rglob('attrs/__init__.py')).parent.parent
+        if fault == 'sitecustomize':
+            planted = site / 'sitecustomize.py'
+            planted.write_text(payload, encoding='utf-8')
+        elif fault == 'pth':
+            planted = site / 'x.pth'
+            planted.write_text('import pathlib; pathlib.Path(' + repr(str(marker))
+                               + ').write_text("executed")\n', encoding='utf-8')
+        elif fault == 'interpreter_wrapper':
+            planted = installed_paths(self.root)[1]
+            real = planted.with_name('awf-real-python')
+            planted.rename(real)
+            planted.write_text('#!/bin/sh\nprintf executed > ' + shlex.quote(str(marker))
+                               + '\nexec ' + shlex.quote(str(real)) + ' "$@"\n', encoding='utf-8')
+            planted.chmod(real.stat().st_mode)
+        elif fault == 'pyvenv_cfg':
+            planted = runtime / 'pyvenv.cfg'
+            cfg = planted.read_bytes()
+            self.assertIn(b'include-system-site-packages = false', cfg)
+            planted.write_bytes(cfg.replace(b'include-system-site-packages = false',
+                                            b'include-system-site-packages = true'))
+            # pyvenv.cfg is data. A startup hook witnesses any execution under
+            # the altered configuration, without mocking interpreter execution.
+            (site / 'sitecustomize.py').write_text(payload, encoding='utf-8')
+        else:
+            self.fail('Unknown existing-runtime payload: ' + fault)
+        planted_bytes = planted.read_bytes()
+        before = self.snapshot()
+        receipt = (self.root / INSTALLED).read_bytes()
+        result = self.provision()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(marker.exists(), 'Existing runtime executed marker payload: ' + fault)
+        self.assertNotEqual(identity, (runtime.stat().st_dev, runtime.stat().st_ino))
+        backups = list(runtime.parent.glob('.venv.backup-*'))
+        self.assertEqual(1, len(backups))
+        self.assertEqual(identity, (backups[0].stat().st_dev, backups[0].stat().st_ino))
+        self.assertEqual(planted_bytes, (backups[0] / planted.relative_to(runtime)).read_bytes())
+        self.assertEqual([], list(runtime.parent.glob('.venv.staging-*')))
+        self.assert_cleanup_warning(result.stderr, backups[0])
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(receipt, (self.root / INSTALLED).read_bytes())
+        self.assertEqual('', self.git_run(self.root, 'status', '--porcelain', '--untracked-files=no'))
+        self.assert_valid_runtime()
+        self.assertFalse(marker.exists())
+        if fault == 'pyvenv_cfg':
+            self.assertIn(b'include-system-site-packages = false', (runtime / 'pyvenv.cfg').read_bytes())
+        elif fault in {'sitecustomize', 'pth'}:
+            self.assertFalse(planted.exists())
+        else:
+            self.assertNotEqual(planted_bytes, planted.read_bytes())
+
+    def test_existing_sitecustomize_payload_is_never_executed(self):
+        self.assert_existing_payload_not_executed('sitecustomize')
+
+    def test_existing_pth_payload_is_never_executed(self):
+        self.assert_existing_payload_not_executed('pth')
+
+    @unittest.skipIf(os.name == 'nt', 'Windows .cmd/.bat cannot replace the exact Scripts/python.exe executable')
+    def test_existing_interpreter_wrapper_is_never_executed(self):
+        self.assert_existing_payload_not_executed('interpreter_wrapper')
+
+    def test_existing_modified_pyvenv_cfg_payload_is_never_executed(self):
+        self.assert_existing_payload_not_executed('pyvenv_cfg')
 
     def test_broken_runtime_replaced_with_retained_backup_and_advisory_warnings(self):
         from agentic.installer import INSTALLED

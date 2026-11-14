@@ -2,7 +2,7 @@
 
 Version 1.9.6. `workflow.py status` is a read-only observation. It creates no directory or lock and evaluates independent stages into `checks`. Each row has a stable `code`, `stage`, `state`, `evidence`, `remedy` and `observed_at`.
 
-Host-Python `workflow.py --root PROJECT provision-runtime --wheelhouse ABS_PATH` preserves receipts; repeating with a current runtime is a no-op. Replacement retains backups; stderr, doctor/status warn with PowerShell/POSIX cleanup commands. Once satisfied, clean the printed path: Git doesn't ignore it; never commit it.
+Host-Python `workflow.py --root PROJECT provision-runtime --wheelhouse ABS_PATH` preserves receipts; each run rebuilds from the verified wheels. Replacement retains backups; stderr, doctor/status warn with PowerShell/POSIX cleanup commands. Once satisfied, clean the printed path: Git doesn't ignore it; never commit it.
 
 Check states are `PASS`, `INVALID`, `MISMATCH`, `UNAVAILABLE`, `UNOBSERVED` and `NOT_APPLICABLE`. An unavailable later observation never lowers a state already established by earlier stages. Text output lists every blocker before one `Next command`; JSON uses the [activation-status schema](../schemas/activation-status.schema.json).
 

@@ -43,7 +43,7 @@ When an authenticated policy explicitly requires owner publication, the
 controller prepares an `awf-owner-publication-1` handoff through
 `OwnerPublicationStore`. Store it in a separate protected SQLite database
 outside every worker/reviewer worktree. The request retains the policy evidence,
-absolute command worktree and one to six completed streams. Each stream carries
+absolute command worktree and one to twelve completed streams. Each stream carries
 its identity, ticket/slug, feature branch, exact completed head, title, canonical
 body, completed-result digest and complete stream/lifecycle snapshot. Budgets,
 amendment counts and completed validation remain in that retained snapshot.

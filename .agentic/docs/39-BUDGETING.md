@@ -94,7 +94,7 @@ OFF applies only to subsequent work, never deletes/refunds history, reservations
 failures or unknowns; known overruns stay charged. Reconciliation closes
 incidents without refund. Count only attributable tools/retries; enroll retries.
 
-Use versioned preservation; installed CMC Quant Foundry 1.9.5 stays unchanged/enabled. Only owners authorize qualified preservation/budget disposition. Never edit integrity-managed bytes/pins/receipts or initialize OFF over upgrades. Live integration requires qualification; release owns manifests.
+Use versioned preservation; an installed 1.9.5 project stays unchanged/enabled. Only owners authorize qualified preservation/budget disposition. Never edit integrity-managed bytes/pins/receipts or initialize OFF over upgrades. Live integration requires qualification; release owns manifests.
 
 ## Upgrade and adoption
 
