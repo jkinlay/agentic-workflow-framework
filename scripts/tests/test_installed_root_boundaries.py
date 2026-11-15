@@ -71,13 +71,13 @@ class RootBoundaryTests(unittest.TestCase):
                 result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(root), str(target)],
                                         capture_output=True, text=True, timeout=30)
                 if result.returncode:
-                    self.skipTest('directory junction creation unavailable: ' + result.stderr.strip())
+                    self.skipTest(f'directory junction creation unavailable: mklink returncode={result.returncode}')
             else:
                 root.symlink_to(target, target_is_directory=True)
         except OSError as exc:
             if getattr(exc, 'winerror', None) == 1314:
                 self.skipTest('symlink privilege unavailable (WinError 1314)')
-            self.skipTest('directory link creation unavailable: ' + str(exc))
+            self.skipTest(f"directory link creation unavailable: {type(exc).__name__} winerror={getattr(exc, 'winerror', None)} errno={getattr(exc, 'errno', None)}")
         if os.name == 'nt':
             self.addCleanup(os.rmdir, root)
         else:

@@ -745,7 +745,7 @@ class InstallerTests(unittest.TestCase):
         try:
             (self.dest / "AGENTS.md").symlink_to(sentinel)
         except OSError as exc:
-            self.skipTest(f"Symlink privilege unavailable: {exc}")
+            self.skipTest(f"Symlink privilege unavailable: {type(exc).__name__} winerror={getattr(exc, 'winerror', None)} errno={getattr(exc, 'errno', None)}")
         with self.assertRaises((ValidationError, OSError)):
             self.perform(conflict="backup")
         self.assertEqual(sentinel.read_text(), "Sentinel")

@@ -155,7 +155,7 @@ class ValidatorCommandContractTests(unittest.TestCase):
             try:
                 (runtime / 'lib64').symlink_to('lib', target_is_directory=True)
             except (OSError, NotImplementedError) as error:
-                self.skipTest('Symlink creation unavailable: ' + str(error))
+                self.skipTest(f"Symlink creation unavailable: {type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}")
             self.assertEqual({}, validate_git_checkout._files(root, installed_runtime=True))
             with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
                 validate_git_checkout._files(root)
@@ -170,7 +170,7 @@ class ValidatorCommandContractTests(unittest.TestCase):
             try:
                 alias.symlink_to(outside, target_is_directory=True)
             except (OSError, NotImplementedError) as error:
-                self.skipTest('Symlink creation unavailable: ' + str(error))
+                self.skipTest(f"Symlink creation unavailable: {type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}")
             with self.assertRaisesRegex(ValueError, 'Linked or reparse-point'):
                 validate_git_checkout._files(root, installed_runtime=True)
             alias.unlink()

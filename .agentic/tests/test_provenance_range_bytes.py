@@ -49,7 +49,7 @@ class _RepositoryCase(unittest.TestCase):
             if self.object_format == "sha256":
                 self.skipTest(
                     "local Git lacks SHA-256 object format support: "
-                    + initialized.stderr.decode("utf-8", "replace").strip()
+                    + f"local git init returncode={initialized.returncode}"
                 )
             self.fail(initialized.stderr.decode("utf-8", "replace"))
         self.empty_tree = self.mktree([])
