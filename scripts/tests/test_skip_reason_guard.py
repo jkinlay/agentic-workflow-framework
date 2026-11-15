@@ -2,9 +2,11 @@
 import ast
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +47,7 @@ class SkipReasonVisitor(ast.NodeVisitor):
             if origin & RESULT:
                 if node.attr in {'stdout', 'stderr', 'output'}:
                     return (origin & ~RESULT) | OUTPUT
-                if node.attr in {'returncode', 'args'}:
+                if node.attr == 'returncode':
                     return origin & ~RESULT
             if node.attr in {'errno', 'winerror'} and isinstance(node.value, ast.Name):
                 return False
@@ -256,20 +258,34 @@ def suite_python_files(root):
     root = Path(root)
     def walk_error(error):
         raise error
+    def exclusion_reason(path):
+        if path.is_symlink():
+            return 'symlink'
+        if getattr(path.lstat(), 'st_file_attributes', 0) & 0x400:
+            return 'junction/reparse point'
+        relative = path.relative_to(root).as_posix()
+        if not release_member(relative) or not release_member(relative + '/'):
+            return 'release-excluded'
+        if path.name == '__pycache__':
+            return 'bytecode cache'
+        return None
     def included(path):
-        return (path.name != '__pycache__' and not path.is_symlink()
-                and not getattr(path.lstat(), 'st_file_attributes', 0) & 0x400
-                and release_member(path.relative_to(root).as_posix())
-                and release_member(path.relative_to(root).as_posix() + '/'))
+        return exclusion_reason(path) is None
     paths = []
     for suite in SUITES:
         start = root / suite
+        parts = Path(suite).parts
+        for end in range(1, len(parts) + 1):
+            path = root.joinpath(*parts[:end])
+            try:
+                reason = exclusion_reason(path)
+            except FileNotFoundError as error:
+                raise ValueError(f'missing suite root: {suite}') from error
+            if reason:
+                raise ValueError(f'invalid suite root: {suite}: {reason}: '
+                                 f'{path.relative_to(root).as_posix()}')
         if not start.is_dir():
             raise ValueError(f'missing suite root: {suite}')
-        parts = Path(suite).parts
-        if not all(included(root.joinpath(*parts[:end]))
-                   for end in range(1, len(parts) + 1)):
-            continue
         for directory, directories, names in os.walk(start, onerror=walk_error,
                                                     followlinks=False):
             parent = Path(directory)
@@ -277,6 +293,14 @@ def suite_python_files(root):
             paths.extend((parent / name).relative_to(root).as_posix()
                          for name in names if name.endswith('.py') and included(parent / name))
     return sorted(paths)
+
+
+def assert_inventory_walk(root, walked):
+    """Require a non-empty walk covering every independently inventoried module."""
+    expected = {relative for paths in inventory(root).values() for relative in paths}
+    missing = sorted(expected - set(walked))
+    if not walked or missing:
+        raise AssertionError(f'suite walk coverage: empty={not bool(walked)}, missing={missing}')
 
 
 class SkipReasonGuardTests(unittest.TestCase):
@@ -429,8 +453,100 @@ class SkipReasonGuardTests(unittest.TestCase):
                 path.write_text('import sys\nself.skipTest(sys.exc_info())\n', encoding='utf-8')
             self.assertEqual([], suite_python_files(root))
 
+    def test_suite_walk_rejects_symlink_root(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / 'target'
+            target.mkdir()
+            try:
+                (root / 'suite').symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlinks unavailable: {type(error).__name__} "
+                              f"winerror={getattr(error, 'winerror', None)} "
+                              f"errno={getattr(error, 'errno', None)}")
+            with patch(__name__ + '.SUITES', ('suite',)):
+                with self.assertRaisesRegex(ValueError, 'suite.*symlink'):
+                    suite_python_files(root)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junctions only')
+    def test_suite_walk_rejects_junction_root(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / 'target'
+            target.mkdir()
+            try:
+                subprocess.run(['cmd', '/c', 'mklink', '/J', str(root / 'suite'),
+                                str(target)], capture_output=True, check=True)
+            except (OSError, subprocess.CalledProcessError) as error:
+                self.skipTest(f"junctions unavailable: {type(error).__name__} "
+                              f"winerror={getattr(error, 'winerror', None)} "
+                              f"errno={getattr(error, 'errno', None)}")
+            with patch(__name__ + '.SUITES', ('suite',)):
+                with self.assertRaisesRegex(ValueError, 'suite.*reparse point'):
+                    suite_python_files(root)
+
+    def test_suite_walk_rejects_release_excluded_root(self):
+        suite = '.agentic/tests/fixtures/upgrades'
+        self.assertFalse(release_member(suite + '/'))
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / suite).mkdir(parents=True)
+            with patch(__name__ + '.SUITES', (suite,)):
+                with self.assertRaisesRegex(ValueError, suite + '.*release-excluded'):
+                    suite_python_files(root)
+
+    def test_suite_walk_rejects_symlink_ancestor(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / 'target'
+            (target / 'tests').mkdir(parents=True)
+            try:
+                (root / 'suite').symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlinks unavailable: {type(error).__name__} "
+                              f"winerror={getattr(error, 'winerror', None)} "
+                              f"errno={getattr(error, 'errno', None)}")
+            with patch(__name__ + '.SUITES', ('suite/tests',)):
+                with self.assertRaisesRegex(ValueError, 'suite/tests.*symlink.*suite'):
+                    suite_python_files(root)
+
+    def test_suite_walk_ordinary_root_returns_files(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'suite').mkdir()
+            (root / 'suite/helper.py').write_text('pass\n', encoding='utf-8')
+            with patch(__name__ + '.SUITES', ('suite',)):
+                self.assertEqual(['suite/helper.py'], suite_python_files(root))
+
+    def test_inventory_walk_rejects_missing_module(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for suite in SUITES:
+                (root / suite).mkdir(parents=True)
+                (root / suite / 'test_present.py').write_text('pass\n', encoding='utf-8')
+            walked = suite_python_files(root)
+            missing = walked.pop()
+            with self.assertRaises(AssertionError) as cm:
+                assert_inventory_walk(root, walked)
+            self.assertIn(missing, str(cm.exception))
+
+    def test_inventory_walk_rejects_empty_walk(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for suite in SUITES:
+                (root / suite).mkdir(parents=True)
+                (root / suite / 'test_present.py').write_text('pass\n', encoding='utf-8')
+            with self.assertRaises(AssertionError) as cm:
+                assert_inventory_walk(root, [])
+            self.assertIn('empty', str(cm.exception))
+            for paths in inventory(root).values():
+                for relative in paths:
+                    self.assertIn(relative, str(cm.exception))
+
     def test_shipped_helpers_and_tests_do_not_include_exception_text(self):
-        findings = [f'{relative}:{line}' for relative in suite_python_files(ROOT)
+        walked = suite_python_files(ROOT)
+        assert_inventory_walk(ROOT, walked)
+        findings = [f'{relative}:{line}' for relative in walked
                     for line in exception_skip_lines((ROOT / relative).read_text(encoding='utf-8'))]
         self.assertFalse(findings, 'Exception text in skip reasons:\n' + '\n'.join(findings))
 
@@ -471,8 +587,24 @@ class SkipReasonGuardTests(unittest.TestCase):
                           'from subprocess import getoutput as output_alias\n' + source)
                 self.assertEqual([len(source.splitlines())], exception_skip_lines(source))
 
+    def test_subprocess_args_taint_skip_reasons(self):
+        for message in ['f"{result.args}"', 'f"{result.args[0]}"']:
+            with self.subTest(message=message):
+                self.assertEqual([3], exception_skip_lines(
+                    'import subprocess\nresult = subprocess.run(["command"])\n'
+                    f'self.skipTest({message})'))
+
+    def test_non_subprocess_args_stay_safe(self):
+        for source in [
+                'import ast\nresult = ast.parse("f()")',
+                'from unittest.mock import Mock\nresult = Mock().call_args',
+                'import argparse\nresult = argparse.Namespace(args=["literal"])']:
+            with self.subTest(source=source):
+                self.assertEqual([], exception_skip_lines(
+                    source + '\nself.skipTest(f"{result.args} {result.args[0]}")'))
+
     def test_subprocess_safe_metadata_literals_branches_and_scope_shadowing(self):
-        for message in ['f"returncode={result.returncode}"', 'result.args[0]',
+        for message in ['f"returncode={result.returncode}"',
                         '"unavailable"']:
             with self.subTest(message=message):
                 self.assertEqual([], exception_skip_lines(

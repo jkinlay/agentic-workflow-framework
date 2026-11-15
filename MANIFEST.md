@@ -837,7 +837,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_self_test_review.py` | `41b61961dc5d12a097065261ce88a2c1f204348dd381045c5de5e9f3b0bc1869` |
 | `scripts/tests/test_skill_distribution_launcher.py` | `26fcfe891d4be5a7fbaa638f0b6dbbfe418f6831d1973f889ebc97fe6a6dc64c` |
 | `scripts/tests/test_skill_distribution_ordering.py` | `4897f1406db51a786ccf4179363c93b50e1d99578c28f51a947154e448366955` |
-| `scripts/tests/test_skip_reason_guard.py` | `24d44232d3f8ee452f244a5664370db62231768823750bd76f0128efcce8355f` |
+| `scripts/tests/test_skip_reason_guard.py` | `b22b168cfd42f7b2766f71e86b5646a9c7ec05663d9e6d70f59d31158d3a65cd` |
 | `scripts/tests/test_validate_archive_defaults.py` | `c9424940cb2c7f052f9a7744bc146bdea2e9cf345cdb88729d2c17dab01685fa` |
 | `scripts/tests/test_validate_archive_report.py` | `5f80854db7f9fac07b2822ab1ba20cb0bdbf9feb78bec296de92d87ee2337caf` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
