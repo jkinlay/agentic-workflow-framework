@@ -1,4 +1,4 @@
-"""Keep exception messages (and their machine-local paths) out of skip records."""
+"""Keep exception and subprocess output (and local paths) out of skip records."""
 import ast
 from pathlib import Path
 import sys
@@ -11,10 +11,11 @@ from run_windows_unittests import inventory
 
 
 SKIPS = {'skip', 'skipIf', 'skipUnless', 'skipTest', 'SkipTest'}
+EXCEPTION, OUTPUT, RESULT = 1, 2, 4
 
 
 class SkipReasonVisitor(ast.NodeVisitor):
-    """Intraprocedural, conservative exception taint, seeded by actual handlers.
+    """Intraprocedural exception/output taint, seeded by handlers/subprocesses.
 
     Follow local assignments, including reason variables surviving a handler,
     and union branches. Nested scopes inherit captures but shadow local bindings.
@@ -30,6 +31,12 @@ class SkipReasonVisitor(ast.NodeVisitor):
         if isinstance(node, ast.Name):
             return self.bindings.get(node.id, False)
         if isinstance(node, ast.Attribute):
+            origin = self.tainted(node.value)
+            if origin & RESULT:
+                if node.attr in {'stdout', 'stderr', 'output'}:
+                    return (origin & ~RESULT) | OUTPUT
+                if node.attr in {'returncode', 'args'}:
+                    return origin & ~RESULT
             if node.attr in {'errno', 'winerror'} and isinstance(node.value, ast.Name):
                 return False
             if (node.attr == '__name__' and isinstance(node.value, ast.Call)
@@ -46,7 +53,20 @@ class SkipReasonVisitor(ast.NodeVisitor):
                 and (len(node.args) == 2 or isinstance(node.args[2], ast.Constant)
                      and (node.args[2].value is None or type(node.args[2].value) is int))):
             return False
-        return any(self.tainted(child) for child in ast.iter_child_nodes(node))
+        if isinstance(node, ast.Call):
+            name = self.call_name(node.func)
+            if name in {'subprocess.run', 'subprocess.Popen'}:
+                return RESULT
+            if name in {'subprocess.check_output', 'subprocess.getoutput',
+                        'subprocess.getstatusoutput'}:
+                return OUTPUT
+            if (isinstance(node.func, ast.Attribute) and node.func.attr == 'communicate'
+                    and self.tainted(node.func.value) & RESULT):
+                return OUTPUT
+        result = 0
+        for child in ast.iter_child_nodes(node):
+            result |= self.tainted(child)
+        return result
 
     def visit_Import(self, node):
         for item in node.names:
@@ -91,9 +111,19 @@ class SkipReasonVisitor(ast.NodeVisitor):
             self.visit(node.value)
             self.bind(node.target, self.tainted(node.value))
 
+    def visit_With(self, node):
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self.bind(item.optional_vars, self.tainted(item.context_expr))
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncWith = visit_With
+
     def visit_AugAssign(self, node):
         self.visit(node.value)
-        self.bind(node.target, self.tainted(node.target) or self.tainted(node.value))
+        self.bind(node.target, self.tainted(node.target) | self.tainted(node.value))
 
     def visit_NamedExpr(self, node):
         self.visit_Assign(ast.Assign(targets=[node.target], value=node.value))
@@ -101,7 +131,7 @@ class SkipReasonVisitor(ast.NodeVisitor):
     def visit_ExceptHandler(self, node):
         previous = self.bindings.get(node.name, False)
         if node.name:
-            self.bindings[node.name] = True
+            self.bindings[node.name] = EXCEPTION
         for statement in node.body:
             self.visit(statement)
         if node.name:
@@ -115,8 +145,10 @@ class SkipReasonVisitor(ast.NodeVisitor):
             for statement in statements:
                 self.visit(statement)
             outcomes.append(self.bindings)
-        self.bindings = {name: any(outcome.get(name, False) for outcome in outcomes)
-                         for outcome in outcomes for name in outcome}
+        self.bindings = {}
+        for outcome in outcomes:
+            for name, taint in outcome.items():
+                self.bindings[name] = self.bindings.get(name, 0) | taint
 
     def visit_If(self, node):
         self.visit(node.test)
@@ -176,6 +208,67 @@ def exception_skip_lines(source):
 
 
 class SkipReasonGuardTests(unittest.TestCase):
+    def test_subprocess_output_message_expressions_and_import_aliases(self):
+        messages = ['result.stderr.strip()',
+                    'result.stderr.strip() or result.stdout.strip()',
+                    '"unavailable: " + result.stderr.strip()',
+                    'result.stderr.decode("utf-8", "replace").strip()',
+                    'result.stdout', 'result.output', 'str(result.stderr)',
+                    'repr(result.stdout)', 'f"failed: {result.stderr}"',
+                    '"failed: %s" % result.stdout',
+                    '"failed: {}".format(result.stderr)',
+                    'result.stdout if flag else "literal"', 'f"{result}"']
+        for producer in ['subprocess.run', 'sp.run', 'run_alias', 'sp.Popen']:
+            for message in messages:
+                with self.subTest(producer=producer, message=message):
+                    source = ('import subprocess\nimport subprocess as sp\n'
+                              'from subprocess import run as run_alias\n'
+                              'def example():\n'
+                              f'    result = {producer}(["command"], capture_output=True)\n'
+                              f'    self.skipTest({message})\n')
+                    self.assertEqual([6], exception_skip_lines(source))
+
+    def test_subprocess_output_bindings_and_communicate(self):
+        sources = [
+            'output = sp.check_output(["command"])\nself.skipTest(output)',
+            'output = output_alias("command")\nself.skipTest(output.strip())',
+            'status, output = sp.getstatusoutput("command")\nself.skipTest(output)',
+            'output, error = sp.Popen(["command"]).communicate()\nself.skipTest(error)',
+            'with sp.Popen(["command"]) as process:\n'
+            '    output, error = process.communicate()\n    self.skipTest(output.decode())',
+            'result = sp.run(["command"])\nalias = result\n'
+            'reason = str(alias.stderr)\nself.skipTest(reason)',
+        ]
+        for source in sources:
+            with self.subTest(source=source):
+                source = ('import subprocess as sp\n'
+                          'from subprocess import getoutput as output_alias\n' + source)
+                self.assertEqual([len(source.splitlines())], exception_skip_lines(source))
+
+    def test_subprocess_safe_metadata_literals_branches_and_scope_shadowing(self):
+        for message in ['f"returncode={result.returncode}"', 'result.args[0]',
+                        '"unavailable"']:
+            with self.subTest(message=message):
+                self.assertEqual([], exception_skip_lines(
+                    'import subprocess\nresult = subprocess.run(["command"])\n'
+                    f'self.skipTest({message})'))
+        self.assertEqual([9], exception_skip_lines(
+            'import subprocess\ndef example():\n    reason = "literal"\n'
+            '    if flag:\n        result = subprocess.run(["command"])\n'
+            '        reason = result.stderr\n    else:\n        reason = "literal"\n'
+            '    self.skipTest(reason)\n'))
+        self.assertEqual([7], exception_skip_lines(
+            'import subprocess\ndef example():\n    if flag:\n'
+            '        result = subprocess.run(["command"])\n    else:\n'
+            '        result = "literal"\n    self.skipTest(f"{result}")\n'))
+        self.assertEqual([], exception_skip_lines(
+            'import subprocess\nresult = subprocess.run(["command"])\n'
+            'def inner(result):\n    self.skipTest(str(result))\n'
+            'def other():\n    result = "literal"\n    self.skipTest(result)\n'))
+        self.assertEqual([4], exception_skip_lines(
+            'import subprocess\nresult = subprocess.run(["command"])\n'
+            'def capture():\n    self.skipTest(result.stdout)\n'))
+
     def test_shipped_skip_reasons_do_not_include_exception_text(self):
         findings = []
         # Same inventory as CI, including its installed-harness exclusion: the

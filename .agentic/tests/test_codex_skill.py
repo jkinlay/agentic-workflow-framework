@@ -117,7 +117,7 @@ class CodexSkillTests(unittest.TestCase):
             if junction.returncode:
                 self.skipTest(
                     "directory aliases unavailable: "
-                    f"symlink failed ({type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}); junction failed ({junction.stderr.strip()})"
+                    f"symlink failed ({type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}); junction failed (mklink returncode={junction.returncode})"
                 )
         stale = canonical_home / ".agents" / "skills" / "awf"
         self.skill(stale, "1.9.3")

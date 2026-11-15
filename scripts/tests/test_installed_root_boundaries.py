@@ -71,7 +71,7 @@ class RootBoundaryTests(unittest.TestCase):
                 result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(root), str(target)],
                                         capture_output=True, text=True, timeout=30)
                 if result.returncode:
-                    self.skipTest('directory junction creation unavailable: ' + result.stderr.strip())
+                    self.skipTest(f'directory junction creation unavailable: mklink returncode={result.returncode}')
             else:
                 root.symlink_to(target, target_is_directory=True)
         except OSError as exc:

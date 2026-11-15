@@ -90,7 +90,7 @@ class PathContainmentTests(unittest.TestCase):
                 capture_output=True, text=True, check=False)
             if created.returncode:
                 self.skipTest("directory symlinks and junctions unavailable: "
-                              + (created.stderr.strip() or created.stdout.strip()))
+                              + f"mklink returncode={created.returncode}")
         escaped = link / "config.json"
         self.assertFalse(is_within(escaped, root))
         with self.assertRaises(ValueError):
