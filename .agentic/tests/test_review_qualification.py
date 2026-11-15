@@ -376,7 +376,7 @@ class QualificationTests(unittest.TestCase):
         try:
             alias.hardlink_to(host_config)
         except OSError as exc:
-            self.skipTest(f'hardlink alias unavailable: {exc}')
+            self.skipTest(f"hardlink alias unavailable: {type(exc).__name__} winerror={getattr(exc, 'winerror', None)} errno={getattr(exc, 'errno', None)}")
         self.config['qualification']['evidence_path'] = str(alias)
         driver = FakeQualificationDriver(self.config)
         with self.assertRaisesRegex(ValidationError,

@@ -77,7 +77,7 @@ class RootBoundaryTests(unittest.TestCase):
         except OSError as exc:
             if getattr(exc, 'winerror', None) == 1314:
                 self.skipTest('symlink privilege unavailable (WinError 1314)')
-            self.skipTest('directory link creation unavailable: ' + str(exc))
+            self.skipTest(f"directory link creation unavailable: {type(exc).__name__} winerror={getattr(exc, 'winerror', None)} errno={getattr(exc, 'errno', None)}")
         if os.name == 'nt':
             self.addCleanup(os.rmdir, root)
         else:

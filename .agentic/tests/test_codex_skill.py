@@ -107,7 +107,7 @@ class CodexSkillTests(unittest.TestCase):
             alias_home.symlink_to(canonical_home, target_is_directory=True)
         except (NotImplementedError, OSError) as error:
             if os.name != "nt":
-                self.skipTest(f"directory symlinks unavailable: {error}")
+                self.skipTest(f"directory symlinks unavailable: {type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}")
             junction = subprocess.run(
                 ["cmd", "/d", "/c", "mklink", "/j", alias_home, canonical_home],
                 capture_output=True,
@@ -117,7 +117,7 @@ class CodexSkillTests(unittest.TestCase):
             if junction.returncode:
                 self.skipTest(
                     "directory aliases unavailable: "
-                    f"symlink failed ({error}); junction failed ({junction.stderr.strip()})"
+                    f"symlink failed ({type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}); junction failed ({junction.stderr.strip()})"
                 )
         stale = canonical_home / ".agents" / "skills" / "awf"
         self.skill(stale, "1.9.3")

@@ -135,7 +135,7 @@ class DiscoveryRoutingOwnershipTests(unittest.TestCase):
                 try:
                     os.link(target, path)
                 except (OSError, NotImplementedError) as error:
-                    self.skipTest("Hardlink creation unavailable: " + str(error))
+                    self.skipTest(f"Hardlink creation unavailable: {type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}")
                 self.assert_reconciliation(fixture, project)
 
     def test_operator_routing_symlinks_are_rejected(self):
@@ -149,7 +149,7 @@ class DiscoveryRoutingOwnershipTests(unittest.TestCase):
                 try:
                     path.symlink_to(target)
                 except (OSError, NotImplementedError) as error:
-                    self.skipTest("Symlink creation unavailable: " + str(error))
+                    self.skipTest(f"Symlink creation unavailable: {type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}")
                 self.assert_reconciliation(fixture, project)
 
     def test_current_immutable_map_and_content_remain_exact(self):

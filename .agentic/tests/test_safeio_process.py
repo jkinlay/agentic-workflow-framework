@@ -960,7 +960,7 @@ class RepositoryMetadataReadTests(unittest.TestCase):
                         link.symlink_to(destination, target_is_directory=is_directory)
                     except OSError as exc:
                         if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
-                            self.skipTest(f"{case} symlinks unavailable: {exc}")
+                            self.skipTest(f"{case} symlinks unavailable: {type(exc).__name__} winerror={getattr(exc, 'winerror', None)} errno={getattr(exc, 'errno', None)}")
                         raise
                     with _metadata_reads() as observed:
                         with self.subTest(check="refusal"):

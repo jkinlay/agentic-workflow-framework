@@ -392,7 +392,7 @@ class WindowsAliasFixtureTests(unittest.TestCase):
         try:
             _winapi.CreateJunction(str(target), str(alias))
         except OSError as error:
-            self.skipTest(f"Windows directory junction unavailable: {error}")
+            self.skipTest(f"Windows directory junction unavailable: {type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}")
         self.addCleanup(alias.rmdir)
         self.assertNotEqual(alias, alias.resolve(strict=True))
 

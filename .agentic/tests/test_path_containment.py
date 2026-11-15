@@ -84,7 +84,7 @@ class PathContainmentTests(unittest.TestCase):
             link.symlink_to(outside, target_is_directory=True)
         except (NotImplementedError, OSError) as error:
             if os.name != "nt":
-                self.skipTest(f"directory symlinks unavailable: {error}")
+                self.skipTest(f"directory symlinks unavailable: {type(error).__name__} winerror={getattr(error, 'winerror', None)} errno={getattr(error, 'errno', None)}")
             created = subprocess.run(
                 ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(outside)],
                 capture_output=True, text=True, check=False)
