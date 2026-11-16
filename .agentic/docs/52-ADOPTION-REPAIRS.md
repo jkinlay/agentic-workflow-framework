@@ -12,7 +12,11 @@ critic and specialists use `gpt-6.1-sol/high`; qualifying simple tasks use
 eligibility predicate still applies, and review/risk floors remain Sol/high.
 Missing host support refuses without fallback. The canonical release defaults
 are immutable `.agentic/defaults/routing.yaml`; an adopter's `.agentic/routing.yaml`
-remains project-owned and is preserved through upgrades.
+remains project-owned and is preserved through upgrades. Likewise
+`.agentic/defaults/PROJECT_CONFIG.yaml` and `.agentic/defaults/OPERATING_CONFIG.yaml`
+hold the release's fresh configuration. The installed self-test reads these
+defaults, never the project's own files, so preserved project values do not
+fail it.
 
 Fresh bootstrap consumes the packaged operating template. Existing operating
 bytes, audit history, pins and reviewer allocation are retained. Missing

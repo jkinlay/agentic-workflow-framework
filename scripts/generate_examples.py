@@ -464,6 +464,9 @@ def generate(output_root, source_root=ROOT):
     source_config = config(False, fresh_policy, fresh_defaults=True)
     write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)
     write(output_root / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
+    # Installed projects keep their own .agentic/PROJECT_CONFIG.yaml, so the
+    # installed self-test reads the shipped default from this managed copy.
+    write(output_root / ".agentic/defaults/PROJECT_CONFIG.yaml", source_config)
     unconfigured = config(False, generation_policy)
     unconfigured["execution"]["model_routing"] = copy.deepcopy(generation_policy)
     write(output_root / ".agentic/examples/unconfigured-project.yaml", unconfigured)

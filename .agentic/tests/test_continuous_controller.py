@@ -1347,7 +1347,7 @@ class ReviewBatchingCliTests(unittest.TestCase):
 			ports=('observe_owner_ready','observe_review_candidate','deliver_review_batch','observe_review_delivery')
 			adapters={name:lambda *args:None for name in required|set(ports)}
 			command=['--state',str(root/'controller.db'),'--stream','A','--worktree-root',str(root/'worker'),
-				'--project-config',str(ROOT/'.agentic/PROJECT_CONFIG.yaml'),'--adapter-sha256','a'*64,
+				'--project-config',str(ROOT/'.agentic/defaults/PROJECT_CONFIG.yaml'),'--adapter-sha256','a'*64,
 				'cycle','--inventory-binding',str(binding_path),'--repository-root',str(ROOT),
 				'--repository-head-sha',REPOSITORY['repository_head_sha'],
 				'--repository-tree-sha',REPOSITORY['repository_tree_sha'],'--now',NOW]

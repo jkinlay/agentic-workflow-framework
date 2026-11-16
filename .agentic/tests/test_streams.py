@@ -57,7 +57,7 @@ def owner(stream="A", agent="synthetic-agent-A", state="active"):
 
 
 def reassignment_governance():
-    value = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+    value = loads((ROOT / ".agentic/defaults/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
     value["merge_gate"]["trusted_owner_ids"] = [1001]
     # Stream reassignment exercises local records, with no Jira adapter.
     value["jira"]["enabled"] = False
