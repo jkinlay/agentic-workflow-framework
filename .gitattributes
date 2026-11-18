@@ -4,6 +4,7 @@
 * text eol=lf
 .agentic/tests/fixtures/upgrades/blobs/** -text
 .agentic/tests/fixtures/upgrades/blobs/** -text whitespace=cr-at-eol
+.agentic/tests/fixtures/historical/blobs/** -text whitespace=cr-at-eol
 # scripts/manifest_merge_driver.py registers merge.awf-manifest.driver for the
 # read-only rehearsal and authorized PR-branch sync invocations. The driver
 # performs a canonical three-way merge of the derived inventories, including
