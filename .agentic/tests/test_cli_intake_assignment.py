@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from agentic.cli import main as workflow_main
-from agentic.intake_assignment import assign_intake, change_assignment
+from agentic.intake_assignment import assign_intake
+from intake_policy_fixture import change_assignment_with_policy as change_assignment
 from agentic.lifecycle import definition
 from agentic.policy import policy_hash
 from agentic.review_tiers import runtime_assignment
@@ -35,6 +36,8 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
         config["jira"]["enabled"] = False
         config["jira"]["controller_actor_id"] = "controller-1"
+        for field in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):
+            config["jira"][field] = None
         config["merge_gate"]["trusted_owner_ids"] = [1001]
         config_path = base / "project-config.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -133,6 +136,8 @@ class CliIntakeAssignmentTests(unittest.TestCase):
 
         state_config = copy.deepcopy(gate_fixture.config0)
         state_config["jira"]["enabled"] = False
+        for field in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):
+            state_config["jira"][field] = None
         state = {}
         first = assign_intake(
             state_config,

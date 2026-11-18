@@ -1,7 +1,7 @@
-"""Shared-account policy diagnostics; observations never grant owner authority.
+"""Accepted shared-account policy binding for explicitly enrolled consumers.
 
-This foundation changes no owner-authority consumer. Consumers must bind the
-default-branch observation and annotate retained evidence before using it.
+Observations alone never authorize execution. Each consumer must authenticate
+its owner source and retain the returned policy evidence with its own binding.
 """
 from __future__ import annotations
 
@@ -13,6 +13,47 @@ from .protected_settings import _blob, _default_ref, _git, _origin_url
 
 SETTING = "shared_owner_automation_actor_id"
 SETTING_PATH = "$.merge_gate." + SETTING
+OWNER_EVIDENCE_FIELDS = frozenset({"shared_owner_automation_account",
+                                   "owner_policy_sha256", "accepted_owner_policy"})
+
+
+def consumer_policy_root(root=None, store=None):
+    """Use host context only; never select a root from an owner source."""
+    from pathlib import Path
+    roots = tuple(getattr(store, "worktree_roots", ()))
+    if root is not None:
+        if roots and Path(root).resolve() not in {Path(item).resolve() for item in roots}:
+            raise ValidationError("Owner policy root differs from protected controller worktrees")
+        return root
+    return roots[0] if len(roots) == 1 else None
+
+
+def validate_retained_owner_evidence(record, actor_id):
+    """Check the closed annotation shape; this does not authenticate policy."""
+    fields = OWNER_EVIDENCE_FIELDS.intersection(record)
+    if not fields:
+        return {}
+    if fields != OWNER_EVIDENCE_FIELDS:
+        raise ValidationError("Shared-owner retained evidence is incomplete")
+    evidence = {key: record[key] for key in OWNER_EVIDENCE_FIELDS}
+    policy = evidence["accepted_owner_policy"]
+    policy_fields = {"status", SETTING, "policy_sha256", "config_sha256", "workflow_sha256",
+                     "default_branch_ref", "default_branch_commit", "warnings", "execution_authority"}
+    import re
+    if (evidence["shared_owner_automation_account"] is not True or not isinstance(policy, dict)
+            or set(policy) != policy_fields or policy["status"] != "OBSERVED"
+            or type(actor_id) is not int or type(policy[SETTING]) is not int or policy[SETTING] != actor_id
+            or policy["execution_authority"] is not False
+            or evidence["owner_policy_sha256"] != policy["policy_sha256"]
+            or not all(isinstance(policy[key], str) and re.fullmatch(r"[0-9a-f]{64}", policy[key])
+                       for key in ("policy_sha256", "config_sha256", "workflow_sha256"))
+            or not isinstance(policy["default_branch_ref"], str)
+            or not policy["default_branch_ref"].startswith("refs/remotes/origin/")
+            or not isinstance(policy["default_branch_commit"], str)
+            or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", policy["default_branch_commit"]) is None
+            or policy["warnings"] != shared_owner_warnings({"merge_gate": {SETTING: actor_id}})):
+        raise ValidationError("Shared-owner retained evidence is malformed or differs from its policy digest")
+    return evidence
 
 
 def configured_shared_owner_actor_id(config):
@@ -40,7 +81,66 @@ def shared_owner_warnings(config):
     if type(actor) is not int or not 1 <= actor <= 9007199254740991:
         return []
     return [{"path": SETTING_PATH, "code": "SHARED_OWNER_AUTOMATION_ACCOUNT",
-             "message": f"Configured shared owner/automation account {actor}: records identify an account, not a person. This report grants no owner authority; owner-authority behavior remains unchanged pending consumer support."}]
+             "message": f"Configured shared owner/automation account {actor}: records identify an account, not a person. This report grants no owner authority; each consumer requires accepted default-branch policy."}]
+
+
+def _has_git_metadata(root):
+    """A missing fixture repository is distinct from an unreadable Git read."""
+    from pathlib import Path
+    try:
+        (Path(root) / ".git").lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
+                            repository=None, project_key=None):
+    """Bind one enrolled consumer without relaxing the global owner validator.
+
+    The project root is supplied by the trusted host, never by an owner record.
+    No observation object or ref can be supplied in place of immutable reads.
+    Observe production policy even when the proposal hides the setting. Only
+    explicitly synthetic, unset-setting reports may lack a policy observation;
+    they never acquire shared-account evidence. Source authentication and
+    replay checks remain the consumer's.
+    """
+    # Intake's documented process-local assignment map is not reviewed policy.
+    # Strip only that context; every reviewed configuration byte still binds.
+    config = {key: value for key, value in config.items() if key != "_awf_runtime"}
+    shared = configured_shared_owner_actor_id(config)
+    if shared is None:
+        if config.get("github", {}).get("expected_actor_id") in config.get("merge_gate", {}).get("trusted_owner_ids", []):
+            from .authorization import trusted_owner_ids
+            trusted_owner_ids(config)
+    if root is None:
+        if shared is None and synthetic:
+            return {}
+        raise ValidationError("Owner records require an accepted default-branch policy observation")
+    if shared is None and synthetic:
+        if not _has_git_metadata(root) or _default_ref(root)[0] is None:
+            return {}
+    from pathlib import Path
+    from .contracts import Contracts
+    from .lifecycle import definition
+    from .policy import policy_hash
+
+    workflow = definition()
+    contracts = Contracts(Path(__file__).resolve().parents[2] / "schemas")
+    observation = observe_accepted_owner_policy(
+        root, config, workflow, contracts, policy_sha256=policy_hash(config, workflow))
+    if repository is not None and repository != config["github"]["repository"]:
+        raise ValidationError("Stream inventory differs from the accepted owner policy repository")
+    if (project_key is not None and config.get("jira", {}).get("enabled", True)
+            and project_key != config["jira"]["project_key"]):
+        raise ValidationError("Stream inventory differs from the accepted owner policy project")
+    if shared is None:
+        return {}
+    if type(actor_id) is not int or actor_id != shared:
+        return {}
+    return {"shared_owner_automation_account": True,
+            "owner_policy_sha256": observation["policy_sha256"],
+            "accepted_owner_policy": observation}
 
 
 def _origin_matches(url, github):

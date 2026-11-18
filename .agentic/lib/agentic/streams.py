@@ -302,7 +302,7 @@ def _assignment_root(previous, expected_sha256):
 
 def _assignment_event(chain_id, *, ticket_id, who, when, why, old, new, kind,
                       source_id=None, intake_assignment_id=None,
-                      owner_source_sha256=None):
+                      owner_source_sha256=None, owner_evidence=None):
     event = {"ticket_id": ticket_id, "who": who, "when": when, "why": why,
              "old": old, "new": new, "kind": kind,
              "previous_assignment_id": chain_id, "source_id": source_id}
@@ -311,18 +311,27 @@ def _assignment_event(chain_id, *, ticket_id, who, when, why, old, new, kind,
         event["previous_assignment_id"] = intake_assignment_id
         event["previous_stream_assignment_id"] = chain_id
         event["owner_source_sha256"] = owner_source_sha256
+    if owner_evidence:
+        event.update(deepcopy(owner_evidence))
     event["assignment_id"] = fingerprint("stream_assignment_event", event)
     return event
 
 
 def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
-                                     directive, verifier, now):
+                                     directive, verifier, now, accepted_policy_root=None,
+                                     policy_project=None, synthetic=False):
     """Bind a stream move to the sealed intake chain and immutable owner source."""
     require(isinstance(governance, dict),
             "Owner stream reassignment requires accepted governance configuration")
     owners = governance.get("merge_gate", {}).get("trusted_owner_ids", [])
     require(isinstance(owners, list) and directive["who"] in owners,
             "Owner stream reassignment requires an authenticated trusted owner")
+    from .shared_owner_policy import accepted_owner_evidence
+    policy_context = {"synthetic": synthetic,
+                      "repository": policy_project["repository"] if policy_project else None,
+                      "project_key": policy_project["key"] if policy_project else None}
+    owner_evidence = accepted_owner_evidence(
+        accepted_policy_root, governance, directive["who"], **policy_context)
     require(isinstance(intake_assignments, dict)
             and isinstance(intake_assignments.get(ticket_id), dict),
             "Owner stream reassignment requires the current intake assignment")
@@ -366,6 +375,8 @@ def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
         "created_at": created,
         "now": now,
     }
+    if owner_evidence:
+        expected["owner_policy_sha256"] = owner_evidence["owner_policy_sha256"]
     try:
         verified = verifier(deepcopy(source), deepcopy(expected))
     except Exception as exc:
@@ -381,11 +392,16 @@ def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
             "Owner-source verifier did not authenticate the exact stream reassignment")
     require(timestamp(verified["observed_at"]) <= timestamp(now),
             "Owner-source verification is future-dated")
-    return current_id, verified, created
+    if owner_evidence:
+        require(owner_evidence == accepted_owner_evidence(
+            accepted_policy_root, governance, directive["who"], **policy_context),
+            "Shared-owner policy changed during owner-source verification")
+    return current_id, verified, created, owner_evidence
 
 
 def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
-                expected_sha256, governance=None, intake_assignments=None):
+                expected_sha256, governance=None, intake_assignments=None,
+                accepted_policy_root=None, policy_project=None, synthetic=False):
     pins = deepcopy(previous.get("owner_stream_pins", {})) if previous is not None else {}
     require(isinstance(pins, dict), "Existing owner stream pins must be an object")
     for ticket_id, pin in pins.items():
@@ -406,7 +422,8 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
     for event in history:
         fields(event, "ticket_id who when why old new kind previous_assignment_id source_id assignment_id",
                "stream assignment audit",
-               "intake_assignment_id previous_stream_assignment_id owner_source_sha256")
+               "intake_assignment_id previous_stream_assignment_id owner_source_sha256 "
+               "shared_owner_automation_account owner_policy_sha256 accepted_owner_policy")
         key(event["ticket_id"], "stream assignment ticket ID")
         require(event["ticket_id"] in tickets,
                 "Stream assignment audit references work outside the retained inventory")
@@ -431,6 +448,9 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
                     and "previous_stream_assignment_id" not in event
                     and "owner_source_sha256" not in event,
                     "Automatic stream moves must be attributed only to awf")
+            require(not any(name in event for name in (
+                "shared_owner_automation_account", "owner_policy_sha256", "accepted_owner_policy")),
+                "Automatic stream moves cannot carry shared-owner evidence")
         else:
             require(event["who"] != "awf" and isinstance(event["source_id"], str)
                     and event["source_id"]
@@ -441,6 +461,31 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
                     and isinstance(event.get("owner_source_sha256"), str)
                     and re.fullmatch(r"[0-9a-f]{64}", event["owner_source_sha256"]),
                     "Owner stream reassignment lacks its authenticated source")
+            from .shared_owner_policy import accepted_owner_evidence
+            require(synthetic or isinstance(governance, dict),
+                    "Owner stream audit requires accepted governance configuration")
+            evidence = (accepted_owner_evidence(
+                            accepted_policy_root, governance, event["who"], synthetic=synthetic,
+                            repository=policy_project["repository"] if policy_project else None,
+                            project_key=policy_project["key"] if policy_project else None)
+                        if governance is not None else {})
+            shared_fields = {"shared_owner_automation_account", "owner_policy_sha256", "accepted_owner_policy"}
+            retained_fields = shared_fields.intersection(event)
+            if evidence or retained_fields:
+                require(evidence and retained_fields == shared_fields
+                        and event["shared_owner_automation_account"] is True
+                        and event["owner_policy_sha256"] == evidence["owner_policy_sha256"],
+                        "Shared-owner stream audit lacks matching accepted policy evidence")
+                retained = event["accepted_owner_policy"]
+                observed = evidence["accepted_owner_policy"]
+                require(isinstance(retained, dict) and set(retained) == set(observed)
+                        and canonical({name: retained[name] for name in retained
+                                       if name != "default_branch_commit"}) ==
+                            canonical({name: observed[name] for name in observed
+                                       if name != "default_branch_commit"})
+                        and isinstance(retained["default_branch_commit"], str)
+                        and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", retained["default_branch_commit"]),
+                        "Shared-owner stream audit policy bytes or identity changed")
             require(event["source_id"] not in consumed_owner_source_ids,
                     "Owner stream reassignment source identity was already consumed")
             consumed_owner_source_ids.add(event["source_id"])
@@ -475,8 +520,9 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
         require(ticket["status"] not in {"in_progress", *FINAL}
                 and ticket["ownership"] is None,
                 "Started or completed work cannot be reassigned to another stream")
-        intake_assignment_id, verified, authenticated_when = _authenticate_owner_reassignment(
-            governance, ticket_id, intake_assignments, directive, verifier, now)
+        intake_assignment_id, verified, authenticated_when, owner_evidence = _authenticate_owner_reassignment(
+            governance, ticket_id, intake_assignments, directive, verifier, now,
+            accepted_policy_root, policy_project, synthetic)
         require(changed_at == timestamp(authenticated_when),
                 "Owner stream reassignment time must match the authenticated owner-source creation time")
         require(verified["source_id"] not in consumed_owner_source_ids,
@@ -488,6 +534,7 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
             source_id=verified["source_id"],
             intake_assignment_id=intake_assignment_id,
             owner_source_sha256=verified["raw_body_sha256"],
+            owner_evidence=owner_evidence,
         )
         history.append(event)
         chain_id = event["assignment_id"]
@@ -884,6 +931,7 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                    coordinator_agent_id=None, operating=None, governance=None, redact_ownership_worktrees=False,
                    owner_reassignments=None, verify_owner_reassignment=None,
                    intake_assignments=None,
+                   accepted_policy_root=None,
                    _recommendation=False):
     """Return a stable plan from one caller-pinned snapshot; never dispatch work."""
     policy = native_execution_policy(execution)
@@ -910,7 +958,8 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                       "inventory_pin": "original-verified-bytes"}
     owner_pins, assignment_history, assignment_chain_id, assignment_root_id = _owner_pins(
         previous, tickets, owner_reassignments, verify_owner_reassignment, now,
-        operating_count, expected_sha256, governance, intake_assignments)
+        operating_count, expected_sha256, governance, intake_assignments, accepted_policy_root,
+        value["project"], value["inventory"]["source"] == "synthetic_fixture")
     fixed = _preserve(previous, value, tickets, owner_pins,
                       path_redaction["applied_ticket_ids"])
     roots = {ticket_id: ticket_id for ticket_id in tickets}
@@ -1172,6 +1221,10 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                             "after a fresh host observation shows enough post-reservation worker capacity or a retained owner completes with confirmed slot release" if capacity["ownership_over_capacity"] else
                             "now; continue other ready project work while resolving any barriers",
                             continue_independent_work=not complete and any(packet["live_dispatch_eligible"] for packet in packets))}
+    from .shared_owner_policy import shared_owner_warnings
+    warnings = shared_owner_warnings(governance)
+    if warnings:
+        result["warnings"] = warnings
     if synthetic and not complete and "synthetic" not in result["next_step"]["action"].casefold():
         result["next_step"]["action"] += " This is a synthetic inventory; obtain verified actual project facts before live dispatch."
     return result
@@ -1221,6 +1274,10 @@ def render_markdown(plan):
                   "## Stream assignment audit", "",
                   f"Current AWF-48 assignment chain: `{plan.get('stream_assignment_chain_id', 'legacy-unrecorded')}`.", ""])
     audit = plan.get("stream_assignment_history", [])
+    for warning in plan.get("warnings", []):
+        code = ("`SHARED_OWNER_AUTOMATION_ACCOUNT`"
+                if warning["code"] == "SHARED_OWNER_AUTOMATION_ACCOUNT" else _md(warning["code"]))
+        lines.extend([code + ": " + _md(warning["message"]), ""])
     if audit:
         lines.extend(["| Ticket | Actor | When | Why | Old | New | Kind | Assignment | Previous |",
                       "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"])
@@ -1232,6 +1289,11 @@ def render_markdown(plan):
                 f"`{item['previous_assignment_id']}`",
             ]) + " |")
         lines.append("")
+        for item in audit:
+            if item.get("shared_owner_automation_account") is True:
+                lines.extend([
+                    f"Owner account {_md(item['who'])}: shared_owner_automation_account=true; "
+                    f"accepted policy `{item['owner_policy_sha256']}`; account identity only.", ""])
     else:
         lines.extend(["No stream moves have been recorded; initial deterministic placement is not a reassignment.", ""])
     capacity = plan["capacity"]
@@ -1417,7 +1479,8 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
                                redact_ownership_worktrees=redact_ownership_worktrees,
                                owner_reassignments=owner_reassignments,
                                verify_owner_reassignment=verify_owner_reassignment,
-                               intake_assignments=intake_assignments)
+                               intake_assignments=intake_assignments,
+                               accepted_policy_root=project_root)
         markdown = render_markdown(plan)
         plan["markdown_sha256"] = sha256(markdown)
         new_plan = (json.dumps(plan, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
@@ -1445,6 +1508,7 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
                 "stream_assignment_chain_id": plan["stream_assignment_chain_id"],
                 "stream_assignment_history": deepcopy(plan["stream_assignment_history"]),
                 "owner_stream_pins": deepcopy(plan["owner_stream_pins"]),
+                **({"warnings": deepcopy(plan["warnings"])} if "warnings" in plan else {}),
                 "write_scope": deepcopy(plan["write_scope"]),
                 "plan_path": str(project_root / PLAN), "markdown_path": str(project_root / MARKDOWN),
                 "execution_authority": False, "prompt_user": False,

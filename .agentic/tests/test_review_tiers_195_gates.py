@@ -23,7 +23,8 @@ from agentic.gates import (cap_disposition_record_id,
                            posting_collector_receipt_sha256,
                            review_round_receipt_sha256,
                            verified_owner_records)
-from agentic.intake_assignment import assign_intake, change_assignment
+from agentic.intake_assignment import assign_intake
+from intake_policy_fixture import change_assignment_with_policy as change_assignment
 from agentic.lifecycle import definition
 from agentic.review_tiers import review_decision
 from test_intake_assignment import owner_source, verify_owner_source
@@ -388,6 +389,8 @@ class ReviewTiers195GateTests(Fixture):
 
         state_config = copy.deepcopy(self.config0)
         state_config["jira"]["enabled"] = False
+        for field in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):
+            state_config["jira"][field] = None
         state = {}
         first = assign_intake(
             state_config,

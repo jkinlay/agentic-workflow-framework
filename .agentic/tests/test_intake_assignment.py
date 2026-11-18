@@ -23,18 +23,21 @@ from agentic.adoption_config import assign_project_start
 from agentic.canonical import sha256
 from agentic.intake_assignment import (
     assign_intake,
-    change_assignment,
     classify_ticket,
     inherit_pr_assignment,
 )
 from source_only import skip_unless_source_repo
+from intake_policy_fixture import (accepted_intake_policy,
+    change_assignment_with_policy as change_assignment)
 
 NOW = "2026-10-10T08:00:00Z"
 
 
 def config():
-    return {
-        "project": {"id": "local-project"}, "github": {"repository_id": "101"},
+    value = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+    overrides = {
+        "project": {"id": "11111111-1111-4111-8111-111111111111"},
+        "github": {"repository_id": 101, "expected_actor_id": 1003},
         "execution": {"risk_tiers": {
             "tier1_eligible_paths": ["docs/**", "tests/**", "*.md"],
             "tier1_excluded_paths": [],
@@ -50,6 +53,13 @@ def config():
                                                      "ownership_required": True, "additional_jql": ""}},
         "merge_gate": {"trusted_owner_ids": [1001, 1002]},
     }
+    for section, fields in overrides.items():
+        if section == "scope":
+            value[section]["protected_paths"] = list(dict.fromkeys(
+                value[section]["protected_paths"] + fields["protected_paths"]))
+        else:
+            value[section].update(fields)
+    return value
 
 
 def ticket(key="AWF-100", **updates):
@@ -265,6 +275,8 @@ class ProjectStartAssignsAll(unittest.TestCase):
             (dest / ".agentic").mkdir(parents=True)
             cfg = config()
             cfg["jira"]["enabled"] = False
+            for field in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):
+                cfg["jira"][field] = None
             (dest / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(cfg), encoding="utf-8")
             inventory_path = root / "inventory.json"
             inventory_path.write_text(json.dumps([ticket("AWF-100")]), encoding="utf-8")
@@ -325,9 +337,11 @@ class ProjectStartAssignsAll(unittest.TestCase):
                 stack.enter_context(mock.patch.object(module, "install", return_value=installed))
                 stack.enter_context(mock.patch.object(module, "complete_runtime_transaction", return_value={}))
                 stack.enter_context(mock.patch.object(module, "post_install_checks", return_value={}))
+                self.store.worktree_roots = (dest,)
+                stack.enter_context(accepted_intake_policy(cfg, dest))
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(0, module.main(common + ["--assignment-change", str(change_path)],
-                                                    owner_source_verifier=verify_owner_source))
+                                                    owner_source_verifier=verify_owner_source, store=self.store))
             state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(3, state["tier_assignments"]["AWF-101"]["tier"])
             self.assertIn("Tier: 3", state["pr_assignments"]["48"]["body"])
