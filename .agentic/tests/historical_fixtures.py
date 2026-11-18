@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 
-FIXTURES = Path(__file__).resolve().parent / 'fixtures/historical'
+FIXTURES = Path(__file__).resolve().parent / 'fixtures/history'
 
 
 def fixture_index():

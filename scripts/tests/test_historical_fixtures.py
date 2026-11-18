@@ -81,6 +81,15 @@ def unexpected_pinned_git_reads(path, source):
 
 
 class HistoricalFixtureTests(unittest.TestCase):
+    def test_fixture_paths_stay_within_existing_tracked_path_limit(self):
+        # Nested clones on Windows hosts hit the 260-character limit.
+        paths = sorted(path.relative_to(ROOT).as_posix()
+                       for path in fixtures.FIXTURES.rglob('*') if path.is_file())
+        self.assertTrue(paths)
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertLessEqual(len(path), 103)
+
     def test_included_sources_match_pins_and_index_identities_are_complete(self):
         for entry in fixtures.fixture_index()['sources']:
             with self.subTest(commit=entry['commit'], path=entry['path']):
