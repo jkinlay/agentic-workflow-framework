@@ -1314,6 +1314,18 @@
           "minItems": 0,
           "uniqueItems": true
         },
+        "shared_owner_automation_actor_id": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "production_posting_collector_ids": {
           "type": "array",
           "items": {

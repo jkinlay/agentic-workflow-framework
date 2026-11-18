@@ -165,6 +165,7 @@ def config(example=True, routing_policy=None, *, fresh_defaults=False):
             "require_critic_approval_current_tuple": True, "require_specialist_reviews_current_tuple": True, "require_required_ci_green": True,
             "require_zero_unresolved_blocking_threads": True, "invalidate_on_head_change": True, "invalidate_on_target_base_change": True,
             "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1,
+            "shared_owner_automation_actor_id": None,
             **({"production_posting_collector_ids": ["github-production-posting-collector"]} if example else {})},
         "controller": {**{key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
                        "status_cadence_seconds": 600},

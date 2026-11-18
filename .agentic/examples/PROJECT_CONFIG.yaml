@@ -432,6 +432,7 @@
       1001
     ],
     "high_risk_owner_quorum": 1,
+    "shared_owner_automation_actor_id": null,
     "production_posting_collector_ids": [
       "github-production-posting-collector"
     ]
