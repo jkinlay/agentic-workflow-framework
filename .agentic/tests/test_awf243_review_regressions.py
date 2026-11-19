@@ -3,6 +3,7 @@ import copy
 import unittest
 from unittest.mock import patch
 from source_only import COMMITTED_GIT_REASON, committed_git_tuple, skip_unless_source_repo
+from historical_fixtures import historical_bytes
 
 import test_jira_mutation_scope as scope_fixture
 from test_jira_mutation_scope import Jira, snapshot, KEY, NOW
@@ -2352,20 +2353,18 @@ class PreNineCliRegressions(unittest.TestCase):
         return ContinuousControllerStore(self.state, ['A']).jira_operations(KEY)
 
     def historical(self, revision, path, *, module=False):
-        import subprocess
         import types
-        result = subprocess.run(['git', '-C', str(scope_fixture.ROOT), 'show', revision + ':' + path],
-            capture_output=True, check=True, timeout=30)
+        raw = historical_bytes(revision, path)
         if not module:
             import shutil
             target = self.root / '.agentic/adapters' / (revision + '-adapter.py')
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(scope_fixture.ROOT / '.agentic/schemas', self.root / '.agentic/schemas', dirs_exist_ok=True)
-            target.write_bytes(result.stdout)
+            target.write_bytes(raw)
             return target
         value = types.ModuleType('agentic._awf243_historical_controller')
         value.__package__ = 'agentic'
-        exec(compile(result.stdout, path, 'exec'), value.__dict__)
+        exec(compile(raw, path, 'exec'), value.__dict__)
         return value
 
     def test_pre9_healthy_multistatus_history_succeeds_in_both_response_orders(self):
@@ -2375,14 +2374,12 @@ class PreNineCliRegressions(unittest.TestCase):
                 self.assertEqual('SUCCEEDED', self.lifecycle()['record']['status'])
                 self.assertEqual(1, len(self.posted))
 
-    @skip_unless_source_repo()
-    @unittest.skipIf(committed_git_tuple(scope_fixture.ROOT) is None, COMMITTED_GIT_REASON)
     def test_pre9_historical_unknown_never_hides_external_transitions_in_either_order(self):
         for newest in (False, True):
             with self.subTest(newest_first=newest):
                 self.fixture(newest)
                 self.histories = []
-                prior_adapter = self.historical('ee33a92f', '.agentic/adapters/reference_controller_adapter.py')
+                prior_adapter = self.historical('ee33a92f0e49c82ad96f3e46ce9c8d2f178f61d6', '.agentic/adapters/reference_controller_adapter.py')
                 self.fail_readback = True
                 self.assertEqual('UNKNOWN', self.lifecycle(adapter=prior_adapter)['record']['status'])
                 self.fail_readback, self.history_problem = False, 'external'

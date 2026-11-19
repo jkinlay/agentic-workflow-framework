@@ -16,7 +16,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from source_only import AWF_SOURCE_REPOSITORY, COMMITTED_GIT_REASON, ROOT, committed_git_tuple
+from source_only import ROOT
+from historical_fixtures import historical_bytes
 from agentic import ValidationError
 from agentic.canonical import canonical
 from agentic.reporting.runtime import reporting_cycle, reporting_status
@@ -458,8 +459,8 @@ class ReportingE2Regressions(unittest.TestCase):
 
     def merge_base_controller(self):
         root = Path(__file__).resolve().parents[2]
-        raw = subprocess.run(['git', 'show', 'a3336b8990a9e59985f67bf69d41846b898db57b:'
-            '.agentic/lib/agentic/continuous_controller.py'], cwd=root, check=True, capture_output=True).stdout
+        raw = historical_bytes('a3336b8990a9e59985f67bf69d41846b898db57b',
+            '.agentic/lib/agentic/continuous_controller.py')
         module = types.ModuleType('agentic._reporting_rollback')
         module.__package__ = 'agentic'
         module.__file__ = str(root / '.agentic/lib/agentic/continuous_controller.py')
@@ -467,8 +468,6 @@ class ReportingE2Regressions(unittest.TestCase):
         return module.ContinuousControllerStore
 
     def test_rollback_merge_base_never_consumes_report_as_legacy_digest(self):
-        if not AWF_SOURCE_REPOSITORY or committed_git_tuple(ROOT) is None:
-            self.skipTest(COMMITTED_GIT_REASON)
         self.cycle('2026-11-07T17:00:00Z')
         controller = self.merge_base_controller()
         older = controller(self.helper.path, ['A', 'B', 'C'], cadence_seconds=3600)
@@ -479,8 +478,6 @@ class ReportingE2Regressions(unittest.TestCase):
         self.assertTrue(self.status()['reports'])
 
     def test_pre_release_report_rows_relocate_additively_with_attempts_intact(self):
-        if not AWF_SOURCE_REPOSITORY or committed_git_tuple(ROOT) is None:
-            self.skipTest(COMMITTED_GIT_REASON)
         from agentic.continuous_controller import ContinuousControllerStore
         self.cycle('2026-11-07T17:00:00Z')
         report = next(r for r in self.status()['reports'] if r['kind'] == 'eod')

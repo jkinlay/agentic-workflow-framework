@@ -161,8 +161,6 @@ class OperatorRecoveryTests(unittest.TestCase):
             self.lifecycle('BLOCK')
         self.assertEqual(1, len(self.posted))
 
-    @regressions.skip_unless_source_repo()
-    @unittest.skipIf(committed_git_tuple(ROOT) is None, COMMITTED_GIT_REASON)
     def test_genuine_f71_pending_identity_recheck_does_not_rollback_healthy_adoption(self):
         self.fixture()
         # Execute the historical producer to create its real pre-pin database.
