@@ -35,6 +35,25 @@
     },
     "evidence": [
       "urn:awf:UNFILLED"
-    ]
+    ],
+    "shared_owner_automation_account": true,
+    "owner_policy_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "accepted_owner_policy": {
+      "status": "OBSERVED",
+      "shared_owner_automation_actor_id": 1,
+      "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "workflow_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "default_branch_ref": "UNFILLED",
+      "default_branch_commit": "0000000000000000000000000000000000000000",
+      "warnings": [
+        {
+          "path": "$.merge_gate.shared_owner_automation_actor_id",
+          "code": "SHARED_OWNER_AUTOMATION_ACCOUNT",
+          "message": "UNFILLED"
+        }
+      ],
+      "execution_authority": false
+    }
   }
 }
