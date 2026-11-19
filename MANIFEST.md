@@ -138,13 +138,13 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/path_containment.py` | `cd1747ad478c701ddf156ef242ee4a5b879f8ee6fb00ea7b64eb593551204a56` |
 | `.agentic/lib/agentic/planning.py` | `be009b12137ba906045bc4049de64de7ca9b2b07bf380fbff1d10dd2e9ba5443` |
 | `.agentic/lib/agentic/planning_graph.py` | `c16ecb51b8ce16ec24508ab728af3bcb55be6d358e6962a545a8236fde8a6239` |
-| `.agentic/lib/agentic/policy.py` | `0d3516af5ff5045e50f9d260758243289d0de21d3f1868355dde36d77e38d5f5` |
+| `.agentic/lib/agentic/policy.py` | `447fc04fa64c8b4d53fbcbbc22020bba73d7a72bf9fd02c593d5cc79f4dd8944` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/preservation_metadata.py` | `2c444dbe1dba34f8813822c3f7ad75a7bb6d8ce0ecfdae3a0ac41849b0946cbc` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
 | `.agentic/lib/agentic/protected_settings.py` | `7bbdea5685af5efad710b3ef2e7fb979521bdbd69c0fa41134b76bab3bd922c3` |
 | `.agentic/lib/agentic/provenance.py` | `1f5fafd6f76726edefae97869818a31b8e2e913cd32f3bcc9e90cb3832961ac3` |
-| `.agentic/lib/agentic/provider_identity.py` | `5a9e3e4b9a525edfcca125fcd902152d22639e4e43e39ac51943a772a4ca1271` |
+| `.agentic/lib/agentic/provider_identity.py` | `3e4d3787169b2cbeefd8282bf94665de4e404a764b964e0ac7bdd2df1a2dfa4d` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
 | `.agentic/lib/agentic/providers/github_review_host.py` | `53c3e27ecf653a8a4307d9d8cb9f43cf8805f34fff5ca8574a32f23ec97c4a59` |
@@ -449,6 +449,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf266_xattr.py` | `7ed8d4a9466a82eeb87705bf2b4d6de46700320a9fc00e437ad1a4585fb6c479` |
 | `.agentic/tests/test_awf275_reftable_gate.py` | `967a0ca1317bdde3077acbb442e076e179130b7feac80a4e604f1bc1a40adb40` |
 | `.agentic/tests/test_awf307_intake_owner_policy.py` | `2cc62d68238a96a50bc6b680069ecb0813d5568ac11ecdc254f887de7f8a5898` |
+| `.agentic/tests/test_awf307_policy_owner_policy.py` | `1de74b665a3a3eb5b920791a7320910159d1ae107b074b9b46fe29a920246a0b` |
+| `.agentic/tests/test_awf307_provider_owner_policy.py` | `4600afc6785199ac90948f912cdcf4b552e85ff8162b868e001061430a7eba33` |
 | `.agentic/tests/test_awf307_shared_owner_policy.py` | `580872aaf07773c03ad74a5e446b6096514370780c564ce7bc9582322ddf6ff1` |
 | `.agentic/tests/test_awf307_stream_owner_policy.py` | `03cb1324c20048d10085261d1b660f57f4c2a7fcead9af9fb300fce14b67dd48` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |

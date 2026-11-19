@@ -65,7 +65,12 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
     return inspect(config, workflow, contracts, project_instructions=project_instructions)
 
 
-def validate_config(config, workflow, contracts):
+def validate_config(config, workflow, contracts, *, accepted_policy_root=None, return_report=False):
+    """Admit policy; only a host-root observation can enable shared identity.
+
+    Existing callers receive the policy digest and keep global separation.
+    Enrolled callers can retain the annotated report with return_report=True.
+    """
     tier3_cap = (config.get("execution", {}).get("risk_tiers", {})
                  .get("tier3_review", {}).get("max_rounds"))
     if tier3_cap is not None and (type(tier3_cap) is not int or tier3_cap > 3):
@@ -80,8 +85,22 @@ def validate_config(config, workflow, contracts):
     if (config["merge_gate"]["trusted_owner_ids"]
             and config["github"].get("expected_actor_id") is not None):
         from .authorization import trusted_owner_ids
-        trusted_owner_ids(config)
-    return report['policy_sha256']
+        from .shared_owner_policy import configured_shared_owner_actor_id, observe_accepted_owner_policy
+        shared = configured_shared_owner_actor_id(config)
+        if shared is None or accepted_policy_root is None:
+            trusted_owner_ids(config)
+    if accepted_policy_root is not None:
+        from .shared_owner_policy import configured_shared_owner_actor_id, observe_accepted_owner_policy
+        shared = configured_shared_owner_actor_id(config)
+        observation = observe_accepted_owner_policy(accepted_policy_root, config, workflow, contracts,
+                                                    policy_sha256=report['policy_sha256'])
+        if observe_accepted_owner_policy(accepted_policy_root, config, workflow, contracts,
+                policy_sha256=report['policy_sha256']) != observation:
+            raise ValidationError("Shared-owner policy changed before policy admission")
+        if shared is not None:
+            report.update(shared_owner_automation_account=True,
+                          owner_policy_sha256=observation['policy_sha256'], accepted_owner_policy=observation)
+    return report if return_report else report['policy_sha256']
 
 
 def policy_hash(config, workflow):
