@@ -360,6 +360,11 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/work-dispatch.yaml` | `b5f2fc50348d04c7c1b217f3d842941df02833f8c9398bdfee3a23ae3f92cfdc` |
 | `.agentic/templates/worker-result.yaml` | `d770c07863bcd51bbb3dd1d913251e07e13099fd41580b2c8597c1f799bda569` |
 | `.agentic/tests/fixtures/fake_host_process.py` | `951bcc4f2702277b58d709083415e5f365fece7713122675830763032c1a9897` |
+| `.agentic/tests/fixtures/history/blobs/01a922aa81ad494fb15553929c1291023e8ae33fb17bb6d63d16412065153507` | `01a922aa81ad494fb15553929c1291023e8ae33fb17bb6d63d16412065153507` |
+| `.agentic/tests/fixtures/history/blobs/a826f8bd39ee6672d9f720d78cb0b2f5e455ebe091cb39cc76e80781a1a6aaf8` | `a826f8bd39ee6672d9f720d78cb0b2f5e455ebe091cb39cc76e80781a1a6aaf8` |
+| `.agentic/tests/fixtures/history/blobs/de992283a3e7552faceb89be83a25da22b86957fe550d123f7215d94ad6ccf58` | `de992283a3e7552faceb89be83a25da22b86957fe550d123f7215d94ad6ccf58` |
+| `.agentic/tests/fixtures/history/blobs/fb2ce431483a2473d04aa525b1b3a93d4378e5fef7a209606c3fc39f5a28c448` | `fb2ce431483a2473d04aa525b1b3a93d4378e5fef7a209606c3fc39f5a28c448` |
+| `.agentic/tests/fixtures/history/index.json` | `ebc54a4c90f068a016b165afd41901789740c7d86aeaf06e3dd8c67c4e4bb2ab` |
 | `.agentic/tests/fixtures/planning/step1.json` | `6ea62e40eb57cc803bd0edc10871cedca7c8e7b40e121bc66bd54b752541f150` |
 | `.agentic/tests/fixtures/planning_graph/hand_computed.json` | `1aec321996df8258e7b731567efd0c589a6e54c7bc808d49d696317126e01176` |
 | `.agentic/tests/fixtures/routing/bad-schema-version.yaml` | `2075218e2cb5fc6b5c6c30fbab810becf6afeb9d171faacc931f3653639a4773` |
@@ -371,6 +376,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/fixtures/routing/unknown-model.yaml` | `e5b2ffc2fcddce5d2a35b3a264f0dff6c3d7dc99aa8e2c75ae838426aaa1b2c5` |
 | `.agentic/tests/fixtures/routing/unsupported-effort.yaml` | `4647c551b8fd51fdf0adaf2cd34159a1ff0a05a6c2983e7a5a2717f5fb976958` |
 | `.agentic/tests/fixtures/routing/valid.yaml` | `912e0bb2adc7d2800d2a674f229e109009a9bd7aec06ee9eda55349c206b50e2` |
+| `.agentic/tests/historical_fixtures.py` | `a6c8a01437bf9a5163e7e63d424ec36803a9a076690a91039696a72d88e32298` |
 | `.agentic/tests/reporting_pr_fixtures.py` | `6f078f1d9f372b2fd01f90814a9e8acccb932d3da451c7f3e88104f0ccd06814` |
 | `.agentic/tests/retained_directory_expectations.py` | `214a228669b21feca61605f8dd0b9e565c25abb7bfb0264cd841157b27ee3e09` |
 | `.agentic/tests/review_admission_fixture.py` | `4ece32c0f91c1f1c7b4a6ec6f5789c046121ae59dc720075477925acea22389f` |
@@ -426,9 +432,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf242_settings_pr.py` | `c3b39fc8e53b5b606c7d4a4b7989ab4d8091363bcba72f5c9ff61f87a7011738` |
 | `.agentic/tests/test_awf242_settings_second_look.py` | `c9ff25cb9e539a688841bd1ebaddc866ec749e75f46c43de831621186875a180` |
 | `.agentic/tests/test_awf243_jira_protocol.py` | `9971b366f0a0d19bd63ada508c81ecd2dcd4c37fb18eecdf162bfba5990dc6a7` |
-| `.agentic/tests/test_awf243_operator_recovery.py` | `2afc947ba78536abb7162d81ad8daa85562f3b612ed55bfcccd96f026716c7cd` |
+| `.agentic/tests/test_awf243_operator_recovery.py` | `a62004b944b58b5220472924c969a3d45a7928d2185d8ea5a815a19563834205` |
 | `.agentic/tests/test_awf243_owner_closure_http.py` | `6b88f6ec69cde50082e603f2b317f28c912b7326e744f12ccf04f7b7b10812e5` |
-| `.agentic/tests/test_awf243_review_regressions.py` | `bdf8362ec4f4d7a9fdba606a1ad8aa24dda644a631dcd49a5df20a8b18e34524` |
+| `.agentic/tests/test_awf243_review_regressions.py` | `62a7e3be809fd870bef08c504745ec6c736a0b4e75ee7036d0a3f3bd9e3c47d1` |
 | `.agentic/tests/test_awf244_calendar.py` | `56bbede3fa9c45c8cc1e55810afe6830f1a02d7261f753d20227d98f74e563d3` |
 | `.agentic/tests/test_awf244_collapsed_windows.py` | `dc65fe88516c8cd6f23f45c05aaebb5fa24f9a53daccb7c6f892c6d2e8ad77c1` |
 | `.agentic/tests/test_awf244_controller_wiring.py` | `3b5da7fc45bdd6cc330ea4eb74d22306952ef09b2c22367a8ae62de04a27b38f` |
@@ -545,7 +551,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_reporting_e15_regressions.py` | `bf9635f8f6f3ee0852d26156954b2bb77025bca33c0cb17a8bcfd25c8fc6cb07` |
 | `.agentic/tests/test_reporting_e16_regressions.py` | `bb9a2620053db55256583edd5d1aba408373fa3cc7787ef084abe10784af107d` |
 | `.agentic/tests/test_reporting_e17_regressions.py` | `f57e71f438f285a7ee732b92fbcf52f4ba2dd098a1fe15e647be3804ab73aeb1` |
-| `.agentic/tests/test_reporting_e2_regressions.py` | `840e7712fec184c31327757eba153d965ea56e0b6b98aea19725df568778b2ad` |
+| `.agentic/tests/test_reporting_e2_regressions.py` | `e06558aeb3b42b83c0f9596a49191621c6d9261290c1e70ef3304d5ff93b058c` |
 | `.agentic/tests/test_reporting_e3_regressions.py` | `2bc1548b45f0f7b411b92b834fbe57dc78b864842b73b4503e02307dc3c6a079` |
 | `.agentic/tests/test_reporting_e4_regressions.py` | `f2f463dfb571039cfb44d4bb1c093ea3ac5dbe714b208882a127f1d953f7bf04` |
 | `.agentic/tests/test_reporting_e5_regressions.py` | `86dfe4e00d3c37b3067e23a69394b4f789425cdd82c61639e2e1ef749304eb8c` |
@@ -624,7 +630,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
 | `.agentic/workflow-version.yaml` | `2fc7aaae4da5627bd781ec1210e968dbaa93f4a11f3550c764cbc6cac4f41255` |
 | `.agentic/workflow.yaml` | `e3f0feb768f4c2823095768548082f10222e5b94eb7f134d2f06224ff2255db0` |
-| `.gitattributes` | `8d550a32a0754956bef789a454ce284e9ad34e0e7a77fdbf6e90c3350e702f31` |
+| `.gitattributes` | `12b23d685554569302fe6352e4d00f07fe7105a8bad5c8ab32d9687e2fcd6355` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
 | `.github/workflows/ci.yml` | `73f1a10ff3bb2638ee472ebb6be836936c69b3f61fedb845e7092e7a650bb0d9` |
@@ -682,8 +688,10 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `VERSION` | `d2f636954f2853db41fd4852001b207d595890b13bc1fe89305668c5a287052d` |
 | `docs/AWF-1.9.2-Showcase-Presentation.html` | `e22beff2c81e6672bb171a824d53755efcda0b13d2090e30a42b1b7989b8b57a` |
 | `docs/AWF-1.9.2-Speaker-Script.md` | `1defc7b9c2e59e59d62a65f54883f81076bf67a1fa418b409c4f65af370b1f3b` |
+| `docs/AWF-1.9.5-Showcase-Presentation.html` | `a4586b58a00e8f64729f604a4b9f21230873daa01a10f7fba899065d29b0597e` |
 | `docs/AWF-1.9.5-User-Interface.md` | `2bc6448fbf0af8d9b76a83c9c24df8bd47ca3352f2880b1259fa8dc1f4a1b336` |
 | `docs/AWF-1.9.5-Whats-New.md` | `9aa3be89cbd4b3fd8644a2eeb5966757daf0bba74a30dcb8a05a12ebab5499ae` |
+| `docs/AWF-1.9.6-Showcase-Presentation.html` | `77242c97e296e3921effb98ec5639e1cdc46f0ea46f102edf5e25aa2dc50db70` |
 | `docs/release-consumer-bytes.md` | `f0c8e38967966cc32e9d2bacc2ab9951624d0faf32367fcb1a47750f131cb8b5` |
 | `docs/runbook/00-runbook-introduction.md` | `75a442d54b01878d933d3e71eaa8556fb94b407b5a30666c6b84fc28d8325589` |
 | `docs/runbook/01-runbook-prerequisites.md` | `a4620b3898181d9e7aa1cf6dc1ebb6f2a7a6c2cbfd9e30fc385da34fb5e587c2` |
@@ -817,6 +825,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_generate_examples_status_report.py` | `00d899906ad02e35b5170bb28a9485de365e41b1d7c86df2f12f58288e956989` |
 | `scripts/tests/test_generate_examples_ticket_plan.py` | `6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2` |
 | `scripts/tests/test_generate_workflow_blob_sha.py` | `8b1bb85282a8ca5a7df1fa7c5c1b15a863ebdc5596746153ae23e47acab38cd6` |
+| `scripts/tests/test_historical_fixtures.py` | `a561ba169dc49a5e102231ec66ac8011a8a915d2ab78a2e11a9c9ed1cdbbd590` |
 | `scripts/tests/test_installed_adopter_configuration.py` | `31b63336c98133d1833b4eee174354e6575ac95967d4b82e9cc43947556f638a` |
 | `scripts/tests/test_installed_origin_ruling.py` | `25c526e8aa336b44138bf71f72c6a8af0c974b4c02392d8c05b06db7829bc87c` |
 | `scripts/tests/test_installed_platform_rulings.py` | `7b93760b01f530629147626f8f1a15456d82f1ddca1361e5af7ea265d5f8cdbd` |
