@@ -1,0 +1,38 @@
+{
+  "format": "awf-historical-test-fixtures-1",
+  "note": "AWF-308: vendor historical test sources so squash merges cannot make required objects unreachable.",
+  "sources": [
+    {
+      "commit": "a3336b8990a9e59985f67bf69d41846b898db57b",
+      "path": ".agentic/lib/agentic/continuous_controller.py",
+      "blob": "e333a81c20354adc71e54ed18f8a042fdfbffa5e",
+      "sha256": "de992283a3e7552faceb89be83a25da22b86957fe550d123f7215d94ad6ccf58",
+      "length": 261813,
+      "fixture": "blobs/de992283a3e7552faceb89be83a25da22b86957fe550d123f7215d94ad6ccf58"
+    },
+    {
+      "commit": "ee33a92f0e49c82ad96f3e46ce9c8d2f178f61d6",
+      "path": ".agentic/adapters/reference_controller_adapter.py",
+      "blob": "68200f1aec2ddc406e2f96eea35379d925af2fd2",
+      "sha256": "fb2ce431483a2473d04aa525b1b3a93d4378e5fef7a209606c3fc39f5a28c448",
+      "length": 128315,
+      "fixture": "blobs/fb2ce431483a2473d04aa525b1b3a93d4378e5fef7a209606c3fc39f5a28c448"
+    },
+    {
+      "commit": "f71ee70f32737bfb02b9b09b1e2e420529e0cc63",
+      "path": ".agentic/lib/agentic/continuous_controller.py",
+      "blob": "b881c2d004dde2d673d327f416e4de68026615e8",
+      "sha256": "01a922aa81ad494fb15553929c1291023e8ae33fb17bb6d63d16412065153507",
+      "length": 219679,
+      "fixture": "blobs/01a922aa81ad494fb15553929c1291023e8ae33fb17bb6d63d16412065153507"
+    },
+    {
+      "commit": "f71ee70f32737bfb02b9b09b1e2e420529e0cc63",
+      "path": ".agentic/adapters/reference_controller_adapter.py",
+      "blob": "45b0ef0d6afbf91b62df96bdc47ebf8eec9b6a1d",
+      "sha256": "a826f8bd39ee6672d9f720d78cb0b2f5e455ebe091cb39cc76e80781a1a6aaf8",
+      "length": 122126,
+      "fixture": "blobs/a826f8bd39ee6672d9f720d78cb0b2f5e455ebe091cb39cc76e80781a1a6aaf8"
+    }
+  ]
+}
