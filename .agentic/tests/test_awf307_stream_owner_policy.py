@@ -62,7 +62,7 @@ class StreamOwnerPolicyTests(unittest.TestCase):
     def policy_reads(self):
         """Synthetic immutable Git boundary; never stub the policy decision."""
         def git(root, *arguments, **kwargs):
-            self.assertEqual(Path(root), self.project)
+            self.assertEqual(Path(root).resolve(), self.project.resolve())
             if arguments[0] == "rev-parse":
                 return self.commit.encode()
             if arguments[0] == "ls-tree":

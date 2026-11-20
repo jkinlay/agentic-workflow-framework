@@ -57,7 +57,7 @@ class IntakeOwnerPolicyTests(unittest.TestCase):
     def policy_reads(self):
         """Replace immutable Git I/O only; run the real policy decision."""
         def git(root, *args, **kwargs):
-            self.assertEqual(Path(root), self.project)
+            self.assertEqual(Path(root).resolve(), self.project.resolve())
             if args[0] == "rev-parse":
                 return self.commit.encode()
             if args[0] == "ls-tree":

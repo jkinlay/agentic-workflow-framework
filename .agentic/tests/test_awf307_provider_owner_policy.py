@@ -60,7 +60,7 @@ class ProviderPolicyFixture(unittest.TestCase):
         reads = 0
         def git(root, *args, **kwargs):
             nonlocal reads
-            self.assertEqual(Path(root), self.project)
+            self.assertEqual(Path(root).resolve(), self.project.resolve())
             if args[0] == "rev-parse":
                 reads += 1
                 return ("b" * 40 if drift and reads > 2 else self.commit).encode()
