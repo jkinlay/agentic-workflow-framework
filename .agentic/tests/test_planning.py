@@ -13,15 +13,26 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic import ValidationError
 from agentic.canonical import fingerprint, load, sha256
 from agentic.contracts import Contracts
+from agentic.model_routing import policy_from_config
 from agentic.operating import operating_ceiling, stream_labels, validate_operating
 from agentic import planning
+import shipped_defaults
 
 NOW = "2026-10-12T12:00:00Z"
 HOST_EVIDENCE = {}
 
 
+def shipped_config():
+    value = shipped_defaults.project_config()
+    # Carry the resolved policy with the fixture: planning/controller consumers
+    # revalidate snapshots after this helper's routing context has exited.
+    with shipped_defaults.shipped_routing():
+        value["execution"]["model_routing"] = policy_from_config(value)
+    return value
+
+
 def config(max_lanes=12):
-    value = load(ROOT / ".agentic/defaults/PROJECT_CONFIG.yaml")
+    value = shipped_config()
     value["execution"]["max_parallel_tickets"] = 12
     value["execution"]["max_lanes"] = max_lanes
     value["execution"]["host_broker"] = {"enabled": False, "max_workers": 12}
@@ -132,7 +143,7 @@ class SchemaLaneTests(unittest.TestCase):
         cls.contracts = Contracts(ROOT / ".agentic/schemas")
 
     def inputs(self, count=12):
-        cfg = load(ROOT / ".agentic/defaults/PROJECT_CONFIG.yaml")
+        cfg = shipped_config()
         cfg["execution"]["max_parallel_tickets"] = 12
         cfg["execution"]["max_lanes"] = 12
         cfg["execution"]["host_broker"].update(enabled=False, max_workers=12)

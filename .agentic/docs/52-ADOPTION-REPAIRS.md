@@ -14,9 +14,10 @@ Missing host support refuses without fallback. The canonical release defaults
 are immutable `.agentic/defaults/routing.yaml`; an adopter's `.agentic/routing.yaml`
 remains project-owned and is preserved through upgrades. Likewise
 `.agentic/defaults/PROJECT_CONFIG.yaml` and `.agentic/defaults/OPERATING_CONFIG.yaml`
-hold the release's fresh configuration. The installed self-test reads these
-defaults, never the project's own files, so preserved project values do not
-fail it.
+hold the release's fresh configuration. Installed self-tests use these defaults
+for fresh-configuration fixtures and bind planning snapshots to shipped routing.
+Project launch-surface checks still read the adopter's declared
+scripts and validate the live tree.
 
 Fresh bootstrap consumes the packaged operating template. Existing operating
 bytes, audit history, pins and reviewer allocation are retained. Missing

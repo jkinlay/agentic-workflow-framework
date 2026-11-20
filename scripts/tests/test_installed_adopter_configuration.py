@@ -24,7 +24,8 @@ from agentic.child_process import child_env  # noqa: E402
 from agentic.contracts import Contracts  # noqa: E402
 from agentic.installer import install  # noqa: E402
 from agentic.launch_surfaces import validate_repository_launch_surfaces  # noqa: E402
-from agentic.model_routing import load_routing  # noqa: E402
+from agentic.model_routing import load_routing, policy_from_config, routing_context  # noqa: E402
+from agentic.operating import default_operating, validate_operating  # noqa: E402
 
 # Every installed module or case that read ROOT's live configuration or tree.
 AFFECTED = (
@@ -38,6 +39,8 @@ AFFECTED = (
     "test_launch_surfaces",
     "test_upgrade_source_independence",
     "test_controller_switches_195",
+    "test_continuous_controller_planning",
+    "test_routing_cli",
     "test_awf154_large_file_allowances",
     "test_planning",
     "test_streams",
@@ -48,7 +51,8 @@ AFFECTED = (
     ".test_cycle_forwards_injected_review_ports_without_requiring_a_transport",
     "test_shipped_defaults",
 )
-ADOPTER_MODELS = ["gpt-6-luna", "gpt-6.1-sol"]
+ADOPTER_MODELS = ["gpt-6.1-sol"]
+ADOPTER_EFFORT = "medium"
 SWITCHES = ("dispatch_enabled", "auto_dispatch", "auto_request_critic",
             "auto_resume_amendments", "auto_transition_jira")
 SUITE_TIMEOUT_SECONDS = 1800
@@ -69,16 +73,27 @@ def adopt_non_default_configuration(project):
     config["jira"]["status_map"].update(in_review="Code Review", done="Resolved")
     for role in config["execution"]["roles"].values():
         role["approved_model_ids"] = list(ADOPTER_MODELS)
+        role.update(model=ADOPTER_MODELS[0], reasoning_effort=ADOPTER_EFFORT)
     config["controller"].update(dict.fromkeys(SWITCHES, True))
+    config["execution"]["model_routing"]["escalation"]["effort_ceiling"] = ADOPTER_EFFORT
     _write(config_path, config)
 
     routing_path = project / ".agentic/routing.yaml"
     routing = _read(routing_path)
-    routing["catalog"] = {model: routing["catalog"][model] for model in ADOPTER_MODELS}
+    routing["catalog"] = {model: {"efforts": [ADOPTER_EFFORT]} for model in ADOPTER_MODELS}
+    pair = {"model": ADOPTER_MODELS[0], "effort": ADOPTER_EFFORT}
+    for tier in routing["tiers"].values():
+        for role in tier:
+            tier[role] = dict(pair)
+    for role in routing["role_defaults"]:
+        routing["role_defaults"][role] = dict(pair)
+    for field in ("simple_worker", "review_floor", "risk_route"):
+        routing[field] = dict(pair)
     _write(routing_path, routing)
 
     operating_path = project / "OPERATING_CONFIG.yaml"
-    operating = _read(operating_path)
+    with routing_context(routing_path.read_bytes(), routing_path):
+        operating = default_operating(policy_from_config(config), count=12)
     operating.pop("operating_calendar")  # A legacy upgrade retains no calendar.
     _write(operating_path, operating)
 
@@ -109,6 +124,13 @@ class InstalledAdopterConfigurationTests(unittest.TestCase):
             # accepts it, routing loads, and the declared scripts validate.
             Contracts(project / ".agentic/schemas").validate("project-config", config)
             self.assertEqual(ADOPTER_MODELS, list(load_routing(project / ".agentic/routing.yaml")["catalog"]))
+            with routing_context((project / ".agentic/routing.yaml").read_bytes(), "adopter fixture"):
+                snapshot = validate_operating(_read(project / "OPERATING_CONFIG.yaml"), config)
+            self.assertEqual(ADOPTER_EFFORT, snapshot.config["streams"]["A"]["worker"]["reasoning_effort"])
+            shipped_routing = _read(project / ".agentic/defaults/routing.yaml")
+            adopter_routing = _read(project / ".agentic/routing.yaml")
+            self.assertNotEqual(shipped_routing["catalog"], adopter_routing["catalog"])
+            self.assertNotEqual(shipped_routing["role_defaults"], adopter_routing["role_defaults"])
             self.assertNotIn("operating_calendar", _read(project / "OPERATING_CONFIG.yaml"))
             surfaces = validate_repository_launch_surfaces(project)
             self.assertEqual(1, surfaces["project_non_python_scripts"])

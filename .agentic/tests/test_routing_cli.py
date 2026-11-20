@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
 from routing_fixtures import fixture_policy
+import shipped_defaults
 from agentic.model_routing import default_policy, load_routing
 from agentic.canonical import canonical
 from agentic.operating import set_operating
@@ -298,7 +299,7 @@ class RoutingCLITests(unittest.TestCase):
     def test_routing_cli_runs_from_installed_directory_layout(self):
         installed = self.root / "installed"
         shutil.copytree(ROOT / ".agentic/lib", installed / ".agentic/lib")
-        shutil.copy2(ROOT / ".agentic/routing.yaml", installed / ".agentic/routing.yaml")
+        shutil.copy2(shipped_defaults.ROUTING, installed / ".agentic/routing.yaml")
         installed_script = installed / ".agentic/scripts/route_model.py"
         installed_script.parent.mkdir()
         shutil.copy2(CLI, installed_script)
