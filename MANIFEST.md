@@ -51,7 +51,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/36-FIVE-SLOT-ACCELERATION.md` | `5e4f105d562d7124b7844accf2cfbac79583634ff8b04ee2dc06bb55c1576402` |
 | `.agentic/docs/37-PRIVATE-DENY-SCAN.md` | `54aee43783e6bed3fa25a08f4e0e1d28553fed92d7b71c9e97d8f47ab9db0e6c` |
 | `.agentic/docs/37-PUBLICATION-READINESS.md` | `12a475024511589aa4b4291975c3b91dd1663ab4b7075a0dad173cb5bb5298d1` |
-| `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `9ced94f3d985fbf2d146848d8216d55c3837a6944646f65a7555dbdabe218918` |
+| `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `5f1eebf1405db907da20a4b39ef1adeb3626cb5a2dd3867c0e1583ab952e9527` |
 | `.agentic/docs/38-RELEASE-196-QUALIFICATION.md` | `421a32f014fd8cc0671ccdc3bec32e3d77984719f10905b8ae0cbcdde32d76bc` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `ff6df195e544f8fdaaeb867186d03bedd8b77df404a24d16030a9f5ea32822d2` |
 | `.agentic/docs/39-BUDGETING.md` | `c3f81af64c233f115abd728aebde5a93851c8484a4f9c1f30728118fef6c7780` |
@@ -187,7 +187,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/runtime_tags.py` | `f8119f049548c026ea11718a17bf75779ee416905a3732628ee07ee40fc6d1ed` |
 | `.agentic/lib/agentic/safeio.py` | `686f09d2bbd8e1f9d54a9fedd8246ee88913befbb46b15a8051d22389427b313` |
 | `.agentic/lib/agentic/self_test_shards.py` | `87c3976c4ff0619a169960dc600ae3de2c7ad2c3d48cef527afba88e6b51bd3b` |
-| `.agentic/lib/agentic/shared_owner_policy.py` | `9ae6e2cc0056df4487753893d099d4800ef2ecdb155c034c56b1697578028550` |
+| `.agentic/lib/agentic/shared_owner_policy.py` | `28e2405e6dc70e938f0bf457e55dd410770a78cb4326cfbf25a66064fe774f61` |
 | `.agentic/lib/agentic/status_report.py` | `e1125f60932ecfbcec14417c10b89049c480f97b8d5d70b3b1902db4f2a08b22` |
 | `.agentic/lib/agentic/status_report_store.py` | `3139eb482126cfb366c09f7577f3bcf74444e3bf31084de0cc683fcb4e6af210` |
 | `.agentic/lib/agentic/store.py` | `5a8483a56417fab1fd8f6f81216eb8ebddf109af2f327922d7038d813c52a5d1` |
@@ -453,7 +453,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf266_sites.py` | `5317d18d0c5a9827a34833e0bb33577f906c4c5a485b3c56a98f5b5d2322cba2` |
 | `.agentic/tests/test_awf266_xattr.py` | `7ed8d4a9466a82eeb87705bf2b4d6de46700320a9fc00e437ad1a4585fb6c479` |
 | `.agentic/tests/test_awf275_reftable_gate.py` | `967a0ca1317bdde3077acbb442e076e179130b7feac80a4e604f1bc1a40adb40` |
-| `.agentic/tests/test_awf307_shared_owner_policy.py` | `580872aaf07773c03ad74a5e446b6096514370780c564ce7bc9582322ddf6ff1` |
+| `.agentic/tests/test_awf307_shared_owner_policy.py` | `e3d2972045067911d34e27fef6f5dca665809afb48f6f52181c95a62f9f5ce06` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `b458c1df63a738f95d9ef26d2de1d3f815894784ea795bc737bd3acf8c63d0aa` |
 | `.agentic/tests/test_awf36_controller_automation.py` | `5284c37e0a30eb346bf64b1ca1978a354aef4275267382be63667be9ee109d6d` |
@@ -810,6 +810,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_awf266_auxiliary.py` | `572a92fd402cf4be4bb8f0a379ef0f06dd30380c2524bb4d5ecabcceeafbf205` |
 | `scripts/tests/test_awf266_round1.py` | `0dd1bb7351efbb5ee933b15474d176370cad967b11a883395f9326814733bfa8` |
 | `scripts/tests/test_awf275_git_guard.py` | `994113784978377607056a52fa5ada7eab3c93a3d3a3533ee786849d12f01953` |
+| `scripts/tests/test_awf307_shared_owner_source_forms.py` | `92c5c593d73010aa49b26b22bf86e6edf3e089ea2a601b191129ac0ac45174e0` |
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
 | `scripts/tests/test_awf88_resource_ceilings.py` | `593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae` |

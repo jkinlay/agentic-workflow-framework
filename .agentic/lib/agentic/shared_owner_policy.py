@@ -82,14 +82,17 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
         raise ValidationError("Shared-owner default-branch commit is invalid")
     raw_config = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
     raw_workflow = _policy_blob(root, commit, ".agentic/workflow.yaml")
+    raw_instructions = _policy_blob(root, commit, "PROJECT_INSTRUCTIONS.md")
     if raw_config is None or raw_workflow is None:
         raise ValidationError("Shared-owner accepted default-branch policy is missing")
     try:
         accepted = load_yaml(raw_config)
         accepted_workflow = load_yaml(raw_workflow)
+        instructions = raw_instructions.decode("utf-8") if raw_instructions is not None else None
     except (ValidationError, ValueError, TypeError, UnicodeError):
         raise ValidationError("Shared-owner accepted default-branch policy is malformed") from None
-    report = inspect_config(accepted, accepted_workflow, contracts)
+    report = inspect_config(accepted, accepted_workflow, contracts,
+                            project_instructions=instructions)
     if report["status"] != "ACCEPTED":
         raise ValidationError("Shared-owner accepted default-branch policy is invalid")
     digest = report["policy_sha256"]

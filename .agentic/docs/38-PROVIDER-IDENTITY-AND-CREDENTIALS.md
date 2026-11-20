@@ -59,9 +59,9 @@ fails with `IDENTITY_MISMATCH`; an unbound expectation reports
 `IDENTITY_UNBOUND`. Read denial reports `ACCESS_DENIED`. The result names
 expected and observed identities without including token values.
 
-`merge_gate.shared_owner_automation_actor_id`: null by default; positive trusted-owner
-ID matching `github.expected_actor_id`. Diagnostics warn
-`SHARED_OWNER_AUTOMATION_ACCOUNT`; authority behavior remains unchanged. Prefer separate accounts.
+`merge_gate.shared_owner_automation_actor_id`: null; positive trusted-owner
+ID=`github.expected_actor_id`. Warns `SHARED_OWNER_AUTOMATION_ACCOUNT`.
+Reserved this slice: must stay null until owner-authority bindings ship. Prefer separate accounts.
 
 ## Jira identity and binding
 
