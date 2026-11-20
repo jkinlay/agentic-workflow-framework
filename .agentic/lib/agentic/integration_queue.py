@@ -19,6 +19,7 @@ import re
 import sqlite3
 import queue
 import threading
+from urllib.parse import urlsplit
 
 from . import ValidationError
 from .canonical import (MAX_DOCUMENT_BYTES, canonical, fingerprint, fresh, loads,
@@ -78,11 +79,13 @@ def render_owner_instruction(action, epic, payload, issued_at):
     return "AWF1.2 INTEGRATION " + canonical(material).decode("utf-8")
 
 
-def _authority(project_config):
+def _authority(project_config, *, accepted_policy_root=None):
     if project_config is None:
         raise ValidationError("accepted PROJECT_CONFIG authority is required")
-    from .review_completion import review_authority_from_config
-    authority = review_authority_from_config(project_config)
+    # Queue authority has its own enrollment. Do not relax the rootless review
+    # authority helper (or inherit a future exception from that consumer).
+    authority = _queue_provider_authority(project_config)
+    policy = _queue_owner_policy(project_config, accepted_policy_root)
     github = project_config.get("github", {})
     project = project_config.get("project", {})
     checks = project_config.get("validation", {}).get("required_ci_checks", [])
@@ -105,11 +108,61 @@ def _authority(project_config):
         "integration_app_id": integration_app_id,
         "integration_check_contexts": ("awf-integration",),
     })
+    authority.update(deepcopy(policy))
+    _recheck_queue_policy(project_config, accepted_policy_root, policy)
     return authority
 
 
+def _queue_provider_authority(config):
+    """Preserve the review authority's exact owner and provider constraints."""
+    if not isinstance(config, dict):
+        raise ValidationError("Accepted PROJECT_CONFIG must be an object")
+    github, gate = config.get("github"), config.get("merge_gate")
+    if not isinstance(github, dict) or not isinstance(gate, dict):
+        raise ValidationError("Accepted PROJECT_CONFIG lacks GitHub or merge-gate policy")
+    owners = gate.get("trusted_owner_ids")
+    if (not isinstance(owners, list) or not owners or
+            any(type(actor) is not int or actor < 1 for actor in owners) or
+            len(owners) != len(set(owners))):
+        raise ValidationError("Accepted PROJECT_CONFIG needs unique positive trusted owner IDs")
+    host, repository, repository_id = (github.get("host"), github.get("repository"),
+                                       github.get("repository_id"))
+    try:
+        parsed = urlsplit(host)
+        valid = (parsed.scheme == "https" and parsed.hostname and
+                 not (parsed.username or parsed.password or parsed.query or parsed.fragment) and
+                 parsed.path in ("", "/"))
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise ValidationError("Accepted PROJECT_CONFIG has an invalid provider host identity")
+    if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValidationError("Accepted PROJECT_CONFIG has an invalid repository identity")
+    if type(repository_id) is not int or repository_id < 1:
+        raise ValidationError("Accepted PROJECT_CONFIG has no immutable repository ID")
+    return {"trusted_owner_ids": tuple(sorted(owners)), "provider_identity": {
+        "host": host.rstrip("/"), "repository": repository, "repository_id": repository_id}}
+
+
+def _queue_owner_policy(config, root):
+    from .authorization import _authorization_owner_policy
+    from .shared_owner_policy import configured_shared_owner_actor_id
+    # Legacy rootless authority projections did not require automation identity.
+    # That offline shape cannot enable the opt-out.
+    if (root is None and configured_shared_owner_actor_id(config) is None and
+            config.get("github", {}).get("expected_actor_id") is None):
+        return {}
+    return _authorization_owner_policy(config, root)
+
+
+def _recheck_queue_policy(config, root, policy):
+    if _queue_owner_policy(config, root) != policy:
+        raise ValidationError("Shared-owner policy changed before queue authority use")
+
+
 def _accepted_project_config(project_config, selector, registry, *, now,
-                             return_attestation=False, match_expected=True):
+                             return_attestation=False, match_expected=True,
+                             accepted_policy_root=None):
     """Authenticate the exact accepted PROJECT_CONFIG bytes before using them.
 
     The selector chooses only an already registered runtime observer.  Identity,
@@ -123,6 +176,7 @@ def _accepted_project_config(project_config, selector, registry, *, now,
             "accepted project configuration requires a registered Git/provider observer selection")
     if now is not None:
         timestamp(now)
+    policy = _queue_owner_policy(project_config, accepted_policy_root)
     request = {
         "operation": "ACCEPTED_PROJECT_CONFIG",
         "source_identity": {"kind": "installed_project_configuration",
@@ -159,7 +213,8 @@ def _accepted_project_config(project_config, selector, registry, *, now,
     from .lifecycle import definition
     from .policy import validate_config
     contracts = Contracts(Path(__file__).resolve().parents[2] / "schemas")
-    policy_sha256 = validate_config(accepted, definition(), contracts)
+    policy_sha256 = validate_config(accepted, definition(), contracts,
+                                    accepted_policy_root=accepted_policy_root)
     acceptance = result["acceptance"]
     if (not isinstance(acceptance, dict) or
             set(acceptance) != {"status", "receipt_id", "workflow_version"} or
@@ -190,6 +245,10 @@ def _accepted_project_config(project_config, selector, registry, *, now,
                        "repository_id": result["repository_id"],
                        "ref": result["ref"], "blob_sha": result["blob_sha"],
                        "acceptance_receipt_id": acceptance["receipt_id"]}
+        attestation.update(deepcopy(policy))
+    if _queue_owner_policy(accepted, accepted_policy_root) != policy:
+        raise ValidationError("Shared-owner policy changed during queue configuration observation")
+    _recheck_queue_policy(project_config, accepted_policy_root, policy)
     accepted = deepcopy(accepted)
     return (accepted, attestation) if return_attestation else accepted
 
@@ -210,11 +269,11 @@ def _evidence_max_age(project_config):
     return value
 
 
-def _authority_projection(project_config):
+def _authority_projection(project_config, *, accepted_policy_root=None):
     """Hash only authority-bearing values so unrelated accepted changes can rotate safely."""
-    authority = _authority(project_config)
+    authority = _authority(project_config, accepted_policy_root=accepted_policy_root)
     jira = project_config.get("jira", {})
-    return {
+    projection = {
         "project_id": authority["project_id"],
         "provider_identity": authority["provider_identity"],
         "base_branch": authority["base_branch"],
@@ -226,19 +285,38 @@ def _authority_projection(project_config):
             "enabled", "cloud_id", "site", "provider_project_id", "project_key",
             "controller_actor_id", "status_map", "lifecycle_writes")},
     }
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    projection.update({key: deepcopy(authority[key]) for key in OWNER_EVIDENCE_FIELDS if key in authority})
+    return projection
+
+
+def _recheck_queue_authority(config, root, authority):
+    if _authority(config, accepted_policy_root=root) != authority:
+        raise ValidationError("Shared-owner policy changed before queue authority use")
 
 
 def _owner_instruction(value, action, epic, payload, *, authority, registry, now, max_age,
-                       return_attestation=False):
+                       return_attestation=False, project_config=None,
+                       accepted_policy_root=None):
     if not isinstance(value, dict):
         raise ValidationError(f"{action} requires an authenticated owner instruction")
     required = {"instruction_id", "owner_actor_id", "producer_id", "source_event_id",
                 "provider_identity", "action", "epic", "payload", "issued_at",
                 "raw_body", "raw_body_sha256"}
-    if set(value) != required:
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    annotation_fields = OWNER_EVIDENCE_FIELDS.intersection(value)
+    if set(value) != required | annotation_fields:
         raise ValidationError("owner instruction fields differ from the closed record shape")
     if not isinstance(authority, dict):
         raise ValidationError("owner instruction requires accepted project authority")
+    from .authorization import _retained_authorization_policy
+    if project_config is None:
+        raise ValidationError("Owner instruction requires accepted project configuration")
+    expected_authority = _authority(project_config, accepted_policy_root=accepted_policy_root)
+    if authority != expected_authority:
+        raise ValidationError("Owner instruction authority changed or differs from accepted policy")
+    policy = _queue_owner_policy(project_config, accepted_policy_root)
+    _retained_authorization_policy(value, policy, value["owner_actor_id"])
     trusted = authority.get("trusted_owner_ids")
     provider = authority.get("provider_identity")
     if (not isinstance(trusted, (tuple, list)) or
@@ -258,7 +336,11 @@ def _owner_instruction(value, action, epic, payload, *, authority, registry, now
     if (value["raw_body"] != expected_raw or
             value["raw_body_sha256"] != sha256(expected_raw.encode("utf-8"))):
         raise ValidationError("owner instruction raw authenticated text does not match its action")
-    material = {key: item for key, item in value.items() if key != "instruction_id"}
+    # Derived policy evidence is bound by the full record/provider/event hashes.
+    # Keep the original immutable source identity stable across policy rotation,
+    # so the consumed-instruction ledger cannot accept the same event twice.
+    material = {key: item for key, item in value.items()
+                if key != "instruction_id" and key not in OWNER_EVIDENCE_FIELDS}
     if value["instruction_id"] != fingerprint("integration_owner_instruction", material):
         raise ValidationError("owner instruction identity does not match its closed bytes")
     request = {"operation": "OWNER_INSTRUCTION",
@@ -275,7 +357,11 @@ def _owner_instruction(value, action, epic, payload, *, authority, registry, now
     result, attestation = (observation if return_attestation else (observation, None))
     if result != {"instruction": value}:
         raise ValidationError("owner instruction was not authenticated for the exact source and owner")
+    if fingerprint("integration_owner_instruction_record", value) != request["record_sha256"]:
+        raise ValidationError("Owner instruction changed during provider observation")
+    _retained_authorization_policy(value, policy, value["owner_actor_id"])
     record = deepcopy(value)
+    _recheck_queue_policy(project_config, accepted_policy_root, policy)
     return (record, attestation) if return_attestation else record
 
 
@@ -374,7 +460,7 @@ def _observed_app_binding(selector, *, authority, registry, epic, now, max_age,
 
 
 def _mode_record(value, epic=None, *, authority, observer_registry, now, max_age,
-                 return_trust=False):
+                 return_trust=False, project_config=None, accepted_policy_root=None):
     fields = {"mode", "test_command", "stall_after_hours", "max_stack_depth",
               "epic", "activation", "record_id"}
     if not isinstance(value, dict) or set(value) != fields or value["mode"] != "epic":
@@ -400,7 +486,8 @@ def _mode_record(value, epic=None, *, authority, observer_registry, now, max_age
         activation_result = _owner_instruction(
             activation["instruction"], "ENABLE_EPIC_MODE", value["epic"], settings,
             authority=authority, registry=observer_registry, now=now, max_age=max_age,
-            return_attestation=return_trust)
+            return_attestation=return_trust, project_config=project_config,
+            accepted_policy_root=accepted_policy_root)
     else:
         raise ValidationError("epic-mode activation provenance is invalid")
     binding = activation["app_binding"]
@@ -437,7 +524,7 @@ def _mode_record(value, epic=None, *, authority, observer_registry, now, max_age
 def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=None,
                  project_config=None, project_config_selector=None,
                  project_config_observer_registry=None,
-                 mode_observer_registry=None, now=None):
+                 mode_observer_registry=None, now=None, accepted_policy_root=None):
     """Resolve serial/epic mode without weakening activation requirements."""
     config = {} if config is None else deepcopy(config)
     if not isinstance(config, dict) or set(config) - (set(DEFAULTS) | {"provenance"}):
@@ -462,8 +549,8 @@ def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=
             project_config_selector = {"producer_id": app_binding.get("producer_id")}
         project_config = _accepted_project_config(
             project_config, project_config_selector,
-            project_config_observer_registry, now=now)
-        authority = _authority(project_config)
+            project_config_observer_registry, now=now, accepted_policy_root=accepted_policy_root)
+        authority = _authority(project_config, accepted_policy_root=accepted_policy_root)
         max_age = _evidence_max_age(project_config)
         configured = config.get("mode") == "epic"
         instructed = owner_instruction is not None
@@ -480,7 +567,8 @@ def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=
                           _owner_instruction(
                               owner_instruction, "ENABLE_EPIC_MODE", epic, settings,
                               authority=authority, registry=mode_observer_registry,
-                              now=now, max_age=max_age)}
+                              now=now, max_age=max_age, project_config=project_config,
+                              accepted_policy_root=accepted_policy_root)}
         else:
             activation = {"kind": "reviewed_config", "provenance":
                           _reviewed_config_provenance(
@@ -491,6 +579,7 @@ def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=
             app_binding, authority=authority, registry=mode_observer_registry,
             epic=epic, now=now, max_age=max_age)
         material = {**effective, "epic": epic, "activation": activation}
+        _recheck_queue_authority(project_config, accepted_policy_root, authority)
         return {**material, "record_id": fingerprint("integration_mode", material)}
     return effective
 
@@ -1106,7 +1195,7 @@ def _authorization_verifier(bundle, authorization):
     return run
 
 
-def _verify_retained_evidence(item, state, *, config, registry, now):
+def _verify_retained_evidence(item, state, *, config, registry, now, accepted_policy_root=None):
     _verified_admission_patch(item, registry)
     retained = item.get("retained_evidence")
     fields = {"review_target_sha", "prior_target_sha", "target_sha", "head_sha",
@@ -1134,9 +1223,9 @@ def _verify_retained_evidence(item, state, *, config, registry, now):
             raise ValidationError("stored retarget observation has an invalid receipt digest")
     request = {
         "operation": "RETARGET_RETENTION",
-        "provider_identity": deepcopy(_authority(config)["provider_identity"]),
+        "provider_identity": deepcopy(_authority(config, accepted_policy_root=accepted_policy_root)["provider_identity"]),
         "repository_identity": _repository_identity(
-            _authority(config)["provider_identity"]),
+            _authority(config, accepted_policy_root=accepted_policy_root)["provider_identity"]),
         "source_identity": "repository_retarget_diff",
         "epic": state["epic"],
         "pr_number": item["pr_number"],
@@ -1165,7 +1254,7 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
                        project_config_selector=None,
                        project_config_observer_registry=None,
                        build_producer_registry=None,
-                       now=None):
+                       now=None, accepted_policy_root=None):
     """Enforce front-only readiness using the existing gate and authorization contracts."""
     _pr(pr_number)
     now = now or now_text()
@@ -1178,12 +1267,13 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
             project_config_selector = {"producer_id": binding.get("producer_id")}
         config, config_trust = _accepted_project_config(
             config, project_config_selector, project_config_observer_registry,
-            now=now, return_attestation=True)
-        authority = _authority(config)
+            now=now, return_attestation=True, accepted_policy_root=accepted_policy_root)
+        authority = _authority(config, accepted_policy_root=accepted_policy_root)
         _, mode_trust = _mode_record(
             state.get("mode_record"), state.get("epic"), authority=authority,
             observer_registry=mode_observer_registry, now=now,
-            max_age=_evidence_max_age(config), return_trust=True)
+            max_age=_evidence_max_age(config), return_trust=True, project_config=config,
+            accepted_policy_root=accepted_policy_root)
     except (ValidationError, KeyError, TypeError) as exc:
         return {"status": "pending", "reason": str(exc)}
     entries = state.get("entries", [])
@@ -1218,7 +1308,9 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
         from .lifecycle import definition
         evaluated_gate = evaluate(
             config, definition(), deepcopy(gate_bundle), contracts, now,
-            posting_collector_registry=posting_collector_registry)
+            posting_collector_registry=posting_collector_registry,
+            **({"accepted_policy_root": accepted_policy_root}
+               if accepted_policy_root is not None else {}))
         contracts.validate("final-gate", final_gate)
         # ``evaluate`` assigns a new offline evaluation record/run UUID on each
         # invocation.  Every substantive field must nevertheless match the
@@ -1234,7 +1326,7 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
         if candidate.get("target_base_sha") != expected_target_sha:
             expected_target_sha, retention_observation = _verify_retained_evidence(
                 item, state, config=config, registry=retarget_observer_registry,
-                now=now)
+                now=now, accepted_policy_root=accepted_policy_root)
         expected_candidate = {
             "pr_number": pr_number,
             "head_sha": item["head_sha"],
@@ -1246,7 +1338,8 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
         if gate.get("conclusion") != "READY_FOR_OWNER_AUTHORIZATION":
             raise ValidationError("existing final gate is not ready for owner authorization")
         verified = verify_record(
-            authorization, authorization_request, gate, config, contracts, now)
+            authorization, authorization_request, gate, config, contracts, now,
+            accepted_policy_root=accepted_policy_root)
         if verified.get("decision") != "AUTHORIZE":
             raise ValidationError("owner authorization decision is not AUTHORIZE")
         _authorization_verifier(gate_bundle, authorization)
@@ -1259,9 +1352,9 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
                 "delta review requires an authenticated producer selection")
         delta_request = {
             "operation": "DELTA_REVIEW",
-            "provider_identity": deepcopy(_authority(config)["provider_identity"]),
+            "provider_identity": deepcopy(authority["provider_identity"]),
             "repository_identity": _repository_identity(
-                _authority(config)["provider_identity"]),
+                authority["provider_identity"]),
             "source_identity": "repository_diff_and_critic_result",
             "candidate_binding": deepcopy(gate["binding"]),
             "pr_number": pr_number,
@@ -1299,6 +1392,7 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
                 expected_binding=gate["binding"])
         if requirement["satisfied"] is not True:
             raise ValidationError("required path-overlap delta review is not satisfied")
+        _recheck_queue_authority(config, accepted_policy_root, authority)
     except (ValidationError, KeyError, TypeError) as exc:
         return {"status": "pending", "reason": str(exc)}
     return {"status": "success", "reason": "front entry has current exact-tuple evidence",
@@ -1316,7 +1410,7 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
 def post_merge_action(selector, *, provider_observer_registry, project_config,
                       project_config_selector=None,
                       project_config_observer_registry=None,
-                      target_branch, target_sha, now=None):
+                      target_branch, target_sha, now=None, accepted_policy_root=None):
     if not isinstance(selector, dict) or set(selector) != {"producer_id"}:
         raise ValidationError("post-merge CI requires an authenticated producer selection")
     _identifier(target_branch, "target_branch")
@@ -1324,8 +1418,8 @@ def post_merge_action(selector, *, provider_observer_registry, project_config,
     now = now or now_text()
     project_config = _accepted_project_config(
         project_config, project_config_selector,
-        project_config_observer_registry, now=now)
-    authority = _authority(project_config)
+        project_config_observer_registry, now=now, accepted_policy_root=accepted_policy_root)
+    authority = _authority(project_config, accepted_policy_root=accepted_policy_root)
     request = {"operation": "TARGET_CI",
                "provider_identity": deepcopy(authority["provider_identity"]),
                "repository_identity": _repository_identity(authority["provider_identity"]),
@@ -1340,6 +1434,7 @@ def post_merge_action(selector, *, provider_observer_registry, project_config,
             result.get("target_sha") != target_sha or
             not isinstance(result.get("ci_green"), bool)):
         raise ValidationError("post-merge CI observation is not bound to the exact target tip")
+    _recheck_queue_authority(project_config, accepted_policy_root, authority)
     return ({"action": "REBUILD_FROM_TARGET", "may_push_target": False}
             if result["ci_green"] else
             {"action": "OPEN_REVERT_PR", "may_push_target": False})
@@ -1358,8 +1453,16 @@ class IntegrationQueueStore:
                  project_config_selector=None,
                  project_config_observer_registry=None,
                  mode_observer_registry=None,
-                 build_producer_registry=None, git_observer_registry=None):
+                 build_producer_registry=None, git_observer_registry=None,
+                 accepted_policy_root=None):
         self.path = Path(path).resolve()
+        self.accepted_policy_root = accepted_policy_root
+        worktree_roots = tuple(worktree_roots)
+        if accepted_policy_root is not None:
+            from .shared_owner_policy import consumer_policy_root
+            self.worktree_roots = worktree_roots
+            self.accepted_policy_root = consumer_policy_root(accepted_policy_root, self)
+            worktree_roots = (*worktree_roots, accepted_policy_root)
         self.project_config = None if project_config is None else deepcopy(project_config)
         self.project_config_selector = deepcopy(project_config_selector)
         self.project_config_observer_registry = (
@@ -1430,11 +1533,13 @@ class IntegrationQueueStore:
         accepted, trust = _accepted_project_config(
             self.project_config, self.project_config_selector,
             self.project_config_observer_registry, now=observed_at,
-            return_attestation=True, match_expected=match_expected)
+            return_attestation=True, match_expected=match_expected,
+            accepted_policy_root=self.accepted_policy_root)
         self.accepted_project_config = accepted
-        self.authority = _authority(accepted)
+        self.authority = _authority(accepted, accepted_policy_root=self.accepted_policy_root)
         self.authority_projection_sha256 = fingerprint(
-            "integration_authority_projection", _authority_projection(accepted))
+            "integration_authority_projection", _authority_projection(accepted,
+                accepted_policy_root=self.accepted_policy_root))
         self.max_evidence_age_seconds = _evidence_max_age(accepted)
         return trust
 
@@ -1450,7 +1555,12 @@ class IntegrationQueueStore:
                     _registration_trust_root(registration) != pin["registration_sha256"]):
                 raise ValidationError(
                     f"{role} observer registration changed; close and reinitialize the queue")
-        state["project_config_trust"] = self._refresh_project_config(observed_at)
+        config_trust = self._refresh_project_config(observed_at)
+        from .authorization import _retained_authorization_policy
+        policy = _queue_owner_policy(self.accepted_project_config, self.accepted_policy_root)
+        _retained_authorization_policy(state["project_config_trust"], policy,
+            self.accepted_project_config["github"].get("expected_actor_id"))
+        state["project_config_trust"] = config_trust
         if state.get("authority_projection_sha256") != self.authority_projection_sha256:
             raise ValidationError(
                 "accepted authority changed; close and reinitialize the integration queue")
@@ -1458,7 +1568,8 @@ class IntegrationQueueStore:
             state.get("mode_record"), state.get("epic"), authority=self.authority,
             observer_registry=self.mode_observer_registry,
             now=observed_at,
-            max_age=self.max_evidence_age_seconds, return_trust=True)
+            max_age=self.max_evidence_age_seconds, return_trust=True,
+            project_config=self.accepted_project_config, accepted_policy_root=self.accepted_policy_root)
         binding = record["activation"]["app_binding"]
         if binding.get("enforced") is not True:
             raise ValidationError("epic queue authority requires active applicable App enforcement")
@@ -1598,6 +1709,9 @@ class IntegrationQueueStore:
                 raise ValidationError(f"integration epic {epic!r} is not initialized")
             state = self._validate_state(loads(row[0]))
             yield connection, state
+            if self.accepted_project_config is not None:
+                _recheck_queue_authority(self.accepted_project_config,
+                                         self.accepted_policy_root, self.authority)
             state["state_digest"] = fingerprint(
                 "integration_queue_state",
                 {key: value for key, value in state.items() if key != "state_digest"})
@@ -1644,7 +1758,8 @@ class IntegrationQueueStore:
             mode_record, epic, authority=self.authority,
             observer_registry=self.mode_observer_registry,
             now=observed_at,
-            max_age=self.max_evidence_age_seconds, return_trust=True)
+            max_age=self.max_evidence_age_seconds, return_trust=True,
+            project_config=self.accepted_project_config, accepted_policy_root=self.accepted_policy_root)
         if mode_record["activation"]["app_binding"].get("enforced") is not True:
             raise ValidationError("epic queue initialization requires active applicable App enforcement")
         authority_time = mode_trust["app_binding"]["observed_at"]
@@ -1684,6 +1799,8 @@ class IntegrationQueueStore:
         with closing(self._connect()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                _recheck_queue_authority(self.accepted_project_config,
+                                         self.accepted_policy_root, self.authority)
                 connection.execute("INSERT INTO epics(epic,state_json) VALUES (?,?)",
                                    (epic, canonical(state).decode("utf-8")))
                 self._event(connection, state, "EPIC_INITIALIZED",
@@ -2074,7 +2191,8 @@ class IntegrationQueueStore:
             instruction = _owner_instruction(
                 instruction, "REORDER", epic, {"order": order},
                 authority=self.authority, registry=self.mode_observer_registry,
-                now=observed_at, max_age=self.max_evidence_age_seconds)
+                now=observed_at, max_age=self.max_evidence_age_seconds,
+                project_config=self.accepted_project_config, accepted_policy_root=self.accepted_policy_root)
             self._consume_instruction(connection, state, instruction)
             previous_front = self._front_key(state)
             state["entries"] = self._validate_order(state["entries"], order)
@@ -2096,7 +2214,8 @@ class IntegrationQueueStore:
             instruction = _owner_instruction(
                 instruction, "SKIP", epic, {"pr_number": pr_number},
                 authority=self.authority, registry=self.mode_observer_registry,
-                now=observed_at, max_age=self.max_evidence_age_seconds)
+                now=observed_at, max_age=self.max_evidence_age_seconds,
+                project_config=self.accepted_project_config, accepted_policy_root=self.accepted_policy_root)
             self._consume_instruction(connection, state, instruction)
             if any(pr_number in item["depends_on"] for item in state["entries"]):
                 raise ValidationError("cannot skip a PR while an admitted PR depends on it")
@@ -2238,7 +2357,8 @@ class IntegrationQueueStore:
                 authenticated_trigger = _owner_instruction(
                     trigger, "REMOVE", epic, {"pr_number": pr_number},
                     authority=self.authority, registry=self.mode_observer_registry,
-                    now=observed_at, max_age=self.max_evidence_age_seconds)
+                    now=observed_at, max_age=self.max_evidence_age_seconds,
+                    project_config=self.accepted_project_config, accepted_policy_root=self.accepted_policy_root)
                 self._consume_instruction(connection, state, authenticated_trigger)
             else:
                 if not isinstance(trigger, dict) or set(trigger) != {"producer_id"}:

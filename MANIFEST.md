@@ -122,7 +122,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/installer.py` | `d33dfb0d5fb3ded9a3ddf344d857c46b04d7b5823e0e33a98ef0a42591f90ae8` |
 | `.agentic/lib/agentic/intake_assignment.py` | `fc707898f1f3257614ee0c7f688f3f1f739f77fe59f1f59cb358859e96e4c1b2` |
 | `.agentic/lib/agentic/integration_build.py` | `5ea6c01f3fe6eec8cb933a000b75cfdcbd57b1a48a14fa070ae475cfb8367268` |
-| `.agentic/lib/agentic/integration_queue.py` | `178eeadecd8b87305734da126eaa558f39c6fab2ddc00a854641df4137bd8d23` |
+| `.agentic/lib/agentic/integration_queue.py` | `92a5d3add808ae52f51d240abdb929b7055643977fd1556611292f5a1ce1ceef` |
 | `.agentic/lib/agentic/interaction.py` | `ccdf2ac25c3e069cfc3d539f880659ab0cdb8680b81d885c460aed6080964e91` |
 | `.agentic/lib/agentic/jira_lifecycle.py` | `0faddbfe956688f636b4ab49a72f4c4659cec3bb4b2c2c2ffee076f6aaf89f5f` |
 | `.agentic/lib/agentic/lane_labels.py` | `3f4c4e86405f88fe496a833ebc3f4670b23441020eef2652a059b2f5dec880d2` |
@@ -458,6 +458,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf307_intake_owner_policy.py` | `2cc62d68238a96a50bc6b680069ecb0813d5568ac11ecdc254f887de7f8a5898` |
 | `.agentic/tests/test_awf307_policy_owner_policy.py` | `1de74b665a3a3eb5b920791a7320910159d1ae107b074b9b46fe29a920246a0b` |
 | `.agentic/tests/test_awf307_provider_owner_policy.py` | `4600afc6785199ac90948f912cdcf4b552e85ff8162b868e001061430a7eba33` |
+| `.agentic/tests/test_awf307_queue_owner_policy.py` | `4fc948c7b22fb469bbef326726845adf026c7ac32eb1c5b9f31ff49f8a945c5d` |
 | `.agentic/tests/test_awf307_shared_owner_policy.py` | `580872aaf07773c03ad74a5e446b6096514370780c564ce7bc9582322ddf6ff1` |
 | `.agentic/tests/test_awf307_stream_owner_policy.py` | `03cb1324c20048d10085261d1b660f57f4c2a7fcead9af9fb300fce14b67dd48` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
