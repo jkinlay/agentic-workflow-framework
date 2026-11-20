@@ -20,69 +20,205 @@ PINNED_GIT_READ_EXCEPTIONS = {
      '1f5f146352ff0a8222a6be1ef9186e4609b11033'),
 }
 
+# AWF-309 pending set: only the owner-identified deferred readers. Conversion
+# needs the historical-byte/scanner plan (and explicit protected-test approval).
+# Keep full revision + path identities; remove each entry with its reader.
+AWF_309_PENDING_PINNED_GIT_READS = {
+    *PINNED_GIT_READ_EXCEPTIONS,
+    ('.agentic/tests/upgrade_195_fixtures.py',
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'),
+    ('.agentic/tests/test_twelve_streams.py',
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'),
+    ('.agentic/tests/test_awf242_settings_second_look.py',
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'),
+}
+
 
 def pinned_git_reads(source):
     return sorted({line for line, revision in pinned_git_read_revisions(source)})
 
 
 def pinned_git_read_revisions(source):
-    """Inspect command arguments, not quoted Python used as scanner test data."""
-    # Scope: git show with a literal or module-level constant revision, plain
-    # or annotated. Wider command/revision detection belongs to AWF-309.
+    return sorted({(line, revision) for line, revision, form in pinned_git_read_details(source)})
+
+
+def pinned_git_read_details(source):
+    """Conservative source-only data flow; never execute quoted Python test data.
+
+    Resolve lexical bindings and calls to local helpers, including defaults.
+    Alternative assignments are retained, so a dynamic/unknown value cannot
+    erase a known pin. Cycles stop at the binding/call already being inspected.
+    The release materializer is an explicit indirect raw-tree Git read sink.
+    This is a syntax guard, not an arbitrary Python execution analyser.
+    """
     tree = ast.parse(source)
-    values = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and isinstance(node.value.value, str):
-                    values[target.id] = node.value.value
-        elif (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
-            values[node.target.id] = node.value.value
+    findings = set()
+    revision_token = re.compile(r'(?<![0-9a-fA-F])[0-9a-fA-F]{4,40}(?![0-9a-fA-F])')
+    runners = {'run', 'check_output', 'check_call', 'Popen', 'getoutput', 'run_bounded'}
+    git_helpers = {'git', 'git_run', 'run_git'}
 
-    def text(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.Name):
-            return values.get(node.id, '')
-        if isinstance(node, ast.FormattedValue):
-            return text(node.value)
-        if isinstance(node, ast.JoinedStr):
-            return ''.join(text(item) for item in node.values)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return text(node.left) + text(node.right)
-        return ''
+    def nodes(body):
+        for node in body:
+            yield node
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                yield from nodes(ast.iter_child_nodes(node))
 
-    findings = []
+    def name(node):
+        return node.id if isinstance(node, ast.Name) else getattr(node, 'attr', '')
 
-    def record(line, parts):
-        findings.extend((line, match.group()[:-1])
-                        for part in parts for match in PIN.finditer(part))
+    def scope(body, outer=(), parameters=None, active=()):
+        local = {}
+        functions = {}
+        members = list(nodes(body))
+        for node in members:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions[node.name] = node
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        local.setdefault(target.id, []).append(node.value)
+        for parameter, arguments in (parameters or {}).items():
+            local.setdefault(parameter, []).extend(arguments)
+        environment = ((local, functions), *outer)
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, 'attr', '')
-        if name in {'git', 'git_run', 'run_git'}:
-            parts = [text(argument) for argument in node.args]
-            if 'show' in parts and any(PIN.search(part) for part in parts):
-                record(node.lineno, parts)
-        for argument in node.args:
-            if isinstance(argument, (ast.List, ast.Tuple)):
-                parts = [text(item) for item in argument.elts]
-                if 'git' in parts and 'show' in parts and any(PIN.search(part) for part in parts):
-                    record(node.lineno, parts)
-            elif isinstance(argument, (ast.Constant, ast.JoinedStr, ast.BinOp)):
-                command = text(argument)
-                if (name in {'run', 'check_output', 'check_call', 'Popen', 'getoutput'}
-                        and re.search(r'\bgit\s+.*\bshow\s+', command) and PIN.search(command)):
-                    record(node.lineno, [command])
-    return sorted(set(findings))
+        def values(node, seen=(), lookup=None):
+            lookup = environment if lookup is None else lookup
+            if isinstance(node, (str, tuple)):
+                return {node}
+            if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+                return {node.value.decode('utf-8', errors='surrogateescape') if isinstance(node.value, bytes) else node.value}
+            if isinstance(node, ast.Name):
+                for depth, (bindings, unused) in enumerate(lookup):
+                    if node.id in bindings:
+                        key = (id(bindings), node.id)
+                        if key in seen:
+                            return {''}
+                        return {value for item in bindings[node.id]
+                                for value in values(item, (*seen, key), lookup[depth:])} or {''}
+            if isinstance(node, ast.FormattedValue):
+                return values(node.value, seen, lookup)
+            if isinstance(node, (ast.JoinedStr, ast.List, ast.Tuple)):
+                parts = {''} if isinstance(node, ast.JoinedStr) else {()}
+                for item in (node.values if isinstance(node, ast.JoinedStr) else node.elts):
+                    resolved = values(item.value if isinstance(item, ast.Starred) else item, seen, lookup)
+                    parts = {left + (right if isinstance(left, str) else
+                                     right if isinstance(item, ast.Starred) and isinstance(right, tuple)
+                                     else (right,))
+                             for left in parts for right in resolved
+                             if not isinstance(left, str) or isinstance(right, str)}
+                return parts
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                return {left + right for left in values(node.left, seen, lookup)
+                        for right in values(node.right, seen, lookup) if type(left) is type(right)}
+            if isinstance(node, ast.Call):
+                function = name(node.func)
+                if function in {'which', 'encode', 'decode'}:
+                    target = node.args[0] if function == 'which' and node.args else getattr(node.func, 'value', None)
+                    return values(target, seen, lookup)
+                if function == 'Popen':
+                    argument = node.args[0] if node.args else next(
+                        (item.value for item in node.keywords if item.arg == 'args'), None)
+                    return values(argument, seen, lookup)
+            return {''}
+
+        def strings(node):
+            return {item for item in values(node) if isinstance(item, str)}
+
+        def record(line, form, parts):
+            for part in parts:
+                for match in revision_token.finditer(part):
+                    findings.add((line, match.group().lower(), form))
+
+        def command(node, argument, helper=False, inputs=()):
+            for value in values(argument):
+                if isinstance(value, tuple):
+                    parts = [item for item in value if isinstance(item, str)]
+                elif isinstance(value, str):
+                    # Tokenize shell commands only at an actual process call.
+                    parts = re.findall(r"[^\s'\"]+", value)
+                else:
+                    continue
+                if not helper and not any(Path(part).name.lower() in {'git', 'git.exe'} for part in parts):
+                    continue
+                for verb in ('show', 'cat-file', 'archive'):
+                    if verb not in parts:
+                        continue
+                    tail = parts[parts.index(verb) + 1:]
+                    # Options can contain hexadecimal format text; only operands
+                    # and batch requests carry object identities.
+                    operands = [part for part in tail if not part.startswith('-')]
+                    batch = verb == 'cat-file' and any(part.startswith('--batch') for part in tail)
+                    if batch:
+                        if isinstance(value, str):
+                            operands += parts[:parts.index(verb)]
+                        operands += [part for argument in inputs for part in strings(argument)]
+                    record(node.lineno, 'git ' + verb + (' --batch' if batch else ''), operands)
+
+        for node in members:
+            if not isinstance(node, ast.Call):
+                continue
+            function = name(node.func)
+            inputs = [item.value for item in node.keywords if item.arg in {'input', 'input_data'}]
+            if function in git_helpers:
+                command(node, ast.Tuple(elts=list(node.args), ctx=ast.Load()), True, inputs)
+            # Preserve the original guard's list/tuple detection at any call,
+            # as well as resolving command variables at process runners.
+            for argument in node.args:
+                if isinstance(argument, (ast.List, ast.Tuple)):
+                    command(node, argument, inputs=inputs)
+            if function in runners:
+                arguments = list(node.args) + [item.value for item in node.keywords if item.arg == 'args']
+                for argument in arguments:
+                    command(node, argument, inputs=inputs)
+            if function == 'communicate' and isinstance(node.func, ast.Attribute):
+                command(node, node.func.value, inputs=[*node.args, *inputs])
+            if function == 'materialize_commit':
+                arguments = list(node.args[1:2]) + [item.value for item in node.keywords if item.arg == 'commit']
+                for argument in arguments:
+                    record(node.lineno, 'materialize_commit -> git cat-file --batch', strings(argument))
+            # Follow positional and keyword arguments into lexically visible
+            # helpers. Attribute calls cover self.method without executing it.
+            for depth, (unused, available) in enumerate(environment):
+                target = available.get(function)
+                if target is not None:
+                    invoke(target, node, environment[depth:], active, values)
+                    break
+
+        for node in members:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                invoke(node, None, environment, active, values)
+            elif isinstance(node, ast.ClassDef):
+                scope(node.body, environment, active=active)
+
+    def invoke(target, call, environment, active, resolve):
+        if id(target) in active:
+            return
+        positional = [*target.args.posonlyargs, *target.args.args]
+        parameters = {argument.arg: [''] for argument in [*positional, *target.args.kwonlyargs]}
+        defaults = list(zip(positional[len(positional) - len(target.args.defaults):], target.args.defaults))
+        defaults += list(zip(target.args.kwonlyargs, target.args.kw_defaults))
+        for argument, default in defaults:
+            if default is not None:
+                parameters[argument.arg] = list(resolve(default, lookup=environment))
+        if call is not None:
+            arguments = positional
+            if isinstance(call.func, ast.Attribute) and arguments and arguments[0].arg in {'self', 'cls'}:
+                arguments = arguments[1:]
+            for argument, value in zip(arguments, call.args):
+                parameters[argument.arg] = list(resolve(value))
+            for keyword in call.keywords:
+                if keyword.arg in parameters:
+                    parameters[keyword.arg] = list(resolve(keyword.value))
+        scope(target.body, environment, parameters, (*active, id(target)))
+
+    scope(tree.body)
+    return sorted(findings)
 
 
 def unexpected_pinned_git_reads(path, source):
     return [(line, revision) for line, revision in pinned_git_read_revisions(source)
-            if (path, revision) not in PINNED_GIT_READ_EXCEPTIONS]
+            if (path, revision) not in AWF_309_PENDING_PINNED_GIT_READS]
 
 
 CONVERTED_REVISIONS = (
@@ -181,9 +317,153 @@ class HistoricalFixtureTests(unittest.TestCase):
         self.assertEqual([], pinned_git_reads("run(['git', 'show', 'HEAD:file'])"))
         self.assertEqual([], pinned_git_reads('source = "run([\'git\', \'show\', \'abcd1234:file\'])"'))
 
+    def test_guard_detects_wider_pinned_read_forms(self):
+        cases = {
+            'cat_file_pretty': (
+                "subprocess.check_output(['git', 'cat-file', '-p', 'abcd1234:file'])"
+            ),
+            'cat_file_blob': (
+                "subprocess.run(['git', 'cat-file', 'blob', 'abcd1234:file'])"
+            ),
+            'cat_file_batch': (
+                "subprocess.run(['git', 'cat-file', '--batch'], input=b'abcd1234:file\\n')"
+            ),
+            'cat_file_batch_format': (
+                "subprocess.run(['git', 'cat-file', '--batch=%(objectname)'], input='abcd1234:file\\n')"
+            ),
+            'cat_file_batch_command': (
+                "subprocess.run(['git', 'cat-file', '--batch-command'], input='contents abcd1234:file\\n')"
+            ),
+            'cat_file_batch_communicate': (
+                "proc = subprocess.Popen(['git', 'cat-file', '--batch'], stdin=PIPE)\n"
+                "proc.communicate(b'abcd1234:file\\n')"
+            ),
+            'archive_literal': (
+                "subprocess.run(['git', 'archive', 'abcd1234', '.agentic'])"
+            ),
+            'archive_shell': (
+                "subprocess.check_output('git archive abcd1234 .agentic')"
+            ),
+            'show_parameter': (
+                'def historical(revision):\n'
+                "    return git('show', revision + ':file')\n"
+                "historical('abcd1234')"
+            ),
+            'cat_file_parameter': (
+                'def historical(revision):\n'
+                "    return git('cat-file', '-p', revision + ':file')\n"
+                "historical(revision='abcd1234')"
+            ),
+            'archive_parameter': (
+                'def historical(revision):\n'
+                "    return git('archive', revision)\n"
+                "historical('abcd1234')"
+            ),
+            'show_default': (
+                "REV = 'abcd1234'\n"
+                'def historical(revision=REV):\n'
+                "    return git('show', f'{revision}:file')"
+            ),
+            'cat_file_default': (
+                "def historical(*, revision='abcd1234'):\n"
+                "    return git('cat-file', 'blob', f'{revision}:file')"
+            ),
+            'archive_default': (
+                "def historical(revision='abcd1234'):\n"
+                "    return git('archive', revision)"
+            ),
+            'local_alias': (
+                'def historical():\n'
+                "    revision = 'abcd1234'\n"
+                '    alias = revision\n'
+                "    return subprocess.run(['git', 'show', f'{alias}:file'])"
+            ),
+            'constant_fstring': (
+                "REV: str = 'abcd1234'\n"
+                "OBJECT = f'{REV}:file'\n"
+                "subprocess.run(['git', 'show', OBJECT])"
+            ),
+            'command_variable_keyword': (
+                "revision = 'abcd1234'\n"
+                "command = ['git', 'show', revision + ':file']\n"
+                'subprocess.run(args=command)'
+            ),
+            'which_git': (
+                "subprocess.run([shutil.which('git'), 'archive', 'abcd1234'])"
+            ),
+            'starred_command': (
+                "GIT = ['git', '-C', '.']\n"
+                "subprocess.run([*GIT, 'archive', 'abcd1234'])"
+            ),
+            'parameter_chain': (
+                'def read(revision):\n'
+                "    return git('show', revision + ':file')\n"
+                'def historical(revision):\n'
+                '    return read(revision)\n'
+                "historical('abcd1234')"
+            ),
+            'materialize_commit': (
+                "REV = 'abcd1234'\n"
+                'publish_release.materialize_commit(repository, REV, destination)'
+            ),
+            'batch_shell_pipe': (
+                "subprocess.check_output('echo abcd1234:file | git cat-file --batch')"
+            ),
+            'batch_encoded_input': (
+                "REV = 'abcd1234'\n"
+                "subprocess.run(['git', 'cat-file', '--batch'], input=f'{REV}:file\\n'.encode())"
+            ),
+            'cat_file_local_alias': (
+                'def historical():\n'
+                "    revision = 'abcd1234'\n"
+                '    alias = revision\n'
+                "    return subprocess.run(['git', 'cat-file', '-p', f'{alias}:file'])"
+            ),
+            'archive_local_alias': (
+                'def historical():\n'
+                "    revision = 'abcd1234'\n"
+                '    alias = revision\n'
+                "    return subprocess.run(['git', 'archive', alias])"
+            ),
+            'cat_file_constant_fstring': (
+                "REV: str = 'abcd1234'\n"
+                "OBJECT = f'{REV}:file'\n"
+                "subprocess.run(['git', 'cat-file', 'blob', OBJECT])"
+            ),
+            'archive_constant_fstring': (
+                "REV: str = 'abcd1234'\n"
+                "OBJECT = f'{REV}'\n"
+                "subprocess.run(['git', 'archive', OBJECT])"
+            ),
+            'method_parameter': (
+                'class Reader:\n'
+                '    def historical(self, revision):\n'
+                "        return git('show', revision + ':file')\n"
+                '    def test_read(self):\n'
+                "        self.historical('abcd1234')"
+            ),
+            'assigned_parameter': (
+                'def historical(revision):\n'
+                "    revision = 'abcd1234'\n"
+                "    return git('archive', revision)"
+            ),
+            'lexical_constant_alias': (
+                "REV = 'abcd1234'\n"
+                "OBJECT = f'{REV}:file'\n"
+                'def historical():\n'
+                "    REV = 'HEAD'\n"
+                "    return git('show', OBJECT)"
+            ),
+        }
+        for form, source in cases.items():
+            with self.subTest(form=form):
+                self.assertEqual(['abcd1234'], sorted({revision for line, revision in
+                    pinned_git_read_revisions(source)}))
+
     def test_tests_do_not_read_pinned_revisions_from_git(self):
         findings = []
         observed_exceptions = set()
+        observed_pending = set()
         for folder in (ROOT / '.agentic/tests', ROOT / 'scripts/tests'):
             for path in sorted(folder.rglob('*.py')):
                 relative = path.relative_to(ROOT).as_posix()
@@ -191,11 +471,42 @@ class HistoricalFixtureTests(unittest.TestCase):
                 observed_exceptions.update((relative, revision)
                     for line, revision in pinned_git_read_revisions(source)
                     if (relative, revision) in PINNED_GIT_READ_EXCEPTIONS)
+                observed_pending.update((relative, revision)
+                    for line, revision in pinned_git_read_revisions(source)
+                    if (relative, revision) in AWF_309_PENDING_PINNED_GIT_READS)
                 findings.extend(f'{relative}:{line}'
                                 for line, revision in unexpected_pinned_git_reads(relative, source))
         self.assertEqual(PINNED_GIT_READ_EXCEPTIONS, observed_exceptions,
                          'AWF-309: remove the stale pinned Git read exception after conversion')
+        self.assertEqual(AWF_309_PENDING_PINNED_GIT_READS, observed_pending,
+                         'AWF-309: remove stale pending entries after reader conversion')
         self.assertEqual([], findings, 'Vendor historical sources and record them in the fixture index')
+
+    def test_pending_set_rejects_other_paths_and_revisions(self):
+        for path, revision in AWF_309_PENDING_PINNED_GIT_READS:
+            source = "run(['git', 'archive', '" + revision + "'])"
+            with self.subTest(path=path, revision=revision):
+                self.assertEqual([], unexpected_pinned_git_reads(path, source))
+                self.assertEqual([(1, revision)], unexpected_pinned_git_reads('other.py', source))
+                changed = source.replace(revision, 'a' * 40)
+                self.assertEqual([(1, 'a' * 40)], unexpected_pinned_git_reads(path, changed))
+
+    def test_guard_ignores_unexecuted_source_and_current_revisions_in_new_forms(self):
+        for verb in ('show', 'cat-file', 'archive'):
+            for revision in ('HEAD', 'main', 'v1.9.5'):
+                source = "subprocess.run(['git', '" + verb + "', '" + revision + "'])"
+                self.assertEqual([], pinned_git_read_revisions(source))
+            source = "source = " + repr("subprocess.run(['git', '" + verb + "', 'abcd1234:file'])")
+            self.assertEqual([], pinned_git_read_revisions(source))
+        self.assertEqual([], pinned_git_read_revisions("run(['echo', 'git show abcd1234:file'])"))
+        self.assertEqual([], pinned_git_read_revisions("run(['echo', 'abcd1234:file'])"))
+
+    def test_guard_retains_alternative_bindings_and_stops_cycles(self):
+        source = ("REV = 'abcd1234'\nREV = unknown\n"
+                  "alias = REV\nREV = alias\nrun(['git', 'show', REV + ':file'])")
+        self.assertIn((5, 'abcd1234'), pinned_git_read_revisions(source))
+        self.assertEqual([(1, 'abcd1234')], pinned_git_read_revisions(
+            "capture(['git', 'show', 'abcd1234:file'])"))
 
     def test_guard_detects_annotated_constant_from_review_reproduction(self):
         source = ('REV: str = "a3336b8990a9e59985f67bf69d41846b898db57b"\n'
