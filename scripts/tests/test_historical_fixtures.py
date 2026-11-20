@@ -1,8 +1,21 @@
-"""Historical sources stay byte-exact and independent of Git object retention."""
+"""Byte-exact fixtures and the owner's four approved live-history readers.
+
+Owner decision, 20 Nov 2026: "All four: documented history (Recommended)".
+The allowlist below documents each reader and its exact path/full revision.
+These commits are ancestors of main and release tags v1.9.x, so CI's
+full-history clone has them; new pinned reads are refused. Fixture-backed
+readers remain independent of Git object retention. The converted-revision
+tripwire prevents their historical pins returning to live Git reads.
+
+This source-repository guard requires Git history and fails if it is absent,
+including shallow clones missing approved commits. Installed copies exclude
+scripts/tests, so this guard is not collected there; no skip is added.
+"""
 import ast
 import hashlib
 from pathlib import Path
 import re
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -13,24 +26,36 @@ import historical_fixtures as fixtures
 
 
 PIN = re.compile(r'(?<![0-9a-f])[0-9a-f]{4,40}:')
-# AWF-309 will convert this receipt reader. This commit is an ancestor of
-# origin/main and the release tags, so CI can fetch it.
-PINNED_GIT_READ_EXCEPTIONS = {
+# Identities are path + full revision, never whole-file or line exemptions.
+LIVE_HISTORY_READERS = {
     ('.agentic/tests/test_upgrade_receipts.py',
-     '1f5f146352ff0a8222a6be1ef9186e4609b11033'),
-}
-
-# AWF-309 pending set: only the owner-identified deferred readers. Conversion
-# needs the historical-byte/scanner plan (and explicit protected-test approval).
-# Keep full revision + path identities; remove each entry with its reader.
-AWF_309_PENDING_PINNED_GIT_READS = {
-    *PINNED_GIT_READ_EXCEPTIONS,
+     '1f5f146352ff0a8222a6be1ef9186e4609b11033'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'git_blob: 209 immutable manifest paths, MANIFEST.json, .agentic/PROJECT_CONFIG.yaml and .agentic/workflow-version.yaml for historical receipt identity.',
+    },
     ('.agentic/tests/upgrade_195_fixtures.py',
-     '8ad399943c8f5e4f17db72f3e321b9365ee27782'),
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'materialize_published: entire raw published v1.9.5 commit tree through publish_release.materialize_commit and git cat-file --batch.',
+    },
     ('.agentic/tests/test_twelve_streams.py',
-     '8ad399943c8f5e4f17db72f3e321b9365ee27782'),
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'test_published_195_runtime_retains_original_upper_label_refusal: git archive of .agentic/** and MANIFEST.json for the published runtime refusal.',
+    },
     ('.agentic/tests/test_awf242_settings_second_look.py',
-     '8ad399943c8f5e4f17db72f3e321b9365ee27782'),
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'test_legacy_event_chain_survives_merged_block: git archive of .agentic/lib/** and .agentic/schemas/** for the published legacy event chain.',
+    },
 }
 
 
@@ -218,7 +243,38 @@ def pinned_git_read_details(source):
 
 def unexpected_pinned_git_reads(path, source):
     return [(line, revision) for line, revision in pinned_git_read_revisions(source)
-            if (path, revision) not in AWF_309_PENDING_PINNED_GIT_READS]
+            if (path, revision) not in LIVE_HISTORY_READERS]
+
+
+def assert_live_history_readers_observed(sources):
+    observed = {(path, revision) for path, source in sources.items()
+                for line, revision in pinned_git_read_revisions(source)
+                if (path, revision) in LIVE_HISTORY_READERS}
+    stale = set(LIVE_HISTORY_READERS) - observed
+    assert not stale, 'Stale live-history reader entries: ' + repr(sorted(stale))
+
+
+def assert_live_history_ancestry():
+    def git(*arguments):
+        try:
+            return subprocess.run(['git', *arguments], cwd=ROOT, capture_output=True,
+                                  text=True, encoding='utf-8', timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AssertionError('Git history is required for this source-repository guard') from error
+
+    assert git('rev-parse', '--git-dir').returncode == 0, (
+        'Git history is required for this source-repository guard; installed copies exclude scripts/tests')
+    # CI feature clones may expose main only as a remote ref, or only HEAD.
+    targets = ['HEAD']
+    for target in ('refs/heads/main', 'refs/remotes/origin/main'):
+        if git('rev-parse', '--verify', target + '^{commit}').returncode == 0:
+            targets.append(target)
+    for revision in sorted({revision for path, revision in LIVE_HISTORY_READERS}):
+        assert git('cat-file', '-e', revision + '^{commit}').returncode == 0, (
+            'Missing approved live-history commit ' + revision + '; CI/source clones must retain full history')
+        for target in targets:
+            assert git('merge-base', '--is-ancestor', revision, target).returncode == 0, (
+                'Approved live-history commit ' + revision + ' must be an ancestor of ' + target)
 
 
 CONVERTED_REVISIONS = (
@@ -269,6 +325,42 @@ def unexpected_converted_revision_tokens(path, source):
 
 
 class HistoricalFixtureTests(unittest.TestCase):
+    def test_live_history_allowlist_stale_entry_fails_for_synthetic_sources(self):
+        sources = {path: "run(['git', 'archive', '" + revision + "'])"
+                   for path, revision in LIVE_HISTORY_READERS}
+        assert_live_history_readers_observed(sources)
+        for path, revision in LIVE_HISTORY_READERS:
+            with self.subTest(path=path):
+                changed = {**sources, path: "run(['git', 'archive', 'HEAD'])"}
+                with self.assertRaisesRegex(AssertionError, 'Stale live-history reader'):
+                    assert_live_history_readers_observed(changed)
+
+    def test_live_history_revisions_are_ancestors_of_main_and_head(self):
+        assert_live_history_ancestry()
+
+    def test_missing_live_history_commit_fails_never_skips(self):
+        def missing_commit(arguments, **kwargs):
+            code = 1 if 'cat-file' in arguments else 0
+            return subprocess.CompletedProcess(arguments, code, '', '')
+
+        with patch('subprocess.run', side_effect=missing_commit):
+            with self.assertRaisesRegex(AssertionError, 'Missing approved live-history commit.*full history'):
+                assert_live_history_ancestry()
+
+    def test_unavailable_git_history_fails_never_skips(self):
+        with patch('subprocess.run', side_effect=FileNotFoundError('git')):
+            with self.assertRaisesRegex(AssertionError, 'Git history is required'):
+                assert_live_history_ancestry()
+
+    def test_nonancestor_live_history_commit_fails_never_skips(self):
+        def nonancestor(arguments, **kwargs):
+            code = 1 if 'merge-base' in arguments else 0
+            return subprocess.CompletedProcess(arguments, code, '', '')
+
+        with patch('subprocess.run', side_effect=nonancestor):
+            with self.assertRaisesRegex(AssertionError, 'must be an ancestor of HEAD'):
+                assert_live_history_ancestry()
+
     def test_fixture_paths_stay_within_existing_tracked_path_limit(self):
         # Nested clones on Windows hosts hit the 260-character limit.
         paths = sorted(path.relative_to(ROOT).as_posix()
@@ -462,28 +554,19 @@ class HistoricalFixtureTests(unittest.TestCase):
 
     def test_tests_do_not_read_pinned_revisions_from_git(self):
         findings = []
-        observed_exceptions = set()
-        observed_pending = set()
+        sources = {}
         for folder in (ROOT / '.agentic/tests', ROOT / 'scripts/tests'):
             for path in sorted(folder.rglob('*.py')):
                 relative = path.relative_to(ROOT).as_posix()
                 source = path.read_text(encoding='utf-8')
-                observed_exceptions.update((relative, revision)
-                    for line, revision in pinned_git_read_revisions(source)
-                    if (relative, revision) in PINNED_GIT_READ_EXCEPTIONS)
-                observed_pending.update((relative, revision)
-                    for line, revision in pinned_git_read_revisions(source)
-                    if (relative, revision) in AWF_309_PENDING_PINNED_GIT_READS)
+                sources[relative] = source
                 findings.extend(f'{relative}:{line}'
                                 for line, revision in unexpected_pinned_git_reads(relative, source))
-        self.assertEqual(PINNED_GIT_READ_EXCEPTIONS, observed_exceptions,
-                         'AWF-309: remove the stale pinned Git read exception after conversion')
-        self.assertEqual(AWF_309_PENDING_PINNED_GIT_READS, observed_pending,
-                         'AWF-309: remove stale pending entries after reader conversion')
-        self.assertEqual([], findings, 'Vendor historical sources and record them in the fixture index')
+        assert_live_history_readers_observed(sources)
+        self.assertEqual([], findings, 'New pinned Git reads require fixtures; only documented owner-approved identities are allowed')
 
-    def test_pending_set_rejects_other_paths_and_revisions(self):
-        for path, revision in AWF_309_PENDING_PINNED_GIT_READS:
+    def test_live_history_allowlist_rejects_other_paths_and_revisions(self):
+        for path, revision in LIVE_HISTORY_READERS:
             source = "run(['git', 'archive', '" + revision + "'])"
             with self.subTest(path=path, revision=revision):
                 self.assertEqual([], unexpected_pinned_git_reads(path, source))
@@ -567,11 +650,12 @@ class HistoricalFixtureTests(unittest.TestCase):
                     unexpected_converted_revision_tokens(relative, path.read_text(encoding='utf-8')))
         self.assertEqual([], findings, 'Converted revision tokens belong only in fixture-loader calls')
 
-    def test_receipt_exception_is_detected_in_real_tree_and_tolerated(self):
+    def test_receipt_reader_is_detected_in_real_tree_and_tolerated(self):
         path = '.agentic/tests/test_upgrade_receipts.py'
         revision = '1f5f146352ff0a8222a6be1ef9186e4609b11033'
         source = (ROOT / path).read_text(encoding='utf-8')
-        self.assertEqual({(path, revision)}, PINNED_GIT_READ_EXCEPTIONS)
+        self.assertEqual({(path, revision)}, {identity for identity in LIVE_HISTORY_READERS
+                                          if identity[0] == path})
         reads = pinned_git_read_revisions(source)
         self.assertEqual([revision], [pin for line, pin in reads])
         self.assertEqual(pinned_git_reads(source), [line for line, pin in reads])
