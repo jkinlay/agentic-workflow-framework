@@ -941,7 +941,7 @@ def catalog(*, include_ticket_plan=True):
         "to_tier": enum(1, 2), "rationale": text(), **signed, "evidence": EVIDENCE})
     schemas["owner-closure"] = bound({"merge_result_id": UUID, "closure_kind": enum("release", "publication", "qualification", "cutover", "production_acceptance", "other"),
         "rationale": text(), **signed, "evidence": EVIDENCE})
-    # Enrolled authorization consumers retain accepted policy outside signed
+    # Enrolled owner consumers retain accepted policy outside signed
     # provider bodies. Other consumers still use the rootless refusal. These
     # optional fields form one closed, indivisible annotation; semantic checks
     # re-observe its exact policy bytes before accepting a shared actor.
@@ -959,7 +959,7 @@ def catalog(*, include_ticket_plan=True):
         }),
     }
     for name in ("owner-authorization", "review-cap-disposition", "finding-disposition",
-                 "tier-reassignment", "owner-closure"):
+                 "tier-reassignment", "owner-closure", "review-verdict", "final-gate"):
         schemas[name]["properties"].update(copy.deepcopy(owner_policy_annotation))
         schemas[name]["dependentRequired"] = {
             key: [other for other in owner_policy_annotation if other != key]
@@ -1031,6 +1031,11 @@ def catalog(*, include_ticket_plan=True):
     schemas["evidence-bundle"]["required"].remove("owner_review")
     schemas["evidence-bundle"]["required"].remove("overcap_approvals")
     schemas["evidence-bundle"]["required"].remove("review_round_receipts")
+    overcap_schema = schemas["evidence-bundle"]["properties"]["overcap_approvals"]["items"]
+    overcap_schema["properties"].update(copy.deepcopy(owner_policy_annotation))
+    overcap_schema["dependentRequired"] = {
+        key: [other for other in owner_policy_annotation if other != key]
+        for key in owner_policy_annotation}
     role_policy = obj({"model": text(), "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
         "fallback": const("deny"), "approved_model_ids": arr(text(), 1, uniqueItems=True),
         "permission_profile": text(), "network_allowlist": STRINGS})

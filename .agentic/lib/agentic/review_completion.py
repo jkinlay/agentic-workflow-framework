@@ -147,7 +147,7 @@ def _canonical_uuid(value, label):
     return value
 
 
-def review_authority_from_config(config):
+def review_authority_from_config(config, *, accepted_policy_root=None):
     """Derive reviewer-removal authority only from reviewed project policy."""
     _require(isinstance(config, dict), "Accepted PROJECT_CONFIG must be an object")
     github, merge_gate = config.get("github"), config.get("merge_gate")
@@ -173,24 +173,37 @@ def review_authority_from_config(config):
         "Accepted PROJECT_CONFIG has an invalid repository identity")
     _require(type(repository_id) is int and repository_id > 0,
              "Accepted PROJECT_CONFIG has no immutable repository ID")
-    return {
+    from .authorization import _authorization_owner_policy, _recheck_authorization_policy
+    from .shared_owner_policy import configured_shared_owner_actor_id
+    # Preserve ordinary profile-only authority. A profile cannot opt out, and
+    # the unchanged identity preflight still refuses observed owner overlap.
+    profile_only = accepted_policy_root is None and github.get("expected_actor_id") is None
+    if profile_only:
+        configured_shared_owner_actor_id(config)
+    policy = {} if profile_only else _authorization_owner_policy(config, accepted_policy_root)
+    value = {
         "trusted_owner_ids": tuple(sorted(owners)),
         "provider_identity": {
             "host": host.rstrip("/"),
             "repository": repository,
             "repository_id": repository_id,
         },
+        **policy,
     }
+    if not profile_only:
+        _recheck_authorization_policy(config, accepted_policy_root, policy)
+    return value
 
 
-def review_authority_binding(config, project_root, worktree_roots, candidate):
+def review_authority_binding(config, project_root, worktree_roots, candidate, *,
+                             accepted_policy_root=None):
     """Bind accepted removal authority to its project and frozen candidate.
 
     The production CLI records this value on the first freeze.  A later
     reviewer-removal request therefore cannot select another ``--root`` or a
     changed accepted configuration as a replacement trust root.
     """
-    authority = review_authority_from_config(config)
+    authority = review_authority_from_config(config, accepted_policy_root=accepted_policy_root)
     candidate = _candidate(candidate)
     _require(candidate["repository"] == authority["provider_identity"]["repository"],
              "Frozen candidate repository differs from accepted PROJECT_CONFIG authority")
@@ -201,6 +214,11 @@ def review_authority_binding(config, project_root, worktree_roots, candidate):
 
     roots = sorted({resolved(path) for path in worktree_roots})
     _require(roots, "Reviewer-removal authority requires protected worktree roots")
+    if accepted_policy_root is not None:
+        _require(resolved(accepted_policy_root) == resolved(project_root),
+                 "Reviewer-removal policy root differs from the protected project root")
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    policy = {key: authority[key] for key in OWNER_EVIDENCE_FIELDS if key in authority}
     value = {
         "schema_version": 1,
         "project_root": resolved(project_root),
@@ -208,16 +226,40 @@ def review_authority_binding(config, project_root, worktree_roots, candidate):
         "project_config_sha256": fingerprint("accepted-project-config", config),
         "tuple": candidate,
         "tuple_sha256": fingerprint("review-tuple", candidate),
-        "review_authority_sha256": fingerprint("review-authority", {
-            "trusted_owner_ids": list(authority["trusted_owner_ids"]),
-            "provider_identity": authority["provider_identity"],
-        }),
+        "review_authority_sha256": _review_authority_sha256(authority),
+        **policy,
     }
+    _require(review_authority_from_config(config, accepted_policy_root=accepted_policy_root) == authority,
+             "Shared-owner policy changed before authority binding")
     return value
 
 
+def _review_authority_sha256(authority):
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    return fingerprint("review-authority", {
+        "trusted_owner_ids": list(authority["trusted_owner_ids"]),
+        "provider_identity": authority["provider_identity"],
+        **{key: authority[key] for key in OWNER_EVIDENCE_FIELDS if key in authority},
+    })
+
+
+def _review_owner_policy(authority, accepted_policy_root, accepted_policy_config):
+    """Re-observe host policy; an annotation is never a substitute trust root."""
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    if accepted_policy_root is None:
+        _require(not OWNER_EVIDENCE_FIELDS.intersection(authority or {}),
+                 "Shared reviewer-removal authority requires an accepted policy root")
+        return {}
+    current = review_authority_from_config(accepted_policy_config,
+                                         accepted_policy_root=accepted_policy_root)
+    _require(current == authority,
+             "Shared-owner policy changed or reviewer-removal authority annotation is missing or altered")
+    return {key: current[key] for key in OWNER_EVIDENCE_FIELDS if key in current}
+
+
 def _reviewer_removal_disposition(value, *, active, binding, authority,
-                                  provider_observer, now):
+                                  provider_observer, now, accepted_policy_root=None,
+                                  accepted_policy_config=None):
     """Validate a fresh provider-observed owner decision to weaken one frozen set."""
     _require(isinstance(value, dict) and set(value) == {"record", "record_sha256"},
              "Reviewer removal disposition must contain exact record and digest fields")
@@ -228,7 +270,9 @@ def _reviewer_removal_disposition(value, *, active, binding, authority,
         "new_required_reviewers", "new_reviewer_set_sha256", "removed_reviewers",
         "reason", "owner_actor_id", "provider_identity", "issued_at", "expires_at",
     }
-    _require(isinstance(record, dict) and set(record) == record_fields,
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    retained_fields = OWNER_EVIDENCE_FIELDS.intersection(record) if isinstance(record, dict) else set()
+    _require(isinstance(record, dict) and set(record) == record_fields | retained_fields,
              "Reviewer removal disposition record must be an exact object")
     _require(record["schema_version"] == 1 and record["decision"] == "REMOVE_REQUIRED_REVIEWERS",
              "Reviewer removal disposition has an unsupported version or decision")
@@ -259,6 +303,9 @@ def _reviewer_removal_disposition(value, *, active, binding, authority,
              "Reviewer removal disposition carries an invalid reviewer-set digest")
     _require(isinstance(authority, dict),
              "Reviewer removal requires accepted PROJECT_CONFIG authority")
+    policy = _review_owner_policy(authority, accepted_policy_root, accepted_policy_config)
+    from .authorization import _retained_authorization_policy
+    _retained_authorization_policy(record, policy, record["owner_actor_id"])
     trusted_owner_ids = authority.get("trusted_owner_ids")
     provider_identity = loads(canonical(authority.get("provider_identity")).decode())
     _require(type(record["owner_actor_id"]) is int and
@@ -310,6 +357,9 @@ def _reviewer_removal_disposition(value, *, active, binding, authority,
     observed = timestamp(review["observed_at"])
     _require(issued <= observed <= expires,
              "Reviewer removal review observation is outside the disposition freshness window")
+    _require(_review_owner_policy(authority, accepted_policy_root, accepted_policy_config) == policy,
+             "Shared-owner policy changed before reviewer removal use")
+    _retained_authorization_policy(record, policy, record["owner_actor_id"])
     return record, record_hash, review
 
 
@@ -322,22 +372,32 @@ class ReviewCompletionStore:
     """
 
     def __init__(self, path, worktree_roots=(), *, authority=None,
-                 authority_binding=None, provider_observer=None):
+                 authority_binding=None, provider_observer=None, accepted_policy_root=None,
+                 accepted_policy_config=None):
         self.path = protected_state_path(path, worktree_roots)
+        from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+        self.worktree_roots = tuple(worktree_roots)
+        self.accepted_policy_root = accepted_policy_root
+        self.accepted_policy_config = accepted_policy_config
+        if authority is not None:
+            _require(isinstance(authority, dict) and set(authority) == {
+                "trusted_owner_ids", "provider_identity"} | OWNER_EVIDENCE_FIELDS.intersection(authority),
+                "Reviewer-removal authority has unexpected fields")
         self.authority = (None if authority is None else {
             "trusted_owner_ids": tuple(authority.get("trusted_owner_ids", ())),
             "provider_identity": loads(canonical(authority.get("provider_identity")).decode()),
+            **{key: loads(canonical(authority[key]).decode())
+               for key in OWNER_EVIDENCE_FIELDS if key in authority},
         })
         self.authority_binding = (None if authority_binding is None else
                                   loads(canonical(authority_binding).decode()))
         if self.authority_binding is not None:
             _require(self.authority is not None,
                      "Reviewer-removal authority binding requires accepted authority")
-            _require(self.authority_binding.get("review_authority_sha256") == fingerprint(
-                "review-authority", {
-                    "trusted_owner_ids": list(self.authority["trusted_owner_ids"]),
-                    "provider_identity": self.authority["provider_identity"],
-                }), "Reviewer-removal authority binding differs from accepted authority")
+            _require(self.authority_binding.get("review_authority_sha256") ==
+                     _review_authority_sha256(self.authority),
+                     "Reviewer-removal authority binding differs from accepted authority")
+        self._recheck_authority()
         self.provider_observer = provider_observer
         with self.connection() as db:
             db.executescript(DDL)
@@ -379,6 +439,7 @@ class ReviewCompletionStore:
 
     def _pin_or_match_authority(self, db, active, candidate_binding):
         """Persist the trust root before dispatch and reject later substitution."""
+        self._recheck_authority()
         row = db.execute(
             "SELECT binding_json,binding_sha256 FROM reviewer_removal_authority WHERE singleton=1"
         ).fetchone()
@@ -390,10 +451,7 @@ class ReviewCompletionStore:
             "schema_version": 1,
             "tuple": candidate_binding["tuple"],
             "tuple_sha256": candidate_binding["tuple_sha256"],
-            "review_authority_sha256": fingerprint("review-authority", {
-                "trusted_owner_ids": list(self.authority["trusted_owner_ids"]),
-                "provider_identity": self.authority["provider_identity"],
-            }),
+            "review_authority_sha256": _review_authority_sha256(self.authority),
         })
         _require(value.get("tuple") == candidate_binding["tuple"] and
                  value.get("tuple_sha256") == candidate_binding["tuple_sha256"],
@@ -422,6 +480,23 @@ class ReviewCompletionStore:
                  "Reviewer-removal authority differs from the exact frozen candidate")
         db.execute("UPDATE reviewer_removal_authority SET binding_json=?,binding_sha256=? "
                    "WHERE singleton=1", (raw, digest))
+
+    def _recheck_authority(self):
+        from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+        policy = _review_owner_policy(self.authority, self.accepted_policy_root,
+                                      self.accepted_policy_config)
+        binding = self.authority_binding
+        if self.accepted_policy_root is None:
+            _require(not OWNER_EVIDENCE_FIELDS.intersection(binding or {}),
+                     "Shared reviewer-removal binding requires an accepted policy root")
+            return
+        _require(isinstance(binding, dict), "Rooted reviewer-removal authority requires a protected binding")
+        expected = review_authority_binding(self.accepted_policy_config, self.accepted_policy_root,
+            self.worktree_roots, binding.get("tuple"), accepted_policy_root=self.accepted_policy_root)
+        _require(binding == expected,
+                 "Shared-owner policy changed or reviewer-removal authority binding is missing or altered")
+        _require({key: binding[key] for key in OWNER_EVIDENCE_FIELDS if key in binding} == policy,
+                 "Reviewer-removal authority annotation differs from its pin")
 
     def freeze(self, candidate, reviewers, reviewer_removal_disposition=None):
         """Freeze the complete reviewer set before any reviewer dispatch.
@@ -457,7 +532,18 @@ class ReviewCompletionStore:
                     disposition = _reviewer_removal_disposition(
                         reviewer_removal_disposition, active=active, binding=binding,
                         authority=self.authority, provider_observer=self.provider_observer,
-                        now=now_text())
+                        now=now_text(), accepted_policy_root=self.accepted_policy_root,
+                        accepted_policy_config=self.accepted_policy_config)
+                    self._recheck_authority()
+                    if self.accepted_policy_root is not None:
+                        # Policy reads can consume time after the provider read.
+                        # Apply the original freshness limits at application too.
+                        applied_now = now_text()
+                        record, _, review = disposition
+                        _require(timestamp(applied_now) <= timestamp(record["expires_at"]),
+                                 "Reviewer removal disposition has expired")
+                        fresh(record["issued_at"], applied_now, REVIEWER_REMOVAL_MAX_AGE_SECONDS)
+                        fresh(review["observed_at"], applied_now, REVIEWER_REMOVAL_MAX_AGE_SECONDS)
                     duplicate_artifact = db.execute(
                         "SELECT 1 FROM reviewer_removal_provider_artifacts WHERE artifact_id=?",
                         (disposition[2]["artifact_id"],)).fetchone()
