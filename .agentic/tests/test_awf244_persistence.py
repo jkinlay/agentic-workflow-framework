@@ -60,8 +60,12 @@ class CalendarPersistenceTests(unittest.TestCase):
         from agentic.contracts import Contracts
         root = Path(__file__).resolve().parents[2]
         expected = effective_calendar({})
-        for name in ('OPERATING_CONFIG.yaml', '.agentic/defaults/OPERATING_CONFIG.yaml',
-                     '.agentic/examples/OPERATING_CONFIG.yaml'):
+        names = ['.agentic/defaults/OPERATING_CONFIG.yaml', '.agentic/examples/OPERATING_CONFIG.yaml']
+        # The root file is generated only in the AWF source repository; an
+        # installed project's OPERATING_CONFIG.yaml is the adopter's (AWF-305).
+        if source_only.AWF_SOURCE_REPOSITORY:
+            names.insert(0, 'OPERATING_CONFIG.yaml')
+        for name in names:
             with self.subTest(name=name):
                 self.assertEqual(json.loads((root / name).read_text())['operating_calendar'], expected)
         value = deepcopy(self.value)

@@ -24,7 +24,7 @@ SWITCHES = tuple(controller_config())
 class ControllerSwitchContractTests(unittest.TestCase):
     def test_boolean_schema_and_shipped_defaults(self):
         contracts = Contracts(ROOT / '.agentic/schemas')
-        for path in ('.agentic/PROJECT_CONFIG.yaml', '.agentic/examples/PROJECT_CONFIG.yaml'):
+        for path in ('.agentic/defaults/PROJECT_CONFIG.yaml', '.agentic/examples/PROJECT_CONFIG.yaml'):
             config = json.loads((ROOT / path).read_text(encoding='utf-8'))
             for key in SWITCHES:
                 self.assertIs(config['controller'][key], False)
@@ -60,7 +60,7 @@ class ControllerSwitchContractTests(unittest.TestCase):
             'to': '1.9.5', 'new_required_settings': []}}}}
         target = {'source_manifest_sha256': 'a' * 64, '_immutable_files': {}}
         for enabled in (False, True):
-            config = json.loads((ROOT / '.agentic/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
+            config = json.loads((ROOT / '.agentic/defaults/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
             config['template']['expected_workflow_version'] = '1.9.4'
             config['controller'].update(dict.fromkeys(SWITCHES, enabled))
             migrated, reports = apply_chain(table, '1.9.4', json.dumps(config).encode(),
