@@ -132,7 +132,7 @@ class RuleDefaults(unittest.TestCase):
                                  (result["tier"], result["round_cap"], result["owner_review_required"]))
 
     def test_multi_file_tools_change_is_not_tier_one(self):
-        cfg = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+        cfg = json.loads((ROOT / ".agentic/defaults/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
         result = classify_ticket(
             cfg,
             ticket(
@@ -535,7 +535,7 @@ class ConfigDefaultsAndOverrides(unittest.TestCase):
 
     def test_existing_project_schema_accepts_review_tiers_and_rejects_invalid_cap(self):
         schema = json.loads((ROOT / ".agentic/schemas/project-config.schema.json").read_text(encoding="utf-8"))
-        actual = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+        actual = json.loads((ROOT / ".agentic/defaults/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
         jsonschema.validate(actual, schema)
         invalid = copy.deepcopy(actual)
         invalid["execution"]["risk_tiers"]["tier3_review"]["max_rounds"] = 4

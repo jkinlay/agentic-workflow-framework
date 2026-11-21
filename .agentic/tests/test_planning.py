@@ -13,15 +13,26 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic import ValidationError
 from agentic.canonical import fingerprint, load, sha256
 from agentic.contracts import Contracts
+from agentic.model_routing import policy_from_config
 from agentic.operating import operating_ceiling, stream_labels, validate_operating
 from agentic import planning
+import shipped_defaults
 
 NOW = "2026-10-12T12:00:00Z"
 HOST_EVIDENCE = {}
 
 
+def shipped_config():
+    value = shipped_defaults.project_config()
+    # Carry the resolved policy with the fixture: planning/controller consumers
+    # revalidate snapshots after this helper's routing context has exited.
+    with shipped_defaults.shipped_routing():
+        value["execution"]["model_routing"] = policy_from_config(value)
+    return value
+
+
 def config(max_lanes=12):
-    value = load(ROOT / ".agentic/PROJECT_CONFIG.yaml")
+    value = shipped_config()
     value["execution"]["max_parallel_tickets"] = 12
     value["execution"]["max_lanes"] = max_lanes
     value["execution"]["host_broker"] = {"enabled": False, "max_workers": 12}
@@ -56,7 +67,7 @@ def verify_owner(source, expected):
 
 def operating_snapshot(cfg, count=None):
     count = count or operating_ceiling(cfg)["effective_ceiling"]
-    value = load(ROOT / "OPERATING_CONFIG.yaml")
+    value = load(ROOT / ".agentic/defaults/OPERATING_CONFIG.yaml")
     route = deepcopy(value["streams"]["A"])
     value["streams"] = {"count": count, **{label: deepcopy(route) for label in stream_labels(count)}}
     return validate_operating(value, cfg)
@@ -132,14 +143,14 @@ class SchemaLaneTests(unittest.TestCase):
         cls.contracts = Contracts(ROOT / ".agentic/schemas")
 
     def inputs(self, count=12):
-        cfg = load(ROOT / ".agentic/PROJECT_CONFIG.yaml")
+        cfg = shipped_config()
         cfg["execution"]["max_parallel_tickets"] = 12
         cfg["execution"]["max_lanes"] = 12
         cfg["execution"]["host_broker"].update(enabled=False, max_workers=12)
         cfg["github"]["repository_id"] = 123
         cfg["github"]["expected_actor_id"] = 101
         cfg["merge_gate"]["trusted_owner_ids"] = [101, 202]
-        operating = load(ROOT / "OPERATING_CONFIG.yaml")
+        operating = load(ROOT / ".agentic/defaults/OPERATING_CONFIG.yaml")
         route = deepcopy(operating["streams"]["A"])
         operating["streams"] = {
             "count": count,

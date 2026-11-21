@@ -150,6 +150,15 @@ class SourceScriptDependencyGuardTests(unittest.TestCase):
 
     def test_inventory_covers_source_scripts_when_present(self):
         root = Path(__file__).resolve().parents[2]
+        # Only the AWF source repository has AWF source scripts. An installed
+        # project's scripts/ is project-owned and never installed (AWF-305).
+        from source_only import is_awf_source_repository
+        if not is_awf_source_repository(root):
+            installed = {path.stem for name in ('adapters', 'lib', 'scripts', 'tests')
+                         for path in (root / '.agentic' / name).rglob('*.py')}
+            self.assertGreater(len(installed), 0)
+            self.assertEqual(set(), SOURCE_SCRIPT_MODULES & installed)
+            return
         shipped = {path.stem for path in (root / '.agentic').rglob('*.py')}
         source = {path.stem for path in (root / 'scripts').glob('*.py')} - shipped
         self.assertLessEqual(source, SOURCE_SCRIPT_MODULES)

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
-from agentic.configuration import PROJECT_LAUNCH_SURFACES
+from agentic.configuration import PROJECT_LAUNCH_SURFACES, load_project_launch_surfaces
 from agentic.launch_surfaces import (
     python_launch_findings,
     validate_repository_launch_surfaces,
@@ -49,7 +49,14 @@ class LaunchSurfaceTests(unittest.TestCase):
         self.assertGreater(report["python_files"], 0)
         self.assertGreater(report["non_python_scripts"], 0)
         self.assertEqual(report["python_findings_allowed"], 0)
-        self.assertEqual(report["project_non_python_scripts"], 0)
+        # An installed project may declare its own scripts in its project
+        # list; the release itself declares none (AWF-305).
+        declared = load_project_launch_surfaces(ROOT)
+        if source_only.AWF_SOURCE_REPOSITORY:
+            self.assertEqual([], declared)
+        self.assertEqual(report["project_non_python_scripts"], len(declared))
+        self.assertEqual(report["non_python_scripts"],
+                         report["pinned_non_python_scripts"] + len(declared))
 
     def test_declared_project_script_passes_without_changing_pinned_inventory(self):
         root, inventory_path, _ = self.make_root(script=False)
