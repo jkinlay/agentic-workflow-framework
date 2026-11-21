@@ -302,7 +302,7 @@ def _evidence_digest(value, field):
 
 
 def _validate_admission_evidence(source, evidence, trusted_owner_ids,
-                                 *, now, max_age_seconds):
+                                 *, now, max_age_seconds, accepted_policy_root=None):
     fields = {"observed_at", "source_state", "final_gate", "critic", "ci",
               "provenance", "owner_review"}
     _require(isinstance(evidence, dict) and set(evidence) == fields,
@@ -393,6 +393,10 @@ def _validate_admission_evidence(source, evidence, trusted_owner_ids,
                  "source owner review actor identity is invalid")
         _require(owner_review["reviewer_id"] in trusted_owner_ids,
                  "source owner review actor is not trusted")
+        from .provenance import _accepted_owner_config
+        identity = _accepted_owner_config(accepted_policy_root)
+        _require(str(owner_review["reviewer_id"]) != str(identity["expected_actor_id"]),
+                 "The configured automation actor must not be a trusted owner")
         _identifier(owner_review["provider_artifact_id"],
                     "owner review provider_artifact_id")
         timestamp(owner_review["submitted_at"])
@@ -413,7 +417,7 @@ def _validate_admission_evidence(source, evidence, trusted_owner_ids,
 
 def admit_source(source, target_branch, expected_provider_identity, observer_id,
                  observer_registry, *, now, trusted_owner_ids,
-                 max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
+                 max_age_seconds=MAX_EVIDENCE_AGE_SECONDS, accepted_policy_root=None):
     """Admit one exact source; its evidence never authorizes the batch."""
     source = _validate_source(source)
     trusted_owner_ids = _trusted_owner_identity_set(trusted_owner_ids)
@@ -426,7 +430,7 @@ def admit_source(source, target_branch, expected_provider_identity, observer_id,
         max_age_seconds=max_age_seconds)
     digests, owner_digest, approval_time = _validate_admission_evidence(
         source, evidence, trusted_owner_ids, now=now,
-        max_age_seconds=max_age_seconds)
+        max_age_seconds=max_age_seconds, accepted_policy_root=accepted_policy_root)
     evidence_material = {
         "source": source,
         "provider_observation": observation,
@@ -459,7 +463,7 @@ def admit_source(source, target_branch, expected_provider_identity, observer_id,
 
 def _validate_admitted_source(source, expected_provider_identity,
                               observer_registry, *, now, trusted_owner_ids,
-                              max_age_seconds):
+                              max_age_seconds, accepted_policy_root=None):
     fields = {"format", "status", "pr_number", "ticket", "head_sha",
               "tree_sha", "base_branch", "base_sha", "depends_on",
               "commit_range", "risk_tier",
@@ -554,7 +558,7 @@ def _validate_admitted_source(source, expected_provider_identity,
     verified_digests, verified_owner_digest, verified_approval_time = (
         _validate_admission_evidence(
             normalized_source, evidence, trusted_owner_ids, now=now,
-            max_age_seconds=max_age_seconds))
+            max_age_seconds=max_age_seconds, accepted_policy_root=accepted_policy_root))
     _require(digests == verified_digests
              and owner_digest == verified_owner_digest
              and source["approval_time"] == verified_approval_time,
@@ -578,7 +582,7 @@ def _validate_admitted_source(source, expected_provider_identity,
 
 def order_sources(sources, expected_provider_identity, observer_registry, *,
                   now, trusted_owner_ids,
-                  max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
+                  max_age_seconds=MAX_EVIDENCE_AGE_SECONDS, accepted_policy_root=None):
     """Topologically order by dependencies, then approval time and PR number."""
     _require(isinstance(sources, list) and sources,
              "merge train requires at least one admitted source")
@@ -586,7 +590,7 @@ def order_sources(sources, expected_provider_identity, observer_registry, *,
         _validate_admitted_source(
             source, expected_provider_identity, observer_registry, now=now,
             trusted_owner_ids=trusted_owner_ids,
-            max_age_seconds=max_age_seconds)
+            max_age_seconds=max_age_seconds, accepted_policy_root=accepted_policy_root)
     prs = [source["pr_number"] for source in sources]
     _require(len(prs) == len(set(prs)), "duplicate PR in merge train")
     heads = [source["head_sha"] for source in sources]
@@ -627,7 +631,7 @@ def require_batch_authorization(record):
 def freeze_generation(batch_id, target_branch, target_sha, sources, generation,
                       expected_provider_identity, observer_registry, *, now,
                       trusted_owner_ids,
-                      max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
+                      max_age_seconds=MAX_EVIDENCE_AGE_SECONDS, accepted_policy_root=None):
     """Freeze target and ordered admitted source/evidence identities."""
     _identifier(batch_id, "batch_id")
     _identifier(target_branch, "target_branch")
@@ -638,7 +642,7 @@ def freeze_generation(batch_id, target_branch, target_sha, sources, generation,
     ordered = order_sources(
         sources, expected_provider_identity, observer_registry, now=now,
         trusted_owner_ids=trusted_owner_ids,
-        max_age_seconds=max_age_seconds)
+        max_age_seconds=max_age_seconds, accepted_policy_root=accepted_policy_root)
     admission_targets = {
         item["provider_admission"]["request"]["target_branch"]
         for item in ordered
@@ -714,7 +718,7 @@ def _validate_generation(generation):
 def generation_status(generation, current_target_sha, current_sources,
                       expected_provider_identity, observer_registry, *, now,
                       trusted_owner_ids,
-                      max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
+                      max_age_seconds=MAX_EVIDENCE_AGE_SECONDS, accepted_policy_root=None):
     """Abandon a generation for target, source, or evidence drift."""
     _validate_generation(generation)
     expected_provider_identity = _provider_identity(
@@ -726,7 +730,7 @@ def generation_status(generation, current_target_sha, current_sources,
     ordered = order_sources(
         current_sources, expected_provider_identity, observer_registry, now=now,
         trusted_owner_ids=trusted_owner_ids,
-        max_age_seconds=max_age_seconds)
+        max_age_seconds=max_age_seconds, accepted_policy_root=accepted_policy_root)
     current = {item["pr_number"]: item for item in ordered}
     frozen = {item["pr_number"]: item for item in generation["sources"]}
     reasons = []

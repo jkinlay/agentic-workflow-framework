@@ -27,6 +27,7 @@ from test_intake_assignment import NOW, owner_source, verify_owner_source
 from test_review_policy import NOW as REVIEW_NOW
 from test_review_policy import (bind_production_posting_fixture,
                                 bind_review_admission, sealed_runtime)
+from accepted_owner_fixture import AcceptedOwnerFixture
 
 
 class CliIntakeAssignmentTests(unittest.TestCase):
@@ -79,6 +80,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
 
     def _cap_plan(self, runtime, config_path, state_path, cycles, *, extensions=0,
                   signed_cycles=None, signed_extensions=None):
+        AcceptedOwnerFixture(self, owners=(1001,), root=runtime)
         signed_cycles = cycles if signed_cycles is None else signed_cycles
         signed_extensions = extensions if signed_extensions is None else signed_extensions
         base = state_path.parent
@@ -87,6 +89,8 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         findings_path = base / f"findings-{cycles}.json"
         disposition_path.write_text(json.dumps({
             "binding": {}, "decision": "PARK", "open_finding_ids": [],
+            "owner_source": {"channel": "github_pr_comment", "comment_id": 91,
+                             "actor_id": 1001},
             "successor_ticket": None,
             "cycles": signed_cycles, "cap_extensions": signed_extensions,
         }), encoding="utf-8")

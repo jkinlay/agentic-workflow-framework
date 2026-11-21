@@ -15,6 +15,10 @@ from agentic.lifecycle import review_round_transition
 
 
 class AssignmentRecordCaps(unittest.TestCase):
+    def setUp(self):
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(1001,))
+
     def config(self):
         return {"execution": {"max_amendment_cycles": 3, "max_cap_extensions": 2,
                               "risk_tiers": {"tier1_eligible_paths": ["docs/**"],
@@ -35,17 +39,17 @@ class AssignmentRecordCaps(unittest.TestCase):
         self.assertEqual(2, round_cap(2, assignment_record=assigned))
         self.assertEqual("ROUTE_TO_OWNER", review_decision(
             2, 2, open_findings=[{"id": "F1", "severity": "MAJOR"}],
-            assignment_record=assigned)["status"])
+            assignment_record=assigned, accepted_policy_root=self.owner_fixture.root)["status"])
         with self.assertRaisesRegex(ValidationError, "cap is 2"):
-            validate_round(2, 3, assignment_record=assigned)
+            validate_round(2, 3, assignment_record=assigned, accepted_policy_root=self.owner_fixture.root)
 
     def test_owner_change_applies_to_next_round(self):
         old = self.record(2, 2, "assignment-old")
         changed = self.record(3, 3, "assignment-new")
         with self.assertRaises(ValidationError):
-            validate_round(2, 3, assignment_record=old)
-        self.assertTrue(validate_round(3, 3, assignment_record=changed))
-        self.assertEqual(3, review_decision(3, 3, assignment_record=changed)["cap"])
+            validate_round(2, 3, assignment_record=old, accepted_policy_root=self.owner_fixture.root)
+        self.assertTrue(validate_round(3, 3, assignment_record=changed, accepted_policy_root=self.owner_fixture.root))
+        self.assertEqual(3, review_decision(3, 3, assignment_record=changed, accepted_policy_root=self.owner_fixture.root)["cap"])
 
     def test_mutated_assignment_record_fails_closed(self):
         record = self.record(2, 2)
@@ -73,11 +77,11 @@ class AssignmentRecordCaps(unittest.TestCase):
             "run_id": "run", "binding": {}, "open_finding_ids": [],
             "notes": "extend", "cycles": 2, "cap_extensions": 1,
             "successor_ticket": None, "authorization_request_id": "request",
-            "owner_source": {"channel": "github_pr_comment", "comment_id": 1},
+            "owner_source": {"channel": "github_pr_comment", "comment_id": 1, "actor_id": 1001},
             "evidence": ["urn:awf:test:evidence"],
         }
         self.assertTrue(validate_round(2, 3, owner_cap_disposition=disposition,
-                                       assignment_record=self.record(2, 2)))
+                                       assignment_record=self.record(2, 2), accepted_policy_root=self.owner_fixture.root))
 
     def test_live_lifecycle_and_cap_disposition_use_intake_bound_record(self):
         cfg = self.config()

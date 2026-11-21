@@ -1,8 +1,7 @@
 # Provider identity and child credentials
 
-Version 1.9.6. Provider identity checks are read-only observations. They never
-switch accounts, select the first available connection, disclose tokens, or
-grant publication/Jira authority. Use them alongside [publication readiness](37-PUBLICATION-READINESS.md).
+Version 1.9.6. Read-only identity checks never switch accounts, choose the first connection,
+disclose tokens, or grant publication/Jira authority. Use them alongside [publication readiness](37-PUBLICATION-READINESS.md).
 
 ## Child environment
 
@@ -14,10 +13,9 @@ whitespace, invalid environment-name characters and case-insensitive duplicates
 are rejected. The extra list cannot remove `GH_TOKEN` or `GITHUB_TOKEN`, which
 the trusted GitHub host adapter needs. Ordinary process settings remain intact.
 
-The scheduled-tick and review-loop entry points scrub their process environment before loading other
-application modules. The PowerShell registration wrapper constructs the same
-sanitized child environment rather than changing the parent shell. Its
-configuration is read as data; no credential value is written to diagnostics.
+Scheduled-tick/review-loop scrub environments before application imports. PowerShell registration
+uses the same sanitized child environment without changing the parent shell.
+Configuration is data; diagnostics never contain credential values.
 
 ### Isolated controller Codex home
 
@@ -59,13 +57,16 @@ fails with `IDENTITY_MISMATCH`; an unbound expectation reports
 `IDENTITY_UNBOUND`. Read denial reports `ACCESS_DENIED`. The result names
 expected and observed identities without including token values.
 
-`merge_gate.shared_owner_automation_actor_id`: null by default; positive trusted-owner
-ID matching `github.expected_actor_id`. Diagnostics warn
-`SHARED_OWNER_AUTOMATION_ACCOUNT`; authority behavior remains unchanged. Prefer separate accounts.
+`merge_gate.shared_owner_automation_actor_id`: reserved, null by default; must stay null
+until the bindings ship. A positive trusted-owner ID must match `github.expected_actor_id`.
+The unmerged candidate has nine accepted-policy bindings; excluded/rootless paths
+retain refusals or grant no owner authority: [exact inventory](SHARED-OWNER-PATHS.md).
+`SHARED_OWNER_AUTOMATION_ACCOUNT` warns; shared records prove accounts, not people.
+Prefer separate accounts. Jira opt-out is unavailable O2.
 
 ## Jira identity and binding
 
-For reviewed credential modes, status IDs and search guarantees, see the
+Credential modes/status/search:
 [reference Jira adapter configuration](REFERENCE-JIRA-ADAPTER.md).
 
 Accepted Jira configuration pins `cloud_id`, HTTPS `site`, `provider_project_id`,
@@ -74,7 +75,7 @@ then match this complete identity. A matching project key in another cloud or
 account is not interchangeable. The controller verifies provider identity
 before issue lookup or mutation; disabled Jira performs neither.
 
-Upgrades insert explicit null values for previously absent immutable Jira
+Upgrades insert nulls for absent immutable Jira
 bindings. Discovery remains possible, while writes fail with `IDENTITY_UNBOUND`
 until the binding is reviewed. `workflow.py jira bind --connections OBSERVATION`
 reports candidates and their digest without modifying configuration.

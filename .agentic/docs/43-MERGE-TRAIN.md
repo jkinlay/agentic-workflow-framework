@@ -98,3 +98,6 @@ Jonathan via DevHead decided:
 3. "Q3=A: sequential 54A then 54B PRs."
 4. "Q4=B: owner review only where the source tier's normal final gate requires
    it."
+
+Owner-review admission/revalidation requires accepted automation identity and refuses shared signers,
+regardless of the GitHub opt-out; [candidate boundary](SHARED-OWNER-PATHS.md). Missing identity fails closed.

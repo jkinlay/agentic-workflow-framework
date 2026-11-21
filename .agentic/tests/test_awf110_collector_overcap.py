@@ -206,6 +206,9 @@ class CollectorOvercapApprovalTests(Fixture):
             entry["sha256"] = review_round_receipt_sha256(receipt)
 
     def _collect_and_gate(self):
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        identity = AcceptedOwnerFixture(self, owners=(1001,))
+        identity.config = copy.deepcopy(dict(self.config))
         registry = registry_from_review_host(
             self.host, self.bundle, release_sha256=RELEASE_SHA256
         )
@@ -216,6 +219,7 @@ class CollectorOvercapApprovalTests(Fixture):
             self.contracts,
             NOW,
             posting_collector_registry=registry,
+            accepted_policy_root=identity.root,
         )
 
     def test_real_collector_records_comment_and_gate_accepts_round_four(self):

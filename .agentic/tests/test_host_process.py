@@ -191,6 +191,15 @@ class Launcher {
         (self.worker / 'src/a.py').write_text('value = 1\n', encoding='utf-8', newline='\n')
         (self.worker / '.github/workflows').mkdir(parents=True)
         (self.worker / '.github/workflows/ci.yml').write_text('workflow\n', encoding='utf-8', newline='\n')
+        # The real child must read identity from accepted main policy, never
+        # from its host configuration or the candidate's working files.
+        governance = json.loads((ROOT / '.agentic/examples/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
+        governance['github'].update(repository='fixture/project', repository_id=12,
+                                     expected_actor_id=7001)
+        (self.worker / '.agentic').mkdir()
+        (self.worker / '.agentic/PROJECT_CONFIG.yaml').write_text(
+            json.dumps(governance), encoding='utf-8', newline='\n')
+        shutil.copyfile(ROOT / '.agentic/workflow.yaml', self.worker / '.agentic/workflow.yaml')
         self.command('-C', str(self.worker), 'add', '.')
         self.command('-C', str(self.worker), 'commit', '-m', 'synthetic baseline')
         self.command('-C', str(self.worker), 'checkout', '-b', 'codex/test')
@@ -203,6 +212,11 @@ class Launcher {
         origin = 'https://github.com/fixture/project.git'
         self.command('-C', str(self.worker), 'remote', 'add', 'origin', origin)
         self.command('-C', str(self.critic), 'remote', 'set-url', 'origin', origin)
+        accepted = self.command('-C', str(self.worker), 'rev-parse', 'main').strip()
+        for checkout in (self.worker, self.critic):
+            self.command('-C', str(checkout), 'update-ref', 'refs/remotes/origin/main', accepted)
+            self.command('-C', str(checkout), 'symbolic-ref', 'refs/remotes/origin/HEAD',
+                         'refs/remotes/origin/main')
         self.head = self.command('-C', str(self.worker), 'rev-parse', 'HEAD').strip()
         # This is production-shaped retained controller evidence.  The real CLI
         # must discover and register it through HostDriver; the test never
@@ -226,6 +240,8 @@ class Launcher {
         # A measured miniature runtime uses the production modules and CLI, with
         # its own exact source inventory. No integrity function is monkeypatched.
         shutil.copytree(ROOT / '.agentic/lib', self.runtime / '.agentic/lib', ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copytree(ROOT / '.agentic/schemas', self.runtime / '.agentic/schemas')
+        shutil.copyfile(ROOT / '.agentic/workflow.yaml', self.runtime / '.agentic/workflow.yaml')
         shutil.copytree(ROOT / '.agentic/review-loop', self.runtime / '.agentic/review-loop')
         (self.runtime / '.agentic/scripts').mkdir()
         shutil.copyfile(ROOT / '.agentic/scripts/review_loop.py', self.runtime / '.agentic/scripts/review_loop.py')

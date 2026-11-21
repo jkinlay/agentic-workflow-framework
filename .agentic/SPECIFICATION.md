@@ -53,3 +53,5 @@ Opt-in [status reports](docs/32-ACTIVATION-STATUS.md) use explicit input/existin
 Live Codex review, scheduling and secret-repository pushes require observed rules and qualification; live execution needs configured CI/trusted owners. Restricted pushes need owner publication or rules; local adoption proceeds without invented PRs ([adoption](docs/20-NEW-PROJECT-SETUP.md)). The [Codex review host](docs/28-EXTERNAL-REVIEW.md) requires project qualification.
 
 Continue authorized work; report results/constraints/next actions. Finish on completion, cancellation or no authorized step; name the required event. See [native coordination](docs/24-STREAM-STARTUP.md), [routing](docs/27-MODEL-ROUTING.md) and [scheduled review](docs/22-AUTOMATED-REVIEW-LOOP.md).
+
+Candidate-only shared-account bindings/refusals and deferred Jira: [inventory](docs/SHARED-OWNER-PATHS.md).

@@ -934,6 +934,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                        round_started_at=round_started_at,
                        repository_id=candidate["repository_id"],
                        pr_number=candidate["pr_number"],
+                       accepted_policy_root=accepted_policy_root or repository,
                        **round_kwargs)
         artifact_binding = verdict["critic_artifact_binding"]
         receipt = receipts_by_round.get(verdict["round"])

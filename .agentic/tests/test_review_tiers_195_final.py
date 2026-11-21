@@ -329,6 +329,8 @@ class ReviewTiers195FinalTests(Fixture):
             }))
 
     def test_awf16_r2_015_001_approval_bound_round_four_reaches_real_gate(self):
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        owner_fixture = AcceptedOwnerFixture(self, owners=(1001,))
         self._review_history(3)
         cap = self.record(
             decision="EXTEND_ONE_CYCLE",
@@ -360,6 +362,7 @@ class ReviewTiers195FinalTests(Fixture):
             self.contracts,
             NOW,
             posting_collector_registry=registry,
+            accepted_policy_root=owner_fixture.root,
         )
         self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
         self.assertEqual(3, gate["verified_critic_artifact_bindings"][-1]["round"])

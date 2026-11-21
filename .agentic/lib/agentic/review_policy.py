@@ -50,7 +50,8 @@ NEGATIVE_PHRASES = HARD_PHRASES + SOFT_PHRASES
 
 
 def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
-                          round_started_at, repository_id=None, pr_number=None):
+                          round_started_at, repository_id=None, pr_number=None,
+                          accepted_policy_root=None):
     """Require a canonical trusted-owner PR comment before an over-cap round.
 
     This is a round-admission check, not a cap increase: the configured Tier 3
@@ -76,7 +77,11 @@ def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
         )
 
     started = timestamp(round_started_at)
+    from .provenance import _accepted_owner_config
+    identity = _accepted_owner_config(accepted_policy_root)
     trusted = set(trusted_owner_ids or ())
+    if not trusted.issubset(identity["trusted_owner_ids"]):
+        raise ValidationError("OWNER_TRUST_UNBOUND: round owners differ from accepted configuration")
     for comment in pr_comments or ():
         if not isinstance(comment, dict) or comment.get("channel") != "github_pr_comment":
             continue
@@ -103,6 +108,8 @@ def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
                 and approval["cap"] == cap
                 and approval["approver"] == str(actor_id)
                 and ruling <= created < started):
+            if actor_id == identity["expected_actor_id"]:
+                raise ValidationError("The configured automation actor must not be a trusted owner")
             return True
     raise ValidationError(
         f"Tier 3 review cap is {cap}; round {round_number} requires a canonical owner approval "
@@ -319,8 +326,18 @@ def cap_status(config, cycles, cap_extensions, *, assignment_record=None):
 
 
 def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings, *, risk_tier=2,
-                         assignment_record=None):
+                         assignment_record=None, accepted_policy_root=None):
     """Translate an owner cap disposition into the lifecycle event and verified facts."""
+    def checked_plan(value):
+        from .provenance import _accepted_owner_config
+        identity = _accepted_owner_config(accepted_policy_root)
+        actor = disposition.get("owner_source", {}).get("actor_id")
+        if type(actor) is not int or actor < 1:
+            raise ValidationError("OWNER_TRUST_UNBOUND: cap disposition missing owner_source.actor_id")
+        if actor == identity["expected_actor_id"]:
+            raise ValidationError("The configured automation actor must not be a trusted owner")
+        return value
+
     if assignment_record is None:
         from .review_tiers import runtime_assignment
         assignment_record = runtime_assignment(config)
@@ -343,23 +360,23 @@ def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findi
             raise ValidationError(f"Extension {cap_extensions + 1} exceeds $.execution.max_cap_extensions = {status['max_cap_extensions']}; "
                                   "choose MERGE_WITH_NOTES, PARK or RESCOPE")
         facts.update(cap_extension_available=True, risk_tier=2)
-        return {"event": CAP_EVENTS[decision], "facts": facts, "cycles": cycles, "cap_extensions": cap_extensions + 1}
+        return checked_plan({"event": CAP_EVENTS[decision], "facts": facts, "cycles": cycles, "cap_extensions": cap_extensions + 1})
     if decision == "MERGE_WITH_NOTES":
         boundaries = [item["id"] for item in open_findings if is_boundary(item)]
         if boundaries:
             raise ValidationError("MERGE_WITH_NOTES cannot carry open boundary findings: " + ", ".join(boundaries))
         facts.update(no_open_boundary_findings=True, residual_risks_recorded=True)
         residual = [f"Merged with notes under cap disposition: {item['id']} ({item['severity']}) {item['summary']}" for item in open_findings]
-        return {"event": CAP_EVENTS[decision], "facts": facts, "residual_risks": residual, "cycles": cycles, "cap_extensions": cap_extensions}
+        return checked_plan({"event": CAP_EVENTS[decision], "facts": facts, "residual_risks": residual, "cycles": cycles, "cap_extensions": cap_extensions})
     if decision == "PARK":
         facts["blocker_recorded"] = True
-        return {"event": CAP_EVENTS[decision], "facts": facts, "blocker": {"reason_code": "REVIEW_CAP_PARKED", "resume_state": "CHANGES_REQUESTED"},
-                "cycles": cycles, "cap_extensions": cap_extensions}
+        return checked_plan({"event": CAP_EVENTS[decision], "facts": facts, "blocker": {"reason_code": "REVIEW_CAP_PARKED", "resume_state": "CHANGES_REQUESTED"},
+                "cycles": cycles, "cap_extensions": cap_extensions})
     if not disposition.get("successor_ticket"):
         raise ValidationError("RESCOPE needs a recorded successor ticket")
     facts["successor_recorded"] = True
-    return {"event": CAP_EVENTS[decision], "facts": facts, "successor_ticket": disposition["successor_ticket"],
-            "cycles": cycles, "cap_extensions": cap_extensions}
+    return checked_plan({"event": CAP_EVENTS[decision], "facts": facts, "successor_ticket": disposition["successor_ticket"],
+            "cycles": cycles, "cap_extensions": cap_extensions})
 
 
 def closure_met(contract, worker, critic):

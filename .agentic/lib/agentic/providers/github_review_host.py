@@ -32,7 +32,7 @@ from ..path_containment import is_within, relative_within
 from ..provenance import (format_writer_trailer, parse_critic_run_carrier,
                           validate_critic_run_binding, decode_git_paths,
                           parse_writer_trailer, check_commit_range,
-                          _Git, _commit_details)
+                          _Git, _commit_details, _accepted_owner_config)
 from ..review_loop import ValidationError, require
 from .. import review_qualification
 from ..safeio import Tree, require_record_bytes, retain_codex_log, run_bounded
@@ -1353,14 +1353,28 @@ class HostDriver:
         require(((head.get('repo') or {}).get('id') == self.c['repository_id']
                  and (base.get('repo') or {}).get('id') == self.c['repository_id']),
                 'Provider repository identity changed')
+        owner_config = self._provenance_owner_config()
         return {'version': 1, 'repository_id': self.c['repository_id'],
                 'repository': self.c['repository'], 'pr': self.c['pr'],
                 'head': head.get('sha'), 'head_ref': head.get('ref'),
                 'base': base.get('sha'), 'base_ref': base.get('ref'),
                 'body_sha256': sha256(body.encode('utf-8')),
                 'labels': label_names, 'comments': comments,
-                'trusted_owner_ids': list(self.c['trusted_owner_ids']),
-                'config_sha256': self.c['config_hash']}
+                **owner_config}
+
+    def _provenance_owner_config(self):
+        """Read the accepted project identity; host/supplied config is not policy."""
+        owner_config = _accepted_owner_config(self.worker)
+        # Preserve the reviewed host's narrower allowlist. No accepted owner
+        # can be added by host/supplied configuration, and the verifier always
+        # refuses the accepted automation identity independently of this list.
+        owners = list(self.c.get('trusted_owner_ids', []))
+        require(all(type(actor) is int and actor > 0 for actor in owners)
+                and len(owners) == len(set(owners))
+                and set(owners).issubset(owner_config['trusted_owner_ids']),
+                'Provenance trusted owners differ from accepted project configuration')
+        return {**{key: value for key, value in owner_config.items()
+                   if key != 'binding_sha256'}, 'trusted_owner_ids': owners}
 
     def collect_default_branch_observation(self):
         """Fresh repository/default-ref authority usable before a PR exists."""
@@ -1373,8 +1387,7 @@ class HostDriver:
                 'repository': self.c['repository'], 'pr': self.c.get('pr'),
                 'base': oid, 'base_ref': self.c['base_branch'],
                 'labels': [], 'comments': [],
-                'trusted_owner_ids': list(self.c.get('trusted_owner_ids', [])),
-                'config_sha256': self.c['config_hash']}
+                **self._provenance_owner_config()}
 
     def publish_critic_evidence(self, binding):
         """Publish then freshly reread the immutable critic carrier."""

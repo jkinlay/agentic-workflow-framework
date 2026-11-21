@@ -771,6 +771,11 @@ class BasisAndDispositionTests(Fixture):
 
 
 class CapTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(1001,))
+
     def open_findings(self):
         return [self.finding("F7", "MAJOR", {"criterion_id": "AC2"}), self.finding("F10", "MAJOR", {"criterion_id": "AC1"}, status="DISPUTED")]
 
@@ -795,11 +800,11 @@ class CapTests(Fixture):
         for decision, target in plans.items():
             with self.subTest(decision=decision):
                 extra = {"successor_ticket": "EX-99"} if decision == "RESCOPE" else {}
-                plan = cap_disposition_plan(self.config, self.disposition(decision, **extra), 3, 0, self.open_findings())
+                plan = cap_disposition_plan(self.config, self.disposition(decision, **extra), 3, 0, self.open_findings(), accepted_policy_root=self.owner_fixture.root)
                 self.assertEqual(target, transition("REVIEW_CAP_REACHED", plan["event"], plan["facts"]))
-        plan = cap_disposition_plan(self.config, self.disposition("MERGE_WITH_NOTES"), 3, 0, self.open_findings())
+        plan = cap_disposition_plan(self.config, self.disposition("MERGE_WITH_NOTES"), 3, 0, self.open_findings(), accepted_policy_root=self.owner_fixture.root)
         self.assertEqual(2, len(plan["residual_risks"]))
-        plan = cap_disposition_plan(self.config, self.disposition("PARK"), 3, 0, self.open_findings())
+        plan = cap_disposition_plan(self.config, self.disposition("PARK"), 3, 0, self.open_findings(), accepted_policy_root=self.owner_fixture.root)
         self.assertEqual({"reason_code": "REVIEW_CAP_PARKED", "resume_state": "CHANGES_REQUESTED"}, plan["blocker"])
 
     def test_ac2_run_and_review_round_caps_are_independent(self):
@@ -812,17 +817,17 @@ class CapTests(Fixture):
         self.assertTrue(cap_status(self.config, 3, 0)["cap_reached"])
 
     def test_third_extension_refused_by_governance_path(self):
-        self.assertEqual(1, cap_disposition_plan(self.config, self.disposition("EXTEND_ONE_CYCLE"), 3, 0, self.open_findings())["cap_extensions"])
+        self.assertEqual(1, cap_disposition_plan(self.config, self.disposition("EXTEND_ONE_CYCLE"), 3, 0, self.open_findings(), accepted_policy_root=self.owner_fixture.root)["cap_extensions"])
         with self.assertRaisesRegex(ValidationError, r"\$\.execution\.max_cap_extensions"):
-            cap_disposition_plan(self.config, self.disposition("EXTEND_ONE_CYCLE"), 5, 2, self.open_findings())
+            cap_disposition_plan(self.config, self.disposition("EXTEND_ONE_CYCLE"), 5, 2, self.open_findings(), accepted_policy_root=self.owner_fixture.root)
         with self.assertRaisesRegex(ValidationError, "before the amendment cap"):
-            cap_disposition_plan(self.config, self.disposition("EXTEND_ONE_CYCLE"), 1, 0, self.open_findings())
+            cap_disposition_plan(self.config, self.disposition("EXTEND_ONE_CYCLE"), 1, 0, self.open_findings(), accepted_policy_root=self.owner_fixture.root)
         with self.assertRaisesRegex(ValidationError, "exactly"):
-            cap_disposition_plan(self.config, self.disposition("PARK"), 3, 0, self.open_findings()[:1])
+            cap_disposition_plan(self.config, self.disposition("PARK"), 3, 0, self.open_findings()[:1], accepted_policy_root=self.owner_fixture.root)
         with self.assertRaisesRegex(ValidationError, "boundary"):
             findings = self.open_findings()
             findings[0]["basis"] = {"boundary_code": "PROTECTED_PATH"}
-            cap_disposition_plan(self.config, self.disposition("MERGE_WITH_NOTES"), 3, 0, findings)
+            cap_disposition_plan(self.config, self.disposition("MERGE_WITH_NOTES"), 3, 0, findings, accepted_policy_root=self.owner_fixture.root)
 
     def test_schema_caps_extensions_and_signature_is_required(self):
         self.config["execution"]["max_cap_extensions"] = 4
