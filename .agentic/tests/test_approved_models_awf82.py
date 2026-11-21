@@ -6,6 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
+import shipped_defaults  # noqa: E402
 
 from agentic import ValidationError
 from agentic.canonical import load
@@ -39,12 +40,14 @@ def request():
 class ApprovedModelsAwf82Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.config = load(ROOT / ".agentic" / "PROJECT_CONFIG.yaml")
+        # The shipped template and routing, not the adopter's own model set (AWF-305).
+        cls.config = load(shipped_defaults.PROJECT_CONFIG)
         cls.routing = load_routing(ROOT / ".agentic/tests/fixtures/routing/valid.yaml")
         Contracts(ROOT / ".agentic" / "schemas").validate("project-config", cls.config)
 
     def policy(self):
-        return policy_from_config(deepcopy(self.config))
+        with shipped_defaults.shipped_routing():
+            return policy_from_config(deepcopy(self.config))
 
     def test_shipped_config_accepts_gpt_6_1_sol_at_medium_and_high(self):
         execution = self.config["execution"]

@@ -19,6 +19,7 @@ from agentic.model_routing import (RoutingConfigError, default_policy,
 from agentic.installer import OPERATOR_CONFIG_PATHS, managed
 from agentic.operating import default_operating, validate_operating
 from routing_fixtures import fixture_policy
+import shipped_defaults  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / ".agentic/tests/fixtures/routing"
@@ -118,8 +119,8 @@ class RoutingConfigTests(unittest.TestCase):
             '"worker": {"model": "gpt-5.6-sol", "effort": "medium"}',
             1,
         )
-        governance = json.loads(
-            (ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+        # Shipped defaults: the adopter's approved models may differ (AWF-305).
+        governance = shipped_defaults.project_config()
         operating = default_operating(fixture_policy())
         request = {
             "ticket_id": "AWF-107",

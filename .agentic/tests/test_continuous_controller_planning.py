@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only
+import shipped_defaults
 from agentic import ValidationError
 from agentic.canonical import MAX_DOCUMENT_BYTES, fingerprint, sha256, timestamp
 import agentic.installer as installer
@@ -334,8 +335,13 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 				source = scratch / 'source'
 				(source / installer.MANIFEST).parent.mkdir(parents=True, exist_ok=True)
 				(source / installer.MANIFEST).write_bytes(manifest_raw)
+				fixture_defaults = {
+					'.agentic/PROJECT_CONFIG.yaml': shipped_defaults.PROJECT_CONFIG,
+					'.agentic/routing.yaml': shipped_defaults.ROUTING,
+					'OPERATING_CONFIG.yaml': shipped_defaults.OPERATING_CONFIG,
+				}
 				for path in manifest['files']:
-					installed_path = root / path
+					installed_path = fixture_defaults.get(path, root / path)
 					if installed_path.is_file():
 						target = source / path
 						target.parent.mkdir(parents=True, exist_ok=True)
