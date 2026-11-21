@@ -13,6 +13,8 @@ from .protected_settings import _blob, _default_ref, _git, _origin_url
 
 SETTING = "shared_owner_automation_actor_id"
 SETTING_PATH = "$.merge_gate." + SETTING
+JIRA_SETTING = "shared_owner_controller_actor_id"
+JIRA_SETTING_PATH = "$.jira." + JIRA_SETTING
 OWNER_EVIDENCE_FIELDS = frozenset({"shared_owner_automation_account",
                                    "owner_policy_sha256", "accepted_owner_policy"})
 
@@ -41,7 +43,7 @@ def validate_retained_owner_evidence(record, actor_id):
                      "default_branch_ref", "default_branch_commit", "warnings", "execution_authority"}
     import re
     if (evidence["shared_owner_automation_account"] is not True or not isinstance(policy, dict)
-            or set(policy) != policy_fields or policy["status"] != "OBSERVED"
+            or set(policy) not in (policy_fields, policy_fields | {JIRA_SETTING}) or policy["status"] != "OBSERVED"
             or type(actor_id) is not int or type(policy[SETTING]) is not int or policy[SETTING] != actor_id
             or policy["execution_authority"] is not False
             or evidence["owner_policy_sha256"] != policy["policy_sha256"]
@@ -51,7 +53,10 @@ def validate_retained_owner_evidence(record, actor_id):
             or not policy["default_branch_ref"].startswith("refs/remotes/origin/")
             or not isinstance(policy["default_branch_commit"], str)
             or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", policy["default_branch_commit"]) is None
-            or policy["warnings"] != shared_owner_warnings({"merge_gate": {SETTING: actor_id}})):
+            or (JIRA_SETTING in policy and (not isinstance(policy[JIRA_SETTING], str)
+                or not policy[JIRA_SETTING].strip() or policy[JIRA_SETTING] != policy[JIRA_SETTING].strip()))
+            or policy["warnings"] != shared_owner_warnings({"merge_gate": {SETTING: actor_id},
+                                                          "jira": {JIRA_SETTING: policy.get(JIRA_SETTING)}})):
         raise ValidationError("Shared-owner retained evidence is malformed or differs from its policy digest")
     return evidence
 
@@ -74,14 +79,34 @@ def configured_shared_owner_actor_id(config):
     return actor
 
 
+def configured_shared_jira_actor_id(config):
+    """Validate a proposed Jira account; configuration is not authority."""
+    jira = config.get("jira", {})
+    actor = jira.get(JIRA_SETTING)
+    if actor is None:
+        return None
+    # Match provider_identity._text, which validates Jira controller identities.
+    if not isinstance(actor, str) or not actor.strip() or actor != actor.strip():
+        raise ValidationError(JIRA_SETTING_PATH + ": expected a non-empty canonical Jira account string or null")
+    if actor != jira.get("controller_actor_id"):
+        raise ValidationError(JIRA_SETTING_PATH + ": must equal jira.controller_actor_id exactly")
+    return actor
+
+
 def shared_owner_warnings(config):
     """Report a proposed account even if other fields prevent acceptance."""
     gate = config.get("merge_gate") if isinstance(config, dict) else None
     actor = gate.get(SETTING) if isinstance(gate, dict) else None
-    if type(actor) is not int or not 1 <= actor <= 9007199254740991:
-        return []
-    return [{"path": SETTING_PATH, "code": "SHARED_OWNER_AUTOMATION_ACCOUNT",
-             "message": f"Configured shared owner/automation account {actor}: records identify an account, not a person. This report grants no owner authority; each consumer requires accepted default-branch policy."}]
+    warnings = []
+    if type(actor) is int and 1 <= actor <= 9007199254740991:
+        warnings.append({"path": SETTING_PATH, "code": "SHARED_OWNER_AUTOMATION_ACCOUNT",
+             "message": f"Configured shared owner/automation account {actor}: records identify an account, not a person. This report grants no owner authority; each consumer requires accepted default-branch policy."})
+    jira = config.get("jira") if isinstance(config, dict) else None
+    actor = jira.get(JIRA_SETTING) if isinstance(jira, dict) else None
+    if isinstance(actor, str) and actor.strip():
+        warnings.append({"path": JIRA_SETTING_PATH, "code": "SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT",
+            "message": f"Configured shared owner/controller Jira account {actor}: closure identifies an account, not a person. Retained controller history rules out only its instrumented operations; accepted default-branch policy is required."})
+    return warnings
 
 
 def _has_git_metadata(root):
@@ -211,7 +236,9 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
             _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip() != commit
             or _origin_url(root) != origin):
         raise ValidationError("Shared-owner default-branch policy changed during read")
+    jira_actor = configured_shared_jira_actor_id(accepted)
     return {"status": "OBSERVED", SETTING: configured_shared_owner_actor_id(accepted),
+            **({JIRA_SETTING: jira_actor} if jira_actor is not None else {}),
             "policy_sha256": digest, "config_sha256": sha256(raw_config),
             "workflow_sha256": sha256(raw_workflow), "default_branch_ref": ref,
             "default_branch_commit": commit, "warnings": shared_owner_warnings(accepted),

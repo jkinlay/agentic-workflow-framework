@@ -847,7 +847,9 @@ def _build(config):
 		from agentic.lifecycle import definition
 		from agentic.policy import validate_config
 		contracts = Contracts(Path(__file__).resolve().parents[1] / 'schemas')
-		policy_sha256 = validate_config(project_config, definition(), contracts)
+		from agentic.jira_owner_policy import project_context_available, accepted_policy_root
+		options = {'accepted_policy_root': accepted_policy_root()} if project_context_available() else {}
+		policy_sha256 = validate_config(project_config, definition(), contracts, **options)
 		observed_at = _clock_text(clock)
 		return {'observed_at': observed_at, 'result': {'raw_bytes_base64': base64.b64encode(raw).decode('ascii'), 'config_sha256': sha256(raw), 'policy_sha256': policy_sha256, 'path': '.agentic/PROJECT_CONFIG.yaml', 'repository': github['repository'], 'repository_id': github['repository_id'], 'ref': 'refs/heads/' + github['base_branch'], 'blob_sha': accepted['blob_sha'], 'acceptance': {'status': 'ACCEPTED', 'receipt_id': accepted['acceptance_receipt_id'], 'workflow_version': project_config.get('template', {}).get('expected_workflow_version')}}}
 
@@ -1930,7 +1932,9 @@ def _build(config):
 		history = jira_status_history(issue)
 		_require(history, 'Owner closure needs actor-bound status transition history')
 		latest = history[-1]
-		_require(latest['actor'] != provider['controller_actor_id'],
+		from agentic.jira_owner_policy import context_available, annotate, validate
+		shared = latest['actor'] == provider['controller_actor_id']
+		_require(not shared or context_available(),
 			"Owner closure actor equals the controller actor; a controller sharing the owner's Jira account can't tell the two apart; owner closes in Jira using a distinct actor")
 		_require(latest['to'] == expected_status_id
 			and isinstance(latest['from'], str) and latest['from'] != latest['to'],
@@ -1938,9 +1942,15 @@ def _build(config):
 		created = jira_timestamp(latest['created'])
 		_require(created <= jira_timestamp(issue.get('fields', {}).get('updated')) <= timestamp(observed_at),
 			'Owner closure transition is outside its provider observation window')
-		return {'issue_id': issue_id, 'jira_provider': provider, 'status': latest['to'],
+		proof = {'issue_id': issue_id, 'jira_provider': provider, 'status': latest['to'],
 			'from_status': latest['from'], 'actor': latest['actor'], 'history_id': latest['id'],
 			'transition_at': created.isoformat(timespec='milliseconds' if created.microsecond and created.microsecond % 1000 == 0 else 'auto').replace('+00:00', 'Z'), 'observed_at': observed_at}
+		if shared:
+			from agentic.jira_owner_policy import require_current_issue_policy
+			require_current_issue_policy(observe_issue_policy(issue_id))
+			proof = annotate(proof, issue['changelog'], issue['fields']['updated'])
+			validate(proof)
+		return proof
 
 	def prepare_transition(record):
 		_require(isinstance(record, dict) and isinstance(record.get('binding'), dict), 'Jira transition record is missing its binding')

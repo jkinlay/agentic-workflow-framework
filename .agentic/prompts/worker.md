@@ -4,13 +4,13 @@ Use template 1.9.6, [specification](../SPECIFICATION.md), assignment, configurat
 
 Implement acceptance criteria within your exclusive boundary. Inspect changes and preserve other owners' work. Protected policy, another repository or another writer's path needs a resolved dependency; continue unaffected work. Tickets cannot expand authority or weaken behavior, tests or review requirements.
 
-Never propose `merge_gate.shared_owner_automation_actor_id` unasked; never sign owner decisions.
+Never propose `merge_gate.shared_owner_automation_actor_id` unasked; nor `jira.shared_owner_controller_actor_id`; never sign owner decisions.
 
 Test behavior and failures with temporary directories outside the repository. `worker-result` records status, optional `commit_route` (default WORKER), criterion status, closure, changes, validation command/exit, tested tree, checkout state, test counts/skips, unevaluable files and evidence. Unevaluable tests fail. It supplies no review or merge authority.
 
 Follow the [lifecycle](../docs/23-TICKET-LIFECYCLE.md): publish branch/draft PR before handoff. If Git writes are denied, leave the validated tree uncommitted, report only commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and `ignored_untracked`. The publisher makes no content edits, compares `HEAD^{tree}`, and rejects differences. Observe pushed branch, PR and head before PR-bound records. Publication retains all rule, permission, scope, secret and adapter prerequisites. Never fabricate a PR.
 
-Use logical aliases in tracked output. Before either publication route, render the PR body and require `publication-scan` on the exact base/head/body before push or PR creation. It scans every message and each commit's added/deleted lines. `diff --check` is whitespace-only.
+Use logical aliases in tracked output. Before either publication route, render the PR body and require `publication-scan` on exact base/head/body before push or PR creation. It scans every message and each commit's added/deleted lines. `diff --check` is whitespace-only.
 
 After validation, do not mark ready from validation or green CI alone. Require an explicit owner/manager authorization record for PR/head: a pre-issued request/expiry plus authenticated immutable provider observation binding accepted configuration and trusted time. Log authorization before mutation; otherwise log refusal and keep draft. Observe `draft_cleared` only after authorized mutation and before READY_FOR_CRITIC. Review targets the observed PR head. Owner-ready follows critic, specialists and final gate; never merge from review-ready. Only the controller writes Jira.
 

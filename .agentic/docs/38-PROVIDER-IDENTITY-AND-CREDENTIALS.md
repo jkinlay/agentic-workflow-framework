@@ -63,6 +63,8 @@ expected and observed identities without including token values.
 ID matching `github.expected_actor_id`. Diagnostics warn
 `SHARED_OWNER_AUTOMATION_ACCOUNT`; authority behavior remains unchanged. Prefer separate accounts.
 
+[`jira.shared_owner_controller_actor_id`](SHARED-JIRA-OWNER-POLICY.md).
+
 ## Jira identity and binding
 
 For reviewed credential modes, status IDs and search guarantees, see the
