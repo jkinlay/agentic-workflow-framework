@@ -197,6 +197,8 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
     if ci_gate == 'NOT_CONFIGURED':
         warnings.append({'path': '$.validation.required_ci_checks', 'code': 'CI_NOT_CONFIGURED',
                          'message': 'Adoption may proceed; configure pinned CI before live enablement or gate readiness.'})
+    from .shared_owner_policy import shared_owner_warnings
+    warnings.extend(shared_owner_warnings(config))
     # Schema errors are complete; semantic checks require the closed, typed shape.
     if not schema_errors and isinstance(config, dict):
         try:
@@ -206,6 +208,11 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
         def require(condition, path, reason):
             if not condition:
                 problems.append(issue(path, reason))
+        from .shared_owner_policy import configured_shared_owner_actor_id, SETTING_PATH
+        try:
+            configured_shared_owner_actor_id(config)
+        except ValidationError as exc:
+            problems.append(issue(SETTING_PATH, str(exc)))
         require(type(config['github']['repository_id']) is int and config['github']['repository_id'] > 0,
                 '$.github.repository_id', 'numeric repository identity is unresolved')
         if not isinstance(workflow, dict):

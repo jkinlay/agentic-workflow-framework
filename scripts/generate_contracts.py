@@ -1066,6 +1066,7 @@ def catalog(*, include_ticket_plan=True):
           "require_required_ci_green": TRUE, "require_zero_unresolved_blocking_threads": TRUE,
           "invalidate_on_head_change": TRUE, "invalidate_on_target_base_change": TRUE,
           "authorization_ttl_seconds": integer(1, maximum=86400), "trusted_owner_ids": arr(integer(1), 0, uniqueItems=True),
+          "shared_owner_automation_actor_id": nullable(integer(1)),
           "production_posting_collector_ids": arr(text(), 0, uniqueItems=True),
           "high_risk_owner_quorum": integer(1)}),
         "controller": obj({**{k: BOOL for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
@@ -1117,6 +1118,8 @@ def catalog(*, include_ticket_plan=True):
     # for migrated configurations and cannot register a collector by itself.
     schemas["project-config"]["properties"]["merge_gate"]["required"].remove(
         "production_posting_collector_ids")
+    schemas["project-config"]["properties"]["merge_gate"]["required"].remove(
+        "shared_owner_automation_actor_id")
     # Optional and append-only for upgrades: tracked declarations add detectors;
     # built-ins can be tuned only by the ignored operator-local mapping.
     schemas["project-config"]["properties"]["publication"] = obj({

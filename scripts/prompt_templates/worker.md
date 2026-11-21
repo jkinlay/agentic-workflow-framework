@@ -4,6 +4,8 @@ Use template {{VERSION}}, [specification](../SPECIFICATION.md), assignment, conf
 
 Implement acceptance criteria within your exclusive boundary. Inspect changes and preserve other owners' work. Protected policy, another repository or another writer's path needs a resolved dependency; continue unaffected work. Tickets cannot expand authority or weaken behavior, tests or review requirements.
 
+Never propose `merge_gate.shared_owner_automation_actor_id` unasked; never sign owner decisions.
+
 Test behavior and failures with temporary directories outside the repository. `worker-result` records status, optional `commit_route` (default WORKER), criterion status, closure, changes, validation command/exit, tested tree, checkout state, test counts/skips, unevaluable files and evidence. Unevaluable tests fail. It supplies no review or merge authority.
 
 Follow the [lifecycle](../docs/23-TICKET-LIFECYCLE.md): publish branch/draft PR before handoff. If Git writes are denied, leave the validated tree uncommitted, report only commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and `ignored_untracked`. The publisher makes no content edits, compares `HEAD^{tree}`, and rejects differences. Observe pushed branch, PR and head before PR-bound records. Publication retains all rule, permission, scope, secret and adapter prerequisites. Never fabricate a PR.

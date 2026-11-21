@@ -338,7 +338,8 @@
     "invalidate_on_target_base_change": true,
     "authorization_ttl_seconds": 900,
     "trusted_owner_ids": [],
-    "high_risk_owner_quorum": 1
+    "high_risk_owner_quorum": 1,
+    "shared_owner_automation_actor_id": null
   },
   "controller": {
     "dispatch_enabled": false,
