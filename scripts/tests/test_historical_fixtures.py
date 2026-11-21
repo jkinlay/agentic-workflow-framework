@@ -7,9 +7,9 @@ full-history clone has them; new pinned reads are refused. Fixture-backed
 readers remain independent of Git object retention. The converted-revision
 tripwire prevents their historical pins returning to live Git reads.
 
-This source-repository guard requires Git history and fails if it is absent,
-including shallow clones missing approved commits. Installed copies exclude
-scripts/tests, so this guard is not collected there; no skip is added.
+Only the declared ancestry test requires source Git history. It skips when
+the checkout has no .git; missing approved commits in a Git checkout fail.
+Synthetic detection and failure cases never read the source repository's Git.
 """
 import ast
 import hashlib
@@ -17,12 +17,14 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/tests'))
 import historical_fixtures as fixtures
+from source_only import COMMITTED_GIT_REASON, skip_unless_source_repo
 
 
 PIN = re.compile(r'(?<![0-9a-f])[0-9a-f]{4,40}:')
@@ -150,7 +152,11 @@ def pinned_git_read_details(source):
         def strings(node):
             return {item for item in values(node) if isinstance(item, str)}
 
-        def record(line, form, parts):
+        def record(line, verb, parts, batch=False):
+            # Format diagnostic data here; callers supply operation tokens,
+            # never command strings that could be mistaken for execution.
+            form = ('materialize_commit -> git cat-file --batch' if verb == 'materialize_commit'
+                    else 'git ' + verb + (' --batch' if batch else ''))
             for part in parts:
                 for match in revision_token.finditer(part):
                     findings.add((line, match.group().lower(), form))
@@ -178,7 +184,7 @@ def pinned_git_read_details(source):
                         if isinstance(value, str):
                             operands += parts[:parts.index(verb)]
                         operands += [part for argument in inputs for part in strings(argument)]
-                    record(node.lineno, 'git ' + verb + (' --batch' if batch else ''), operands)
+                    record(node.lineno, verb, operands, batch=batch)
 
         for node in members:
             if not isinstance(node, ast.Call):
@@ -201,7 +207,7 @@ def pinned_git_read_details(source):
             if function == 'materialize_commit':
                 arguments = list(node.args[1:2]) + [item.value for item in node.keywords if item.arg == 'commit']
                 for argument in arguments:
-                    record(node.lineno, 'materialize_commit -> git cat-file --batch', strings(argument))
+                    record(node.lineno, 'materialize_commit', strings(argument))
             # Follow positional and keyword arguments into lexically visible
             # helpers. Attribute calls cover self.method without executing it.
             for depth, (unused, available) in enumerate(environment):
@@ -254,27 +260,46 @@ def assert_live_history_readers_observed(sources):
     assert not stale, 'Stale live-history reader entries: ' + repr(sorted(stale))
 
 
-def assert_live_history_ancestry():
-    def git(*arguments):
-        try:
-            return subprocess.run(['git', *arguments], cwd=ROOT, capture_output=True,
-                                  text=True, encoding='utf-8', timeout=30, check=False)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise AssertionError('Git history is required for this source-repository guard') from error
+def history_git(repository, *arguments):
+    try:
+        return subprocess.run(['git', *arguments], cwd=repository, capture_output=True,
+                              text=True, encoding='utf-8', timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AssertionError('Git history is required for this source-repository guard') from error
 
-    assert git('rev-parse', '--git-dir').returncode == 0, (
+
+def assert_live_history_ancestry(repository, revisions=None):
+    assert history_git(repository, 'rev-parse', '--git-dir').returncode == 0, (
         'Git history is required for this source-repository guard; installed copies exclude scripts/tests')
     # CI feature clones may expose main only as a remote ref, or only HEAD.
     targets = ['HEAD']
     for target in ('refs/heads/main', 'refs/remotes/origin/main'):
-        if git('rev-parse', '--verify', target + '^{commit}').returncode == 0:
+        if history_git(repository, 'rev-parse', '--verify', target + '^{commit}').returncode == 0:
             targets.append(target)
-    for revision in sorted({revision for path, revision in LIVE_HISTORY_READERS}):
-        assert git('cat-file', '-e', revision + '^{commit}').returncode == 0, (
+    if revisions is None:
+        revisions = {revision for path, revision in LIVE_HISTORY_READERS}
+    for revision in sorted(revisions):
+        assert history_git(repository, 'cat-file', '-e', revision + '^{commit}').returncode == 0, (
             'Missing approved live-history commit ' + revision + '; CI/source clones must retain full history')
         for target in targets:
-            assert git('merge-base', '--is-ancestor', revision, target).returncode == 0, (
+            assert history_git(repository, 'merge-base', '--is-ancestor', revision, target).returncode == 0, (
                 'Approved live-history commit ' + revision + ' must be an ancestor of ' + target)
+
+
+def temporary_history_repository():
+    # Retain temporary repositories for inspection; never alter source Git.
+    repository = Path(tempfile.mkdtemp(prefix='history-'))
+    initialized = history_git(repository, 'init', '-b', 'main')
+    assert initialized.returncode == 0, initialized.stderr
+    return repository
+
+
+def temporary_history_commit(repository, message='history fixture'):
+    committed = history_git(repository, '-c', 'user.name=Fixture', '-c',
+                            'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+                            'commit', '--allow-empty', '-m', message)
+    assert committed.returncode == 0, committed.stderr
+    return history_git(repository, 'rev-parse', 'HEAD').stdout.strip()
 
 
 CONVERTED_REVISIONS = (
@@ -335,31 +360,33 @@ class HistoricalFixtureTests(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, 'Stale live-history reader'):
                     assert_live_history_readers_observed(changed)
 
+    @skip_unless_source_repo(COMMITTED_GIT_REASON, '.git')
     def test_live_history_revisions_are_ancestors_of_main_and_head(self):
-        assert_live_history_ancestry()
+        assert_live_history_ancestry(ROOT)
 
     def test_missing_live_history_commit_fails_never_skips(self):
-        def missing_commit(arguments, **kwargs):
-            code = 1 if 'cat-file' in arguments else 0
-            return subprocess.CompletedProcess(arguments, code, '', '')
-
-        with patch('subprocess.run', side_effect=missing_commit):
-            with self.assertRaisesRegex(AssertionError, 'Missing approved live-history commit.*full history'):
-                assert_live_history_ancestry()
+        repository = temporary_history_repository()
+        temporary_history_commit(repository)
+        with self.assertRaisesRegex(AssertionError, 'Missing approved live-history commit.*full history'):
+            assert_live_history_ancestry(repository)
 
     def test_unavailable_git_history_fails_never_skips(self):
+        repository = temporary_history_repository()
+        with self.assertRaisesRegex(AssertionError, 'Git history is required'):
+            assert_live_history_ancestry(Path(tempfile.mkdtemp(prefix='no-history-')))
         with patch('subprocess.run', side_effect=FileNotFoundError('git')):
             with self.assertRaisesRegex(AssertionError, 'Git history is required'):
-                assert_live_history_ancestry()
+                assert_live_history_ancestry(repository)
 
     def test_nonancestor_live_history_commit_fails_never_skips(self):
-        def nonancestor(arguments, **kwargs):
-            code = 1 if 'merge-base' in arguments else 0
-            return subprocess.CompletedProcess(arguments, code, '', '')
-
-        with patch('subprocess.run', side_effect=nonancestor):
-            with self.assertRaisesRegex(AssertionError, 'must be an ancestor of HEAD'):
-                assert_live_history_ancestry()
+        repository = temporary_history_repository()
+        revision = temporary_history_commit(repository)
+        orphaned = history_git(repository, 'checkout', '--orphan', 'unrelated')
+        self.assertEqual(0, orphaned.returncode, orphaned.stderr)
+        unrelated = temporary_history_commit(repository, message='unrelated history fixture')
+        self.assertNotEqual(revision, unrelated)
+        with self.assertRaisesRegex(AssertionError, 'must be an ancestor of HEAD'):
+            assert_live_history_ancestry(repository, revisions=(revision,))
 
     def test_fixture_paths_stay_within_existing_tracked_path_limit(self):
         # Nested clones on Windows hosts hit the 260-character limit.
