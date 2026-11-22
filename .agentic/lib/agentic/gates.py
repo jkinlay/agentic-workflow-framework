@@ -703,6 +703,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     # runtime adapter may pass a registry.  Configuration and environment data
     # can narrow that registry but can never create membership.
     trusted_posting_collectors = posting_collector_registry or {}
+    # A rootless queue evaluation scopes its registered accepted-policy
+    # observation in provenance. Never substitute the installed library root
+    # (the later commit-provenance fallback) for owner identity.
+    round_policy_root = accepted_policy_root or repository
     validate_config(config, workflow, contracts, accepted_policy_root=accepted_policy_root)
     from .authorization import (_authorization_owner_policy, _retained_authorization_policy,
                                 _recheck_authorization_policy)
@@ -934,7 +938,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                        round_started_at=round_started_at,
                        repository_id=candidate["repository_id"],
                        pr_number=candidate["pr_number"],
-                       accepted_policy_root=accepted_policy_root or repository,
+                       accepted_policy_root=round_policy_root,
                        **round_kwargs)
         artifact_binding = verdict["critic_artifact_binding"]
         receipt = receipts_by_round.get(verdict["round"])

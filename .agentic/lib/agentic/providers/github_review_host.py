@@ -1263,7 +1263,7 @@ class HostDriver:
                 return rows
         raise ValidationError('Provider pagination has no bounded terminal page')
 
-    def collect_provenance_observation(self):
+    def collect_provenance_observation(self, *, owner_authority=False):
         """Fresh, bounded repository/PR/label/comment authority snapshot."""
         require('provenance' in self.c and 'trusted_owner_ids' in self.c,
                 'Reviewed provenance policy/trusted owner root is not configured')
@@ -1353,7 +1353,13 @@ class HostDriver:
         require(((head.get('repo') or {}).get('id') == self.c['repository_id']
                  and (base.get('repo') or {}).get('id') == self.c['repository_id']),
                 'Provider repository identity changed')
-        owner_config = self._provenance_owner_config()
+        # Ordinary provider observations do not consume owner authority. Only
+        # an owner-authority request needs the accepted projection; verification
+        # still authenticates the exact record, actor and accepted bytes.
+        owner_config = (self._provenance_owner_config()
+                        if owner_authority
+                        else {'trusted_owner_ids': list(self.c['trusted_owner_ids']),
+                              'config_sha256': self.c['config_hash']})
         return {'version': 1, 'repository_id': self.c['repository_id'],
                 'repository': self.c['repository'], 'pr': self.c['pr'],
                 'head': head.get('sha'), 'head_ref': head.get('ref'),
@@ -1376,7 +1382,7 @@ class HostDriver:
         return {**{key: value for key, value in owner_config.items()
                    if key != 'binding_sha256'}, 'trusted_owner_ids': owners}
 
-    def collect_default_branch_observation(self):
+    def collect_default_branch_observation(self, *, owner_authority=False):
         """Fresh repository/default-ref authority usable before a PR exists."""
         self.require_repository_identity()
         branch = self.api('branches/' + quote(self.c['base_branch'], safe=''))
@@ -1387,7 +1393,9 @@ class HostDriver:
                 'repository': self.c['repository'], 'pr': self.c.get('pr'),
                 'base': oid, 'base_ref': self.c['base_branch'],
                 'labels': [], 'comments': [],
-                **self._provenance_owner_config()}
+                **(self._provenance_owner_config() if owner_authority else
+                   {'trusted_owner_ids': list(self.c.get('trusted_owner_ids', [])),
+                    'config_sha256': self.c['config_hash']})}
 
     def publish_critic_evidence(self, binding):
         """Publish then freshly reread the immutable critic carrier."""

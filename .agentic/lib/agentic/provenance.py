@@ -8,6 +8,8 @@ commits, posts comments, grants an override, or authenticates a host.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 import hashlib
 import json
@@ -514,6 +516,72 @@ def _override_payload(record):
     return {key: value for key, value in record.items() if key != "override_sha256"}
 
 
+_OBSERVED_OWNER_CONFIG = ContextVar('observed_owner_config', default=None)
+
+
+@contextmanager
+def _provider_owner_authority(config, snapshot, registry, *, now):
+    """Scope identity from the queue's receipt-authenticated accepted bytes.
+
+    Reverify the protected runtime receipt; a caller's configuration or digest
+    cannot establish this context. Never retain it beyond this evaluation.
+    """
+    import base64
+    from .canonical import canonical, fresh, load_yaml
+    from .configuration import inspect_config
+    from .contracts import Contracts
+    from .integration_queue import (_verify_stored_provider_observation, _evidence_max_age,
+                                    MAX_DOCUMENT_BYTES, SHA)
+    from .lifecycle import definition
+    from .policy import policy_hash
+    result = _verify_stored_provider_observation(snapshot, registry, 'accepted owner policy')
+    request = {'operation': 'ACCEPTED_PROJECT_CONFIG',
+               'source_identity': {'kind': 'installed_project_configuration',
+                                   'path': '.agentic/PROJECT_CONFIG.yaml'}}
+    _require(snapshot['request'] == request,
+             'OWNER_TRUST_UNBOUND: accepted provider policy request differs')
+    fresh(snapshot['observation']['observed_at'], now, _evidence_max_age(config))
+    fields = {'raw_bytes_base64', 'config_sha256', 'policy_sha256', 'path',
+              'repository', 'repository_id', 'ref', 'blob_sha', 'acceptance'}
+    _require(set(result) == fields
+             and isinstance(result['raw_bytes_base64'], str)
+             and len(result['raw_bytes_base64']) <= ((MAX_DOCUMENT_BYTES + 2) // 3) * 4,
+             'OWNER_TRUST_UNBOUND: accepted provider policy encoding is invalid')
+    raw = base64.b64decode(result['raw_bytes_base64'].encode('ascii'), validate=True)
+    _require(len(raw) <= MAX_DOCUMENT_BYTES and not raw.startswith(b'\xef\xbb\xbf'),
+             'OWNER_TRUST_UNBOUND: accepted provider policy bytes are invalid')
+    accepted = load_yaml(raw)
+    report = inspect_config(accepted, definition(),
+                            Contracts(Path(__file__).resolve().parents[2] / 'schemas'))
+    github = accepted['github']
+    _require(report['status'] == 'ACCEPTED'
+             and canonical(accepted) == canonical(config)
+             and result['config_sha256'] == sha256(raw).hexdigest()
+             and result['policy_sha256'] == policy_hash(accepted, definition())
+             and result['path'] == '.agentic/PROJECT_CONFIG.yaml'
+             and result['ref'] == 'refs/heads/' + github['base_branch']
+             and result['repository'] == github['repository']
+             and result['repository_id'] == github['repository_id']
+             and isinstance(result['blob_sha'], str) and SHA.fullmatch(result['blob_sha'])
+             and isinstance(result['acceptance'], dict)
+             and set(result['acceptance']) == {'status', 'receipt_id', 'workflow_version'}
+             and result['acceptance']['status'] == 'ACCEPTED'
+             and isinstance(result['acceptance']['receipt_id'], str)
+             and bool(result['acceptance']['receipt_id'])
+             and result['acceptance']['workflow_version']
+                 == accepted['template']['expected_workflow_version'],
+             'OWNER_TRUST_UNBOUND: accepted provider policy binding differs')
+    payload = {'config_sha256': result['config_sha256'],
+               'trusted_owner_ids': copy.deepcopy(accepted['merge_gate']['trusted_owner_ids']),
+               'expected_actor_id': github['expected_actor_id']}
+    token = _OBSERVED_OWNER_CONFIG.set({**payload,
+        'binding_sha256': fingerprint('provenance_owner_config', payload)})
+    try:
+        yield
+    finally:
+        _OBSERVED_OWNER_CONFIG.reset(token)
+
+
 def _accepted_owner_config(root):
     """Project immutable accepted default-branch bytes, never working policy.
 
@@ -527,6 +595,8 @@ def _accepted_owner_config(root):
     from .shared_owner_policy import (_default_ref, _git, _policy_blob,
                                       observe_accepted_owner_policy)
 
+    if root is None and _OBSERVED_OWNER_CONFIG.get() is not None:
+        return copy.deepcopy(_OBSERVED_OWNER_CONFIG.get())
     _require(root is not None,
              "OWNER_TRUST_UNBOUND: accepted_policy_root is required")
     ref, _ = _default_ref(root)
@@ -549,7 +619,7 @@ def _accepted_owner_config(root):
              and observed["default_branch_commit"] == commit,
              "OWNER_TRUST_UNBOUND: accepted configuration changed during read")
     actor = config["github"].get("expected_actor_id")
-    _require(type(actor) is int and actor > 0,
+    _require(actor is None or (type(actor) is int and actor > 0),
              "OWNER_TRUST_UNBOUND: accepted github.expected_actor_id is missing or invalid")
     payload = {"config_sha256": sha256(raw).hexdigest(),
                "trusted_owner_ids": copy.deepcopy(config["merge_gate"]["trusted_owner_ids"]),
@@ -581,7 +651,7 @@ def _reviewed_owner_ids(reviewed_owner_config, *, expected_config_sha256=None,
              and len(owners) == len(set(owners)),
              "OWNER_TRUST_UNBOUND: reviewed trusted owner ids must be unique positive numeric ids")
     actor = reviewed_owner_config["expected_actor_id"]
-    _require(type(actor) is int and actor > 0,
+    _require(actor is None or (type(actor) is int and actor > 0),
              "OWNER_TRUST_UNBOUND: reviewed expected_actor_id must be a positive numeric id")
     payload = {"config_sha256": config_sha256,
                "trusted_owner_ids": owners, "expected_actor_id": actor}
@@ -907,8 +977,9 @@ def _provider_owner_config(observation, reviewed_owner_config=None, *,
                  "Provider override reviewed configuration mismatch")
     _require("expected_actor_id" in observation,
              "OWNER_TRUST_UNBOUND: provider owner configuration missing expected_actor_id")
-    _require(type(observation["expected_actor_id"]) is int
-             and observation["expected_actor_id"] > 0,
+    _require(observation["expected_actor_id"] is None
+             or (type(observation["expected_actor_id"]) is int
+                 and observation["expected_actor_id"] > 0),
              "OWNER_TRUST_UNBOUND: provider expected_actor_id must be a positive numeric id")
     if reviewed_owner_config is None:
         # Close the accepted configuration snapshot before authority checking.

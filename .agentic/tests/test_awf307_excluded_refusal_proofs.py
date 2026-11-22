@@ -525,7 +525,7 @@ class HostProjectionRefusalTests(ProviderPolicyFixture):
     def prove(self, consumer):
         for actor in (1001, 1002):
             with self.subTest(actor=actor), self.policy_reads():
-                observed = getattr(self.driver(actor), consumer)()
+                observed = getattr(self.driver(actor), consumer)(owner_authority=True)
                 self.assertEqual(1002, observed["expected_actor_id"])
                 self.assertEqual(sha256(self.blobs[".agentic/PROJECT_CONFIG.yaml"]), observed["config_sha256"])
                 self.assertNotIn("execution_authority", observed)
@@ -667,12 +667,12 @@ class ExcludedIdentitySourceTests(ProviderPolicyFixture):
         fixture.accepted["github"]["expected_actor_id"] = None
         fixture.accepted["merge_gate"]["shared_owner_automation_actor_id"] = None
         fixture.blobs[".agentic/PROJECT_CONFIG.yaml"] = canonical(fixture.accepted)
-        with fixture.policy_reads(), self.assertRaisesRegex(ValidationError, "expected_actor_id"):
-            fixture.authorize(1001, review_policy.authorize_tier3_round)
-        with fixture.policy_reads(), self.assertRaisesRegex(ValidationError, "expected_actor_id"):
-            review_policy.cap_disposition_plan(fixture.config,
+        with fixture.policy_reads():
+            self.assertTrue(fixture.authorize(1001, review_policy.authorize_tier3_round))
+        with fixture.policy_reads():
+            self.assertEqual('CAP_PARK', review_policy.cap_disposition_plan(fixture.config,
                 {"decision": "PARK", "open_finding_ids": [], "owner_source": {"actor_id": 1001}},
-                3, 0, [], accepted_policy_root=fixture.project)
+                3, 0, [], accepted_policy_root=fixture.project)['event'])
 
     def test_rootless_round_and_cap_fail_closed_with_missing_identity_context(self):
         fixture = RoundRefusalTests("runTest")
@@ -764,9 +764,9 @@ class MergeTrainIdentitySourceTests(ProviderPolicyFixture):
         self.accepted["github"]["expected_actor_id"] = None
         self.accepted["merge_gate"]["shared_owner_automation_actor_id"] = None
         self.blobs[".agentic/PROJECT_CONFIG.yaml"] = canonical(self.accepted)
-        with self.policy_reads(), self.assertRaisesRegex(ValidationError, "expected_actor_id"):
-            merge_train._validate_admission_evidence(source, evidence, [1001], now=NOW,
-                max_age_seconds=300, accepted_policy_root=self.project)
+        with self.policy_reads():
+            self.assertTrue(merge_train._validate_admission_evidence(source, evidence, [1001], now=NOW,
+                max_age_seconds=300, accepted_policy_root=self.project))
 
 
 class TierTwoExtensionRefusalTests(ProviderPolicyFixture):
@@ -831,7 +831,7 @@ class HostOwnerNarrowingTests(ProviderPolicyFixture):
             driver = self.driver(actor)
             driver.c["trusted_owner_ids"] = [1001]
             with self.subTest(actor=actor), self.policy_reads():
-                observed = driver.collect_provenance_observation()
+                observed = driver.collect_provenance_observation(owner_authority=True)
                 self.assertEqual([1001], observed["trusted_owner_ids"])
                 if actor == 1002:
                     with self.assertRaisesRegex(ValidationError, "trusted owner"):

@@ -162,7 +162,7 @@ def _recheck_queue_policy(config, root, policy):
 
 def _accepted_project_config(project_config, selector, registry, *, now,
                              return_attestation=False, match_expected=True,
-                             accepted_policy_root=None):
+                             accepted_policy_root=None, owner_observation=None):
     """Authenticate the exact accepted PROJECT_CONFIG bytes before using them.
 
     The selector chooses only an already registered runtime observer.  Identity,
@@ -188,6 +188,7 @@ def _accepted_project_config(project_config, selector, registry, *, now,
         max_age=_evidence_max_age(project_config),
         return_attestation=return_attestation)
     result, attestation = (observation if return_attestation else (observation, None))
+    provider_attestation = deepcopy(attestation)
     fields = {"raw_bytes_base64", "config_sha256", "policy_sha256", "path",
               "repository", "repository_id", "ref", "blob_sha", "acceptance"}
     if not isinstance(result, dict) or set(result) != fields:
@@ -249,6 +250,12 @@ def _accepted_project_config(project_config, selector, registry, *, now,
     if _queue_owner_policy(accepted, accepted_policy_root) != policy:
         raise ValidationError("Shared-owner policy changed during queue configuration observation")
     _recheck_queue_policy(project_config, accepted_policy_root, policy)
+    if owner_observation is not None:
+        if not return_attestation:
+            raise ValidationError("Owner identity context requires the authenticated provider attestation")
+        owner_observation.clear()
+        owner_observation.update(request=deepcopy(request), result=deepcopy(result),
+                                 observation=provider_attestation)
     accepted = deepcopy(accepted)
     return (accepted, attestation) if return_attestation else accepted
 
@@ -1265,9 +1272,11 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
         if project_config_selector is None:
             binding = state.get("mode_record", {}).get("activation", {}).get("app_binding", {})
             project_config_selector = {"producer_id": binding.get("producer_id")}
+        owner_observation = {}
         config, config_trust = _accepted_project_config(
             config, project_config_selector, project_config_observer_registry,
-            now=now, return_attestation=True, accepted_policy_root=accepted_policy_root)
+            now=now, return_attestation=True, accepted_policy_root=accepted_policy_root,
+            owner_observation=owner_observation)
         authority = _authority(config, accepted_policy_root=accepted_policy_root)
         _, mode_trust = _mode_record(
             state.get("mode_record"), state.get("epic"), authority=authority,
@@ -1306,11 +1315,14 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
         from .authorization import verify_record
         from .gates import evaluate
         from .lifecycle import definition
-        evaluated_gate = evaluate(
-            config, definition(), deepcopy(gate_bundle), contracts, now,
-            posting_collector_registry=posting_collector_registry,
-            **({"accepted_policy_root": accepted_policy_root}
-               if accepted_policy_root is not None else {}))
+        from .provenance import _provider_owner_authority
+        with _provider_owner_authority(config, owner_observation,
+                                       project_config_observer_registry, now=now):
+            evaluated_gate = evaluate(
+                config, definition(), deepcopy(gate_bundle), contracts, now,
+                posting_collector_registry=posting_collector_registry,
+                **({"accepted_policy_root": accepted_policy_root}
+                   if accepted_policy_root is not None else {}))
         contracts.validate("final-gate", final_gate)
         # ``evaluate`` assigns a new offline evaluation record/run UUID on each
         # invocation.  Every substantive field must nevertheless match the

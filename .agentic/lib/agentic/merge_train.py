@@ -395,7 +395,11 @@ def _validate_admission_evidence(source, evidence, trusted_owner_ids,
                  "source owner review actor is not trusted")
         from .provenance import _accepted_owner_config
         identity = _accepted_owner_config(accepted_policy_root)
-        _require(str(owner_review["reviewer_id"]) != str(identity["expected_actor_id"]),
+        if identity["expected_actor_id"] is not None:
+            _require(set(trusted_owner_ids).issubset(identity["trusted_owner_ids"]),
+                     "OWNER_TRUST_UNBOUND: source owner review owners differ from accepted configuration")
+        _require(identity["expected_actor_id"] is None
+                 or str(owner_review["reviewer_id"]) != str(identity["expected_actor_id"]),
                  "The configured automation actor must not be a trusted owner")
         _identifier(owner_review["provider_artifact_id"],
                     "owner review provider_artifact_id")

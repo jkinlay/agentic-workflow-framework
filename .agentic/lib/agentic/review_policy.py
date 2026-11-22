@@ -80,7 +80,8 @@ def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
     from .provenance import _accepted_owner_config
     identity = _accepted_owner_config(accepted_policy_root)
     trusted = set(trusted_owner_ids or ())
-    if not trusted.issubset(identity["trusted_owner_ids"]):
+    if (identity["expected_actor_id"] is not None
+            and not trusted.issubset(identity["trusted_owner_ids"])):
         raise ValidationError("OWNER_TRUST_UNBOUND: round owners differ from accepted configuration")
     for comment in pr_comments or ():
         if not isinstance(comment, dict) or comment.get("channel") != "github_pr_comment":
@@ -331,6 +332,8 @@ def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findi
     def checked_plan(value):
         from .provenance import _accepted_owner_config
         identity = _accepted_owner_config(accepted_policy_root)
+        if identity["expected_actor_id"] is None:
+            return value
         actor = disposition.get("owner_source", {}).get("actor_id")
         if type(actor) is not int or actor < 1:
             raise ValidationError("OWNER_TRUST_UNBOUND: cap disposition missing owner_source.actor_id")

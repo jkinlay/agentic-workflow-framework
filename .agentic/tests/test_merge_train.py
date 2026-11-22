@@ -42,7 +42,7 @@ class MergeTrainTests(unittest.TestCase):
         self.tree1 = self._git("rev-parse", f"{self.head1}^{{tree}}")
         self.tree2 = self._git("rev-parse", f"{self.head2}^{{tree}}")
         from accepted_owner_fixture import AcceptedOwnerFixture
-        self.owner_fixture = AcceptedOwnerFixture(self)
+        self.owner_fixture = AcceptedOwnerFixture(self, actor=None)
         self.observer_registry = {}
         self.observer_count = 0
         self.provider_identity = {

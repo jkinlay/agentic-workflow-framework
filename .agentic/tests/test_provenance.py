@@ -43,7 +43,7 @@ from accepted_owner_fixture import AcceptedOwnerFixture
 
 class OwnerIdentityCase(unittest.TestCase):
     def setUp(self):
-        self.owner_fixture = AcceptedOwnerFixture(self)
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(101, 102, 202))
 
     def reviewed_owner_config(self, *owner_ids):
         return self.owner_fixture.projection(owner_ids)
@@ -835,7 +835,7 @@ class RepositoryRangeTests(OwnerIdentityCase):
         self.git_run("config", "commit.gpgsign", "false")
         self.write("README.md", "base\n")
         self.base = self.commit("base", f"Writer: codex/{RUN_A}")
-        self.owner_fixture = AcceptedOwnerFixture(self, root=self.root)
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(101, 202), root=self.root)
 
     def tearDown(self):
         self.temporary.cleanup()

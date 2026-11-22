@@ -60,9 +60,8 @@ class AcceptedOwnerFixture:
         return sha256(canonical(self.config))
 
     def projection(self, owners=None):
-        if owners is not None:
-            self.config['merge_gate']['trusted_owner_ids'] = list(owners)
         payload = {'config_sha256': self.config_sha256,
-                   'trusted_owner_ids': deepcopy(self.config['merge_gate']['trusted_owner_ids']),
+                   'trusted_owner_ids': deepcopy(self.config['merge_gate']['trusted_owner_ids']
+                                                if owners is None else list(owners)),
                    'expected_actor_id': self.config['github']['expected_actor_id']}
         return {**payload, 'binding_sha256': fingerprint('provenance_owner_config', payload)}

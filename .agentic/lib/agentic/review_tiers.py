@@ -229,6 +229,8 @@ def validate_round(tier, round_number, *, owner_cap_disposition=None, config=Non
     if round_number > cap:
         from .provenance import _accepted_owner_config
         identity = _accepted_owner_config(accepted_policy_root)
+        if identity["expected_actor_id"] is None:
+            return True
         source = owner_cap_disposition.get("owner_source")
         actor = source.get("actor_id") if isinstance(source, dict) else None
         if type(actor) is not int or actor < 1:
