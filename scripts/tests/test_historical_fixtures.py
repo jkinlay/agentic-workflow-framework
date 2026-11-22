@@ -1,23 +1,63 @@
-"""Historical sources stay byte-exact and independent of Git object retention."""
+"""Byte-exact fixtures and the owner's four approved live-history readers.
+
+Owner decision, 20 Nov 2026: "All four: documented history (Recommended)".
+The allowlist below documents each reader and its exact path/full revision.
+These commits are ancestors of main and release tags v1.9.x, so CI's
+full-history clone has them; new pinned reads are refused. Fixture-backed
+readers remain independent of Git object retention. The converted-revision
+tripwire prevents their historical pins returning to live Git reads.
+
+Only the declared ancestry test requires source Git history. It skips when
+the checkout has no .git; missing approved commits in a Git checkout fail.
+Synthetic detection and failure cases never read the source repository's Git.
+"""
 import ast
 import hashlib
 from pathlib import Path
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/tests'))
 import historical_fixtures as fixtures
+from source_only import COMMITTED_GIT_REASON, skip_unless_source_repo
 
 
 PIN = re.compile(r'(?<![0-9a-f])[0-9a-f]{4,40}:')
-# AWF-309 will convert this receipt reader. This commit is an ancestor of
-# origin/main and the release tags, so CI can fetch it.
-PINNED_GIT_READ_EXCEPTIONS = {
+# Identities are path + full revision, never whole-file or line exemptions.
+LIVE_HISTORY_READERS = {
     ('.agentic/tests/test_upgrade_receipts.py',
-     '1f5f146352ff0a8222a6be1ef9186e4609b11033'),
+     '1f5f146352ff0a8222a6be1ef9186e4609b11033'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'git_blob: 209 immutable manifest paths, MANIFEST.json, .agentic/PROJECT_CONFIG.yaml and .agentic/workflow-version.yaml for historical receipt identity.',
+    },
+    ('.agentic/tests/upgrade_195_fixtures.py',
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'materialize_published: entire raw published v1.9.5 commit tree through publish_release.materialize_commit and git cat-file --batch.',
+    },
+    ('.agentic/tests/test_twelve_streams.py',
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'test_published_195_runtime_retains_original_upper_label_refusal: git archive of .agentic/** and MANIFEST.json for the published runtime refusal.',
+    },
+    ('.agentic/tests/test_awf242_settings_second_look.py',
+     '8ad399943c8f5e4f17db72f3e321b9365ee27782'): {
+        'owner_decision_date': '2026-11-20',
+        'owner_decision': 'All four: documented history (Recommended)',
+        'reason': "The commit is an ancestor of main and release tags v1.9.x, so CI's full-history clone has it.",
+        'reads': 'test_legacy_event_chain_survives_merged_block: git archive of .agentic/lib/** and .agentic/schemas/** for the published legacy event chain.',
+    },
 }
 
 
@@ -26,63 +66,240 @@ def pinned_git_reads(source):
 
 
 def pinned_git_read_revisions(source):
-    """Inspect command arguments, not quoted Python used as scanner test data."""
-    # Scope: git show with a literal or module-level constant revision, plain
-    # or annotated. Wider command/revision detection belongs to AWF-309.
+    return sorted({(line, revision) for line, revision, form in pinned_git_read_details(source)})
+
+
+def pinned_git_read_details(source):
+    """Conservative source-only data flow; never execute quoted Python test data.
+
+    Resolve lexical bindings and calls to local helpers, including defaults.
+    Alternative assignments are retained, so a dynamic/unknown value cannot
+    erase a known pin. Cycles stop at the binding/call already being inspected.
+    The release materializer is an explicit indirect raw-tree Git read sink.
+    This is a syntax guard, not an arbitrary Python execution analyser.
+    """
     tree = ast.parse(source)
-    values = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and isinstance(node.value.value, str):
-                    values[target.id] = node.value.value
-        elif (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
-            values[node.target.id] = node.value.value
+    findings = set()
+    revision_token = re.compile(r'(?<![0-9a-fA-F])[0-9a-fA-F]{4,40}(?![0-9a-fA-F])')
+    runners = {'run', 'check_output', 'check_call', 'Popen', 'getoutput', 'run_bounded'}
+    git_helpers = {'git', 'git_run', 'run_git'}
 
-    def text(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.Name):
-            return values.get(node.id, '')
-        if isinstance(node, ast.FormattedValue):
-            return text(node.value)
-        if isinstance(node, ast.JoinedStr):
-            return ''.join(text(item) for item in node.values)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return text(node.left) + text(node.right)
-        return ''
+    def nodes(body):
+        for node in body:
+            yield node
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                yield from nodes(ast.iter_child_nodes(node))
 
-    findings = []
+    def name(node):
+        return node.id if isinstance(node, ast.Name) else getattr(node, 'attr', '')
 
-    def record(line, parts):
-        findings.extend((line, match.group()[:-1])
-                        for part in parts for match in PIN.finditer(part))
+    def scope(body, outer=(), parameters=None, active=()):
+        local = {}
+        functions = {}
+        members = list(nodes(body))
+        for node in members:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions[node.name] = node
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        local.setdefault(target.id, []).append(node.value)
+        for parameter, arguments in (parameters or {}).items():
+            local.setdefault(parameter, []).extend(arguments)
+        environment = ((local, functions), *outer)
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, 'attr', '')
-        if name in {'git', 'git_run', 'run_git'}:
-            parts = [text(argument) for argument in node.args]
-            if 'show' in parts and any(PIN.search(part) for part in parts):
-                record(node.lineno, parts)
-        for argument in node.args:
-            if isinstance(argument, (ast.List, ast.Tuple)):
-                parts = [text(item) for item in argument.elts]
-                if 'git' in parts and 'show' in parts and any(PIN.search(part) for part in parts):
-                    record(node.lineno, parts)
-            elif isinstance(argument, (ast.Constant, ast.JoinedStr, ast.BinOp)):
-                command = text(argument)
-                if (name in {'run', 'check_output', 'check_call', 'Popen', 'getoutput'}
-                        and re.search(r'\bgit\s+.*\bshow\s+', command) and PIN.search(command)):
-                    record(node.lineno, [command])
-    return sorted(set(findings))
+        def values(node, seen=(), lookup=None):
+            lookup = environment if lookup is None else lookup
+            if isinstance(node, (str, tuple)):
+                return {node}
+            if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+                return {node.value.decode('utf-8', errors='surrogateescape') if isinstance(node.value, bytes) else node.value}
+            if isinstance(node, ast.Name):
+                for depth, (bindings, unused) in enumerate(lookup):
+                    if node.id in bindings:
+                        key = (id(bindings), node.id)
+                        if key in seen:
+                            return {''}
+                        return {value for item in bindings[node.id]
+                                for value in values(item, (*seen, key), lookup[depth:])} or {''}
+            if isinstance(node, ast.FormattedValue):
+                return values(node.value, seen, lookup)
+            if isinstance(node, (ast.JoinedStr, ast.List, ast.Tuple)):
+                parts = {''} if isinstance(node, ast.JoinedStr) else {()}
+                for item in (node.values if isinstance(node, ast.JoinedStr) else node.elts):
+                    resolved = values(item.value if isinstance(item, ast.Starred) else item, seen, lookup)
+                    parts = {left + (right if isinstance(left, str) else
+                                     right if isinstance(item, ast.Starred) and isinstance(right, tuple)
+                                     else (right,))
+                             for left in parts for right in resolved
+                             if not isinstance(left, str) or isinstance(right, str)}
+                return parts
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                return {left + right for left in values(node.left, seen, lookup)
+                        for right in values(node.right, seen, lookup) if type(left) is type(right)}
+            if isinstance(node, ast.Call):
+                function = name(node.func)
+                if function in {'which', 'encode', 'decode'}:
+                    target = node.args[0] if function == 'which' and node.args else getattr(node.func, 'value', None)
+                    return values(target, seen, lookup)
+                if function == 'Popen':
+                    argument = node.args[0] if node.args else next(
+                        (item.value for item in node.keywords if item.arg == 'args'), None)
+                    return values(argument, seen, lookup)
+            return {''}
+
+        def strings(node):
+            return {item for item in values(node) if isinstance(item, str)}
+
+        def record(line, verb, parts, batch=False):
+            # Format diagnostic data here; callers supply operation tokens,
+            # never command strings that could be mistaken for execution.
+            form = ('materialize_commit -> git cat-file --batch' if verb == 'materialize_commit'
+                    else 'git ' + verb + (' --batch' if batch else ''))
+            for part in parts:
+                for match in revision_token.finditer(part):
+                    findings.add((line, match.group().lower(), form))
+
+        def command(node, argument, helper=False, inputs=()):
+            for value in values(argument):
+                if isinstance(value, tuple):
+                    parts = [item for item in value if isinstance(item, str)]
+                elif isinstance(value, str):
+                    # Tokenize shell commands only at an actual process call.
+                    parts = re.findall(r"[^\s'\"]+", value)
+                else:
+                    continue
+                if not helper and not any(Path(part).name.lower() in {'git', 'git.exe'} for part in parts):
+                    continue
+                for verb in ('show', 'cat-file', 'archive'):
+                    if verb not in parts:
+                        continue
+                    tail = parts[parts.index(verb) + 1:]
+                    # Options can contain hexadecimal format text; only operands
+                    # and batch requests carry object identities.
+                    operands = [part for part in tail if not part.startswith('-')]
+                    batch = verb == 'cat-file' and any(part.startswith('--batch') for part in tail)
+                    if batch:
+                        if isinstance(value, str):
+                            operands += parts[:parts.index(verb)]
+                        operands += [part for argument in inputs for part in strings(argument)]
+                    record(node.lineno, verb, operands, batch=batch)
+
+        for node in members:
+            if not isinstance(node, ast.Call):
+                continue
+            function = name(node.func)
+            inputs = [item.value for item in node.keywords if item.arg in {'input', 'input_data'}]
+            if function in git_helpers:
+                command(node, ast.Tuple(elts=list(node.args), ctx=ast.Load()), True, inputs)
+            # Preserve the original guard's list/tuple detection at any call,
+            # as well as resolving command variables at process runners.
+            for argument in node.args:
+                if isinstance(argument, (ast.List, ast.Tuple)):
+                    command(node, argument, inputs=inputs)
+            if function in runners:
+                arguments = list(node.args) + [item.value for item in node.keywords if item.arg == 'args']
+                for argument in arguments:
+                    command(node, argument, inputs=inputs)
+            if function == 'communicate' and isinstance(node.func, ast.Attribute):
+                command(node, node.func.value, inputs=[*node.args, *inputs])
+            if function == 'materialize_commit':
+                arguments = list(node.args[1:2]) + [item.value for item in node.keywords if item.arg == 'commit']
+                for argument in arguments:
+                    record(node.lineno, 'materialize_commit', strings(argument))
+            # Follow positional and keyword arguments into lexically visible
+            # helpers. Attribute calls cover self.method without executing it.
+            for depth, (unused, available) in enumerate(environment):
+                target = available.get(function)
+                if target is not None:
+                    invoke(target, node, environment[depth:], active, values)
+                    break
+
+        for node in members:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                invoke(node, None, environment, active, values)
+            elif isinstance(node, ast.ClassDef):
+                scope(node.body, environment, active=active)
+
+    def invoke(target, call, environment, active, resolve):
+        if id(target) in active:
+            return
+        positional = [*target.args.posonlyargs, *target.args.args]
+        parameters = {argument.arg: [''] for argument in [*positional, *target.args.kwonlyargs]}
+        defaults = list(zip(positional[len(positional) - len(target.args.defaults):], target.args.defaults))
+        defaults += list(zip(target.args.kwonlyargs, target.args.kw_defaults))
+        for argument, default in defaults:
+            if default is not None:
+                parameters[argument.arg] = list(resolve(default, lookup=environment))
+        if call is not None:
+            arguments = positional
+            if isinstance(call.func, ast.Attribute) and arguments and arguments[0].arg in {'self', 'cls'}:
+                arguments = arguments[1:]
+            for argument, value in zip(arguments, call.args):
+                parameters[argument.arg] = list(resolve(value))
+            for keyword in call.keywords:
+                if keyword.arg in parameters:
+                    parameters[keyword.arg] = list(resolve(keyword.value))
+        scope(target.body, environment, parameters, (*active, id(target)))
+
+    scope(tree.body)
+    return sorted(findings)
 
 
 def unexpected_pinned_git_reads(path, source):
     return [(line, revision) for line, revision in pinned_git_read_revisions(source)
-            if (path, revision) not in PINNED_GIT_READ_EXCEPTIONS]
+            if (path, revision) not in LIVE_HISTORY_READERS]
+
+
+def assert_live_history_readers_observed(sources):
+    observed = {(path, revision) for path, source in sources.items()
+                for line, revision in pinned_git_read_revisions(source)
+                if (path, revision) in LIVE_HISTORY_READERS}
+    stale = set(LIVE_HISTORY_READERS) - observed
+    assert not stale, 'Stale live-history reader entries: ' + repr(sorted(stale))
+
+
+def history_git(repository, *arguments):
+    try:
+        return subprocess.run(['git', *arguments], cwd=repository, capture_output=True,
+                              text=True, encoding='utf-8', timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AssertionError('Git history is required for this source-repository guard') from error
+
+
+def assert_live_history_ancestry(repository, revisions=None):
+    assert history_git(repository, 'rev-parse', '--git-dir').returncode == 0, (
+        'Git history is required for this source-repository guard; installed copies exclude scripts/tests')
+    # CI feature clones may expose main only as a remote ref, or only HEAD.
+    targets = ['HEAD']
+    for target in ('refs/heads/main', 'refs/remotes/origin/main'):
+        if history_git(repository, 'rev-parse', '--verify', target + '^{commit}').returncode == 0:
+            targets.append(target)
+    if revisions is None:
+        revisions = {revision for path, revision in LIVE_HISTORY_READERS}
+    for revision in sorted(revisions):
+        assert history_git(repository, 'cat-file', '-e', revision + '^{commit}').returncode == 0, (
+            'Missing approved live-history commit ' + revision + '; CI/source clones must retain full history')
+        for target in targets:
+            assert history_git(repository, 'merge-base', '--is-ancestor', revision, target).returncode == 0, (
+                'Approved live-history commit ' + revision + ' must be an ancestor of ' + target)
+
+
+def temporary_history_repository():
+    # Retain temporary repositories for inspection; never alter source Git.
+    repository = Path(tempfile.mkdtemp(prefix='history-'))
+    initialized = history_git(repository, 'init', '-b', 'main')
+    assert initialized.returncode == 0, initialized.stderr
+    return repository
+
+
+def temporary_history_commit(repository, message='history fixture'):
+    committed = history_git(repository, '-c', 'user.name=Fixture', '-c',
+                            'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+                            'commit', '--allow-empty', '-m', message)
+    assert committed.returncode == 0, committed.stderr
+    return history_git(repository, 'rev-parse', 'HEAD').stdout.strip()
 
 
 CONVERTED_REVISIONS = (
@@ -133,6 +350,44 @@ def unexpected_converted_revision_tokens(path, source):
 
 
 class HistoricalFixtureTests(unittest.TestCase):
+    def test_live_history_allowlist_stale_entry_fails_for_synthetic_sources(self):
+        sources = {path: "run(['git', 'archive', '" + revision + "'])"
+                   for path, revision in LIVE_HISTORY_READERS}
+        assert_live_history_readers_observed(sources)
+        for path, revision in LIVE_HISTORY_READERS:
+            with self.subTest(path=path):
+                changed = {**sources, path: "run(['git', 'archive', 'HEAD'])"}
+                with self.assertRaisesRegex(AssertionError, 'Stale live-history reader'):
+                    assert_live_history_readers_observed(changed)
+
+    @skip_unless_source_repo(COMMITTED_GIT_REASON, '.git')
+    def test_live_history_revisions_are_ancestors_of_main_and_head(self):
+        assert_live_history_ancestry(ROOT)
+
+    def test_missing_live_history_commit_fails_never_skips(self):
+        repository = temporary_history_repository()
+        temporary_history_commit(repository)
+        with self.assertRaisesRegex(AssertionError, 'Missing approved live-history commit.*full history'):
+            assert_live_history_ancestry(repository)
+
+    def test_unavailable_git_history_fails_never_skips(self):
+        repository = temporary_history_repository()
+        with self.assertRaisesRegex(AssertionError, 'Git history is required'):
+            assert_live_history_ancestry(Path(tempfile.mkdtemp(prefix='no-history-')))
+        with patch('subprocess.run', side_effect=FileNotFoundError('git')):
+            with self.assertRaisesRegex(AssertionError, 'Git history is required'):
+                assert_live_history_ancestry(repository)
+
+    def test_nonancestor_live_history_commit_fails_never_skips(self):
+        repository = temporary_history_repository()
+        revision = temporary_history_commit(repository)
+        orphaned = history_git(repository, 'checkout', '--orphan', 'unrelated')
+        self.assertEqual(0, orphaned.returncode, orphaned.stderr)
+        unrelated = temporary_history_commit(repository, message='unrelated history fixture')
+        self.assertNotEqual(revision, unrelated)
+        with self.assertRaisesRegex(AssertionError, 'must be an ancestor of HEAD'):
+            assert_live_history_ancestry(repository, revisions=(revision,))
+
     def test_fixture_paths_stay_within_existing_tracked_path_limit(self):
         # Nested clones on Windows hosts hit the 260-character limit.
         paths = sorted(path.relative_to(ROOT).as_posix()
@@ -181,21 +436,187 @@ class HistoricalFixtureTests(unittest.TestCase):
         self.assertEqual([], pinned_git_reads("run(['git', 'show', 'HEAD:file'])"))
         self.assertEqual([], pinned_git_reads('source = "run([\'git\', \'show\', \'abcd1234:file\'])"'))
 
+    def test_guard_detects_wider_pinned_read_forms(self):
+        cases = {
+            'cat_file_pretty': (
+                "subprocess.check_output(['git', 'cat-file', '-p', 'abcd1234:file'])"
+            ),
+            'cat_file_blob': (
+                "subprocess.run(['git', 'cat-file', 'blob', 'abcd1234:file'])"
+            ),
+            'cat_file_batch': (
+                "subprocess.run(['git', 'cat-file', '--batch'], input=b'abcd1234:file\\n')"
+            ),
+            'cat_file_batch_format': (
+                "subprocess.run(['git', 'cat-file', '--batch=%(objectname)'], input='abcd1234:file\\n')"
+            ),
+            'cat_file_batch_command': (
+                "subprocess.run(['git', 'cat-file', '--batch-command'], input='contents abcd1234:file\\n')"
+            ),
+            'cat_file_batch_communicate': (
+                "proc = subprocess.Popen(['git', 'cat-file', '--batch'], stdin=PIPE)\n"
+                "proc.communicate(b'abcd1234:file\\n')"
+            ),
+            'archive_literal': (
+                "subprocess.run(['git', 'archive', 'abcd1234', '.agentic'])"
+            ),
+            'archive_shell': (
+                "subprocess.check_output('git archive abcd1234 .agentic')"
+            ),
+            'show_parameter': (
+                'def historical(revision):\n'
+                "    return git('show', revision + ':file')\n"
+                "historical('abcd1234')"
+            ),
+            'cat_file_parameter': (
+                'def historical(revision):\n'
+                "    return git('cat-file', '-p', revision + ':file')\n"
+                "historical(revision='abcd1234')"
+            ),
+            'archive_parameter': (
+                'def historical(revision):\n'
+                "    return git('archive', revision)\n"
+                "historical('abcd1234')"
+            ),
+            'show_default': (
+                "REV = 'abcd1234'\n"
+                'def historical(revision=REV):\n'
+                "    return git('show', f'{revision}:file')"
+            ),
+            'cat_file_default': (
+                "def historical(*, revision='abcd1234'):\n"
+                "    return git('cat-file', 'blob', f'{revision}:file')"
+            ),
+            'archive_default': (
+                "def historical(revision='abcd1234'):\n"
+                "    return git('archive', revision)"
+            ),
+            'local_alias': (
+                'def historical():\n'
+                "    revision = 'abcd1234'\n"
+                '    alias = revision\n'
+                "    return subprocess.run(['git', 'show', f'{alias}:file'])"
+            ),
+            'constant_fstring': (
+                "REV: str = 'abcd1234'\n"
+                "OBJECT = f'{REV}:file'\n"
+                "subprocess.run(['git', 'show', OBJECT])"
+            ),
+            'command_variable_keyword': (
+                "revision = 'abcd1234'\n"
+                "command = ['git', 'show', revision + ':file']\n"
+                'subprocess.run(args=command)'
+            ),
+            'which_git': (
+                "subprocess.run([shutil.which('git'), 'archive', 'abcd1234'])"
+            ),
+            'starred_command': (
+                "GIT = ['git', '-C', '.']\n"
+                "subprocess.run([*GIT, 'archive', 'abcd1234'])"
+            ),
+            'parameter_chain': (
+                'def read(revision):\n'
+                "    return git('show', revision + ':file')\n"
+                'def historical(revision):\n'
+                '    return read(revision)\n'
+                "historical('abcd1234')"
+            ),
+            'materialize_commit': (
+                "REV = 'abcd1234'\n"
+                'publish_release.materialize_commit(repository, REV, destination)'
+            ),
+            'batch_shell_pipe': (
+                "subprocess.check_output('echo abcd1234:file | git cat-file --batch')"
+            ),
+            'batch_encoded_input': (
+                "REV = 'abcd1234'\n"
+                "subprocess.run(['git', 'cat-file', '--batch'], input=f'{REV}:file\\n'.encode())"
+            ),
+            'cat_file_local_alias': (
+                'def historical():\n'
+                "    revision = 'abcd1234'\n"
+                '    alias = revision\n'
+                "    return subprocess.run(['git', 'cat-file', '-p', f'{alias}:file'])"
+            ),
+            'archive_local_alias': (
+                'def historical():\n'
+                "    revision = 'abcd1234'\n"
+                '    alias = revision\n'
+                "    return subprocess.run(['git', 'archive', alias])"
+            ),
+            'cat_file_constant_fstring': (
+                "REV: str = 'abcd1234'\n"
+                "OBJECT = f'{REV}:file'\n"
+                "subprocess.run(['git', 'cat-file', 'blob', OBJECT])"
+            ),
+            'archive_constant_fstring': (
+                "REV: str = 'abcd1234'\n"
+                "OBJECT = f'{REV}'\n"
+                "subprocess.run(['git', 'archive', OBJECT])"
+            ),
+            'method_parameter': (
+                'class Reader:\n'
+                '    def historical(self, revision):\n'
+                "        return git('show', revision + ':file')\n"
+                '    def test_read(self):\n'
+                "        self.historical('abcd1234')"
+            ),
+            'assigned_parameter': (
+                'def historical(revision):\n'
+                "    revision = 'abcd1234'\n"
+                "    return git('archive', revision)"
+            ),
+            'lexical_constant_alias': (
+                "REV = 'abcd1234'\n"
+                "OBJECT = f'{REV}:file'\n"
+                'def historical():\n'
+                "    REV = 'HEAD'\n"
+                "    return git('show', OBJECT)"
+            ),
+        }
+        for form, source in cases.items():
+            with self.subTest(form=form):
+                self.assertEqual(['abcd1234'], sorted({revision for line, revision in
+                    pinned_git_read_revisions(source)}))
+
     def test_tests_do_not_read_pinned_revisions_from_git(self):
         findings = []
-        observed_exceptions = set()
+        sources = {}
         for folder in (ROOT / '.agentic/tests', ROOT / 'scripts/tests'):
             for path in sorted(folder.rglob('*.py')):
                 relative = path.relative_to(ROOT).as_posix()
                 source = path.read_text(encoding='utf-8')
-                observed_exceptions.update((relative, revision)
-                    for line, revision in pinned_git_read_revisions(source)
-                    if (relative, revision) in PINNED_GIT_READ_EXCEPTIONS)
+                sources[relative] = source
                 findings.extend(f'{relative}:{line}'
                                 for line, revision in unexpected_pinned_git_reads(relative, source))
-        self.assertEqual(PINNED_GIT_READ_EXCEPTIONS, observed_exceptions,
-                         'AWF-309: remove the stale pinned Git read exception after conversion')
-        self.assertEqual([], findings, 'Vendor historical sources and record them in the fixture index')
+        assert_live_history_readers_observed(sources)
+        self.assertEqual([], findings, 'New pinned Git reads require fixtures; only documented owner-approved identities are allowed')
+
+    def test_live_history_allowlist_rejects_other_paths_and_revisions(self):
+        for path, revision in LIVE_HISTORY_READERS:
+            source = "run(['git', 'archive', '" + revision + "'])"
+            with self.subTest(path=path, revision=revision):
+                self.assertEqual([], unexpected_pinned_git_reads(path, source))
+                self.assertEqual([(1, revision)], unexpected_pinned_git_reads('other.py', source))
+                changed = source.replace(revision, 'a' * 40)
+                self.assertEqual([(1, 'a' * 40)], unexpected_pinned_git_reads(path, changed))
+
+    def test_guard_ignores_unexecuted_source_and_current_revisions_in_new_forms(self):
+        for verb in ('show', 'cat-file', 'archive'):
+            for revision in ('HEAD', 'main', 'v1.9.5'):
+                source = "subprocess.run(['git', '" + verb + "', '" + revision + "'])"
+                self.assertEqual([], pinned_git_read_revisions(source))
+            source = "source = " + repr("subprocess.run(['git', '" + verb + "', 'abcd1234:file'])")
+            self.assertEqual([], pinned_git_read_revisions(source))
+        self.assertEqual([], pinned_git_read_revisions("run(['echo', 'git show abcd1234:file'])"))
+        self.assertEqual([], pinned_git_read_revisions("run(['echo', 'abcd1234:file'])"))
+
+    def test_guard_retains_alternative_bindings_and_stops_cycles(self):
+        source = ("REV = 'abcd1234'\nREV = unknown\n"
+                  "alias = REV\nREV = alias\nrun(['git', 'show', REV + ':file'])")
+        self.assertIn((5, 'abcd1234'), pinned_git_read_revisions(source))
+        self.assertEqual([(1, 'abcd1234')], pinned_git_read_revisions(
+            "capture(['git', 'show', 'abcd1234:file'])"))
 
     def test_guard_detects_annotated_constant_from_review_reproduction(self):
         source = ('REV: str = "a3336b8990a9e59985f67bf69d41846b898db57b"\n'
@@ -256,11 +677,12 @@ class HistoricalFixtureTests(unittest.TestCase):
                     unexpected_converted_revision_tokens(relative, path.read_text(encoding='utf-8')))
         self.assertEqual([], findings, 'Converted revision tokens belong only in fixture-loader calls')
 
-    def test_receipt_exception_is_detected_in_real_tree_and_tolerated(self):
+    def test_receipt_reader_is_detected_in_real_tree_and_tolerated(self):
         path = '.agentic/tests/test_upgrade_receipts.py'
         revision = '1f5f146352ff0a8222a6be1ef9186e4609b11033'
         source = (ROOT / path).read_text(encoding='utf-8')
-        self.assertEqual({(path, revision)}, PINNED_GIT_READ_EXCEPTIONS)
+        self.assertEqual({(path, revision)}, {identity for identity in LIVE_HISTORY_READERS
+                                          if identity[0] == path})
         reads = pinned_git_read_revisions(source)
         self.assertEqual([revision], [pin for line, pin in reads])
         self.assertEqual(pinned_git_reads(source), [line for line, pin in reads])

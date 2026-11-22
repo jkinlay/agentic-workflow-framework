@@ -842,7 +842,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_generate_examples_status_report.py` | `00d899906ad02e35b5170bb28a9485de365e41b1d7c86df2f12f58288e956989` |
 | `scripts/tests/test_generate_examples_ticket_plan.py` | `6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2` |
 | `scripts/tests/test_generate_workflow_blob_sha.py` | `8b1bb85282a8ca5a7df1fa7c5c1b15a863ebdc5596746153ae23e47acab38cd6` |
-| `scripts/tests/test_historical_fixtures.py` | `a561ba169dc49a5e102231ec66ac8011a8a915d2ab78a2e11a9c9ed1cdbbd590` |
+| `scripts/tests/test_historical_fixtures.py` | `2ce44d94aef78863f88445c5b39e2097aac94602872a9928e19103207cbc5c34` |
 | `scripts/tests/test_installed_adopter_configuration.py` | `98ed1a43e26c77a2695ee97272e1aac72861da20f7545fc6b550d49c73a36bab` |
 | `scripts/tests/test_installed_origin_ruling.py` | `25c526e8aa336b44138bf71f72c6a8af0c974b4c02392d8c05b06db7829bc87c` |
 | `scripts/tests/test_installed_platform_rulings.py` | `7b93760b01f530629147626f8f1a15456d82f1ddca1361e5af7ea265d5f8cdbd` |
