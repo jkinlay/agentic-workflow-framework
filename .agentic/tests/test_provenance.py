@@ -38,15 +38,15 @@ RUN_B = "22222222-2222-4222-8222-222222222222"
 NOW = "2026-10-12T12:00:00Z"
 
 
-def reviewed_owner_config(*owner_ids, config_sha256="f" * 64):
-    payload = {
-        "config_sha256": config_sha256,
-        "trusted_owner_ids": list(owner_ids),
-    }
-    return {
-        **payload,
-        "binding_sha256": fingerprint("provenance_owner_config", payload),
-    }
+from accepted_owner_fixture import AcceptedOwnerFixture
+
+
+class OwnerIdentityCase(unittest.TestCase):
+    def setUp(self):
+        self.owner_fixture = AcceptedOwnerFixture(self)
+
+    def reviewed_owner_config(self, *owner_ids):
+        return self.owner_fixture.projection(owner_ids)
 
 
 class R13InputContractTests(unittest.TestCase):
@@ -400,18 +400,20 @@ class CriticBindingTests(unittest.TestCase):
             validate_critic_run_binding(verdict, reviewed_head=head)
 
 
-class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
+class OwnerOverrideSliceAAcceptanceTests(OwnerIdentityCase):
     def test_in26_b19_b22_versioned_envelope_accepts_194_v1_and_refuses_unknown(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         record = record_owner_override(
             {}, who=101, when=NOW, why="1.9.4 compatibility", pr=49,
             covered_shas=["a" * 40], reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         self.assertEqual(1, record["schema_version"])
         self.assertEqual(
             record,
             verify_owner_override(
                 record, reviewed_owner_config=authority, pr=49,
+                accepted_policy_root=self.owner_fixture.root,
             ),
         )
         self.assertIn("Schema version: 1", render_owner_override(record))
@@ -427,6 +429,7 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
                 ValidationError, r"^OVERRIDE_VERSION_UNSUPPORTED:.*3"):
             verify_owner_override(
                 unsupported, reviewed_owner_config=authority, pr=49,
+                accepted_policy_root=self.owner_fixture.root,
             )
 
         legacy_text_owner = {
@@ -444,24 +447,27 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
                 r"^OVERRIDE_VERSION_AUTHORITY_INCOMPATIBLE:.*version 1"):
             verify_owner_override(
                 legacy_text_owner, reviewed_owner_config=authority, pr=49,
+                accepted_policy_root=self.owner_fixture.root,
             )
 
     def test_in27_coverage_has_stable_reason_and_bounded_sorted_shas(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         covered = [f"{value:040x}" for value in range(257)]
         with self.assertRaisesRegex(
                 ValidationError, r"^OVERRIDE_COVERAGE_INVALID:"):
             record_owner_override(
                 {}, who=101, when=NOW, why="Too broad", pr=49,
                 covered_shas=covered, reviewed_owner_config=authority,
+                accepted_policy_root=self.owner_fixture.root,
             )
 
     def test_in28_supersession_chain_has_stable_reason_and_preserves_predecessor(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         state = {}
         original = record_owner_override(
             state, who=101, when=NOW, why="Initial", pr=49,
             covered_shas=["a" * 40], reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         before = copy.deepcopy(state)
         with self.assertRaisesRegex(
@@ -472,6 +478,7 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
                 covered_shas=["a" * 40, "b" * 40],
                 supersedes="c" * 64,
                 reviewed_owner_config=authority,
+                accepted_policy_root=self.owner_fixture.root,
             )
         self.assertEqual(before, state)
         self.assertEqual(original, state["provenance_overrides"]["49"])
@@ -480,17 +487,18 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
         record = record_owner_override(
             {}, who=101, when=NOW, why="1.9.4 keyword compatibility", pr=49,
             covered_shas=["a" * 40], trusted_owner_ids=[202],
+            accepted_policy_root=self.owner_fixture.root,
         )
         with self.assertRaisesRegex(
                 ValidationError, r"^OVERRIDE_VERSION_AUTHORITY_UNBOUND:"):
-            verify_owner_override(record, trusted_owner_ids=[101], pr=49)
+            verify_owner_override(record, trusted_owner_ids=[101], pr=49, accepted_policy_root=self.owner_fixture.root)
         rendered = render_owner_override(record)
         observation = {
             "version": 1,
             "repository_id": 12,
             "pr": 49,
             "trusted_owner_ids": [101],
-            "config_sha256": "f" * 64,
+            "config_sha256": self.owner_fixture.config_sha256, "expected_actor_id": 1002,
             "comments": [{
                 "kind": "issue",
                 "id": 91,
@@ -502,7 +510,8 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
         }
 
         verified = verify_provider_owner_override(
-            record, observation, repository_id=12, config_sha256="f" * 64,
+            record, observation, repository_id=12, config_sha256=self.owner_fixture.config_sha256,
+            accepted_policy_root=self.owner_fixture.root,
         )
 
         self.assertEqual(1, verified["version"])
@@ -535,7 +544,7 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
         )
         observation = {
             "version": 1, "repository_id": 12, "pr": 49,
-            "trusted_owner_ids": [101], "config_sha256": "f" * 64,
+            "trusted_owner_ids": [101], "config_sha256": self.owner_fixture.config_sha256, "expected_actor_id": 1002,
             "comments": [{
                 "kind": "issue", "id": 91, "actor_id": 101,
                 "url": "https://example.invalid/pull/49#issuecomment-91",
@@ -546,11 +555,12 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
 
     def test_awf96a_r2_001_b22_fixed_194_comment_bytes_remain_accepted(self):
         record, observation = self.legacy_v1_fixture()
-        for authority in (None, reviewed_owner_config(101)):
+        for authority in (None, self.reviewed_owner_config(101)):
             with self.subTest(explicit_authority=authority is not None):
                 verified = verify_provider_owner_override(
                     record, observation, reviewed_owner_config=authority,
-                    repository_id=12, config_sha256="f" * 64,
+                    repository_id=12, config_sha256=self.owner_fixture.config_sha256,
+                    accepted_policy_root=self.owner_fixture.root,
                 )
                 self.assertEqual(91, verified["provider_comment_id"])
                 self.assertEqual(record, verified["record"])
@@ -567,7 +577,7 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
                 changed["comments"][0]["body_sha256"] = sha256(value.encode()).hexdigest()
             with self.subTest(field=field), self.assertRaisesRegex(
                     ValidationError, "exactly one freshly observed trusted owner comment"):
-                verify_provider_owner_override(record, changed)
+                verify_provider_owner_override(record, changed, accepted_policy_root=self.owner_fixture.root)
 
     def test_awf96a_r2_001_legacy_and_versioned_comments_are_not_two_authorizations(self):
         record, observation = self.legacy_v1_fixture()
@@ -578,14 +588,15 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
         observation["comments"].append(modern)
         with self.assertRaisesRegex(
                 ValidationError, "exactly one freshly observed trusted owner comment"):
-            verify_provider_owner_override(record, observation)
+            verify_provider_owner_override(record, observation, accepted_policy_root=self.owner_fixture.root)
 
     def test_deprecated_owner_alias_refuses_dual_authority_arguments(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         original_state = {}
         original = record_owner_override(
             original_state, who=101, when=NOW, why="Reviewed authority", pr=49,
             covered_shas=["a" * 40], reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         conflict = (
             r"^OWNER_AUTHORITY_ARGUMENT_CONFLICT:.*reviewed_owner_config.*"
@@ -601,6 +612,7 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
                         pr=49, covered_shas=["a" * 40],
                         reviewed_owner_config=authority,
                         trusted_owner_ids=legacy_ids,
+                        accepted_policy_root=self.owner_fixture.root,
                     )
                 self.assertEqual({}, state)
 
@@ -609,6 +621,7 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
                     verify_owner_override(
                         original, reviewed_owner_config=authority,
                         trusted_owner_ids=legacy_ids, pr=49,
+                        accepted_policy_root=self.owner_fixture.root,
                     )
 
             with self.subTest(operation="supersede", legacy_ids=legacy_ids):
@@ -621,13 +634,14 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
                         supersedes=original["override_sha256"],
                         reviewed_owner_config=authority,
                         trusted_owner_ids=legacy_ids,
+                        accepted_policy_root=self.owner_fixture.root,
                     )
                 self.assertEqual(original_state, state)
 
 
-class OwnerOverrideTests(unittest.TestCase):
+class OwnerOverrideTests(OwnerIdentityCase):
     def test_override_is_recorded_sealed_and_renderable_for_the_pr(self):
-        authority = reviewed_owner_config(101, 102)
+        authority = self.reviewed_owner_config(101, 102)
         state = {}
         sha = "a" * 40
         record = record_owner_override(
@@ -638,11 +652,12 @@ class OwnerOverrideTests(unittest.TestCase):
             pr=49,
             covered_shas=[sha],
             reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         self.assertEqual(record, state["provenance_overrides"]["49"])
         self.assertEqual(record, verify_owner_override(
             record, reviewed_owner_config=authority, pr=49
-        ))
+        , accepted_policy_root=self.owner_fixture.root))
         rendered = render_owner_override(record)
         for value in ("101", NOW, "#49", sha, record["override_sha256"]):
             self.assertIn(value, rendered)
@@ -657,7 +672,8 @@ class OwnerOverrideTests(unittest.TestCase):
                 why="Attempted bypass",
                 pr=49,
                 covered_shas=["a" * 40],
-                reviewed_owner_config=reviewed_owner_config(101),
+                reviewed_owner_config=self.reviewed_owner_config(101),
+                accepted_policy_root=self.owner_fixture.root,
             )
         self.assertEqual({}, state)
 
@@ -666,7 +682,8 @@ class OwnerOverrideTests(unittest.TestCase):
             record_owner_override(
                 {}, who=101, when=NOW, why="reason\nInjected: value", pr=49,
                 covered_shas=["a" * 40],
-                reviewed_owner_config=reviewed_owner_config(101),
+                reviewed_owner_config=self.reviewed_owner_config(101),
+                accepted_policy_root=self.owner_fixture.root,
             )
 
     def test_override_requires_non_empty_owner_identity_and_reason(self):
@@ -682,16 +699,17 @@ class OwnerOverrideTests(unittest.TestCase):
                     ValidationError, message):
                 record_owner_override(
                     state, when=NOW, pr=49, covered_shas=["a" * 40],
-                    reviewed_owner_config=reviewed_owner_config(101), **values
-                )
+                    reviewed_owner_config=self.reviewed_owner_config(101), **values
+                , accepted_policy_root=self.owner_fixture.root)
             self.assertEqual({}, state)
 
     def test_superseding_override_preserves_and_binds_the_original_record(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         state = {}
         original = record_owner_override(
             state, who=101, when=NOW, why="Initial exception", pr=49,
             covered_shas=["a" * 40], reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         original_bytes = json.dumps(
             state["provenance_overrides"]["49"],
@@ -704,6 +722,7 @@ class OwnerOverrideTests(unittest.TestCase):
             covered_shas=["a" * 40, "b" * 40],
             supersedes=original["override_sha256"],
             reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
 
         self.assertEqual(
@@ -713,13 +732,14 @@ class OwnerOverrideTests(unittest.TestCase):
         )
         self.assertEqual(original, verify_owner_override(
             original, reviewed_owner_config=authority, pr=49
-        ))
+        , accepted_policy_root=self.owner_fixture.root))
         self.assertEqual(original["override_sha256"], superseding["supersedes"])
         self.assertEqual(
             superseding,
             verify_owner_override(
                 superseding, reviewed_owner_config=authority, pr=49,
                 supersedes=original,
+                accepted_policy_root=self.owner_fixture.root,
             ),
         )
         self.assertEqual(
@@ -729,11 +749,12 @@ class OwnerOverrideTests(unittest.TestCase):
         self.assertIn(original["override_sha256"], rendered)
 
     def test_tampering_with_original_or_superseding_override_is_detected(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         state = {}
         original = record_owner_override(
             state, who=101, when=NOW, why="Initial exception", pr=49,
             covered_shas=["a" * 40], reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         superseding = supersede_owner_override(
             state, who=101, when="2026-10-13T11:05:00Z",
@@ -741,13 +762,14 @@ class OwnerOverrideTests(unittest.TestCase):
             covered_shas=["a" * 40, "b" * 40],
             supersedes=original["override_sha256"],
             reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         tampered_original = copy.deepcopy(original)
         tampered_original["why"] = "Changed"
         with self.assertRaisesRegex(ValidationError, "digest"):
             verify_owner_override(
                 tampered_original, reviewed_owner_config=authority, pr=49
-            )
+            , accepted_policy_root=self.owner_fixture.root)
         for field, value in (("why", "Changed"), ("supersedes", "c" * 64)):
             tampered = copy.deepcopy(superseding)
             tampered[field] = value
@@ -756,14 +778,16 @@ class OwnerOverrideTests(unittest.TestCase):
                 verify_owner_override(
                     tampered, reviewed_owner_config=authority, pr=49,
                     supersedes=original,
+                    accepted_policy_root=self.owner_fixture.root,
                 )
 
     def test_invalid_supersede_is_refused_without_state_change(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         state = {}
         original = record_owner_override(
             state, who=101, when=NOW, why="Initial exception", pr=49,
             covered_shas=["a" * 40], reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         cases = [
             {"who": 202},
@@ -785,11 +809,11 @@ class OwnerOverrideTests(unittest.TestCase):
                 }
                 values.update(changed)
                 with self.assertRaises(ValidationError):
-                    supersede_owner_override(state, **values)
+                    supersede_owner_override(state, **values, accepted_policy_root=self.owner_fixture.root)
                 self.assertEqual(before, state)
 
 
-class RepositoryRangeTests(unittest.TestCase):
+class RepositoryRangeTests(OwnerIdentityCase):
     @classmethod
     def setUpClass(cls):
         cls.git = "git"
@@ -811,6 +835,7 @@ class RepositoryRangeTests(unittest.TestCase):
         self.git_run("config", "commit.gpgsign", "false")
         self.write("README.md", "base\n")
         self.base = self.commit("base", f"Writer: codex/{RUN_A}")
+        self.owner_fixture = AcceptedOwnerFixture(self, root=self.root)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -900,32 +925,35 @@ class RepositoryRangeTests(unittest.TestCase):
 
     def make_superseding_override(self, affected, *, who=101,
                                   owner_ids=(101,)):
-        authority = reviewed_owner_config(*owner_ids)
+        authority = self.reviewed_owner_config(*owner_ids)
         state = {}
         original = record_owner_override(
             state, who=101, when=NOW, why="Initial two-commit exception",
             pr=128, covered_shas=affected[:2],
             reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         latest = supersede_owner_override(
             state, who=who, when="2026-10-13T18:18:00Z",
             why="Digest-linked four-commit recovery", pr=128,
             covered_shas=affected, supersedes=original["override_sha256"],
             reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         return original, latest, authority
 
     def make_provider_override(self, covered_shas, *, include_authority=False):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         record = record_owner_override(
             {}, who=101, when=NOW, why="Reviewed fallback", pr=49,
             covered_shas=covered_shas, reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         rendered = render_owner_override(record)
         observation = {
             "version": 1,
             "repository_id": 12,
-            "config_sha256": "f" * 64,
+            "config_sha256": self.owner_fixture.config_sha256, "expected_actor_id": 1002,
             "base": self.base,
             "base_ref": "main",
             "pr": 49,
@@ -1218,12 +1246,13 @@ class RepositoryRangeTests(unittest.TestCase):
             why="Known fallback bot commit",
             pr=49,
             covered_shas=[head],
-            reviewed_owner_config=reviewed_owner_config(101),
+            reviewed_owner_config=self.reviewed_owner_config(101),
+            accepted_policy_root=self.owner_fixture.root,
         )
         result = check_commit_range(
             self.root, self.base, head,
             override=override,
-            reviewed_owner_config=reviewed_owner_config(101),
+            reviewed_owner_config=self.reviewed_owner_config(101),
             pr_number=49,
             pr_labels=["fallback: bot-written"],
         )
@@ -1278,7 +1307,8 @@ class RepositoryRangeTests(unittest.TestCase):
         untrusted["binding_sha256"] = fingerprint(
             "provenance_owner_config",
             {"config_sha256": untrusted["config_sha256"],
-             "trusted_owner_ids": untrusted["trusted_owner_ids"]},
+             "trusted_owner_ids": untrusted["trusted_owner_ids"],
+             "expected_actor_id": untrusted["expected_actor_id"]},
         )
         wrong_comment = copy.deepcopy(observation)
         wrong_comment["comments"][0]["body_sha256"] = "0" * 64
@@ -1308,17 +1338,18 @@ class RepositoryRangeTests(unittest.TestCase):
         override = record_owner_override(
             {}, who=101, when=NOW, why="Over-broad record", pr=49,
             covered_shas=[head],
-            reviewed_owner_config=reviewed_owner_config(101),
+            reviewed_owner_config=self.reviewed_owner_config(101),
+            accepted_policy_root=self.owner_fixture.root,
         )
         with self.assertRaisesRegex(ValidationError, "needed no override"):
             check_commit_range(
                 self.root, self.base, head, override=override,
-                reviewed_owner_config=reviewed_owner_config(101), pr_number=49,
+                reviewed_owner_config=self.reviewed_owner_config(101), pr_number=49,
                 pr_labels=["fallback: bot-written"],
             )
 
     def test_range_honours_latest_superseding_override(self):
-        authority = reviewed_owner_config(101)
+        authority = self.reviewed_owner_config(101)
         self.write("legacy-one.txt", "legacy one\n")
         first = self.commit("legacy bot commit one")
         self.write("legacy-two.txt", "legacy two\n")
@@ -1327,6 +1358,7 @@ class RepositoryRangeTests(unittest.TestCase):
         original = record_owner_override(
             state, who=101, when=NOW, why="Initial exception", pr=49,
             covered_shas=[first], reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
         latest = supersede_owner_override(
             state, who=101, when="2026-10-13T11:05:00Z",
@@ -1334,6 +1366,7 @@ class RepositoryRangeTests(unittest.TestCase):
             covered_shas=[first, second],
             supersedes=original["override_sha256"],
             reviewed_owner_config=authority,
+            accepted_policy_root=self.owner_fixture.root,
         )
 
         result = check_commit_range(
@@ -1402,6 +1435,7 @@ class RepositoryRangeTests(unittest.TestCase):
              if key != "override_sha256"},
         )
 
+        self.owner_fixture.projection((101,))
         cases = (
             (tampered, [original], "digest"),
             (unauthorised, [original], "trusted owner"),

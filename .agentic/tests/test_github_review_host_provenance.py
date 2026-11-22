@@ -28,9 +28,18 @@ CODEX_THREAD_ID = '01a1317f-dadb-7071-80de-12832161734c'
 CONTROLLER_RUN_ID = '3dd68622-6223-48bc-b236-8ed6df9a55c2'
 
 
+from accepted_owner_fixture import AcceptedOwnerFixture
+
+
 class ProviderProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        self.owner_fixture = AcceptedOwnerFixture(self)
+
     def driver(self):
+        if not hasattr(self, "owner_fixture"):
+            self.owner_fixture = AcceptedOwnerFixture(self)
         driver = HostDriver.__new__(HostDriver)
+        driver.worker = self.owner_fixture.root
         driver.c = {'repository': 'fixture/project', 'repository_id': 12,
                     'pr': 7, 'base_branch': 'main', 'config_hash': 'f' * 64,
                     'trusted_owner_ids': [101],
@@ -231,12 +240,12 @@ class ProviderProvenanceTests(unittest.TestCase):
     def test_override_authority_comes_from_reviewed_config_and_observed_actor(self):
         record = record_owner_override(
             {}, who=101, when='2026-10-13T20:00:00Z', why='Reviewed fallback',
-            pr=7, covered_shas=['a' * 40], trusted_owner_ids=[101])
+            pr=7, covered_shas=['a' * 40], trusted_owner_ids=[101], accepted_policy_root=self.owner_fixture.root)
         body = render_owner_override(record)
         observation = {'version': 1, 'repository_id': 12, 'pr': 7,
                        'labels': ['fallback: bot-written'],
                        'trusted_owner_ids': [101],
-                       'config_sha256': 'f' * 64,
+                       'config_sha256': self.owner_fixture.config_sha256, 'expected_actor_id': 1002,
                        'comments': [{'kind': 'issue', 'id': 91,
                                      'actor_id': 101, 'url': 'https://github.com/fixture/project/issues/7#issuecomment-91',
                                      'body': body,
@@ -244,14 +253,14 @@ class ProviderProvenanceTests(unittest.TestCase):
                                          body.encode()).hexdigest()}]}
         verified = verify_provider_owner_override(
             record, observation=observation, repository_id=12,
-            config_sha256='f' * 64)
+            config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
         self.assertEqual(91, verified['provider_comment_id'])
         forged = dict(observation)
         forged['trusted_owner_ids'] = ['101']
         with self.assertRaises(ValidationError):
             verify_provider_owner_override(
                 record, observation=forged, repository_id=12,
-                config_sha256='f' * 64)
+                config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
 
     def test_host_api_output_is_stream_bounded_before_decode(self):
         sentinel = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])

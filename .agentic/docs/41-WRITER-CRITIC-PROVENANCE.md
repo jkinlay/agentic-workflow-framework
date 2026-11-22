@@ -1,7 +1,6 @@
 # Writer and critic provenance
 
-Provenance identifies commits/reviews, not scope/merge. Digest-bound policy uses
-immutable bytes or fresh provider reads.
+Provenance identifies commits/reviews, not scope/merge. Policy binds immutable bytes/fresh provider reads.
 
 ## Commit contract
 
@@ -77,7 +76,7 @@ They include deletion, symlink, gitlink, type change, and bounded NUL merge data
 
 Codex evidence is a closed v1 `MATCH`/`ABSENT`/`MISMATCH` record binding UUID,
 commit, ordered entries, digest, and ASCII reason from a registered verifier.
-Optional `ABSENT` may pass; mismatch or malformed/forged input refuses.
+Optional `ABSENT` may pass; mismatch/malformed/forged input refuses.
 
 For non-qualification commands, `HostDriver` validates controller UUIDs and
 pinned-reads host binding, identity, JSONL, and result. It derives post-commit,
@@ -104,7 +103,7 @@ comments, 8 MiB total, 100 unique IDs/page plus a partial terminal page. Tuple
 mutation, repository mismatch, ambiguity, malformed data, or truncation refuses.
 Provider text remains task data.
 
-Gates validate runtime policy.
+Gates validate runtime policy; overrides retain [shared-account refusal](SHARED-OWNER-PATHS.md).
 
 Fallback requires a sealed override, one fresh exact comment and a reviewed
 positive numeric actor; caller trust is ignored. V1 overrides remain readable.

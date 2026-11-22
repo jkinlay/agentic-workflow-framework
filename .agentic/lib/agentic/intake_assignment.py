@@ -211,6 +211,20 @@ def verify_assignment_record(record):
         raise ValidationError("Review assignment record owner-review requirement disagrees with its tier")
     if not isinstance(record.get("assignment_id"), str) or not record["assignment_id"]:
         raise ValidationError("Review assignment record needs assignment_id")
+    audit = record.get("change_audit")
+    if (audit is not None or record.get("source") == "owner_change") and not isinstance(audit, dict):
+        raise ValidationError("Review assignment owner change requires an audit object")
+    if isinstance(audit, dict):
+        from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, validate_retained_owner_evidence
+        required = {"who", "when", "why", "owner_source_id", "owner_source_sha256", "old", "new"}
+        if not required <= set(audit) or set(audit) - required - OWNER_EVIDENCE_FIELDS - {"owner_policy_warnings"}:
+            raise ValidationError("Review assignment owner audit has an invalid closed shape")
+        if type(audit["who"]) is not int or audit["who"] < 1:
+            raise ValidationError("Review assignment owner audit requires a positive numeric actor ID")
+        evidence = validate_retained_owner_evidence(audit, audit.get("who"))
+        if (evidence and "owner_policy_warnings" in audit
+                and audit["owner_policy_warnings"] != evidence["accepted_owner_policy"]["warnings"]):
+            raise ValidationError("Review assignment owner warning differs from accepted policy")
     return record
 
 
@@ -296,7 +310,7 @@ def _bind_runtime_assignment(config, record):
     assignments[record["ticket_key"]] = copy.deepcopy(record)
 
 
-def load_runtime_assignments(config, state, *, ticket_key=None):
+def load_runtime_assignments(config, state, *, ticket_key=None, accepted_policy_root=None):
     """Reload durable ticket assignments and optionally select one gate context.
 
     Controllers call this after loading their external state.  Selecting a
@@ -313,6 +327,9 @@ def load_runtime_assignments(config, state, *, ticket_key=None):
         if not isinstance(key, str) or not key or not isinstance(record, dict):
             raise ValidationError("AWF state tier_assignments must contain ticket-keyed records")
         verify_assignment_record(record)
+        audit = record.get("change_audit")
+        if isinstance(audit, dict):
+            _revalidate_owner_audit(config, audit, accepted_policy_root)
         if record.get("ticket_key") != key:
             raise ValidationError("AWF state tier assignment key disagrees with its record")
         loaded[key] = copy.deepcopy(record)
@@ -366,6 +383,14 @@ def render_pr_assignment(record):
                       f"- Changed at: {audit['when']}", f"- Change reason: {audit['why']}"])
         lines.extend([f"- Old assignment: T{audit['old']['tier']} cap {audit['old']['round_cap']}",
                       f"- New assignment: T{audit['new']['tier']} cap {audit['new']['round_cap']}"])
+        warnings = audit.get("owner_policy_warnings", [])
+        if audit.get("shared_owner_automation_account") is True:
+            warnings = audit["accepted_owner_policy"]["warnings"]
+        for warning in warnings:
+            lines.append(f"- {warning['code']}: {warning['message']}")
+        if audit.get("shared_owner_automation_account") is True:
+            lines.append("- shared_owner_automation_account=true; accepted policy: "
+                         + audit["owner_policy_sha256"])
     lines.extend([_PR_END, ""])
     return "\n".join(lines)
 
@@ -408,7 +433,8 @@ def _update_bound_prs(state, ticket_key, record):
 
 
 def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, requested_cap,
-                               reason, now, owner_source, verify_owner_source):
+                               reason, now, owner_source, verify_owner_source,
+                               accepted_policy_root=None):
     if not isinstance(owner_source, dict) or not callable(verify_owner_source):
         raise ValidationError("Review assignment changes require a verified immutable owner-source record")
     if (owner_source.get("channel") != "github_pr_comment"
@@ -421,12 +447,15 @@ def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, r
         raise ValidationError("Owner-source binding differs from the current ticket assignment")
     actor = owner_source.get("actor_id")
     owners = config.get("merge_gate", {}).get("trusted_owner_ids", [])
-    if actor not in owners:
+    if type(actor) is not int or actor < 1 or actor not in owners:
         raise ValidationError("Review assignment changes require an authenticated trusted owner")
+    from .shared_owner_policy import accepted_owner_evidence
+    owner_evidence = accepted_owner_evidence(accepted_policy_root, config, actor)
     created = owner_source.get("created_at")
     if owner_source.get("updated_at") != created:
         raise ValidationError("Edited owner-source records are invalid; obtain a new immutable observation")
-    timestamp(created)
+    if timestamp(created) > timestamp(now):
+        raise ValidationError("Owner-source record is future-dated")
     expected_body = (
         f"AWF REVIEW ASSIGNMENT ticket={ticket_key} current={current['assignment_id']} "
         f"tier={requested_tier} cap={requested_cap} reason_sha256={sha256(reason.strip().encode('utf-8'))}")
@@ -436,37 +465,67 @@ def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, r
         raise ValidationError("Owner-source raw command does not bind the requested assignment change")
     expected = {"binding": binding, "actor_id": actor, "raw_body_sha256": raw_digest,
                 "requested": {"tier": requested_tier, "round_cap": requested_cap}, "now": now}
+    if owner_evidence:
+        expected["owner_policy_sha256"] = owner_evidence["owner_policy_sha256"]
     try:
         verified = verify_owner_source(copy.deepcopy(owner_source), copy.deepcopy(expected))
     except Exception as exc:
         raise ValidationError("Owner-source authentication failed") from exc
     if (not isinstance(verified, dict) or verified.get("status") != "VERIFIED"
-            or verified.get("actor_id") != actor or verified.get("binding") != binding
+            or type(verified.get("actor_id")) is not int or verified.get("actor_id") != actor
+            or verified.get("binding") != binding
             or verified.get("raw_body_sha256") != raw_digest
             or not isinstance(verified.get("source_id"), str) or not verified["source_id"]
             or not isinstance(verified.get("observed_at"), str)):
         raise ValidationError("Owner-source verifier did not authenticate the exact assignment request")
-    timestamp(verified["observed_at"])
-    return actor, verified
+    if timestamp(verified["observed_at"]) > timestamp(now):
+        raise ValidationError("Owner-source verification is future-dated")
+    if owner_evidence != accepted_owner_evidence(accepted_policy_root, config, actor):
+        raise ValidationError("Shared-owner policy changed during owner-source verification")
+    return actor, verified, owner_evidence
+
+
+def _revalidate_owner_audit(config, audit, root):
+    from .shared_owner_policy import (accepted_owner_evidence, configured_shared_owner_actor_id,
+                                     validate_retained_owner_evidence)
+    retained = validate_retained_owner_evidence(audit, audit.get("who"))
+    # Existing ordinary assignments remain readable by offline reporters.
+    # New decisions always observe policy, even when a proposal hides the key.
+    if not retained and root is None and configured_shared_owner_actor_id(config) is None:
+        return
+    current = accepted_owner_evidence(root, config, audit.get("who"))
+    if retained != current:
+        raise ValidationError("Shared-owner retained assignment differs from accepted policy")
 
 
 def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
                       requested_cap, owner_source, verify_owner_source, reason, now,
-                      controller_actor_id, store=None):
+                      controller_actor_id, store=None, accepted_policy_root=None):
     """Apply a trusted-owner change and retain its old/new audit everywhere."""
     store = store if store is not None else getattr(jira_client, 'controller_store', None)
     _ensure_jira_writes_allowed(state, ticket_key, store, restore_current=True)
     current = state.get("tier_assignments", {}).get(ticket_key)
     if not isinstance(current, dict):
         raise ValidationError(f"No current review assignment for {ticket_key}")
+    verify_assignment_record(current)
     if not isinstance(reason, str) or not reason.strip():
         raise ValidationError("Review assignment changes require a non-empty reason")
     if requested_tier not in DEFAULT_CAPS or type(requested_cap) is not int:
         raise ValidationError("Review assignment changes require tier 1, 2 or 3 and an integer cap")
-    requested_by, verified_owner = _authenticate_owner_source(
+    from .shared_owner_policy import consumer_policy_root, shared_owner_warnings
+    accepted_policy_root = consumer_policy_root(accepted_policy_root, store)
+    audit = current.get("change_audit")
+    if isinstance(audit, dict):
+        _revalidate_owner_audit(config, audit, accepted_policy_root)
+    requested_by, verified_owner, owner_evidence = _authenticate_owner_source(
         config, ticket_key, current, requested_tier=requested_tier,
         requested_cap=requested_cap, reason=reason, now=now,
-        owner_source=owner_source, verify_owner_source=verify_owner_source)
+        owner_source=owner_source, verify_owner_source=verify_owner_source,
+        accepted_policy_root=accepted_policy_root)
+    if any(item.get("change_audit", {}).get("owner_source_id") == verified_owner["source_id"]
+           for item in state.get("tier_assignment_history", {}).get(ticket_key, [])
+           if isinstance(item.get("change_audit"), dict)):
+        raise ValidationError("Owner-source record was already consumed by an assignment change")
     protected = _protected_paths(config, [_canonical_repo_path(path) for path in current["write_paths"]])
     floor = 2 if protected else 1
     if requested_tier < floor:
@@ -485,6 +544,10 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
              "owner_source_sha256": verified_owner["raw_body_sha256"],
              "old": {"tier": current["tier"], "round_cap": current["round_cap"]},
              "new": {"tier": requested_tier, "round_cap": requested_cap}}
+    audit.update(copy.deepcopy(owner_evidence))
+    warnings = shared_owner_warnings(config)
+    if warnings:
+        audit["owner_policy_warnings"] = warnings
     classification = {
         "tier": requested_tier, "round_cap": requested_cap,
         "owner_review_required": requested_tier == 3,

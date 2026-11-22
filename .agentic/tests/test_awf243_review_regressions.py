@@ -1550,6 +1550,7 @@ class AssignmentSharedAdmissionRegressions(unittest.TestCase):
         from pathlib import Path
         from types import SimpleNamespace
         from test_intake_assignment import owner_source, verify_owner_source
+        from intake_policy_fixture import accepted_intake_policy
         spec = importlib.util.spec_from_file_location('assignment_bootstrap_regression',
             scope_fixture.ROOT / 'scripts/bootstrap_project.py')
         module = importlib.util.module_from_spec(spec)
@@ -1561,6 +1562,11 @@ class AssignmentSharedAdmissionRegressions(unittest.TestCase):
                 dest = folder / 'project'
                 (dest / '.agentic').mkdir(parents=True)
                 cfg = copy.deepcopy(self.args['config'])
+                cfg['project'].update(id='11111111-1111-4111-8111-111111111111',
+                                      name='Synthetic assignment project', short_name='AWF')
+                for review in cfg['specialist_reviews'].values():
+                    review['reviewer_identity'] = '@fixture-reviewer'
+                cfg['validation']['commands'] = ['python -m unittest']
                 cfg['merge_gate']['trusted_owner_ids'] = [1001]
                 (dest / '.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(cfg), encoding='utf-8')
                 ticket = dict(key='AWF-1', summary='Routine work', write_paths=['src/a.py'])
@@ -1584,7 +1590,9 @@ class AssignmentSharedAdmissionRegressions(unittest.TestCase):
                     'AWF-1', current['assignment_id'], 3, 3, 'Governance scope'))), encoding='utf-8')
                 setattr(args, route, None)
                 args.assignment_change = source
-                module._run_assignment_path(args, jira, verify_owner_source, store=self.fixture.store)
+                self.fixture.store.worktree_roots = (dest,)
+                with accepted_intake_policy(cfg, dest):
+                    module._run_assignment_path(args, jira, verify_owner_source, store=self.fixture.store)
                 state = json.loads(args.assignment_state.read_text(encoding='utf-8'))
                 self.assertEqual(3, state['tier_assignments']['AWF-1']['tier'])
                 self.assertEqual(2, sum(call == 'comment' for call in jira.calls))
@@ -1762,10 +1770,16 @@ class SecondLookAssignmentRegressions(unittest.TestCase):
         self.assertEqual(1, len(self.spy.writes))
 
     def test_second_look_owner_change_restores_current_before_authentication(self):
-        from agentic.intake_assignment import assign_intake, change_assignment
+        from agentic.intake_assignment import assign_intake
+        from intake_policy_fixture import change_assignment_with_policy as change_assignment
         from agentic.continuous_controller import jira_assignment_state
         from test_intake_assignment import owner_source, verify_owner_source
         config = self.args['config']
+        config['project'].update(id='11111111-1111-4111-8111-111111111111',
+                                 name='Synthetic assignment project', short_name='AWF')
+        for review in config['specialist_reviews'].values():
+            review['reviewer_identity'] = '@fixture-reviewer'
+        config['validation']['commands'] = ['python -m unittest']
         config['merge_gate']['trusted_owner_ids'] = [1001]
         jira, cache = self.jira(), {}
         first = assign_intake(config, dict(key='AWF-1', summary='Routine work', write_paths=['src/a.py']),

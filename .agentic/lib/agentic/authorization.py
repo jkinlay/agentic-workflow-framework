@@ -67,10 +67,15 @@ def make_request(gate, contracts, now):
     return request
 
 
-def verify_record(record, request, gate, config, contracts, now):
+def verify_record(record, request, gate, config, contracts, now, *, accepted_policy_root=None):
     from .policy import validate_config
     from .lifecycle import definition
-    current_policy = validate_config(config, definition(), contracts)
+    # Rootless merge verification keeps its original policy-admission contract,
+    # including ordinary profile-only configurations; it enables no opt-out.
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+              if accepted_policy_root is not None else {})
+    current_policy = validate_config(config, definition(), contracts,
+                                     accepted_policy_root=accepted_policy_root)
     contracts.validate("owner-authorization", record)
     contracts.validate("authorization-request", request)
     contracts.validate("final-gate", gate)
@@ -95,6 +100,7 @@ def verify_record(record, request, gate, config, contracts, now):
     if timestamp(now) >= timestamp(request["expires_at"]) or timestamp(request["created_at"]) < timestamp(gate["created_at"]):
         raise ValidationError("Expired or temporally invalid request")
     source = record["source"]
+    evidence = _retained_authorization_policy(record, policy, source["actor_id"])
     if source["actor_id"] not in config["merge_gate"]["trusted_owner_ids"]:
         raise ValidationError("Untrusted numeric owner identity")
     if source["repository_id"] != request["candidate"]["repository_id"] or source["pr_number"] != request["candidate"]["pr_number"]:
@@ -111,7 +117,12 @@ def verify_record(record, request, gate, config, contracts, now):
         raise ValidationError("Raw authorization and recorded fields disagree")
     if record["execution_authority"] is not False:
         raise ValidationError("Offline verification cannot grant execution authority")
-    return {"decision": decision, "record_consistent": True, "live_source_verified": False, "owner_quorum_verified": False, "execution_authority": False}
+    if accepted_policy_root is not None:
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
+    elif validate_config(config, definition(), contracts) != current_policy:
+        raise ValidationError("Authorization uses a different project or superseded policy")
+    return {"decision": decision, "record_consistent": True, "live_source_verified": False,
+            "owner_quorum_verified": False, "execution_authority": False, **evidence}
 
 
 # Owner records other than merge authorization (1.9.3): finding and cap
@@ -129,12 +140,13 @@ READY_AUTHORIZATION_ORDER = ["request", "action", "role", "repoid", "pr", "head"
 
 def make_batch_authorization_request(generation, candidate, config, *, action,
                                      request_id, requested_at, expires_at,
-                                     gate=None, contracts=None, observer_registry=None):
+                                     gate=None, contracts=None, observer_registry=None,
+                                     accepted_policy_root=None):
     """Prepare batch-only owner text; this does not authorize any mutation."""
     from .gates import validate_batch_candidate, validate_batch_final_gate
     from .merge_train import _require, _identifier
     validate_batch_candidate(generation, candidate, config)
-    trusted_owner_ids(config)
+    policy = _authorization_owner_policy(config, accepted_policy_root)
     _require(action in {"MARK_READY", "HUMAN_MERGE_HANDOFF"},
              "Unsupported batch authorization action")
     _identifier(request_id, "batch authorization request_id")
@@ -152,11 +164,13 @@ def make_batch_authorization_request(generation, candidate, config, *, action,
             gate, generation, candidate, config, contracts, observer_registry, now=requested_at)
     else:
         _require(gate is None, "Ready authorization cannot be used as batch merge authorization")
+    _recheck_authorization_policy(config, accepted_policy_root, policy)
     return {
         "format": "awf-batch-authorization-request-1", "action": action,
         "request_id": request_id, "requested_at": requested_at, "expires_at": expires_at,
         "generation_id": generation["generation_id"], "candidate": copy.deepcopy(candidate),
         "configuration_sha256": fingerprint("batch_configuration", config), "batch_gate_id": gate_id,
+        **policy,
     }
 
 
@@ -172,7 +186,7 @@ def render_batch_authorization(request):
 
 def verify_batch_authorization(request, source_id, generation, candidate, config, *,
                                observer_id, observer_registry, now,
-                               gate=None, contracts=None):
+                               gate=None, contracts=None, accepted_policy_root=None):
     """Observe fresh immutable batch approval without consuming or merging it.
 
     The runtime registry is the trust boundary. Source IDs are locators, never
@@ -180,14 +194,18 @@ def verify_batch_authorization(request, source_id, generation, candidate, config
     for the separately signed final-gate-bound human merge handoff.
     """
     from .merge_train import _require, _identifier, _registered_observation
+    policy = _authorization_owner_policy(config, accepted_policy_root)
     fields = {"format", "action", "request_id", "requested_at", "expires_at",
               "generation_id", "candidate", "configuration_sha256", "batch_gate_id"}
-    _require(isinstance(request, dict) and set(request) == fields,
+    _require(isinstance(request, dict) and set(request) == fields | set(policy),
              "Batch authorization request has invalid fields")
+    _retained_authorization_policy(request, policy, config["github"]["expected_actor_id"])
     expected = make_batch_authorization_request(
         generation, candidate, config, action=request["action"], request_id=request["request_id"],
         requested_at=request["requested_at"], expires_at=request["expires_at"],
-        gate=gate, contracts=contracts, observer_registry=observer_registry)
+        gate=gate, contracts=contracts, observer_registry=observer_registry,
+        accepted_policy_root=accepted_policy_root)
+    _retained_authorization_policy(expected, policy, config["github"]["expected_actor_id"])
     _require(request == expected, "Batch authorization request binding differs")
     _identifier(source_id, "batch authorization source_id")
     _require(timestamp(request["requested_at"]) <= timestamp(now) < timestamp(request["expires_at"]),
@@ -208,7 +226,7 @@ def verify_batch_authorization(request, source_id, generation, candidate, config
                      "configuration_sha256", "configuration_status", "candidate", "generation_id"}
     _require(isinstance(result, dict) and set(result) == result_fields,
              "Batch approval observation has invalid fields")
-    _require(type(result["actor_id"]) is int and result["actor_id"] in trusted_owner_ids(config),
+    _require(type(result["actor_id"]) is int and result["actor_id"] in config["merge_gate"]["trusted_owner_ids"],
              "Batch approval actor is not a trusted human owner")
     _require(result["source_id"] == source_id and result["candidate"] == candidate
              and result["generation_id"] == generation["generation_id"]
@@ -220,16 +238,20 @@ def verify_batch_authorization(request, source_id, generation, candidate, config
     _require(result["created_at"] == result["updated_at"]
              and timestamp(request["requested_at"]) <= created <= timestamp(receipt["observed_at"])
              <= timestamp(now), "Batch approval is edited or outside its request window")
+    _recheck_authorization_policy(config, accepted_policy_root, policy)
+    evidence = _actor_authorization_policy(policy, result["actor_id"])
     return {
         "format": "awf-batch-authorization-1", "decision": "AUTHORIZED",
         "action": request["action"], "request": copy.deepcopy(request),
         "actor_id": result["actor_id"], "source_id": source_id,
         "provider_observation": receipt, "execution_authority": False, "may_merge": False,
+        **evidence,
     }
 
 
 def batch_mark_ready(request, source_id, generation, candidate, config, *,
-                     observer_id, observer_registry, now, log_record, mark_ready):
+                     observer_id, observer_registry, now, log_record, mark_ready,
+                     accepted_policy_root=None):
     """Log observed approval before a host's conditional exact-head ready call.
 
     The host must durably log the record and enforce the supplied candidate as
@@ -244,13 +266,17 @@ def batch_mark_ready(request, source_id, generation, candidate, config, *,
                  "Batch ready requires a separate MARK_READY approval")
         record = verify_batch_authorization(
             request, source_id, generation, candidate, config, observer_id=observer_id,
-            observer_registry=observer_registry, now=now)
+            observer_registry=observer_registry, now=now, accepted_policy_root=accepted_policy_root)
     except ValidationError as exc:
         record = {"format": "awf-batch-ready-refusal-1", "decision": "REFUSED",
                   "reason": str(exc), "draft": True, "execution_authority": False}
         log_record(copy.deepcopy(record))
         return record
     log_record(copy.deepcopy(record))
+    # Logging is a host callback: re-observe after it and before any mutation.
+    policy = _authorization_owner_policy(config, accepted_policy_root)
+    _retained_authorization_policy(request, policy, config["github"]["expected_actor_id"])
+    _retained_authorization_policy(record, policy, record["actor_id"])
     preconditions = {
         "candidate": copy.deepcopy(candidate), "generation_id": generation["generation_id"],
         "authorization_sha256": fingerprint("batch_authorization", record),
@@ -293,6 +319,42 @@ def trusted_owner_ids(config):
             "The configured automation actor must not be a trusted owner"
         )
     return tuple(owners)
+
+
+def _authorization_owner_policy(config, accepted_policy_root, *, identity_optional=False):
+    """A separate rooted path; the public rootless validator is unchanged."""
+    from .shared_owner_policy import configured_shared_owner_actor_id, accepted_owner_evidence
+    if identity_optional and config.get("github", {}).get("expected_actor_id") is None:
+        return accepted_owner_evidence(accepted_policy_root, config, None)
+    if accepted_policy_root is None:
+        trusted_owner_ids(config)
+        configured_shared_owner_actor_id(config)
+        return {}
+    shared = configured_shared_owner_actor_id(config)
+    if shared is None:
+        trusted_owner_ids(config)
+    return accepted_owner_evidence(accepted_policy_root, config, shared)
+
+
+def _actor_authorization_policy(policy, actor_id):
+    from .shared_owner_policy import SETTING
+    if policy and type(actor_id) is int and policy["accepted_owner_policy"][SETTING] == actor_id:
+        return copy.deepcopy(policy)
+    return {}
+
+
+def _retained_authorization_policy(record, policy, actor_id):
+    from .shared_owner_policy import validate_retained_owner_evidence
+    retained = validate_retained_owner_evidence(record, actor_id)
+    expected = _actor_authorization_policy(policy, actor_id)
+    if retained != expected:
+        raise ValidationError("Shared-owner policy changed or retained authorization evidence is missing or altered")
+    return expected
+
+
+def _recheck_authorization_policy(config, accepted_policy_root, policy, *, identity_optional=False):
+    if _authorization_owner_policy(config, accepted_policy_root, identity_optional=identity_optional) != policy:
+        raise ValidationError("Shared-owner policy changed before authorization use")
 
 
 def cap_disposition_record_id(record):
@@ -342,17 +404,23 @@ def _verify_owner_record_candidate(record, kind, head_sha):
 
 
 def make_owner_disposition_request(record, schema, config, *, head_sha,
-                                   authorization_request_id=None):
+                                   authorization_request_id=None, accepted_policy_root=None):
     """Render non-authoritative fields for later provider verification."""
     kind = OWNER_KINDS.get(schema)
     if kind is None:
         raise ValidationError("Not an owner disposition record type")
-    trusted_owner_ids(config)
+    policy = _authorization_owner_policy(config, accepted_policy_root)
     if not isinstance(record, dict):
         raise ValidationError("Owner disposition request fields must be an object")
     if "owner_source" in record:
         raise ValidationError("A disposition request must precede the owner comment")
     fields = copy.deepcopy(record)
+    if policy and fields.get("binding", {}).get("policy_hash") != policy["owner_policy_sha256"]:
+        raise ValidationError("Owner disposition request uses a superseded policy")
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    if OWNER_EVIDENCE_FIELDS.intersection(fields):
+        _retained_authorization_policy(fields, policy, config["github"]["expected_actor_id"])
+    fields.update(copy.deepcopy(policy))
     existing = fields.get("authorization_request_id")
     if existing is not None and authorization_request_id is not None and existing != authorization_request_id:
         raise ValidationError("Disposition authorization request ID conflicts with the supplied request ID")
@@ -362,6 +430,7 @@ def make_owner_disposition_request(record, schema, config, *, head_sha,
     )
     _verify_owner_record_candidate(fields, kind, head_sha)
     expected_text = render_owner_record(fields, kind, head_sha)
+    _recheck_authorization_policy(config, accepted_policy_root, policy)
     return {
         "format": "awf-owner-disposition-request-1",
         "record_type": schema,
@@ -371,6 +440,7 @@ def make_owner_disposition_request(record, schema, config, *, head_sha,
         "expected_text": expected_text,
         "disposition_fields": fields,
         "execution_authority": False,
+        **copy.deepcopy(policy),
     }
 
 
@@ -453,7 +523,8 @@ def parse_ready_authorization(raw):
     return values
 
 
-def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_source=None):
+def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_source=None,
+                               accepted_policy_root=None):
     """Verify a trusted, fresh owner/manager authorization for one PR head.
 
     The schema/template for this new record type is generator-owned.  Until it
@@ -461,7 +532,9 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
     host-injected observer must also re-read the immutable provider object and
     bind an accepted configuration and its trusted observation clock.
     """
-    required = {"format", "request", "owner_source"}
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, configured_shared_owner_actor_id
+    retained_fields = OWNER_EVIDENCE_FIELDS.intersection(record) if isinstance(record, dict) else set()
+    required = {"format", "request", "owner_source"} | retained_fields
     if not isinstance(record, dict) or set(record) != required:
         raise ValidationError("Ready authorization has invalid, missing or unexpected fields")
     if record["format"] != READY_AUTHORIZATION_FORMAT:
@@ -494,6 +567,10 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
     if (isinstance(repository_id, bool) or not isinstance(repository_id, int) or repository_id < 1 or
             not isinstance(trusted_owner_ids, list) or isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 1):
         raise ValidationError("Ready authorization configuration is invalid")
+    # Preserve the original shape/configuration refusals before policy admission.
+    # Older host configurations without automation identity cannot opt out.
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    evidence = _retained_authorization_policy(record, policy, source["actor_id"])
     if source["actor_id"] not in trusted_owner_ids:
         raise ValidationError("Ready authorization uses an untrusted numeric owner/manager identity")
     if request["repository_id"] != repository_id or source["repository_id"] != repository_id:
@@ -548,12 +625,15 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
     observed_at = timestamp(observed["observed_at"])
     if observed_at < timestamp(source["updated_at"]) or observed_at >= expires_at:
         raise ValidationError("Ready authorization trusted observation time is outside the request window")
+    if ready_authorization_config_sha256(config) != config_sha256:
+        raise ValidationError("Ready authorization configuration changed during provider observation")
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     return {"action": "MARK_READY", "role": request["role"], "actor_id": source["actor_id"],
             "actor_login": source["actor_login"], "source_id": observed["source_id"],
             "observed_at": observed["observed_at"], "configuration_sha256": config_sha256,
             "raw_body_sha256": source["raw_body_sha256"], "record_consistent": True,
             "live_source_verified": True, "configuration_accepted": True,
-            "trusted_time_verified": True, "execution_authority": False}
+            "trusted_time_verified": True, "execution_authority": False, **evidence}
 
 
 def owner_fields(record, kind, head_sha):
@@ -605,7 +685,7 @@ def parse_owner_text(raw):
 
 def verify_owner_record(record, schema, config, contracts, now, *, head_sha, binding,
                         runs=None, excluded_contexts=(), excluded_producers=(),
-                        allow_historical_finding=False):
+                        allow_historical_finding=False, accepted_policy_root=None):
     """Authenticate the shape, digest, grammar, trusted actor and producer of an owner record.
 
     Offline verification establishes consistency; the trusted host verifies the live comment.
@@ -613,6 +693,7 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
     kind = OWNER_KINDS.get(schema)
     if kind is None:
         raise ValidationError("Not an owner record schema")
+    policy = _authorization_owner_policy(config, accepted_policy_root)
     contracts.validate(schema, record)
     historical_finding = (allow_historical_finding and kind == "finding"
                           and record.get("head_sha") != head_sha)
@@ -629,7 +710,10 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
         signed_head = record.get("head_sha")
     _verify_owner_record_candidate(record, kind, signed_head)
     source = record["owner_source"]
-    if source["actor_id"] not in trusted_owner_ids(config):
+    evidence = _retained_authorization_policy(record, policy, source["actor_id"])
+    if policy and record["binding"]["policy_hash"] != policy["owner_policy_sha256"]:
+        raise ValidationError("Owner disposition uses a superseded policy")
+    if source["actor_id"] not in config["merge_gate"]["trusted_owner_ids"]:
         raise ValidationError(f"{schema}: untrusted numeric owner identity {source['actor_id']}")
     if sha256(source["raw_body"].encode("utf-8")) != source["raw_body_sha256"]:
         raise ValidationError(f"{schema}: raw-body digest mismatch")
@@ -659,10 +743,11 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
             if ancestor["context_id"] in excluded_contexts or ancestor["producer_id"] in excluded_producers:
                 raise ValidationError(f"{schema}: verifier descends from an implementation or review run")
             parent = ancestor.get("parent_run_id")
+    _recheck_authorization_policy(config, accepted_policy_root, policy)
     return {"kind": kind, "decision": fields["decision"], "expected_text": source["raw_body"],
             "authorization_request_id": record["authorization_request_id"],
             "record_consistent": True, "live_source_verified": False,
-            "execution_authority": False}
+            "execution_authority": False, **evidence}
 
 
 def verify_webhook(secret: bytes, body: bytes, signature: str, delivery_id: str):

@@ -14,6 +14,8 @@ from agentic.review_tiers import (classify, diff_effect, review_decision,
 
 class ReviewTiers194Tests(unittest.TestCase):
     def setUp(self):
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(1001,))
         self.config = {"execution": {"risk_tiers": {
             "tier1_eligible_paths": ["docs/**", "evidence/**"],
             "tier1_excluded_paths": [],
@@ -22,12 +24,12 @@ class ReviewTiers194Tests(unittest.TestCase):
 
     def test_tier1_single_pass_qualifies(self):
         self.assertEqual(1, round_cap(1))
-        self.assertEqual("QUALIFIED", review_decision(1, 1, latest_pass=True)["status"])
+        self.assertEqual("QUALIFIED", review_decision(1, 1, latest_pass=True, accepted_policy_root=self.owner_fixture.root)["status"])
 
     def test_tier2_has_three_rounds_and_refuses_fourth(self):
         self.assertEqual(3, round_cap(2))
         with self.assertRaises(ValidationError):
-            review_decision(2, 4)
+            review_decision(2, 4, accepted_policy_root=self.owner_fixture.root)
 
     def test_configured_cap_cannot_raise_mandatory_three_round_ceiling(self):
         with self.assertRaisesRegex(ValidationError, "mandatory"):
@@ -36,29 +38,29 @@ class ReviewTiers194Tests(unittest.TestCase):
     def test_awf16_195_r3_001_tier2_cap_ticket_p2_and_qualifies_after_ticket(self):
         """AWF16-195-R3-001: a Tier 2 cap needs retained ticket keys."""
         finding = {"id": "F2", "severity": "MINOR"}
-        result = review_decision(2, 3, latest_pass=True, open_findings=[finding])
+        result = review_decision(2, 3, latest_pass=True, open_findings=[finding], accepted_policy_root=self.owner_fixture.root)
         self.assertEqual("TICKET_P2", result["status"])
         result = review_decision(2, 3, latest_pass=True, open_findings=[finding],
-                                 ticketed_p2_records=[{"finding_id": "F2", "ticket_key": "AWF-100"}])
+                                 ticketed_p2_records=[{"finding_id": "F2", "ticket_key": "AWF-100"}], accepted_policy_root=self.owner_fixture.root)
         self.assertEqual("QUALIFIED", result["status"])
 
     def test_tier1_pass_qualifies_with_advisory_minor(self):
         self.assertEqual("QUALIFIED", review_decision(
-            1, 1, latest_pass=True, open_findings=[{"id": "M", "severity": "MINOR"}])["status"])
+            1, 1, latest_pass=True, open_findings=[{"id": "M", "severity": "MINOR"}], accepted_policy_root=self.owner_fixture.root)["status"])
 
     def test_cap_requires_authenticated_bounded_record(self):
         with self.assertRaises(ValidationError):
-            review_decision(2, 4, owner_cap_disposition=True)
+            review_decision(2, 4, owner_cap_disposition=True, accepted_policy_root=self.owner_fixture.root)
         disposition = {
             "decision": "EXTEND_ONE_CYCLE", "record_id": "owner-record",
             "created_at": "2026-09-09T12:00:00Z", "producer_id": "verifier",
             "run_id": "run", "binding": {}, "open_finding_ids": [],
             "notes": "extend", "cycles": 3, "cap_extensions": 1,
             "successor_ticket": None, "authorization_request_id": "request",
-            "owner_source": {"channel": "github_pr_comment", "comment_id": 1},
+            "owner_source": {"channel": "github_pr_comment", "comment_id": 1, "actor_id": 1001},
             "evidence": ["urn:awf:fixture:evidence"]}
         self.assertEqual("CONTINUE", review_decision(2, 4,
-                         owner_cap_disposition=disposition)["status"])
+                         owner_cap_disposition=disposition, accepted_policy_root=self.owner_fixture.root)["status"])
 
     def test_awf16_r1_006_lifecycle_refuses_unverified_or_unbounded_cap_rounds(self):
         """AWF16-R1-006: an extension cannot authorize rounds 5, 6, or 100."""
@@ -68,7 +70,7 @@ class ReviewTiers194Tests(unittest.TestCase):
                         "run_id": "run", "binding": {}, "open_finding_ids": [],
                         "notes": "extend", "cycles": 3, "cap_extensions": 1,
                         "successor_ticket": None, "authorization_request_id": "request",
-                        "owner_source": {"channel": "github_pr_comment", "comment_id": 1},
+                        "owner_source": {"channel": "github_pr_comment", "comment_id": 1, "actor_id": 1001},
                         "evidence": ["urn:awf:fixture:evidence"]}
         with self.assertRaises(ValidationError):
             review_round_transition(2, 4, owner_cap_disposition=disposition)
@@ -76,16 +78,16 @@ class ReviewTiers194Tests(unittest.TestCase):
             review_round_transition(2, 5, owner_cap_disposition=disposition,
                                     owner_cap_verified=True)
         with self.assertRaises(ValidationError):
-            review_decision(2, 5, owner_cap_disposition=disposition)
+            review_decision(2, 5, owner_cap_disposition=disposition, accepted_policy_root=self.owner_fixture.root)
         with self.assertRaises(ValidationError):
-            review_decision(3, 4, owner_cap_disposition=disposition)
+            review_decision(3, 4, owner_cap_disposition=disposition, accepted_policy_root=self.owner_fixture.root)
 
     def test_tier2_cap_p1_routes_owner(self):
         self.assertEqual("ROUTE_TO_OWNER", review_decision(
-            2, 3, open_findings=[{"id": "F1", "severity": "MAJOR"}])["status"])
+            2, 3, open_findings=[{"id": "F1", "severity": "MAJOR"}], accepted_policy_root=self.owner_fixture.root)["status"])
 
     def test_tier3_requires_owner_review(self):
-        self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(3, 3, latest_pass=True)["status"])
+        self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(3, 3, latest_pass=True, accepted_policy_root=self.owner_fixture.root)["status"])
         owner = {"owner_review": True,
                  "record_id": "owner-record", "run_id": "verify-run",
                  "producer_id": "verifier", "owner_id": 1001,
@@ -96,15 +98,15 @@ class ReviewTiers194Tests(unittest.TestCase):
         refusal = review_decision(
             3, 3, latest_pass=True, owner_review=owner,
             configured_owner_ids=[1001],
-            expected_candidate_binding=owner["candidate_binding"])
+            expected_candidate_binding=owner["candidate_binding"], accepted_policy_root=self.owner_fixture.root)
         self.assertEqual("OWNER_REVIEW_REQUIRED", refusal["status"])
         self.assertEqual("provider-verified owner review required", refusal["reason"])
         self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(
             3, 3, latest_pass=True, owner_review={**owner, "owner_id": 999},
             configured_owner_ids=[1001],
-            expected_candidate_binding=owner["candidate_binding"])["status"])
+            expected_candidate_binding=owner["candidate_binding"], accepted_policy_root=self.owner_fixture.root)["status"])
         self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(
-            3, 3, latest_pass=True, owner_review=True)["status"])
+            3, 3, latest_pass=True, owner_review=True, accepted_policy_root=self.owner_fixture.root)["status"])
 
     def test_upgrade_adds_only_tier3_lines_and_is_idempotent(self):
         from agentic.upgrade import review_tier_defaults
@@ -145,10 +147,10 @@ class ReviewTiers194Tests(unittest.TestCase):
         self.assertEqual(["security"], specialists(self.config, 1, ["security", "operations"]))
         with self.assertRaises(ValidationError):
             verdict_record(pr_comment_url="", pr_body_link="https://example.test/pr#review",
-                           verdict="PASS", tier=1, round_number=1, head_sha="a" * 40, reviewer_id="critic")
+                           verdict="PASS", tier=1, round_number=1, head_sha="a" * 40, reviewer_id="critic", accepted_policy_root=self.owner_fixture.root)
         record = verdict_record(pr_comment_url="https://example.test/comment/1",
                                 pr_body_link="https://example.test/pr#verdict-1", verdict="PASS",
-                                tier=1, round_number=1, head_sha="a" * 40, reviewer_id="critic")
+                                tier=1, round_number=1, head_sha="a" * 40, reviewer_id="critic", accepted_policy_root=self.owner_fixture.root)
         self.assertEqual("https://example.test/comment/1", record["pr_comment_url"])
 
     def test_fourth_round_receipt_requires_the_owner_cap_record(self):
@@ -158,24 +160,24 @@ class ReviewTiers194Tests(unittest.TestCase):
             "run_id": "run", "binding": {}, "open_finding_ids": [],
             "notes": "extend", "cycles": 3, "cap_extensions": 1,
             "successor_ticket": None, "authorization_request_id": "request",
-            "owner_source": {"channel": "github_pr_comment", "comment_id": 1},
+            "owner_source": {"channel": "github_pr_comment", "comment_id": 1, "actor_id": 1001},
             "evidence": ["urn:awf:fixture:evidence"]}
         with self.assertRaises(ValidationError):
             verdict_record(pr_comment_url="https://example.test/comment/4",
                            pr_body_link="https://example.test/pr#verdict-4",
                            verdict="PASS", tier=2, round_number=4,
-                           head_sha="a" * 40, reviewer_id="critic")
+                           head_sha="a" * 40, reviewer_id="critic", accepted_policy_root=self.owner_fixture.root)
         record = verdict_record(pr_comment_url="https://example.test/comment/4",
                                 pr_body_link="https://example.test/pr#verdict-4",
                                 verdict="PASS", tier=2, round_number=4,
                                 head_sha="a" * 40, reviewer_id="critic",
-                                owner_cap_disposition=disposition)
+                                owner_cap_disposition=disposition, accepted_policy_root=self.owner_fixture.root)
         self.assertEqual(4, record["round"])
 
     def test_boundary_findings_block(self):
         result = review_decision(1, 1, latest_pass=True,
                                  open_findings=[{"id": "B", "severity": "MINOR",
-                                                 "basis": {"boundary_code": "SCOPE_ESCAPE"}}])
+                                                 "basis": {"boundary_code": "SCOPE_ESCAPE"}}], accepted_policy_root=self.owner_fixture.root)
         self.assertEqual("BLOCKED", result["status"])
 
     def test_run_cap_is_independent_from_review_cap(self):

@@ -8,6 +8,8 @@ commits, posts comments, grants an override, or authenticates a host.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 import hashlib
 import json
@@ -514,9 +516,124 @@ def _override_payload(record):
     return {key: value for key, value in record.items() if key != "override_sha256"}
 
 
-def _reviewed_owner_ids(reviewed_owner_config, *, expected_config_sha256=None):
+_OBSERVED_OWNER_CONFIG = ContextVar('observed_owner_config', default=None)
+
+
+@contextmanager
+def _provider_owner_authority(config, snapshot, registry, *, now):
+    """Scope identity from the queue's receipt-authenticated accepted bytes.
+
+    Reverify the protected runtime receipt; a caller's configuration or digest
+    cannot establish this context. Never retain it beyond this evaluation.
+    """
+    import base64
+    from .canonical import canonical, fresh, load_yaml
+    from .configuration import inspect_config
+    from .contracts import Contracts
+    from .integration_queue import (_verify_stored_provider_observation, _evidence_max_age,
+                                    MAX_DOCUMENT_BYTES, SHA)
+    from .lifecycle import definition
+    from .policy import policy_hash
+    result = _verify_stored_provider_observation(snapshot, registry, 'accepted owner policy')
+    request = {'operation': 'ACCEPTED_PROJECT_CONFIG',
+               'source_identity': {'kind': 'installed_project_configuration',
+                                   'path': '.agentic/PROJECT_CONFIG.yaml'}}
+    _require(snapshot['request'] == request,
+             'OWNER_TRUST_UNBOUND: accepted provider policy request differs')
+    fresh(snapshot['observation']['observed_at'], now, _evidence_max_age(config))
+    fields = {'raw_bytes_base64', 'config_sha256', 'policy_sha256', 'path',
+              'repository', 'repository_id', 'ref', 'blob_sha', 'acceptance'}
+    _require(set(result) == fields
+             and isinstance(result['raw_bytes_base64'], str)
+             and len(result['raw_bytes_base64']) <= ((MAX_DOCUMENT_BYTES + 2) // 3) * 4,
+             'OWNER_TRUST_UNBOUND: accepted provider policy encoding is invalid')
+    raw = base64.b64decode(result['raw_bytes_base64'].encode('ascii'), validate=True)
+    _require(len(raw) <= MAX_DOCUMENT_BYTES and not raw.startswith(b'\xef\xbb\xbf'),
+             'OWNER_TRUST_UNBOUND: accepted provider policy bytes are invalid')
+    accepted = load_yaml(raw)
+    report = inspect_config(accepted, definition(),
+                            Contracts(Path(__file__).resolve().parents[2] / 'schemas'))
+    github = accepted['github']
+    _require(report['status'] == 'ACCEPTED'
+             and canonical(accepted) == canonical(config)
+             and result['config_sha256'] == sha256(raw).hexdigest()
+             and result['policy_sha256'] == policy_hash(accepted, definition())
+             and result['path'] == '.agentic/PROJECT_CONFIG.yaml'
+             and result['ref'] == 'refs/heads/' + github['base_branch']
+             and result['repository'] == github['repository']
+             and result['repository_id'] == github['repository_id']
+             and isinstance(result['blob_sha'], str) and SHA.fullmatch(result['blob_sha'])
+             and isinstance(result['acceptance'], dict)
+             and set(result['acceptance']) == {'status', 'receipt_id', 'workflow_version'}
+             and result['acceptance']['status'] == 'ACCEPTED'
+             and isinstance(result['acceptance']['receipt_id'], str)
+             and bool(result['acceptance']['receipt_id'])
+             and result['acceptance']['workflow_version']
+                 == accepted['template']['expected_workflow_version'],
+             'OWNER_TRUST_UNBOUND: accepted provider policy binding differs')
+    payload = {'config_sha256': result['config_sha256'],
+               'trusted_owner_ids': copy.deepcopy(accepted['merge_gate']['trusted_owner_ids']),
+               'expected_actor_id': github.get('expected_actor_id')}
+    token = _OBSERVED_OWNER_CONFIG.set({**payload,
+        'binding_sha256': fingerprint('provenance_owner_config', payload)})
+    try:
+        yield
+    finally:
+        _OBSERVED_OWNER_CONFIG.reset(token)
+
+
+def _accepted_owner_config(root):
+    """Project immutable accepted default-branch bytes, never working policy.
+
+    The root is trusted host context, not a field supplied by an owner record.
+    This projection grants no exception to the owner/automation separation rule.
+    """
+    from pathlib import Path
+    from .canonical import load_yaml
+    from .contracts import Contracts
+    from .policy import policy_hash
+    from .shared_owner_policy import (_default_ref, _git, _policy_blob,
+                                      observe_accepted_owner_policy)
+
+    if root is None and _OBSERVED_OWNER_CONFIG.get() is not None:
+        return copy.deepcopy(_OBSERVED_OWNER_CONFIG.get())
+    _require(root is not None,
+             "OWNER_TRUST_UNBOUND: accepted_policy_root is required")
+    ref, _ = _default_ref(root)
+    _require(ref is not None,
+             "OWNER_TRUST_UNBOUND: accepted default branch is unobserved")
+    commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+    raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
+    _require(raw is not None,
+             "OWNER_TRUST_UNBOUND: accepted configuration bytes are missing")
+    raw_workflow = _policy_blob(root, commit, ".agentic/workflow.yaml")
+    _require(raw_workflow is not None,
+             "OWNER_TRUST_UNBOUND: accepted workflow bytes are missing")
+    config = load_yaml(raw)
+    workflow = load_yaml(raw_workflow)
+    contracts = Contracts(Path(__file__).resolve().parents[2] / "schemas")
+    observed = observe_accepted_owner_policy(root, config, workflow, contracts,
+                                           policy_sha256=policy_hash(config, workflow))
+    _require(observed["config_sha256"] == sha256(raw).hexdigest()
+             and observed["workflow_sha256"] == sha256(raw_workflow).hexdigest()
+             and observed["default_branch_commit"] == commit,
+             "OWNER_TRUST_UNBOUND: accepted configuration changed during read")
+    actor = config["github"].get("expected_actor_id")
+    _require(actor is None or (type(actor) is int and actor > 0),
+             "OWNER_TRUST_UNBOUND: accepted github.expected_actor_id is missing or invalid")
+    payload = {"config_sha256": sha256(raw).hexdigest(),
+               "trusted_owner_ids": copy.deepcopy(config["merge_gate"]["trusted_owner_ids"]),
+               "expected_actor_id": actor}
+    return {**payload, "binding_sha256": fingerprint("provenance_owner_config", payload)}
+
+
+def _reviewed_owner_ids(reviewed_owner_config, *, expected_config_sha256=None,
+                        accepted_policy_root=None):
     """Return numeric owners from one closed, digest-bound reviewed input."""
-    expected = {"config_sha256", "trusted_owner_ids", "binding_sha256"}
+    _require(isinstance(reviewed_owner_config, dict)
+             and "expected_actor_id" in reviewed_owner_config,
+             "OWNER_TRUST_UNBOUND: reviewed owner configuration missing expected_actor_id")
+    expected = {"config_sha256", "trusted_owner_ids", "expected_actor_id", "binding_sha256"}
     _require(isinstance(reviewed_owner_config, dict)
              and set(reviewed_owner_config) == expected,
              "OWNER_TRUST_UNBOUND: reviewed owner configuration is missing or open")
@@ -533,11 +650,21 @@ def _reviewed_owner_ids(reviewed_owner_config, *, expected_config_sha256=None):
              and all(type(value) is int and value > 0 for value in owners)
              and len(owners) == len(set(owners)),
              "OWNER_TRUST_UNBOUND: reviewed trusted owner ids must be unique positive numeric ids")
+    actor = reviewed_owner_config["expected_actor_id"]
+    _require(actor is None or (type(actor) is int and actor > 0),
+             "OWNER_TRUST_UNBOUND: reviewed expected_actor_id must be a positive numeric id")
     payload = {"config_sha256": config_sha256,
-               "trusted_owner_ids": owners}
+               "trusted_owner_ids": owners, "expected_actor_id": actor}
     _require(reviewed_owner_config["binding_sha256"]
              == fingerprint("provenance_owner_config", payload),
              "OWNER_TRUST_UNBOUND: reviewed owner configuration binding is stale")
+    accepted = _accepted_owner_config(accepted_policy_root)
+    # A reviewed host may narrow the accepted owner set, never enlarge it.
+    # Identity and the digest still come from the exact accepted bytes.
+    _require(config_sha256 == accepted["config_sha256"]
+             and actor == accepted["expected_actor_id"]
+             and set(owners).issubset(accepted["trusted_owner_ids"]),
+             "OWNER_TRUST_UNBOUND: reviewed trusted owner configuration differs from accepted default-branch bytes")
     return tuple(owners)
 
 
@@ -602,7 +729,7 @@ def _reject_dual_owner_authority(reviewed_owner_config, trusted_owner_ids):
 
 def verify_owner_override(record, *, reviewed_owner_config=None,
                           trusted_owner_ids=_OWNER_AUTHORITY_UNSET, pr=None,
-                          supersedes=None):
+                          supersedes=None, accepted_policy_root=None):
     """Validate an override; ``trusted_owner_ids`` is a deprecated alias.
 
     The alias remains accepted for 1.9.4 call compatibility but cannot establish
@@ -617,10 +744,14 @@ def verify_owner_override(record, *, reviewed_owner_config=None,
              "OVERRIDE_VERSION_AUTHORITY_UNBOUND: provenance override schema "
              f"version {record['schema_version']} requires digest-bound reviewed "
              "owner configuration")
-    owners = _reviewed_owner_ids(reviewed_owner_config)
+    owners = _reviewed_owner_ids(reviewed_owner_config,
+                                    accepted_policy_root=accepted_policy_root,
+                                )
     _require(type(record["who"]) is int and record["who"] > 0,
              "OVERRIDE_VERSION_AUTHORITY_INCOMPATIBLE: provenance override "
              f"schema version {record['schema_version']} has a non-numeric owner id")
+    _require(record["who"] != reviewed_owner_config["expected_actor_id"],
+             "The configured automation actor must not be a trusted owner")
     _require(record["who"] in owners,
              "OWNER_TRUST_UNBOUND: provenance override actor is not a reviewed "
              "trusted owner id")
@@ -630,7 +761,7 @@ def verify_owner_override(record, *, reviewed_owner_config=None,
     if supersedes is not None:
         verify_owner_override(
             supersedes, reviewed_owner_config=reviewed_owner_config,
-            pr=record["pr"]
+            pr=record["pr"], accepted_policy_root=accepted_policy_root
         )
         _require(record["schema_version"] == 2
                  and record["supersedes"] == supersedes["override_sha256"],
@@ -644,7 +775,8 @@ def verify_owner_override(record, *, reviewed_owner_config=None,
 
 def record_owner_override(state, *, who, when, why, pr, covered_shas,
                           reviewed_owner_config=None,
-                          trusted_owner_ids=_OWNER_AUTHORITY_UNSET):
+                          trusted_owner_ids=_OWNER_AUTHORITY_UNSET,
+                          accepted_policy_root=None):
     """Seal an override; ``trusted_owner_ids`` is a deprecated alias.
 
     Alias-only 1.9.4 calls may create the compatibility envelope for later
@@ -676,7 +808,7 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
                  "schema version 1 has a non-numeric owner id")
     else:
         verify_owner_override(draft, reviewed_owner_config=reviewed_owner_config,
-                              pr=pr)
+                              pr=pr, accepted_policy_root=accepted_policy_root)
     existing = state.get("provenance_overrides", {})
     _require(isinstance(existing, dict), "AWF provenance override state is malformed")
     key = str(pr)
@@ -689,7 +821,8 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
 
 def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
                              supersedes, reviewed_owner_config=None,
-                             trusted_owner_ids=_OWNER_AUTHORITY_UNSET):
+                             trusted_owner_ids=_OWNER_AUTHORITY_UNSET,
+                             accepted_policy_root=None):
     """Append a sealed replacement while preserving the original record.
 
     ``trusted_owner_ids`` is a deprecated 1.9.4 alias which cannot establish
@@ -710,7 +843,8 @@ def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
     key = str(pr)
     _require(key in originals, "This PR has no provenance override record to supersede")
     current = verify_owner_override(
-        originals[key], reviewed_owner_config=reviewed_owner_config, pr=pr
+        originals[key], reviewed_owner_config=reviewed_owner_config, pr=pr,
+        accepted_policy_root=accepted_policy_root
     )
     histories = state.get("provenance_override_supersessions", {})
     _require(isinstance(histories, dict),
@@ -722,6 +856,7 @@ def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
         verify_owner_override(
             existing, reviewed_owner_config=reviewed_owner_config, pr=pr,
             supersedes=current,
+            accepted_policy_root=accepted_policy_root,
         )
         current = existing
 
@@ -743,7 +878,7 @@ def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
     )
     verify_owner_override(
         draft, reviewed_owner_config=reviewed_owner_config, pr=pr,
-        supersedes=current
+        supersedes=current, accepted_policy_root=accepted_policy_root
     )
     _require(set(current["covered_shas"]).issubset(set(draft["covered_shas"])),
              "Superseding provenance override must retain all covered commit SHAs")
@@ -778,7 +913,8 @@ def render_owner_override(record):
     )
 
 
-def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
+def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr,
+                           accepted_policy_root=None):
     """Verify an override and every digest-linked predecessor, oldest first."""
     _require(isinstance(predecessors, (list, tuple)),
              "OVERRIDE_CHAIN_INVALID: provenance override predecessors must be "
@@ -791,7 +927,8 @@ def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
                  "OVERRIDE_CHAIN_INVALID: an original provenance override cannot "
                  "have predecessors")
         return verify_owner_override(
-            record, reviewed_owner_config=reviewed_owner_config, pr=pr
+            record, reviewed_owner_config=reviewed_owner_config, pr=pr,
+            accepted_policy_root=accepted_policy_root
         )
     _require(predecessors,
              "OVERRIDE_CHAIN_INVALID: a superseding provenance override requires "
@@ -801,7 +938,8 @@ def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
     for predecessor in predecessors:
         if current is None:
             verified = verify_owner_override(
-                predecessor, reviewed_owner_config=reviewed_owner_config, pr=pr
+                predecessor, reviewed_owner_config=reviewed_owner_config, pr=pr,
+                accepted_policy_root=accepted_policy_root
             )
             _require(verified["schema_version"] == 1,
                      "OVERRIDE_CHAIN_INVALID: provenance override predecessor "
@@ -810,6 +948,7 @@ def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
             verified = verify_owner_override(
                 predecessor, reviewed_owner_config=reviewed_owner_config, pr=pr,
                 supersedes=current,
+                accepted_policy_root=accepted_policy_root,
             )
         current = verified
         observed_time = timestamp(verified["when"])
@@ -819,6 +958,7 @@ def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
     result = verify_owner_override(
         record, reviewed_owner_config=reviewed_owner_config, pr=pr,
         supersedes=current,
+        accepted_policy_root=accepted_policy_root,
     )
     _require(prior_time is None or timestamp(result["when"]) >= prior_time,
              "OVERRIDE_CHAIN_INVALID: provenance override chain is not chronological")
@@ -826,8 +966,8 @@ def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
 
 
 def _provider_owner_config(observation, reviewed_owner_config=None, *,
-                           config_sha256=None):
-    """Bind the 1.9.4 reviewed-host snapshot or explicit reviewed input."""
+                           config_sha256=None, accepted_policy_root=None):
+    """Bind a provider snapshot to the identity in accepted policy bytes."""
     observed_config_sha256 = observation.get('config_sha256')
     _require(isinstance(observed_config_sha256, str)
              and _DIGEST.fullmatch(observed_config_sha256),
@@ -835,14 +975,20 @@ def _provider_owner_config(observation, reviewed_owner_config=None, *,
     if config_sha256 is not None:
         _require(config_sha256 == observed_config_sha256,
                  "Provider override reviewed configuration mismatch")
+    _require("expected_actor_id" in observation,
+             "OWNER_TRUST_UNBOUND: provider owner configuration missing expected_actor_id")
+    _require(observation["expected_actor_id"] is None
+             or (type(observation["expected_actor_id"]) is int
+                 and observation["expected_actor_id"] > 0),
+             "OWNER_TRUST_UNBOUND: provider expected_actor_id must be a positive numeric id")
     if reviewed_owner_config is None:
-        # The 1.9.4 host observation copied the already-reviewed numeric IDs and
-        # its configuration digest into one provider snapshot.  Close and bind
-        # that legacy representation before it reaches the authority verifier.
+        # Close the accepted configuration snapshot before authority checking.
+        # Identity-less historical snapshots remain audit data only.
         payload = {
             "config_sha256": observed_config_sha256,
             "trusted_owner_ids": copy.deepcopy(
                 observation.get("trusted_owner_ids")),
+            "expected_actor_id": observation["expected_actor_id"],
         }
         reviewed_owner_config = {
             **payload,
@@ -851,13 +997,17 @@ def _provider_owner_config(observation, reviewed_owner_config=None, *,
     _reviewed_owner_ids(
         reviewed_owner_config,
         expected_config_sha256=observed_config_sha256,
+        accepted_policy_root=accepted_policy_root,
     )
+    _require(observation["expected_actor_id"] == reviewed_owner_config["expected_actor_id"],
+             "OWNER_TRUST_UNBOUND: provider expected_actor_id differs from accepted owner configuration")
     return reviewed_owner_config
 
 
 def verify_provider_owner_override(record, observation, *,
                                    reviewed_owner_config=None,
-                                   repository_id=None, config_sha256=None):
+                                   repository_id=None, config_sha256=None,
+                                   accepted_policy_root=None):
     """Bind an override to reviewed numeric owners and one fresh comment."""
     _require(isinstance(observation, dict) and observation.get("version") == 1,
              "Provider provenance observation is missing")
@@ -868,11 +1018,12 @@ def verify_provider_owner_override(record, observation, *,
              "Provider override repository identity mismatch")
     reviewed_owner_config = _provider_owner_config(
         observation, reviewed_owner_config, config_sha256=config_sha256,
+        accepted_policy_root=accepted_policy_root,
     )
     _require(type(record.get("who")) is int,
              "Provider overrides require a numeric GitHub actor id")
     verify_owner_override(record, reviewed_owner_config=reviewed_owner_config,
-                          pr=observation.get("pr"))
+                          pr=observation.get("pr"), accepted_policy_root=accepted_policy_root)
     rendered = render_owner_override(record)
     bodies = [rendered]
     if record["schema_version"] == 1:
@@ -1741,16 +1892,19 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
         if reviewed_policy is not None and reviewed_owner_config is None:
             # Preserve the 1.9.4 host API through the same reviewed-snapshot
             # adapter used by direct provider verification, before chain checks.
-            reviewed_owner_config = _provider_owner_config(provider_observation)
+            reviewed_owner_config = _provider_owner_config(provider_observation,
+                   accepted_policy_root=root,
+               )
         override_record = _verify_override_chain(
             override, override_predecessors,
             reviewed_owner_config=reviewed_owner_config, pr=pr_number,
+            accepted_policy_root=root,
         )
         if reviewed_policy is not None:
             provider_override_evidence = verify_provider_owner_override(
                 override_record, provider_observation,
                 repository_id=provider_observation.get('repository_id'),
-                reviewed_owner_config=reviewed_owner_config)
+                reviewed_owner_config=reviewed_owner_config, accepted_policy_root=root)
         covered = set(override_record["covered_shas"])
         _require(covered.issubset(set(commits)),
                  "Provenance override names commits outside the checked PR range")
