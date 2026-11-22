@@ -32,7 +32,7 @@ def allowance(path=ARTIFACT, content=LARGE_CONTENT):
 
 
 def project_config(entries=None):
-    config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+    config = json.loads((ROOT / ".agentic/defaults/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
     config["publication"] = {
         "deny_literals": [], "deny_regexes": [], "internal_hostnames": [],
     }

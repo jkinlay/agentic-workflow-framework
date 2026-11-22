@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.canonical import canonical, fingerprint, sha256
 from agentic.provider_identity import require_jira_write_identity
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shipped_defaults  # noqa: E402
 
 NOW = "2026-10-17T16:00:00Z"
 PROVIDER = dict(cloud_id="cloud-1", site="https://jira.example.invalid",
@@ -78,7 +80,8 @@ class MergeTrainControllerTests(unittest.TestCase):
         # Doc 47's audit schema/location/retention and batch lifecycle fields
         # remain open owner questions. The dictionaries below describe only
         # T11's proposed Python seam, not a new canonical record schema.
-        config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text("utf-8"))
+        # Shipped defaults, never the adopter's own Jira statuses (AWF-305).
+        config = shipped_defaults.project_config()
         # This synthetic fixture owns main, independent of the adopting project.
         config["github"]["base_branch"] = "main"
         config["project"]["id"] = "local-project"
@@ -209,7 +212,7 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "state.sqlite"
         self.store = controller.ContinuousControllerStore(self.path, ["B"])
-        self.config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text("utf-8"))
+        self.config = shipped_defaults.project_config()
         # This synthetic fixture owns main, independent of the adopting project.
         self.config["github"]["base_branch"] = "main"
         self.config["project"]["id"] = "local-project"

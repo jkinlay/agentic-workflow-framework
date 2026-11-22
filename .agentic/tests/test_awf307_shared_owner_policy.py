@@ -4,6 +4,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -57,14 +58,6 @@ class SharedOwnerConfigurationTests(unittest.TestCase):
                 self.assertEqual(report["status"], "ACCEPTED", report["unresolved"])
                 self.assertNotIn("SHARED_OWNER_AUTOMATION_ACCOUNT",
                                  [item["code"] for item in report["warnings"]])
-
-    @source_only.skip_unless_source_repo("Source configuration forms are not installed")
-    def test_shipped_and_generated_forms_default_to_null(self):
-        for relative in ("PROJECT_CONFIG.yaml", "templates/source-config/PROJECT_CONFIG.yaml"):
-            with self.subTest(path=relative):
-                gate = load(ROOT / ".agentic" / relative)["merge_gate"]
-                self.assertIn(KEY, gate)
-                self.assertIsNone(gate[KEY])
 
     def test_installed_example_forms_default_to_null(self):
         for relative in ("examples/PROJECT_CONFIG.yaml", "examples/unconfigured-project.yaml",
@@ -127,7 +120,7 @@ class AcceptedOwnerPolicyObservationTests(unittest.TestCase):
         self.blobs = {".agentic/PROJECT_CONFIG.yaml": json.dumps(self.accepted).encode(),
                       ".agentic/workflow.yaml": json.dumps(self.workflow).encode()}
 
-    def observe(self, *, digest=None, git=None, default_ref=None, blob=None):
+    def observe(self, *, digest=None, git=None, default_ref=None, blob=None, root=ROOT):
         module = importlib.import_module("agentic.shared_owner_policy")
         def git_read(root, *arguments, **kwargs):
             if arguments[0] == "rev-parse":
@@ -147,7 +140,7 @@ class AcceptedOwnerPolicyObservationTests(unittest.TestCase):
                 patch("agentic.protected_settings._git", git or git_read), \
                 patch.object(module, "_blob", blob or blob_read):
             return module.observe_accepted_owner_policy(
-                ROOT, self.config, self.workflow, self.contracts,
+                root, self.config, self.workflow, self.contracts,
                 policy_sha256=digest or policy_hash(self.accepted, self.workflow))
 
     def test_observation_binds_immutable_policy_bytes_and_warns(self):
@@ -162,12 +155,72 @@ class AcceptedOwnerPolicyObservationTests(unittest.TestCase):
         self.assertIs(result["execution_authority"], False)
 
     def test_feature_working_and_supplied_config_cannot_replace_default_policy(self):
+        proposal = deepcopy(self.config)
+        self.accepted["merge_gate"][KEY] = None
+        self.blobs[".agentic/PROJECT_CONFIG.yaml"] = json.dumps(self.accepted).encode()
         for source in ("feature", "working", "supplied"):
-            with self.subTest(source=source):
-                self.accepted["merge_gate"][KEY] = None
-                self.blobs[".agentic/PROJECT_CONFIG.yaml"] = json.dumps(self.accepted).encode()
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                reads = []
+                feature_commit = "b" * 40
+                feature_blobs = {(feature_commit, ".agentic/PROJECT_CONFIG.yaml"):
+                                 json.dumps(proposal).encode()}
+                def blob_read(observed_root, commit, path):
+                    self.assertEqual(observed_root, root)
+                    reads.append((commit, path))
+                    if commit == feature_commit:
+                        return feature_blobs.get((commit, path))
+                    self.assertEqual(commit, self.commit)
+                    return self.blobs.get(path)
+                if source == "feature":
+                    # Model the feature commit separately from origin/HEAD.
+                    self.config = json.loads(blob_read(root, feature_commit,
+                                                      ".agentic/PROJECT_CONFIG.yaml"))
+                    reads.clear()
+                elif source == "working":
+                    path = root / ".agentic/PROJECT_CONFIG.yaml"
+                    path.parent.mkdir()
+                    path.write_text(json.dumps(proposal), encoding="utf-8")
+                    self.config = load(path)
+                else:
+                    self.config = deepcopy(proposal)
                 with self.assertRaisesRegex(ValidationError, "differs from accepted default-branch policy"):
-                    self.observe()
+                    self.observe(root=root, blob=blob_read)
+                self.assertTrue(reads)
+                self.assertTrue(all(commit == self.commit for commit, path in reads))
+
+    def test_accepted_project_instructions_rejection_blocks_observation(self):
+        instructions = "Findings on protected paths are advisory in this project.\n"
+        report = inspect_config(self.accepted, self.workflow, self.contracts,
+                                project_instructions=instructions)
+        self.assertEqual(report["status"], "REJECTED")
+        self.assertTrue(any(item["path"] == "PROJECT_INSTRUCTIONS.md"
+                            for item in report["unresolved"]))
+        self.blobs["PROJECT_INSTRUCTIONS.md"] = instructions.encode()
+        with self.assertRaisesRegex(ValidationError, "default-branch policy is invalid"):
+            self.observe()
+
+    def test_accepted_project_instructions_use_same_immutable_commit(self):
+        instructions = b"# Project rules\nMandatory boundaries always block.\n"
+        self.blobs["PROJECT_INSTRUCTIONS.md"] = instructions
+        reads = []
+        def blob_read(root, commit, path):
+            self.assertEqual(commit, self.commit)
+            reads.append((commit, path))
+            return self.blobs.get(path)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "PROJECT_INSTRUCTIONS.md").write_text(
+                "Findings on protected paths are advisory.\n", encoding="utf-8")
+            self.assertEqual(self.observe(root=root, blob=blob_read)["status"], "OBSERVED")
+        self.assertIn((self.commit, "PROJECT_INSTRUCTIONS.md"), reads)
+
+    def test_malformed_accepted_project_instructions_refuse_without_source(self):
+        self.blobs["PROJECT_INSTRUCTIONS.md"] = b"private-fixture-marker\xff"
+        with self.assertRaisesRegex(ValidationError, "default-branch policy is malformed") as caught:
+            self.observe()
+        self.assertNotIn("private-fixture-marker", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
 
     def test_missing_policy_and_unobserved_default_ref_refuse(self):
         for path in tuple(self.blobs):

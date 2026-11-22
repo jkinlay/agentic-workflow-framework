@@ -13,6 +13,7 @@ from agentic.canonical import canonical, loads, sha256
 from agentic.child_process import child_env
 from agentic.intake_assignment import assign_intake
 from routing_fixtures import fixture_policy
+import shipped_defaults  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -84,7 +85,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
             fixture_root = Path(temporary).resolve()
             project = fixture_root / "project"
             (project / ".agentic").mkdir(parents=True)
-            config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+            config = shipped_defaults.project_config()
             config["execution"]["model_routing"] = fixture_policy()
             config_bytes = canonical(config)
             (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(config_bytes)
@@ -118,7 +119,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="awf-twelve-plan-") as temporary:
             project = Path(temporary)
             (project / ".agentic").mkdir()
-            config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+            config = shipped_defaults.project_config()
             config["jira"]["enabled"] = False
             config["execution"].update(max_lanes=12, max_parallel_tickets=12, model_routing=fixture_policy())
             (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
@@ -147,7 +148,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
             fixture_root = Path(temporary).resolve()
             project = fixture_root / "project"
             (project / ".agentic").mkdir(parents=True)
-            config = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+            config = shipped_defaults.project_config()
             config["merge_gate"]["trusted_owner_ids"] = [1001]
             config["execution"]["model_routing"] = fixture_policy()
             # This local planning fixture intentionally has no Jira adapter.
