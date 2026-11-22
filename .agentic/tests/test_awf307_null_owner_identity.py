@@ -96,12 +96,12 @@ class NullOwnerIdentityTests(proofs.ProviderPolicyFixture):
             with self.subTest(context=context), self.policy_reads():
                 if context == 'missing_origin_head':
                     with patch('agentic.shared_owner_policy._default_ref', return_value=(None, 'unobserved')):
-                        self.assertEqual(101, getattr(driver, consumer)()['repository_id'])
+                        self.assertEqual(101, getattr(driver, consumer)(owner_authority=False)['repository_id'])
                 elif context == 'other_origin_form':
                     with patch('agentic.shared_owner_policy._origin_url', return_value='ssh://git@github.com/fixture/example.git'):
-                        self.assertEqual(101, getattr(driver, consumer)()['repository_id'])
+                        self.assertEqual(101, getattr(driver, consumer)(owner_authority=False)['repository_id'])
                 else:
-                    self.assertEqual(101, getattr(driver, consumer)()['repository_id'])
+                    self.assertEqual(101, getattr(driver, consumer)(owner_authority=False)['repository_id'])
 
     def test_ordinary_provenance_observation_needs_no_owner_authority(self):
         self.ordinary_observation('collect_provenance_observation')
@@ -281,3 +281,48 @@ class NullOwnerIdentityTests(proofs.ProviderPolicyFixture):
                                 operation()
                         else:
                             self.assertEqual(expected, operation())
+
+
+class FrozenFixtureCompatibilityTests(proofs.ProviderPolicyFixture):
+    record = proofs.ProvenanceRefusalTests.record
+
+    def test_legacy_fixture_defaults_preserve_configured_provenance_and_null_train(self):
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        from test_merge_train import MergeTrainTests
+        fixture = AcceptedOwnerFixture(self)
+        self.assertEqual(1002, fixture.config['github']['expected_actor_id'])
+        self.assertEqual([101, 102, 202], fixture.config['merge_gate']['trusted_owner_ids'])
+        train_case = MergeTrainTests('runTest')
+        self.addCleanup(train_case.doCleanups)
+        train = AcceptedOwnerFixture(train_case)
+        self.assertIsNone(train.config['github']['expected_actor_id'])
+        explicit = AcceptedOwnerFixture(self, owners=(1001,), actor=1002)
+        self.assertEqual(1002, explicit.config['github']['expected_actor_id'])
+        self.assertEqual([1001], explicit.config['merge_gate']['trusted_owner_ids'])
+
+    def test_default_provenance_observation_keeps_owner_identity(self):
+        driver = proofs.HostProjectionRefusalTests.driver(self, 1001)
+        with self.policy_reads():
+            observed = driver.collect_provenance_observation()
+        self.assertEqual(1002, observed['expected_actor_id'])
+        ordinary = driver.collect_provenance_observation(owner_authority=False)
+        self.assertNotIn('expected_actor_id', ordinary)
+
+    def test_ordinary_collector_scope_preserves_zero_argument_hook_and_resets(self):
+        driver = proofs.HostProjectionRefusalTests.driver(self, 1001)
+        real_collector = driver.collect_provenance_observation
+        with patch.object(driver, '_provenance_owner_config',
+                          side_effect=AssertionError('ordinary read consumed owner authority')):
+            ordinary = driver._ordinary_provenance_observation()
+        self.assertNotIn('expected_actor_id', ordinary)
+        driver.collect_provenance_observation = lambda: {'repository_id': 101}
+        self.assertEqual({'repository_id': 101}, driver._ordinary_provenance_observation())
+        driver.collect_provenance_observation = real_collector
+        with patch.object(driver, 'collect_provenance_observation',
+                          side_effect=ValidationError('fixture collector failure')):
+            with self.assertRaisesRegex(ValidationError, 'fixture collector failure'):
+                driver._ordinary_provenance_observation()
+        with self.policy_reads():
+            self.assertEqual(1002, driver.collect_provenance_observation()['expected_actor_id'])
+            driver.collect_provenance_observation = lambda: real_collector(owner_authority=True)
+            self.assertEqual(1002, driver._ordinary_provenance_observation()['expected_actor_id'])

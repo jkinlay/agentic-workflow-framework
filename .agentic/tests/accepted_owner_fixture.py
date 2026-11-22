@@ -9,8 +9,18 @@ from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.lifecycle import definition
 
 
+_DEFAULT_ACTOR = object()
+
+
 class AcceptedOwnerFixture:
-    def __init__(self, test, *, owners=(101,), actor=1002, root=None):
+    def __init__(self, test, *, owners=(101, 102, 202), actor=_DEFAULT_ACTOR, root=None):
+        # Keep the pre-existing merge-train fixture's legacy login/numeric-owner
+        # cases on null-account policy. Other suites exercise a configured,
+        # distinct automation actor. Explicit actor arguments always win.
+        if actor is _DEFAULT_ACTOR:
+            actor = (None if any(base.__name__ == 'MergeTrainTests'
+                                 and base.__module__ in {'test_merge_train', '__main__'}
+                                 for base in type(test).__mro__) else 1002)
         folder = tempfile.TemporaryDirectory()
         test.addCleanup(folder.cleanup)
         self.root = Path(root or folder.name).resolve()

@@ -75,7 +75,7 @@ class ObservedInputTests(unittest.TestCase):
         pages = {'issues/7/comments?per_page=100&page=1': [
             self.comment(91, render_owner_override(record))]}
         driver, pr, calls = self.host(pages=pages)
-        observed = driver.collect_provenance_observation(owner_authority=True)
+        observed = driver.collect_provenance_observation()
         verified = verify_provider_owner_override(
             record, observed, repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
         self.assertEqual(verified['provider_comment_id'], 91)
@@ -88,14 +88,14 @@ class ObservedInputTests(unittest.TestCase):
                 changed = deepcopy(pr)
                 changed['labels'] = labels
                 host, _, _ = self.host(before=changed, pages=pages)
-                fresh = host.collect_provenance_observation(owner_authority=True)
+                fresh = host.collect_provenance_observation()
                 self.assertEqual(fresh['labels'],
                                  [label['name'] for label in labels])
                 fresh_verified = verify_provider_owner_override(
                     record, fresh, repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
                 baseline_host, _, _ = self.host(
                     before=dict(pr, labels=[]), pages=pages)
-                baseline = baseline_host.collect_provenance_observation(owner_authority=True)
+                baseline = baseline_host.collect_provenance_observation()
                 self.assertEqual(baseline['labels'], [])
                 baseline_verified = verify_provider_owner_override(
                     record, baseline, repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
@@ -375,7 +375,7 @@ class ObservedInputTests(unittest.TestCase):
             with self.subTest(unbound_or_ambiguous_authority=len(rows)):
                 host, _, _ = self.host(pages={
                     'issues/7/comments?per_page=100&page=1': rows})
-                observed = host.collect_provenance_observation(owner_authority=True)
+                observed = host.collect_provenance_observation()
                 with self.assertRaises(ValidationError):
                     verify_provider_owner_override(record, observed,
                         repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
