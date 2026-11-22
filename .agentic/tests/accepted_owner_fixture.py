@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.lifecycle import definition
+from shipped_defaults import shipped_routing
 
 
 _DEFAULT_ACTOR = object()
@@ -31,6 +32,7 @@ class AcceptedOwnerFixture:
         self.workflow = definition()
         self.stack = ExitStack()
         test.addCleanup(self.stack.close)
+        self.stack.enter_context(shipped_routing())
         from agentic import shared_owner_policy, protected_settings
         old_git, old_blob, old_ref = (shared_owner_policy._git, shared_owner_policy._blob,
                                        shared_owner_policy._default_ref)

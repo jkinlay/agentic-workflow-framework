@@ -17,6 +17,7 @@ from agentic.canonical import load, sha256
 from agentic.configuration import inspect_config
 from agentic.contracts import Contracts
 from agentic.lifecycle import definition
+from shipped_defaults import shipped_routing
 from agentic.policy import policy_hash, validate_config
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +27,7 @@ PATH = "$.merge_gate." + KEY
 
 class SharedOwnerConfigurationTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(shipped_routing())
         self.contracts = Contracts(ROOT / ".agentic/schemas")
         self.config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.config["merge_gate"]["trusted_owner_ids"] = [1001, 1002]
@@ -109,6 +111,7 @@ class SharedOwnerConfigurationTests(unittest.TestCase):
 class AcceptedOwnerPolicyObservationTests(unittest.TestCase):
     """Exercise immutable reads at the new library boundary, never a CLI wrapper."""
     def setUp(self):
+        self.enterContext(shipped_routing())
         self.contracts = Contracts(ROOT / ".agentic/schemas")
         self.config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.config["merge_gate"]["trusted_owner_ids"] = [1001, 1002]

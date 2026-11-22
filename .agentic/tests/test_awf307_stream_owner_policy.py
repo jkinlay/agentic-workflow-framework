@@ -15,6 +15,7 @@ from agentic import ValidationError
 from agentic.authorization import trusted_owner_ids
 from agentic.canonical import canonical, load, fingerprint, sha256
 from agentic.lifecycle import definition
+from shipped_defaults import shipped_routing
 from agentic.policy import policy_hash, validate_config
 from agentic.contracts import Contracts
 from agentic.provider_identity import github_identity_preflight
@@ -29,6 +30,7 @@ KEY = "shared_owner_automation_actor_id"
 
 class StreamOwnerPolicyTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(shipped_routing())
         self.config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.config["merge_gate"]["trusted_owner_ids"] = [1001, 1002]
         self.config["merge_gate"][KEY] = 1002

@@ -16,6 +16,7 @@ from agentic.continuous_controller import ContinuousControllerStore
 from agentic.intake_assignment import (assign_intake, change_assignment,
     inherit_pr_assignment, load_runtime_assignments, render_pr_assignment, verify_assignment_record)
 from agentic.lifecycle import definition
+from shipped_defaults import shipped_routing
 from agentic.policy import policy_hash
 from test_intake_assignment import NOW, owner_source, ticket, verify_owner_source
 
@@ -26,6 +27,7 @@ EVIDENCE = ("shared_owner_automation_account", "owner_policy_sha256", "accepted_
 
 class IntakeOwnerPolicyTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(shipped_routing())
         self.config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.config["jira"]["enabled"] = False
         for key in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):

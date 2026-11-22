@@ -6,12 +6,13 @@ from unittest.mock import patch
 
 from agentic.canonical import canonical
 from agentic.lifecycle import definition
+from shipped_defaults import shipped_routing
 
 
 @contextmanager
 def accepted_intake_policy(config, root=None):
     """Supply accepted bytes, without replacing policy validation or decisions."""
-    with tempfile.TemporaryDirectory(prefix="intake-policy-") as folder:
+    with shipped_routing(), tempfile.TemporaryDirectory(prefix="intake-policy-") as folder:
         project = Path(root) if root is not None else Path(folder)
         accepted = {key: value for key, value in config.items() if key != "_awf_runtime"}
         blobs = {".agentic/PROJECT_CONFIG.yaml": canonical(accepted),

@@ -14,6 +14,7 @@ from agentic import ValidationError
 from agentic.canonical import canonical, load, sha256
 from agentic.contracts import Contracts
 from agentic.lifecycle import definition
+from shipped_defaults import shipped_routing
 from agentic.policy import policy_hash
 from agentic.provider_identity import (github_identity_preflight, jira_binding_plan,
                                       observe_github_identity)
@@ -26,6 +27,7 @@ NOW = "2026-10-03T10:00:00Z"
 
 class ProviderPolicyFixture(unittest.TestCase):
     def setUp(self):
+        self.enterContext(shipped_routing())
         self.config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.config["merge_gate"]["trusted_owner_ids"] = [1001, 1002]
         self.config["merge_gate"][KEY] = 1002
