@@ -177,10 +177,10 @@ def review_authority_from_config(config, *, accepted_policy_root=None):
     from .shared_owner_policy import configured_shared_owner_actor_id
     # Preserve ordinary profile-only authority. A profile cannot opt out, and
     # the unchanged identity preflight still refuses observed owner overlap.
-    profile_only = accepted_policy_root is None and github.get("expected_actor_id") is None
+    profile_only = github.get("expected_actor_id") is None
     if profile_only:
         configured_shared_owner_actor_id(config)
-    policy = {} if profile_only else _authorization_owner_policy(config, accepted_policy_root)
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
     value = {
         "trusted_owner_ids": tuple(sorted(owners)),
         "provider_identity": {
@@ -190,8 +190,7 @@ def review_authority_from_config(config, *, accepted_policy_root=None):
         },
         **policy,
     }
-    if not profile_only:
-        _recheck_authorization_policy(config, accepted_policy_root, policy)
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     return value
 
 

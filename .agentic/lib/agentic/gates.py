@@ -312,7 +312,7 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import (verify_owner_record, _authorization_owner_policy,
                                 _recheck_authorization_policy)
-    policy = (_authorization_owner_policy(config, accepted_policy_root)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
               if accepted_policy_root is not None else {})
     head = bundle["candidate"]["head_sha"]
     dispositions, comments, request_ids, review_records = [], set(), set(), []
@@ -397,7 +397,7 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
             candidate=bundle["candidate"],
         )
     if accepted_policy_root is not None:
-        _recheck_authorization_policy(config, accepted_policy_root, policy)
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     return dispositions, cap
 
 
@@ -609,7 +609,7 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
                     and config.get("github", {}).get("expected_actor_id") is None)
     if profile_only:
         configured_shared_owner_actor_id(config)
-    policy = (_authorization_owner_policy(config, accepted_policy_root)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
               if not profile_only and (approvals or accepted_policy_root is not None) else {})
     configured_collectors = set(config["merge_gate"].get(
         "production_posting_collector_ids", []))
@@ -682,7 +682,7 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
         if config.get("github", {}).get("expected_actor_id") is not None:
             _authorization_owner_policy(config, None)
     elif approvals or accepted_policy_root is not None:
-        _recheck_authorization_policy(config, accepted_policy_root, policy)
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     return verified
 
 
@@ -710,7 +710,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     validate_config(config, workflow, contracts, accepted_policy_root=accepted_policy_root)
     from .authorization import (_authorization_owner_policy, _retained_authorization_policy,
                                 _recheck_authorization_policy)
-    policy = (_authorization_owner_policy(config, accepted_policy_root)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
               if accepted_policy_root is not None else {})
     if config["jira"].get("enabled", True) is False:
         raise ValidationError("Jira is disabled; this Jira evidence evaluator requires Jira scope. Continue provisional local planning through the native host.")
@@ -1498,7 +1498,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     if not required_domains:
         gate["gates"]["specialist_reviews"]["result"] = "N_A"
     if accepted_policy_root is not None:
-        _recheck_authorization_policy(config, accepted_policy_root, policy)
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
         for record in bundle.get("finding_dispositions", []) + (
                 [bundle["cap_disposition"]] if bundle.get("cap_disposition") is not None else []):
             _retained_authorization_policy(record, policy, record["owner_source"]["actor_id"])

@@ -72,7 +72,7 @@ def verify_record(record, request, gate, config, contracts, now, *, accepted_pol
     from .lifecycle import definition
     # Rootless merge verification keeps its original policy-admission contract,
     # including ordinary profile-only configurations; it enables no opt-out.
-    policy = (_authorization_owner_policy(config, accepted_policy_root)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
               if accepted_policy_root is not None else {})
     current_policy = validate_config(config, definition(), contracts,
                                      accepted_policy_root=accepted_policy_root)
@@ -118,7 +118,7 @@ def verify_record(record, request, gate, config, contracts, now, *, accepted_pol
     if record["execution_authority"] is not False:
         raise ValidationError("Offline verification cannot grant execution authority")
     if accepted_policy_root is not None:
-        _recheck_authorization_policy(config, accepted_policy_root, policy)
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     elif validate_config(config, definition(), contracts) != current_policy:
         raise ValidationError("Authorization uses a different project or superseded policy")
     return {"decision": decision, "record_consistent": True, "live_source_verified": False,
@@ -321,9 +321,11 @@ def trusted_owner_ids(config):
     return tuple(owners)
 
 
-def _authorization_owner_policy(config, accepted_policy_root):
+def _authorization_owner_policy(config, accepted_policy_root, *, identity_optional=False):
     """A separate rooted path; the public rootless validator is unchanged."""
     from .shared_owner_policy import configured_shared_owner_actor_id, accepted_owner_evidence
+    if identity_optional and config.get("github", {}).get("expected_actor_id") is None:
+        return accepted_owner_evidence(accepted_policy_root, config, None)
     if accepted_policy_root is None:
         trusted_owner_ids(config)
         configured_shared_owner_actor_id(config)
@@ -350,8 +352,8 @@ def _retained_authorization_policy(record, policy, actor_id):
     return expected
 
 
-def _recheck_authorization_policy(config, accepted_policy_root, policy):
-    if _authorization_owner_policy(config, accepted_policy_root) != policy:
+def _recheck_authorization_policy(config, accepted_policy_root, policy, *, identity_optional=False):
+    if _authorization_owner_policy(config, accepted_policy_root, identity_optional=identity_optional) != policy:
         raise ValidationError("Shared-owner policy changed before authorization use")
 
 
@@ -567,11 +569,7 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
         raise ValidationError("Ready authorization configuration is invalid")
     # Preserve the original shape/configuration refusals before policy admission.
     # Older host configurations without automation identity cannot opt out.
-    if "expected_actor_id" in config["github"] or accepted_policy_root is not None:
-        policy = _authorization_owner_policy(config, accepted_policy_root)
-    else:
-        configured_shared_owner_actor_id(config)
-        policy = {}
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
     evidence = _retained_authorization_policy(record, policy, source["actor_id"])
     if source["actor_id"] not in trusted_owner_ids:
         raise ValidationError("Ready authorization uses an untrusted numeric owner/manager identity")
@@ -629,8 +627,7 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
         raise ValidationError("Ready authorization trusted observation time is outside the request window")
     if ready_authorization_config_sha256(config) != config_sha256:
         raise ValidationError("Ready authorization configuration changed during provider observation")
-    if "expected_actor_id" in config["github"] or accepted_policy_root is not None:
-        _recheck_authorization_policy(config, accepted_policy_root, policy)
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     return {"action": "MARK_READY", "role": request["role"], "actor_id": source["actor_id"],
             "actor_login": source["actor_login"], "source_id": observed["source_id"],
             "observed_at": observed["observed_at"], "configuration_sha256": config_sha256,

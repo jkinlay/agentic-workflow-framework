@@ -330,22 +330,11 @@ def jira_binding_plan(config, connections, confirmation=None, *, now=None, accep
         raise ProviderIdentityError("INVALID_CONFIRMATION", "Jira binding confirmation owner is not trusted")
     # This is GitHub owner authority for a binding proposal, not Jira closure
     # authority. Never infer a Jira shared-controller exception from it.
-    from .authorization import trusted_owner_ids
-    owner_evidence = {}
-    if accepted_policy_root is not None:
-        from .shared_owner_policy import accepted_owner_evidence, configured_shared_owner_actor_id
-        shared = configured_shared_owner_actor_id(config)
-        # Observe even for a distinct owner: a shared configured automation
-        # actor still requires accepted policy before this consumer can admit it.
-        automation_evidence = accepted_owner_evidence(
-            accepted_policy_root, config, config["github"]["expected_actor_id"])
-        if type(confirmation["owner_id"]) is int and confirmation["owner_id"] == shared:
-            owner_evidence = automation_evidence
-        owners = (tuple(config["merge_gate"]["trusted_owner_ids"]) if shared is not None and automation_evidence
-                  else trusted_owner_ids(config))
-    else:
-        owners = trusted_owner_ids(config)
-    if type(confirmation["owner_id"]) is not int or confirmation["owner_id"] not in owners:
+    from .authorization import _authorization_owner_policy, _actor_authorization_policy
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    owner_evidence = _actor_authorization_policy(policy, confirmation["owner_id"])
+    if (type(confirmation["owner_id"]) is not int or
+            confirmation["owner_id"] not in config["merge_gate"]["trusted_owner_ids"]):
         raise ProviderIdentityError("INVALID_CONFIRMATION", "Jira binding confirmation owner is not trusted")
     if (not isinstance(confirmation["authentication_evidence"], list)
             or not confirmation["authentication_evidence"]
@@ -355,9 +344,8 @@ def jira_binding_plan(config, connections, confirmation=None, *, now=None, accep
         ("cloud_id", "site", "project_id", "project_key", "account_id"))]
     if len(chosen) != 1 or not chosen[0]["browse"]:
         raise ProviderIdentityError("IDENTITY_MISMATCH", "Confirmed Jira binding is absent, ambiguous, or unreadable")
-    if accepted_policy_root is not None and shared is not None:
-        if accepted_owner_evidence(accepted_policy_root, config, config["github"]["expected_actor_id"]) != automation_evidence:
-            raise ProviderIdentityError("INVALID_CONFIRMATION", "Shared-owner policy changed before binding admission")
+    from .authorization import _recheck_authorization_policy
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     result.update(status="CONFIRMED", binding_patch={"cloud_id": chosen[0]["cloud_id"],
         "site": chosen[0]["site"], "provider_project_id": chosen[0]["project_id"],
         "project_key": chosen[0]["project_key"], "controller_actor_id": chosen[0]["account_id"]},

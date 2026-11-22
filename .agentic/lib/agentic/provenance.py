@@ -573,7 +573,7 @@ def _provider_owner_authority(config, snapshot, registry, *, now):
              'OWNER_TRUST_UNBOUND: accepted provider policy binding differs')
     payload = {'config_sha256': result['config_sha256'],
                'trusted_owner_ids': copy.deepcopy(accepted['merge_gate']['trusted_owner_ids']),
-               'expected_actor_id': github['expected_actor_id']}
+               'expected_actor_id': github.get('expected_actor_id')}
     token = _OBSERVED_OWNER_CONFIG.set({**payload,
         'binding_sha256': fingerprint('provenance_owner_config', payload)})
     try:

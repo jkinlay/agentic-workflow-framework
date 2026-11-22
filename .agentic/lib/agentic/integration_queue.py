@@ -152,7 +152,7 @@ def _queue_owner_policy(config, root):
     if (root is None and configured_shared_owner_actor_id(config) is None and
             config.get("github", {}).get("expected_actor_id") is None):
         return {}
-    return _authorization_owner_policy(config, root)
+    return _authorization_owner_policy(config, root, identity_optional=True)
 
 
 def _recheck_queue_policy(config, root, policy):
