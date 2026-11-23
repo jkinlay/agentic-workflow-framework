@@ -55,32 +55,18 @@ UPGRADE_MATRIX_FIRST_HALF = frozenset({
     'test_state_compatibility_is_listed_for_every_adjacent_step',
 })
 SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
-# Windows 3.12 sampled suite totals (seconds), before reallocation:
-# shard 0: agentic 2907 / scripts 482; shard 4: agentic 1378 / scripts >2199
-# (cancelled, not a completed duration). Child stderr was buffered per suite:
-# its log timestamps cannot identify individual module durations. Isolated
-# local module-suite measurements: admission 1318, adoption_status 448-483,
-# review_regressions 146, upgrade_journal 613, installed adapter 227, host_process
-# 162, publish_release 1682, adoptable_source 213, self_test_review 82, ac42_e2e
-# 556, fresh_bootstrap 152; prior local bootstrap_configuration 1115. The
-# upgrade_195 log records 181+211+199 seconds in bootstrap alone.
-# These fixtures and the review regressions need fixed owners.
-# The removed terminal admission module is replaced by settings-via-PR coverage.
-# Stacked-suite local observations: awf244 cohort 1334; reporting boundary 627,
-# e10 597 / e11 694 / e12 191 / e13 232 / e16 614 / e3 237 / e6 123 / e7 203 /
-# e9 383 / owner 206 / wiring 122;
-# awf238 owner boundary 662 / pre_f3 386; upgrade preservation 1403 / recovery
-# 1640 / budgeting 417. Calendar attribution and its newer window regressions
-# (180 s planning allowance, outside that cohort) are estimates, not per-module
-# CI measurements. Third-look (900 s) and reporting e17 (300 s) also use
-# explicit planning allowances pending measurement. Preassign incoming paths so their
-# arrival cannot crowd an existing heavy shard. New module_result records carry
-# elapsed seconds even when the parent buffers output; refresh estimates there.
+# Rebalanced from module_result timings in two hosted runs on 23 November,
+# across Windows Python 3.11-3.13. Sum each version's slower per-module sample
+# plus its largest measured job overhead: the projected maximum is 44.8 minutes,
+# including the measured incoming workflow-isolation and 1.9.7 qualification
+# modules. Unmeasured incoming modules still require hosted validation.
+# Keep whole-module ownership, per-suite interpreter isolation, the installed
+# acceptance exclusion and the existing upgrade-matrix halves unchanged.
 HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_adoption_status.py': 0,
     '.agentic/tests/test_awf242_settings_pr.py': 2,
-    '.agentic/tests/test_awf243_review_regressions.py': 3,
-    '.agentic/tests/test_bootstrap_configuration.py': 6,
+    '.agentic/tests/test_awf243_review_regressions.py': 1,
+    '.agentic/tests/test_bootstrap_configuration.py': 4,
     '.agentic/tests/test_host_process.py': 5,
     '.agentic/tests/test_reference_controller_adapter_install.py': 7,
     '.agentic/tests/test_upgrade_195.py': 3,
@@ -96,11 +82,11 @@ HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_awf238_second_look.py': 6,
     '.agentic/tests/test_awf244_window_regressions.py': 8,
     '.agentic/tests/test_reporting_boundary.py': 2,
-    '.agentic/tests/test_reporting_e10_regressions.py': 7,
-    '.agentic/tests/test_reporting_e11_regressions.py': 0,
+    '.agentic/tests/test_reporting_e10_regressions.py': 3,
+    '.agentic/tests/test_reporting_e11_regressions.py': 8,
     '.agentic/tests/test_reporting_e12_regressions.py': 1,
     '.agentic/tests/test_reporting_e13_regressions.py': 6,
-    '.agentic/tests/test_reporting_e16_regressions.py': 5,
+    '.agentic/tests/test_reporting_e16_regressions.py': 6,
     '.agentic/tests/test_reporting_e3_regressions.py': 1,
     '.agentic/tests/test_reporting_e6_regressions.py': 0,
     '.agentic/tests/test_reporting_e7_regressions.py': 3,
@@ -110,6 +96,13 @@ HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_upgrade_195_preservation.py': 0,
     '.agentic/tests/test_upgrade_195_recovery.py': 7,
     '.agentic/tests/test_upgrade_196_budgeting.py': 4,
+    'scripts/tests/test_installed_adopter_configuration.py': 3,
+    '.agentic/tests/test_reporting_e17_regressions.py': 5,
+    '.agentic/tests/test_awf307_queue_owner_policy.py': 2,
+    '.agentic/tests/test_reporting_timing.py': 1,
+    '.agentic/tests/test_continuous_controller_planning.py': 4,
+    '.agentic/tests/test_awf238_same_version_identity.py': 8,
+    '.agentic/tests/test_awf238_migration_identity.py': 4,
 }
 ZERO_TEST_MODULES = frozenset({
     '.agentic/tests/test_awf36_automation_fixtures.py',

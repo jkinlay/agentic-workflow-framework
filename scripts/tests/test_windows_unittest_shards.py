@@ -101,6 +101,33 @@ class ShardTests(unittest.TestCase):
             (self.root / path).unlink()
         self.assertEqual(before, self.allocation())
 
+    def test_measured_november_allocation_preserves_whole_modules(self):
+        # Fixed owners follow the two hosted runs across Python 3.11-3.13.
+        expected = {
+            '.agentic/tests/test_awf238_migration_identity.py': 4,
+            '.agentic/tests/test_awf238_same_version_identity.py': 8,
+            '.agentic/tests/test_awf243_review_regressions.py': 1,
+            '.agentic/tests/test_awf307_queue_owner_policy.py': 2,
+            '.agentic/tests/test_bootstrap_configuration.py': 4,
+            '.agentic/tests/test_continuous_controller_planning.py': 4,
+            '.agentic/tests/test_reporting_e10_regressions.py': 3,
+            '.agentic/tests/test_reporting_e11_regressions.py': 8,
+            '.agentic/tests/test_reporting_e16_regressions.py': 6,
+            '.agentic/tests/test_reporting_e17_regressions.py': 5,
+            '.agentic/tests/test_reporting_timing.py': 1,
+            'scripts/tests/test_installed_adopter_configuration.py': 3,
+        }
+        for path, shard in expected.items():
+            suite, name = path.rsplit("/", 1)
+            self.write(suite, name, PASSING)
+            self.assertEqual(shard, runner.HEAVY_MODULE_SHARDS.get(path), path)
+        allocation = self.allocation()
+        for path, shard in expected.items():
+            suite = path.rsplit("/", 1)[0]
+            self.assertEqual([shard], [index for index, paths in allocation[suite].items()
+                                       if path in paths], path)
+        runner.guard(self.root, allocation)
+
     def test_budget_pr_regressions_replace_removed_terminal_module_without_losing_guard(self):
         removed = ROOTS[0] + '/test_awf242_owner_admission.py'
         replacement = self.write(ROOTS[0], 'test_awf242_settings_pr.py', PASSING)
