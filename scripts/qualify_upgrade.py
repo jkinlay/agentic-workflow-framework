@@ -39,6 +39,13 @@ QUALIFICATION_LEDGER = '.agentic-state/routing/ledger.sqlite'
 _PERMISSION_PROBES = ContextVar('permission_probes', default=None)
 
 
+def require_qualification_route(previous, target):
+    """Only reviewed preservation routes may qualify; observed deltas add none."""
+    if (previous, target) not in {('1.9.5', '1.9.6'), ('1.9.5', '1.9.7'), ('1.9.6', '1.9.7')}:
+        raise ValueError('BEFORE baseline must be a supported pre-upgrade release, not a post-upgrade snapshot; '
+            'use the untouched pre-upgrade copy and its matching BEFORE report; preservation before a snapshot is unproven')
+
+
 class _PermissionProbeRoots(list):
     def __init__(self):
         super().__init__()
@@ -611,12 +618,12 @@ def prepare_upgrade(source, project, pin, before):
 def _prepare_upgrade(source, project, pin, before):
     """Derive a closed migration policy from verified release and baseline bytes.
 
-    This is deliberately the 1.9.5 -> 1.9.6 policy. A future state/configuration
-    migration needs its own reviewed rule; observed deltas cannot register one.
+    Only the enumerated 1.9.5/1.9.6 preservation routes are reviewed. A future
+    state/configuration migration needs its own rule; observed deltas cannot register one.
     Private policy inputs include parsed owner configuration, never report them.
     """
     from agentic.upgrade import (identify_installation, load_known_versions,
-                                 state_archive_plan, apply_chain)
+                                 state_archive_plan, apply_chain, crosses_budget_milestone)
     project = Path(project).resolve(strict=True)
     if inventory(project, evidence_kind=before['evidence_kind']) != before:
         raise ValueError('BEFORE snapshot does not match --baseline-project; retain an untouched 1.9.5 copy, '
@@ -632,9 +639,7 @@ def _prepare_upgrade(source, project, pin, before):
     with Tree(project) as tree:
         identity = identify_installation(tree, versions, config_raw, receipt_raw)
     target = manifest['template_version']
-    if (identity['version'], target) != ('1.9.5', '1.9.6'):
-        raise ValueError('BEFORE baseline must be 1.9.5, not a post-upgrade snapshot; use the untouched '
-                         'pre-upgrade copy and its matching BEFORE report; preservation before a snapshot is unproven')
+    require_qualification_route(identity['version'], target)
     immutable = {path: digest for path, digest in manifest['files'].items()
                  if managed(path) and path not in {CONFIG, PROVENANCE, CODEOWNERS}}
     collisions = before['files'].keys() & (immutable.keys() - identity['immutable_files'].keys())
@@ -662,17 +667,18 @@ def _prepare_upgrade(source, project, pin, before):
     # upgrade/settings PR; default-branch settings take effect after fetch.
     operating_raw = operating.read_bytes() if operating.exists() else None
     settings = load_yaml(operating_raw).get('budgeting') if operating_raw is not None else None
-    disposition = {'format': 'awf-budget-upgrade-1', 'target_version': '1.9.6',
-        'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
-        'operating_sha256': hashlib.sha256(operating_raw).hexdigest() if operating_raw is not None else None,
-        'settings': settings,
-        'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED', 'owner_adoption_required': True}
-    disposition_raw = (json.dumps(disposition, indent=2, ensure_ascii=False) + '\n').encode()
-    disposition_path = '.agentic-state/upgrade/budgeting-1.9.6.json'
-    if disposition_path in state and state[disposition_path] != disposition_raw:
-        raise ValueError('Conflicting budget compatibility disposition')
-    files[disposition_path] = {'sha256': hashlib.sha256(disposition_raw).hexdigest(),
-                              'size': len(disposition_raw), 'rule': 'budget-legacy-compatibility-disposition'}
+    if crosses_budget_milestone(identity['version'], target):
+        disposition = {'format': 'awf-budget-upgrade-1', 'target_version': '1.9.6',
+            'disposition': 'LEGACY_RETAINED' if settings is None else 'EXPLICIT_SETTINGS_RETAINED',
+            'operating_sha256': hashlib.sha256(operating_raw).hexdigest() if operating_raw is not None else None,
+            'settings': settings,
+            'history_import': 'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED', 'owner_adoption_required': True}
+        disposition_raw = (json.dumps(disposition, indent=2, ensure_ascii=False) + '\n').encode()
+        disposition_path = '.agentic-state/upgrade/budgeting-1.9.6.json'
+        if disposition_path in state and state[disposition_path] != disposition_raw:
+            raise ValueError('Conflicting budget compatibility disposition')
+        files[disposition_path] = {'sha256': hashlib.sha256(disposition_raw).hexdigest(),
+                                  'size': len(disposition_raw), 'rule': 'budget-legacy-compatibility-disposition'}
     for path, raw in bundle.state.items():
         if raw == state[path]:
             continue
@@ -1270,8 +1276,8 @@ def checked_bootstrap(result, project, pin):
                                  for path in (CONFIG, INSTALLED, PROVENANCE)}}
 
 
-def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
-    """Build only a disposable source projection, then bootstrap authentic 1.9.5.
+def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None, baseline_version='1.9.5'):
+    """Build a disposable source projection, then bootstrap a registered baseline.
 
     Neither the checkout manifests nor historical release bytes are rewritten.
     The fresh directory and synthetic repository identity exclude live adopters.
@@ -1279,6 +1285,8 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
     import build_release
     sys.path.insert(0, str(ROOT / '.agentic/tests'))
     from upgrade_195_fixtures import materialize_published, PUBLISHED_PIN
+    if baseline_version not in {'1.9.5', '1.9.6'}:
+        raise ValueError('Unsupported qualification baseline')
     source = Path(source).resolve(strict=True)
     report = {'status': 'NOT_QUALIFIED', 'execution_authority': False,
               'evidence_kind': 'SYNTHETIC_OWNER_CUSTOMIZATION', 'stages': []}
@@ -1325,11 +1333,24 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
     with Tree(candidate) as tree:
         verify_release(tree, target_pin)
     report['source_manifest_sha256'] = target_pin
-    historical = materialize_published(source, work_dir / 'published')
+    if baseline_version == '1.9.5':
+        historical = materialize_published(source, work_dir / 'published')
+        baseline_pin = PUBLISHED_PIN
+    else:
+        from upgrade_release import materialize_registered
+        from agentic.upgrade import load_known_versions
+        registry_raw = (candidate / '.agentic/upgrade/known-versions.json').read_bytes()
+        load_known_versions(registry_raw)
+        registry = loads(registry_raw.decode('utf-8'))
+        require_qualification_route(baseline_version, registry['target'])
+        historical = materialize_registered(source, registry, baseline_version, work_dir / 'published')
+        baseline_pin = hashlib.sha256((historical / 'MANIFEST.json').read_bytes()).hexdigest()
+    report['baseline_version'] = baseline_version
+    report['baseline_manifest_sha256'] = baseline_pin
     project = work_dir / 'project'
     migration_policy = None
     budget_baseline = None
-    for stage, release, pin, mode in (('baseline', historical, PUBLISHED_PIN, 'install'),
+    for stage, release, pin, mode in (('baseline', historical, baseline_pin, 'install'),
                                      ('upgrade', candidate, target_pin, 'upgrade')):
         wheels = work_dir / (stage + '-wheels')
         wheels.mkdir()
@@ -1365,14 +1386,20 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             if not owner.exists():
                 with owner.open('xb') as stream:
                     stream.write(b'Synthetic owner customization; not adopter evidence.\n')
-            try:
-                budget_baseline = _prepare_qualification_budget(historical, project, work_dir)
-            except (ValueError, AssertionError, OSError):
-                report['failed_stage'] = 'budget_baseline'
-                return report
-            # Both genuinely reserved/settled published API history and a legacy
-            # schema ledger must enter the upgrade, not only a later import.
-            _seed_qualification_state(historical, project, budget_baseline)
+            if baseline_version == '1.9.5':
+                try:
+                    budget_baseline = _prepare_qualification_budget(historical, project, work_dir)
+                except (ValueError, AssertionError, OSError):
+                    report['failed_stage'] = 'budget_baseline'
+                    return report
+                # Both genuinely reserved/settled published API history and a legacy
+                # schema ledger must enter the upgrade, not only a later import.
+                _seed_qualification_state(historical, project, budget_baseline)
+            else:
+                seeded = _seed_current_qualification_state(project, execute)
+                if seeded.returncode != 0:
+                    report['failed_stage'] = 'baseline_history'
+                    return report
             report['before'] = inventory(project)
             try:
                 migration_policy = prepare_upgrade(candidate, project, target_pin, report['before'])
@@ -1386,18 +1413,27 @@ def qualify(source, work_dir, wheelhouse=None, *, allowed_delta=None):
             report['after'] = inventory(project)
             report['preservation'] = compare_upgrade(report['before'], report['after'],
                 migration_policy, project, allowed_delta=allowed_delta)
-            if not exercised_ledger_migration(report['preservation']):
+            if baseline_version == '1.9.5' and not exercised_ledger_migration(report['preservation']):
                 report['failed_stage'] = 'ledger_migration_coverage'
                 return report
+            if baseline_version == '1.9.6':
+                continuity = report['preservation'].get('migration', {}).get('historical_continuity', {})
+                if QUALIFICATION_LEDGER not in continuity.get('sqlite_paths', []):
+                    report['failed_stage'] = 'ledger_continuity_coverage'
+                    return report
             if (report['preservation']['preserved'] is not True or
                     any(report['preservation'].get('checks', {}).get(name) != 'PASS'
                         for name in REQUIRED_CHECKS)):
                 report['failed_stage'] = 'preservation'
                 return report
-    report['budget_import'] = _qualify_budget_import(budget_baseline, project, work_dir, execute)
-    if report['budget_import'].get('preserved') is not True:
-        report['failed_stage'] = 'budget_import'
-        return report
+    if baseline_version == '1.9.5':
+        report['budget_import'] = _qualify_budget_import(budget_baseline, project, work_dir, execute)
+        if report['budget_import'].get('preserved') is not True:
+            report['failed_stage'] = 'budget_import'
+            return report
+    else:
+        report['budget_import'] = {'status': 'NOT_APPLICABLE',
+            'reason': 'This route does not cross the 1.9.6 budget migration milestone'}
     try:
         if source_identity(source) != report['source_identity']:
             raise ValueError('Source identity changed during qualification')
@@ -1415,6 +1451,32 @@ def exercised_ledger_migration(preservation):
     return (QUALIFICATION_LEDGER in continuity.get('sqlite_paths', []) and
             any(action.get('path') == QUALIFICATION_LEDGER and action.get('action') == 'migrated_schema'
                 for action in migration.get('state_migrations', [])))
+
+
+def _seed_current_qualification_state(project, execute):
+    """Exercise the authentic installed 1.9.6 API, retaining its real history."""
+    runtime = project / '.agentic/.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    code = '''import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from agentic.model_routing import RoutingLedger, default_policy
+from agentic.canonical import load_yaml
+project = Path(sys.argv[2])
+project_id = load_yaml((project / '.agentic/PROJECT_CONFIG.yaml').read_bytes())['project']['id']
+path = project / '.agentic-state/routing/ledger.sqlite'
+path.parent.mkdir(parents=True, exist_ok=True)
+ledger = RoutingLedger(path)
+policy = default_policy()
+request = dict(ticket_id='EX-196', role='worker', agent_id='fixture-worker',
+    context_id='fixture-context', phase='implementation', task_class='unit-fix',
+    complexity='medium', risk='low', uncertainty='low', verification='strong',
+    risk_flags=[], reservation_tokens=100, reservation_cost_microusd=None)
+capabilities = {'models': {m: v['reasoning_efforts'] for m, v in policy['models'].items()}}
+route = ledger.reserve(project_id, policy, request, capabilities)
+print(json.dumps({'routing_run_id': route['run_id']}))
+'''
+    return execute('baseline_history', [str(runtime), '-B', '-I', '-c', code,
+        str(project / '.agentic/lib'), str(project)])
 
 
 def _seed_qualification_state(historical, project, budget_baseline):
@@ -1507,6 +1569,8 @@ def main(argv=None):
     diff.add_argument('--output', type=Path, required=True)
     runtime = sub.add_parser('installed')
     runtime.add_argument('--source', type=Path, required=True)
+    runtime.add_argument('--baseline-version', choices=('1.9.5', '1.9.6'), default='1.9.5',
+                         help='authentic baseline; use a separate new work directory for each route')
     runtime.add_argument('--work-dir', type=Path, required=True, help='new external disposable directory')
     runtime.add_argument('--wheelhouse', type=Path, help='optional local wheel seed; pip verifies each release lock')
     runtime.add_argument('--output', type=Path, required=True)
@@ -1582,7 +1646,8 @@ def main(argv=None):
                      source=getattr(args, 'source', None))
     if args.command == 'installed':
         delta = json.loads(args.allowed_delta.read_bytes()) if args.allowed_delta else None
-        report = qualify(args.source, args.work_dir, args.wheelhouse, allowed_delta=delta)
+        report = qualify(args.source, args.work_dir, args.wheelhouse, allowed_delta=delta,
+                         baseline_version=args.baseline_version)
         publish_report(args.output, report, project=args.work_dir, source=args.source)
         print(json.dumps(report, sort_keys=True))
         return 0 if report['status'] == 'QUALIFIED_DISPOSABLE_UPGRADE' else 1
