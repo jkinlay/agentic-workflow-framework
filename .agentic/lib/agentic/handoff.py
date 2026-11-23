@@ -18,6 +18,7 @@ from .canonical import fingerprint, load, loads, now_text, timestamp
 from .child_process import child_env
 from .configuration import inspect_config
 from .contracts import Contracts
+from .controller_state import is_link_component
 from .lifecycle import definition
 from .operating import read_operating
 
@@ -220,10 +221,9 @@ def _completed_tickets(state_path, project_id, root):
         return None
     path = Path(state_path).absolute()
     try:
-        if (not path.is_file() or path.resolve().is_relative_to(Path(root).resolve()) or
-                path.stat().st_nlink > 1 or any(
-                    parent.is_symlink() or (hasattr(parent, "is_junction") and parent.is_junction())
-                    for parent in (path, *path.parents) if parent.exists())):
+        if (any(is_link_component(parent) for parent in (path, *path.parents)) or
+                not path.is_file() or path.resolve().is_relative_to(Path(root).resolve()) or
+                path.stat().st_nlink > 1):
             return None
         database = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
         database.row_factory = sqlite3.Row

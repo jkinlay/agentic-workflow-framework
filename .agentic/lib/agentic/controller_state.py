@@ -7,7 +7,7 @@ import sqlite3
 import stat
 
 from . import ValidationError
-from .path_containment import is_within
+from .path_containment import is_reparse_point, is_within
 
 
 STATE_SCHEMA_VERSION = 1
@@ -18,13 +18,28 @@ def _require(condition, message):
         raise ValidationError(message)
 
 
+def is_link_component(path):
+    """Check one path component without following it, so dangling links count.
+
+    A missing component, or a name below a regular file, is not a link. Denied
+    access propagates; any other component that cannot be inspected fails closed.
+    """
+    try:
+        return is_reparse_point(path)
+    except PermissionError:
+        raise
+    except NotADirectoryError:
+        return False
+    except (OSError, ValueError):
+        return True
+
+
 def protected_state_path(path, worktree_roots):
     """Return a normalized absolute state path after containment/link checks."""
     candidate = Path(path)
     _require(candidate.is_absolute(), "Controller state path must be absolute")
     for parent in (candidate, *candidate.parents):
-        if parent.exists() and (parent.is_symlink() or
-                (hasattr(parent, "is_junction") and parent.is_junction())):
+        if is_link_component(parent):
             raise ValidationError("Controller state path traverses a link/reparse point")
     normalized = candidate.resolve(strict=False)
     for worktree in worktree_roots:

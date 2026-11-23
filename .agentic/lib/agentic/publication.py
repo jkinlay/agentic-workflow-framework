@@ -37,6 +37,8 @@ from .canonical import canonical, loads
 from .child_process import (GIT_RUNNER_POLICY, child_env,
                             render_diagnostic)
 from .gittree import verify_publisher_tree
+from .controller_state import is_link_component
+from .path_containment import is_reparse_point
 from .interaction import writer_commit_message
 from .provenance import (parse_writer_trailer, validate_commit_message,
                          validate_ref_locator)
@@ -792,10 +794,12 @@ def _require_operator_local_mapping(root, path, extra_env=None):
 
     def reparse_point(candidate):
         try:
-            if candidate.is_symlink() or (hasattr(candidate, "is_junction") and candidate.is_junction()):
+            if candidate.is_symlink() or is_reparse_point(candidate):
                 return True
             attributes = getattr(candidate.lstat(), "st_file_attributes", 0)
             return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        except (FileNotFoundError, NotADirectoryError):
+            return False
         except OSError as exc:
             raise ValidationError("Operator-local publication mapping path could not be inspected") from exc
 
@@ -805,7 +809,7 @@ def _require_operator_local_mapping(root, path, extra_env=None):
     cursor = Path(lexical.anchor)
     for component in lexical.parts[1:]:
         cursor /= component
-        if cursor.exists() and reparse_point(cursor):
+        if reparse_point(cursor):
             raise ValidationError("Operator-local publication mapping must not traverse symlinks, junctions, or reparse points")
 
     def relative_to_root(candidate):
@@ -1739,11 +1743,13 @@ def _git_common_dir(root):
 def _file_bytes(path):
     try:
         path = Path(path)
+        if is_link_component(path):
+            raise ValidationError("Rewrite state file is not a canonical regular file")
         if not path.exists():
             return None
         attributes = getattr(path.lstat(), "st_file_attributes", 0)
         if (not path.is_file() or path.is_symlink() or
-                (hasattr(path, "is_junction") and path.is_junction()) or
+                is_reparse_point(path) or
                 attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
             raise ValidationError("Rewrite state file is not a canonical regular file")
         return path.read_bytes()
@@ -1761,7 +1767,7 @@ def _tree_files(path):
             for name in directories + files:
                 item = Path(current) / name
                 attributes = getattr(item.lstat(), "st_file_attributes", 0)
-                if (item.is_symlink() or (hasattr(item, "is_junction") and item.is_junction()) or
+                if (item.is_symlink() or is_reparse_point(item) or
                         attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
                     raise ValidationError("Rewrite state inventory contains an alias")
             for name in files:
@@ -1901,7 +1907,7 @@ def _fanout_snapshot(object_dir):
         attributes = getattr(details, "st_file_attributes", 0)
         try:
             canonical = (path.is_dir() and not path.is_symlink() and
-                         not (hasattr(path, "is_junction") and path.is_junction()) and
+                         not is_reparse_point(path) and
                          not attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) and
                          path.resolve(strict=True).parent == Path(object_dir))
         except OSError as exc:
@@ -1977,7 +1983,7 @@ def _canonical_object_dir(root, snapshot):
         for component in expected.relative_to(common).parts:
             cursor /= component
             attributes = getattr(cursor.lstat(), "st_file_attributes", 0)
-            if cursor.is_symlink() or (hasattr(cursor, "is_junction") and cursor.is_junction()) or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+            if cursor.is_symlink() or is_reparse_point(cursor) or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
                 raise ValidationError("Primary object directory traverses an alias")
     except (OSError, ValueError) as exc:
         raise ValidationError("Primary object directory identity could not be proved") from exc
@@ -2008,7 +2014,7 @@ def _quarantine_objects(root, object_dir, extra_env, object_format):
                     raise ValidationError("Quarantine object inventory changed during enumeration") from exc
                 attributes = getattr(details, "st_file_attributes", 0)
                 if (not stat.S_ISDIR(details.st_mode) or fanout.is_symlink() or
-                        (hasattr(fanout, "is_junction") and fanout.is_junction()) or
+                        is_reparse_point(fanout) or
                         attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
                     raise ValidationError("Quarantine fanout directory is not canonical")
                 fanouts[fanout.name] = (details.st_dev, details.st_ino,
@@ -2101,10 +2107,12 @@ def _loose_path(object_dir, oid, object_format):
         fanout = Path(object_dir) / oid[:2]
         if path.resolve(strict=False).parent != fanout.resolve(strict=False):
             raise ValidationError("Loose object path escaped the primary object directory")
+        if is_link_component(fanout):
+            raise ValidationError("Loose object fanout directory is aliased")
         if fanout.exists():
             attributes = getattr(fanout.lstat(), "st_file_attributes", 0)
             if (not fanout.is_dir() or fanout.is_symlink() or
-                    (hasattr(fanout, "is_junction") and fanout.is_junction()) or
+                    is_reparse_point(fanout) or
                     attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
                     fanout.resolve(strict=True).parent != Path(object_dir)):
                 raise ValidationError("Loose object fanout directory is aliased")
@@ -2554,7 +2562,7 @@ def _cleanup_new_objects(root, records, snapshot):
             attributes = getattr(details, "st_file_attributes", 0)
             if ((details.st_dev, details.st_ino) != fanout.get("installed_identity") or
                     not path.is_dir() or path.is_symlink() or
-                    (hasattr(path, "is_junction") and path.is_junction()) or
+                    is_reparse_point(path) or
                     attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
                     path.resolve(strict=True).parent != Path(snapshot["object_dir"])):
                 raise ValidationError("Operation-created fanout identity changed; cleanup refused")

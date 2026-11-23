@@ -13,7 +13,7 @@ import uuid
 
 from . import ValidationError
 from .canonical import canonical, fingerprint, loads, now_text, timestamp
-from .controller_state import restrict_state_permissions
+from .controller_state import is_link_component, restrict_state_permissions
 from .lifecycle import transition
 from .path_containment import is_within
 
@@ -71,7 +71,7 @@ class Store:
         self.path = Path(path).absolute()
         uuid.UUID(project_id)
         for parent in [self.path, *self.path.parents]:
-            if parent.exists() and (parent.is_symlink() or (hasattr(parent, "is_junction") and parent.is_junction())):
+            if is_link_component(parent):
                 raise ValidationError("State path traverses a link/reparse point")
         if self.path.exists() and self.path.stat().st_nlink > 1:
             raise ValidationError("State file has multiple hardlinks")
