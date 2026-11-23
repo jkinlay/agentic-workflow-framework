@@ -204,7 +204,7 @@ def _ticketed_finding_ids(records):
 def validate_round(tier, round_number, *, owner_cap_disposition=None, config=None,
                    assignment_record=None, overcap_approvals=(),
                    trusted_owner_ids=(), round_started_at=None,
-                   repository_id=None, pr_number=None):
+                   repository_id=None, pr_number=None, accepted_policy_root=None):
     cap = round_cap(tier, config, assignment_record)
     if type(round_number) is not int or round_number < 1:
         raise ValidationError("review round must be a positive integer")
@@ -221,10 +221,22 @@ def validate_round(tier, round_number, *, owner_cap_disposition=None, config=Non
             round_started_at=round_started_at,
             repository_id=repository_id,
             pr_number=pr_number,
+            accepted_policy_root=accepted_policy_root,
         )
         return True
     if round_number > cap and (round_number != cap + 1 or not _cap_disposition_valid(owner_cap_disposition, tier, cap)):
         raise ValidationError(f"Tier {tier} review cap is {cap}; an additional round needs an explicit owner cap disposition")
+    if round_number > cap:
+        from .provenance import _accepted_owner_config
+        identity = _accepted_owner_config(accepted_policy_root)
+        if identity["expected_actor_id"] is None:
+            return True
+        source = owner_cap_disposition.get("owner_source")
+        actor = source.get("actor_id") if isinstance(source, dict) else None
+        if type(actor) is not int or actor < 1:
+            raise ValidationError("OWNER_TRUST_UNBOUND: cap disposition missing owner_source.actor_id")
+        if actor == identity["expected_actor_id"]:
+            raise ValidationError("The configured automation actor must not be a trusted owner")
     return True
 
 
@@ -232,7 +244,8 @@ def verdict_record(*, pr_comment_url, pr_body_link, verdict, tier, round_number,
                    reviewer_id, evidence=None, owner_review=False,
                    owner_cap_disposition=None, assignment_record=None,
                    overcap_approvals=(), trusted_owner_ids=(),
-                   round_started_at=None, repository_id=None, pr_number=None):
+                   round_started_at=None, repository_id=None, pr_number=None,
+                   accepted_policy_root=None):
     """Build the policy-level verdict receipt; posting remains a successor concern."""
     if verdict not in {"PASS", "P1", "P2", "REQUEST_CHANGES"}:
         raise ValidationError("unknown review verdict")
@@ -243,7 +256,9 @@ def verdict_record(*, pr_comment_url, pr_body_link, verdict, tier, round_number,
                    overcap_approvals=overcap_approvals,
                    trusted_owner_ids=trusted_owner_ids,
                    round_started_at=round_started_at,
-                   repository_id=repository_id, pr_number=pr_number)
+                   repository_id=repository_id, pr_number=pr_number,
+                      accepted_policy_root=accepted_policy_root,
+                  )
     return {"verdict": verdict, "tier": tier, "round": round_number, "head_sha": head_sha,
             "reviewer_id": reviewer_id, "pr_comment_url": pr_comment_url,
             "pr_body_link": pr_body_link, "evidence": list(evidence or []),
@@ -255,7 +270,7 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
                     configured_owner_ids=None, expected_candidate_binding=None, config=None,
                     assignment_record=None, overcap_approvals=(),
                     trusted_owner_ids=(), round_started_at=None,
-                    repository_id=None, pr_number=None):
+                    repository_id=None, pr_number=None, accepted_policy_root=None):
     """Derive qualification/escalation at the tier-specific round boundary."""
     cap = round_cap(tier, config, assignment_record)
     validate_round(
@@ -265,6 +280,7 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
         trusted_owner_ids=trusted_owner_ids,
         round_started_at=round_started_at,
         repository_id=repository_id, pr_number=pr_number,
+        accepted_policy_root=accepted_policy_root,
     )
     findings = list(open_findings or ())
     p1 = [f for f in findings if f.get("severity") in P1 or f.get("priority") in P1]

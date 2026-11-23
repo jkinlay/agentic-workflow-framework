@@ -603,6 +603,7 @@ def main(argv=None, default_root=None):
                     output = cap_disposition_plan(
                         config, disposition, args.cycles, args.extensions, findings,
                         risk_tier=assignment["tier"], assignment_record=assignment,
+                        accepted_policy_root=root,
                     )
                     output["review_verdict_binding"] = output_binding
                     output["execution_authority"] = False

@@ -941,6 +941,29 @@ def catalog(*, include_ticket_plan=True):
         "to_tier": enum(1, 2), "rationale": text(), **signed, "evidence": EVIDENCE})
     schemas["owner-closure"] = bound({"merge_result_id": UUID, "closure_kind": enum("release", "publication", "qualification", "cutover", "production_acceptance", "other"),
         "rationale": text(), **signed, "evidence": EVIDENCE})
+    # Enrolled owner consumers retain accepted policy outside signed
+    # provider bodies. Other consumers still use the rootless refusal. These
+    # optional fields form one closed, indivisible annotation; semantic checks
+    # re-observe its exact policy bytes before accepting a shared actor.
+    owner_policy_annotation = {
+        "shared_owner_automation_account": TRUE,
+        "owner_policy_sha256": DIGEST,
+        "accepted_owner_policy": obj({
+            "status": const("OBSERVED"), "shared_owner_automation_actor_id": integer(1),
+            "policy_sha256": DIGEST, "config_sha256": DIGEST, "workflow_sha256": DIGEST,
+            "default_branch_ref": text(pattern="^refs/remotes/origin/.+$"),
+            "default_branch_commit": OBJECT_ID,
+            "warnings": arr(obj({"path": const("$.merge_gate.shared_owner_automation_actor_id"),
+                "code": const("SHARED_OWNER_AUTOMATION_ACCOUNT"), "message": text()}), 1, maxItems=1),
+            "execution_authority": FALSE,
+        }),
+    }
+    for name in ("owner-authorization", "review-cap-disposition", "finding-disposition",
+                 "tier-reassignment", "owner-closure", "review-verdict", "final-gate"):
+        schemas[name]["properties"].update(copy.deepcopy(owner_policy_annotation))
+        schemas[name]["dependentRequired"] = {
+            key: [other for other in owner_policy_annotation if other != key]
+            for key in owner_policy_annotation}
     schemas["closeout-record"] = bound({"pr_number": integer(1), "reviewed_head_sha": SHA, "base_sha": SHA,
         "merge_commit_sha": SHA, "merge_tree_sha": SHA,
         "bound_files": arr(obj({"path": text(), "blob_sha": SHA, "sha256": DIGEST}), 1),
@@ -1008,6 +1031,11 @@ def catalog(*, include_ticket_plan=True):
     schemas["evidence-bundle"]["required"].remove("owner_review")
     schemas["evidence-bundle"]["required"].remove("overcap_approvals")
     schemas["evidence-bundle"]["required"].remove("review_round_receipts")
+    overcap_schema = schemas["evidence-bundle"]["properties"]["overcap_approvals"]["items"]
+    overcap_schema["properties"].update(copy.deepcopy(owner_policy_annotation))
+    overcap_schema["dependentRequired"] = {
+        key: [other for other in owner_policy_annotation if other != key]
+        for key in owner_policy_annotation}
     role_policy = obj({"model": text(), "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
         "fallback": const("deny"), "approved_model_ids": arr(text(), 1, uniqueItems=True),
         "permission_profile": text(), "network_allowlist": STRINGS})

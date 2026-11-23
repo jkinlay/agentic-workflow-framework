@@ -342,7 +342,7 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                             previous_diff_sha=None, current_diff_sha=None, base_only=False, config=None,
                             overcap_approvals=(), trusted_owner_ids=(), round_started_at=None,
                             repository_id=None, pr_number=None,
-                            overcap_approval_context=None):
+                            overcap_approval_context=None, accepted_policy_root=None):
     """Lifecycle-facing review policy API with provider-authenticated authority."""
     if previous_diff_sha is not None and current_diff_sha is not None:
         diff = diff_effect(previous_diff_sha, current_diff_sha, base_only=base_only)
@@ -466,7 +466,9 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                    overcap_approvals=overcap_approvals,
                    trusted_owner_ids=trusted_owner_ids,
                    round_started_at=round_started_at,
-                   repository_id=repository_id, pr_number=pr_number)
+                   repository_id=repository_id, pr_number=pr_number,
+                      accepted_policy_root=accepted_policy_root,
+                  )
     if diff["invalidate"]:
         return {"status": "REVIEW_REQUIRED", "round": round_number, "history_preserved": True,
                 "invalidated": True, "diff": diff}
@@ -479,6 +481,8 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                                config=config, overcap_approvals=overcap_approvals,
                                trusted_owner_ids=trusted_owner_ids,
                                round_started_at=round_started_at,
-                               repository_id=repository_id, pr_number=pr_number)
+                               repository_id=repository_id, pr_number=pr_number,
+                                  accepted_policy_root=accepted_policy_root,
+                              )
     return {**decision, "round": round_number, "history_preserved": True,
             "invalidated": False, "diff": diff, "verdict": verdict}

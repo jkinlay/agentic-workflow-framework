@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from agentic.cli import main as workflow_main
-from agentic.intake_assignment import assign_intake, change_assignment
+from agentic.intake_assignment import assign_intake
+from intake_policy_fixture import change_assignment_with_policy as change_assignment
 from agentic.lifecycle import definition
 from agentic.policy import policy_hash
 from agentic.review_tiers import runtime_assignment
@@ -26,6 +27,7 @@ from test_intake_assignment import NOW, owner_source, verify_owner_source
 from test_review_policy import NOW as REVIEW_NOW
 from test_review_policy import (bind_production_posting_fixture,
                                 bind_review_admission, sealed_runtime)
+from accepted_owner_fixture import AcceptedOwnerFixture
 
 
 class CliIntakeAssignmentTests(unittest.TestCase):
@@ -35,6 +37,8 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
         config["jira"]["enabled"] = False
         config["jira"]["controller_actor_id"] = "controller-1"
+        for field in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):
+            config["jira"][field] = None
         config["merge_gate"]["trusted_owner_ids"] = [1001]
         config_path = base / "project-config.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -76,6 +80,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
 
     def _cap_plan(self, runtime, config_path, state_path, cycles, *, extensions=0,
                   signed_cycles=None, signed_extensions=None):
+        AcceptedOwnerFixture(self, owners=(1001,), root=runtime)
         signed_cycles = cycles if signed_cycles is None else signed_cycles
         signed_extensions = extensions if signed_extensions is None else signed_extensions
         base = state_path.parent
@@ -84,6 +89,8 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         findings_path = base / f"findings-{cycles}.json"
         disposition_path.write_text(json.dumps({
             "binding": {}, "decision": "PARK", "open_finding_ids": [],
+            "owner_source": {"channel": "github_pr_comment", "comment_id": 91,
+                             "actor_id": 1001},
             "successor_ticket": None,
             "cycles": signed_cycles, "cap_extensions": signed_extensions,
         }), encoding="utf-8")
@@ -133,6 +140,8 @@ class CliIntakeAssignmentTests(unittest.TestCase):
 
         state_config = copy.deepcopy(gate_fixture.config0)
         state_config["jira"]["enabled"] = False
+        for field in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id"):
+            state_config["jira"][field] = None
         state = {}
         first = assign_intake(
             state_config,

@@ -37,7 +37,13 @@ GATE_CANONICAL = (
 )
 
 
+from accepted_owner_fixture import AcceptedOwnerFixture
+
+
 class Tier3OvercapApprovalTests(unittest.TestCase):
+    def setUp(self):
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(1001,))
+
     def comment(self, *, body=CANONICAL, actor_id=OWNER, created_at=POSTED_AT,
                 updated_at=None):
         return {
@@ -56,6 +62,7 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
             pr_comments=comments,
             trusted_owner_ids=[OWNER],
             round_started_at=ROUND_STARTED_AT,
+            accepted_policy_root=self.owner_fixture.root,
         )
 
     def test_no_record_refuses_round_four(self):
@@ -72,6 +79,7 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
             overcap_approvals=[self.comment()],
             trusted_owner_ids=[OWNER],
             round_started_at=ROUND_STARTED_AT,
+            accepted_policy_root=self.owner_fixture.root,
         )
         self.assertEqual("OWNER_REVIEW_REQUIRED", result["status"])
 
@@ -93,6 +101,7 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
                 pr_comments=[self.comment()],
                 trusted_owner_ids=[OWNER],
                 round_started_at=ROUND_STARTED_AT,
+                accepted_policy_root=self.owner_fixture.root,
             )
 
     def test_even_a_separately_canonical_round_five_record_is_refused(self):
@@ -104,6 +113,7 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
                 pr_comments=[self.comment(body=round_five)],
                 trusted_owner_ids=[OWNER],
                 round_started_at=ROUND_STARTED_AT,
+                accepted_policy_root=self.owner_fixture.root,
             )
 
     def test_wrong_round_or_cap_is_refused(self):
@@ -148,13 +158,14 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
                     pr_comments=[],
                     trusted_owner_ids=[],
                     round_started_at=ROUND_STARTED_AT,
-                ))
+                    accepted_policy_root=self.owner_fixture.root),
+                )
 
     def test_tier_one_and_two_decisions_are_unchanged(self):
-        self.assertEqual("QUALIFIED", review_decision(1, 1, latest_pass=True)["status"])
-        self.assertEqual("CONTINUE", review_decision(2, 1)["status"])
+        self.assertEqual("QUALIFIED", review_decision(1, 1, latest_pass=True, accepted_policy_root=self.owner_fixture.root)["status"])
+        self.assertEqual("CONTINUE", review_decision(2, 1, accepted_policy_root=self.owner_fixture.root)["status"])
         with self.assertRaises(ValidationError):
-            review_decision(2, 4)
+            review_decision(2, 4, accepted_policy_root=self.owner_fixture.root)
 
 
 class NonTier3GateRegressionTests(Fixture):
@@ -178,6 +189,7 @@ class Tier3OvercapGateTests(Fixture):
 
     def setUp(self):
         super().setUp()
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(1001,))
         gate_fixtures.ReviewTiers195GateTests._tier_three_candidate(self)
         gate_fixtures.ReviewTiers195GateTests._review_history(
             self, 4, historical_tier=3, terminal_tier=3,
@@ -266,9 +278,10 @@ class Tier3OvercapGateTests(Fixture):
         })
         if approval_factory is not None:
             self.bundle["overcap_approvals"] = [approval_factory(registry)]
+        self.owner_fixture.config = copy.deepcopy(dict(self.config))
         return evaluate(
             self.config, definition(), self.bundle, self.contracts,
-            gate_fixtures.NOW, posting_collector_registry=registry,
+            gate_fixtures.NOW, posting_collector_registry=registry, accepted_policy_root=self.owner_fixture.root,
         )
 
     def _owner_review(self, *, provider_evidence=True):
@@ -288,6 +301,7 @@ class Tier3OvercapGateTests(Fixture):
         result = review_round_transition(
             3,
             ROUND,
+            accepted_policy_root=self.owner_fixture.root,
             overcap_approval_context={
                 "config": self.config,
                 "approvals": [approval],

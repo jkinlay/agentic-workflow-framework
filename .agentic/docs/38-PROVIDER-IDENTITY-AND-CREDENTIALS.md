@@ -2,7 +2,7 @@
 
 Version 1.9.6. Provider identity checks are read-only observations. They never
 switch accounts, select the first available connection, disclose tokens, or
-grant publication/Jira authority. Use them alongside [publication readiness](37-PUBLICATION-READINESS.md).
+grant publication/Jira authority. See [publication readiness](37-PUBLICATION-READINESS.md).
 
 ## Child environment
 
@@ -59,9 +59,10 @@ fails with `IDENTITY_MISMATCH`; an unbound expectation reports
 `IDENTITY_UNBOUND`. Read denial reports `ACCESS_DENIED`. The result names
 expected and observed identities without including token values.
 
-`merge_gate.shared_owner_automation_actor_id`: null; positive trusted-owner
-ID=`github.expected_actor_id`. Warns `SHARED_OWNER_AUTOMATION_ACCOUNT`.
-Reserved this slice: must stay null until owner-authority bindings ship. Prefer separate accounts.
+`merge_gate.shared_owner_automation_actor_id`: reserved; keep null until bindings ship.
+Trusted-owner IDs match `github.expected_actor_id`.
+[Bindings/refusals](SHARED-OWNER-PATHS.md) warn `SHARED_OWNER_AUTOMATION_ACCOUNT`:
+Account-level proof; prefer separate accounts. Jira O2 unavailable.
 
 ## Jira identity and binding
 

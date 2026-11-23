@@ -71,7 +71,7 @@ def _github_expected(config):
         "actor_login": login, "auth_profile": profile}
 
 
-def github_identity_preflight(config, observation):
+def github_identity_preflight(config, observation, *, accepted_policy_root=None):
     """Require the intended actor/profile and numeric repository before change."""
     expected = _github_expected(config)
     if not isinstance(observation, dict) or set(observation) != GITHUB_FIELDS:
@@ -86,6 +86,7 @@ def github_identity_preflight(config, observation):
     # allowlist add no identity requirement. Validate every other policy shape.
     gate = config.get("merge_gate")
     owners = ()
+    owner_evidence = {}
     absent_policy = gate is None or gate == [] or gate == {}
     empty_allowlist = isinstance(gate, dict) and gate.get("trusted_owner_ids") == []
     if not (absent_policy or empty_allowlist):
@@ -96,11 +97,19 @@ def github_identity_preflight(config, observation):
         if expected["actor_id"] is None:
             owner_config = config | {"github": config["github"] | {"expected_actor_id": actor_id}}
         try:
-            owners = trusted_owner_ids(owner_config)
+            if accepted_policy_root is not None:
+                from .shared_owner_policy import accepted_owner_evidence, configured_shared_owner_actor_id
+                shared = configured_shared_owner_actor_id(config)
+                owner_evidence = accepted_owner_evidence(
+                    accepted_policy_root, config, expected["actor_id"])
+                owners = (tuple(gate["trusted_owner_ids"]) if shared is not None and owner_evidence
+                          else trusted_owner_ids(owner_config))
+            else:
+                owners = trusted_owner_ids(owner_config)
         except ValidationError as exc:
             raise ProviderIdentityError("IDENTITY_UNBOUND", str(exc),
                                         expected=expected, observed=observation) from exc
-    if actor_id in owners:
+    if actor_id in owners and not (owner_evidence and actor_id == expected["actor_id"]):
         raise ProviderIdentityError("IDENTITY_UNBOUND",
                                     "The observed automation actor must not be a trusted owner",
                                     expected=expected, observed=observation)
@@ -129,9 +138,13 @@ def github_identity_preflight(config, observation):
     if not observation["readable"]:
         raise ProviderIdentityError("ACCESS_DENIED", "Configured numeric GitHub repository is not readable",
                                     expected=expected, observed=observation)
+    if owner_evidence:
+        if accepted_owner_evidence(accepted_policy_root, config, actor_id) != owner_evidence:
+            raise ProviderIdentityError("IDENTITY_UNBOUND", "Shared-owner policy changed before identity admission",
+                                        expected=expected, observed=observation)
     return {"status": "PASS", "provider": "github", "expected": expected,
             "observed": copy.deepcopy(observation), "changes_attempted": False,
-            "tokens_reported": False, "execution_authority": False}
+            "tokens_reported": False, "execution_authority": False, **owner_evidence}
 
 
 def observe_github_identity(config, *, read_actor, read_repository, observe_protocol):
@@ -289,7 +302,7 @@ def require_jira_write_identity(config, observation):
             "controller_actor_id": expected["account_id"]}
 
 
-def jira_binding_plan(config, connections, confirmation=None, *, now=None):
+def jira_binding_plan(config, connections, confirmation=None, *, now=None, accepted_policy_root=None):
     """Discover bindings, or produce a governance patch after exact confirmation."""
     candidates = discover_jira_binding_candidates(config, connections)
     candidate_sha256 = fingerprint("jira-binding-candidates", candidates)
@@ -315,6 +328,14 @@ def jira_binding_plan(config, connections, confirmation=None, *, now=None):
         raise ProviderIdentityError("IDENTITY_MISMATCH", "Jira binding candidates changed after confirmation")
     if confirmation["owner_id"] not in config.get("merge_gate", {}).get("trusted_owner_ids", []):
         raise ProviderIdentityError("INVALID_CONFIRMATION", "Jira binding confirmation owner is not trusted")
+    # This is GitHub owner authority for a binding proposal, not Jira closure
+    # authority. Never infer a Jira shared-controller exception from it.
+    from .authorization import _authorization_owner_policy, _actor_authorization_policy
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    owner_evidence = _actor_authorization_policy(policy, confirmation["owner_id"])
+    if (type(confirmation["owner_id"]) is not int or
+            confirmation["owner_id"] not in config["merge_gate"]["trusted_owner_ids"]):
+        raise ProviderIdentityError("INVALID_CONFIRMATION", "Jira binding confirmation owner is not trusted")
     if (not isinstance(confirmation["authentication_evidence"], list)
             or not confirmation["authentication_evidence"]
             or not all(isinstance(item, str) and item.startswith("urn:") for item in confirmation["authentication_evidence"])):
@@ -323,8 +344,10 @@ def jira_binding_plan(config, connections, confirmation=None, *, now=None):
         ("cloud_id", "site", "project_id", "project_key", "account_id"))]
     if len(chosen) != 1 or not chosen[0]["browse"]:
         raise ProviderIdentityError("IDENTITY_MISMATCH", "Confirmed Jira binding is absent, ambiguous, or unreadable")
+    from .authorization import _recheck_authorization_policy
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     result.update(status="CONFIRMED", binding_patch={"cloud_id": chosen[0]["cloud_id"],
         "site": chosen[0]["site"], "provider_project_id": chosen[0]["project_id"],
         "project_key": chosen[0]["project_key"], "controller_actor_id": chosen[0]["account_id"]},
-        confirmation=copy.deepcopy(confirmation))
+        confirmation=copy.deepcopy(confirmation), **owner_evidence)
     return result

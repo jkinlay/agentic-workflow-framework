@@ -307,9 +307,13 @@ def ci_workflow_provenance_matches(required, observed, candidate_blob_sha):
 
 
 def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts,
-                           excluded_producers, now, *, assignment_record=None):
+                           excluded_producers, now, *, assignment_record=None,
+                           accepted_policy_root=None):
     """Validate owner dispositions before any of them can change a gate."""
-    from .authorization import verify_owner_record
+    from .authorization import (verify_owner_record, _authorization_owner_policy,
+                                _recheck_authorization_policy)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+              if accepted_policy_root is not None else {})
     head = bundle["candidate"]["head_sha"]
     dispositions, comments, request_ids, review_records = [], set(), set(), []
     records = [("finding-disposition", r) for r in bundle.get("finding_dispositions", [])]
@@ -320,7 +324,8 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
         verify_owner_record(record, schema, config, contracts, now, head_sha=head, binding=binding,
                             runs=runs, excluded_contexts=excluded_contexts,
                             excluded_producers=excluded_producers,
-                            allow_historical_finding=True)
+                            allow_historical_finding=True,
+                            accepted_policy_root=accepted_policy_root)
         if schema == "review-cap-disposition" and record["record_id"] != cap_disposition_record_id(record):
             raise ValidationError(
                 "Review cap disposition record ID does not authenticate its critic artifact and verdict binding")
@@ -391,6 +396,8 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
             expected_ticket_key=bundle["contract"]["ticket"],
             candidate=bundle["candidate"],
         )
+    if accepted_policy_root is not None:
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     return dispositions, cap
 
 
@@ -590,12 +597,29 @@ def overcap_approval_collector_receipt_sha256(observation, observation_binding_s
 
 
 def verified_overcap_approvals(config, approvals, candidate, runs,
-                               trusted_posting_collectors):
+                               trusted_posting_collectors, *, accepted_policy_root=None):
     """Authenticate approval fields and admission time through a registered collector."""
+    from .authorization import (_authorization_owner_policy, _retained_authorization_policy,
+                                _recheck_authorization_policy)
+    from .shared_owner_policy import configured_shared_owner_actor_id
+    # Legacy profile-only observations remain ordinary offline evidence. They
+    # cannot enable an opt-out; configured numeric overlap still uses the
+    # unchanged public separation validator through authorization's path.
+    profile_only = (accepted_policy_root is None
+                    and config.get("github", {}).get("expected_actor_id") is None)
+    if profile_only:
+        configured_shared_owner_actor_id(config)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+              if not profile_only and (approvals or accepted_policy_root is not None) else {})
     configured_collectors = set(config["merge_gate"].get(
         "production_posting_collector_ids", []))
     verified = []
     for approval in approvals:
+        _retained_authorization_policy(approval, policy, approval.get("actor_id"))
+        if (type(approval.get("actor_id")) is not int
+                or approval["actor_id"] not in config["merge_gate"]["trusted_owner_ids"]):
+            raise ValidationError(
+                "Tier 3 over-cap approval lacks a matching authenticated provider observation")
         run = runs.get(approval.get("run_id"))
         registration = trusted_posting_collectors.get(approval.get("producer_id"))
         registration_shape_ok = (isinstance(registration, dict)
@@ -653,6 +677,12 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
                 "Tier 3 over-cap approval lacks a matching authenticated provider observation"
             )
         verified.append(approval)
+    if profile_only:
+        configured_shared_owner_actor_id(config)
+        if config.get("github", {}).get("expected_actor_id") is not None:
+            _authorization_owner_policy(config, None)
+    elif approvals or accepted_policy_root is not None:
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
     return verified
 
 
@@ -668,12 +698,20 @@ def cap_disposition_record_id(record):
 
 
 def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_registry=None,
-             repository=None):
+             repository=None, accepted_policy_root=None):
     # Production intentionally has no built-in collector registration.  Only a
     # runtime adapter may pass a registry.  Configuration and environment data
     # can narrow that registry but can never create membership.
     trusted_posting_collectors = posting_collector_registry or {}
-    validate_config(config, workflow, contracts)
+    # A rootless queue evaluation scopes its registered accepted-policy
+    # observation in provenance. Never substitute the installed library root
+    # (the later commit-provenance fallback) for owner identity.
+    round_policy_root = accepted_policy_root or repository
+    validate_config(config, workflow, contracts, accepted_policy_root=accepted_policy_root)
+    from .authorization import (_authorization_owner_policy, _retained_authorization_policy,
+                                _recheck_authorization_policy)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+              if accepted_policy_root is not None else {})
     if config["jira"].get("enabled", True) is False:
         raise ValidationError("Jira is disabled; this Jira evidence evaluator requires Jira scope. Continue provisional local planning through the native host.")
     if not config["merge_gate"]["trusted_owner_ids"]:
@@ -750,7 +788,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     dispositions, cap_disposition = verified_owner_records(config, contracts, bundle, binding, runs,
                                                             {worker_run["context_id"], critic_run["context_id"]},
                                                             {worker_run["producer_id"], critic_run["producer_id"]}, now,
-                                                            assignment_record=assignment_record)
+                                                            assignment_record=assignment_record,
+                                                            accepted_policy_root=accepted_policy_root)
     if bundle["worker"]["dispatch_id"] != bundle["dispatch"]["record_id"]:
         raise ValidationError("Worker result references a different dispatch")
     dispatch = bundle["dispatch"]
@@ -820,7 +859,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     overcap_approvals = bundle.get("overcap_approvals", [])
     unique(overcap_approvals, "comment_id", "Tier 3 over-cap approval comment")
     overcap_approvals = verified_overcap_approvals(
-        config, overcap_approvals, candidate, runs, trusted_posting_collectors)
+        config, overcap_approvals, candidate, runs, trusted_posting_collectors,
+        accepted_policy_root=accepted_policy_root)
     unique(verdicts, "round", "review verdict round")
     expected_rounds = set(range(1, max(v["round"] for v in verdicts) + 1))
     if {v["round"] for v in verdicts} != expected_rounds:
@@ -898,6 +938,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                        round_started_at=round_started_at,
                        repository_id=candidate["repository_id"],
                        pr_number=candidate["pr_number"],
+                       accepted_policy_root=round_policy_root,
                        **round_kwargs)
         artifact_binding = verdict["critic_artifact_binding"]
         receipt = receipts_by_round.get(verdict["round"])
@@ -1220,6 +1261,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
     terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
     owner = bundle.get("owner_review")
+    if owner is not None:
+        _retained_authorization_policy(owner, policy, owner.get("owner_id"))
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
     owner_provider_receipt_uri = f"urn:awf:review-round-receipt:{terminal_round}"
     owner_provider_receipt_entry = next(
@@ -1454,5 +1497,19 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         "execution_authority": False, "evaluation_mode": "offline_reference", "expires_at": expires.isoformat().replace("+00:00", "Z")}
     if not required_domains:
         gate["gates"]["specialist_reviews"]["result"] = "N_A"
+    if accepted_policy_root is not None:
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
+        for record in bundle.get("finding_dispositions", []) + (
+                [bundle["cap_disposition"]] if bundle.get("cap_disposition") is not None else []):
+            _retained_authorization_policy(record, policy, record["owner_source"]["actor_id"])
+        for approval in overcap_approvals:
+            _retained_authorization_policy(approval, policy, approval["actor_id"])
+        if owner is not None:
+            _retained_authorization_policy(owner, policy, owner["owner_id"])
+        gate.update(deepcopy(policy))
+        if policy:
+            gate["residual_risks"].extend(
+                warning["code"] + ": " + warning["message"]
+                for warning in policy["accepted_owner_policy"]["warnings"])
     contracts.validate("final-gate", gate)
     return gate

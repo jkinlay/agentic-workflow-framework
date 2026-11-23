@@ -815,6 +815,12 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
                 args = ('-c', 'protocol.file.allow=always', *args)
             return real_git(checkout, *args, **kwargs)
         self.driver.git = local_git
+        # Keep the existing local-file publication transport. Accepted-policy
+        # Git reads use the same immutable fixture as the other host tests;
+        # the production observer and identity verifier still run unchanged.
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(1001,), actor=7001, root=worker)
+        self.owner_fixture.config['github'].update(repository='fixture/project', repository_id=12)
 
     def cli(self, *args):
         spec = importlib.util.spec_from_file_location('awf_review_loop_cli',

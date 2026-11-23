@@ -4,6 +4,7 @@ All commands are argument arrays, with no shell expansion. No merge command,
 Jira write, API-key provisioning, approval bypass or automatic force-push exists.
 """
 from __future__ import annotations
+from contextvars import ContextVar
 from dataclasses import replace
 from functools import wraps
 import json
@@ -32,10 +33,14 @@ from ..path_containment import is_within, relative_within
 from ..provenance import (format_writer_trailer, parse_critic_run_carrier,
                           validate_critic_run_binding, decode_git_paths,
                           parse_writer_trailer, check_commit_range,
-                          _Git, _commit_details)
+                          _Git, _commit_details, _accepted_owner_config)
 from ..review_loop import ValidationError, require
 from .. import review_qualification
 from ..safeio import Tree, require_record_bytes, retain_codex_log, run_bounded
+
+
+_OWNER_AUTHORITY_DEFAULT = object()
+_ORDINARY_PROVENANCE = ContextVar('ordinary_provenance', default=False)
 
 
 PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattributes','.gitmodules','.lfsconfig'}
@@ -1263,8 +1268,18 @@ class HostDriver:
                 return rows
         raise ValidationError('Provider pagination has no bounded terminal page')
 
-    def collect_provenance_observation(self):
-        """Fresh, bounded repository/PR/label/comment authority snapshot."""
+    def _ordinary_provenance_observation(self):
+        """Scope ordinary reads while retaining the zero-argument collector hook."""
+        token = _ORDINARY_PROVENANCE.set(True)
+        try:
+            return self.collect_provenance_observation()
+        finally:
+            _ORDINARY_PROVENANCE.reset(token)
+
+    def collect_provenance_observation(self, *, owner_authority=_OWNER_AUTHORITY_DEFAULT):
+        """Fresh snapshot; owner authority by default, ordinary reads opt out."""
+        if owner_authority is _OWNER_AUTHORITY_DEFAULT:
+            owner_authority = not _ORDINARY_PROVENANCE.get()
         require('provenance' in self.c and 'trusted_owner_ids' in self.c,
                 'Reviewed provenance policy/trusted owner root is not configured')
         provider_budget = HOST_PROVIDER_RUNNER_POLICY.make_budget(
@@ -1353,16 +1368,36 @@ class HostDriver:
         require(((head.get('repo') or {}).get('id') == self.c['repository_id']
                  and (base.get('repo') or {}).get('id') == self.c['repository_id']),
                 'Provider repository identity changed')
+        # Ordinary provider observations do not consume owner authority. Only
+        # an owner-authority request needs the accepted projection; verification
+        # still authenticates the exact record, actor and accepted bytes.
+        owner_config = (self._provenance_owner_config()
+                        if owner_authority
+                        else {'trusted_owner_ids': list(self.c['trusted_owner_ids']),
+                              'config_sha256': self.c['config_hash']})
         return {'version': 1, 'repository_id': self.c['repository_id'],
                 'repository': self.c['repository'], 'pr': self.c['pr'],
                 'head': head.get('sha'), 'head_ref': head.get('ref'),
                 'base': base.get('sha'), 'base_ref': base.get('ref'),
                 'body_sha256': sha256(body.encode('utf-8')),
                 'labels': label_names, 'comments': comments,
-                'trusted_owner_ids': list(self.c['trusted_owner_ids']),
-                'config_sha256': self.c['config_hash']}
+                **owner_config}
 
-    def collect_default_branch_observation(self):
+    def _provenance_owner_config(self):
+        """Read the accepted project identity; host/supplied config is not policy."""
+        owner_config = _accepted_owner_config(self.worker)
+        # Preserve the reviewed host's narrower allowlist. No accepted owner
+        # can be added by host/supplied configuration, and the verifier always
+        # refuses the accepted automation identity independently of this list.
+        owners = list(self.c.get('trusted_owner_ids', []))
+        require(all(type(actor) is int and actor > 0 for actor in owners)
+                and len(owners) == len(set(owners))
+                and set(owners).issubset(owner_config['trusted_owner_ids']),
+                'Provenance trusted owners differ from accepted project configuration')
+        return {**{key: value for key, value in owner_config.items()
+                   if key != 'binding_sha256'}, 'trusted_owner_ids': owners}
+
+    def collect_default_branch_observation(self, *, owner_authority=False):
         """Fresh repository/default-ref authority usable before a PR exists."""
         self.require_repository_identity()
         branch = self.api('branches/' + quote(self.c['base_branch'], safe=''))
@@ -1373,8 +1408,9 @@ class HostDriver:
                 'repository': self.c['repository'], 'pr': self.c.get('pr'),
                 'base': oid, 'base_ref': self.c['base_branch'],
                 'labels': [], 'comments': [],
-                'trusted_owner_ids': list(self.c.get('trusted_owner_ids', [])),
-                'config_sha256': self.c['config_hash']}
+                **(self._provenance_owner_config() if owner_authority else
+                   {'trusted_owner_ids': list(self.c.get('trusted_owner_ids', [])),
+                    'config_sha256': self.c['config_hash']})}
 
     def publish_critic_evidence(self, binding):
         """Publish then freshly reread the immutable critic carrier."""
@@ -1406,7 +1442,7 @@ class HostDriver:
         require(isinstance(url, str)
                 and url.startswith(f'https://github.com/{self.c["repository"]}/'),
                 'Created critic evidence belongs to another repository')
-        observation = self.collect_provenance_observation()
+        observation = self._ordinary_provenance_observation()
         matches = [comment for comment in observation['comments']
                    if comment['kind'] == 'issue'
                    and comment['id'] == created['id']]
@@ -1427,7 +1463,7 @@ class HostDriver:
         """Run the reviewed fail-closed provenance gate on immutable OIDs."""
         require(isinstance(self.c.get('provenance'), dict),
                 'Reviewed provenance policy is not configured')
-        observation = observation or self.collect_provenance_observation()
+        observation = observation or self._ordinary_provenance_observation()
         require(observation.get('repository_id') == self.c['repository_id']
                 and observation.get('pr') == self.c['pr'],
                 'Provenance observation belongs to another repository or PR')
@@ -1999,7 +2035,7 @@ class HostDriver:
     @_terminal_agent_call
     def review(self, candidate, findings, run_id, files):
         self._controller_run_id(run_id)
-        observation = self.collect_provenance_observation()
+        observation = self._ordinary_provenance_observation()
         require(observation.get('head') == candidate['head']
                 and observation.get('base') == candidate['base']
                 and observation.get('head_ref') == candidate['head_ref']
@@ -2108,7 +2144,7 @@ class HostDriver:
                 f'actual_sha256={sha256(raw_message)} expected_sha256={sha256(expected_message)})')
         parse_writer_trailer(raw_message.decode('utf-8', 'strict'))
         self.register_commit_run_log(run_id, new_head)
-        observation = self.collect_provenance_observation()
+        observation = self._ordinary_provenance_observation()
         require(observation.get('head') == candidate['head']
                 and observation.get('base') == candidate['base'],
                 'Provider candidate moved before amendment provenance proof')

@@ -446,6 +446,7 @@ def _planning_overlap_allowances(graph, config, records, binding, now, authentic
         current = timestamp(now)
     except (KeyError, TypeError, ValueError, ValidationError):
         return {}
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, validate_retained_owner_evidence
     accepted = {}
     record_fields = {"schema_version", "allowance_id", "source_id", "binding",
                      "approval", "expires_at", "provider_binding_sha256", "allowance_sha256"}
@@ -455,12 +456,15 @@ def _planning_overlap_allowances(graph, config, records, binding, now, authentic
                        "created_at", "body", "body_sha256"}
     for record in records:
         try:
-            if (not isinstance(record, dict) or set(record) != record_fields
+            if (not isinstance(record, dict) or set(record) not in (record_fields, record_fields | OWNER_EVIDENCE_FIELDS)
                     or type(record["schema_version"]) is not int or record["schema_version"] != 1
                     or not isinstance(record["binding"], dict)
                     or set(record["binding"]) != binding_fields
                     or not isinstance(record["approval"], dict)
-                    or set(record["approval"]) != approval_fields):
+                    or set(record["approval"]) not in (approval_fields, approval_fields | OWNER_EVIDENCE_FIELDS)):
+                continue
+            retained = validate_retained_owner_evidence(record, record["approval"]["actor_id"])
+            if retained != validate_retained_owner_evidence(record["approval"], record["approval"]["actor_id"]):
                 continue
             if record["allowance_sha256"] != fingerprint(
                     "controller-overlap-allowance-record",

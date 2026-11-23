@@ -41,6 +41,8 @@ class MergeTrainTests(unittest.TestCase):
         self.head2 = self._commit("src/two.txt", "two\n", "two")
         self.tree1 = self._git("rev-parse", f"{self.head1}^{{tree}}")
         self.tree2 = self._git("rev-parse", f"{self.head2}^{{tree}}")
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        self.owner_fixture = AcceptedOwnerFixture(self)
         self.observer_registry = {}
         self.observer_count = 0
         self.provider_identity = {
@@ -209,6 +211,7 @@ class MergeTrainTests(unittest.TestCase):
             trusted_owner_ids=(trusted_owner_ids
                                if trusted_owner_ids is not None
                                else ["owner-1"]),
+            accepted_policy_root=self.owner_fixture.root,
         )
 
     def test_default_is_on_for_adopters_and_off_for_awf_repository(self):
@@ -236,7 +239,7 @@ class MergeTrainTests(unittest.TestCase):
                          admitted["authorization_scope"])
         self.assertEqual([admitted], module.order_sources(
             [admitted], self.provider_identity, self.observer_registry,
-            now=NOW, trusted_owner_ids=[54314148]))
+            now=NOW, trusted_owner_ids=[54314148], accepted_policy_root=self.owner_fixture.root))
 
     def test_numeric_provider_owner_identity_boundary(self):
         source = self._source()
@@ -282,7 +285,7 @@ class MergeTrainTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "provider identity"):
             module.admit_source(
                 source, "main", self.provider_identity, observer_id, registry,
-                now=NOW, trusted_owner_ids=["owner-1"])
+                now=NOW, trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
 
     def test_missing_required_owner_review_is_refused(self):
         source = self._source()
@@ -367,7 +370,7 @@ class MergeTrainTests(unittest.TestCase):
             [dependent, independent_late, independent_early],
             self.provider_identity,
             self.observer_registry, now=NOW,
-            trusted_owner_ids=["owner-1"])
+            trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
         self.assertEqual([11, 12, 13],
                          [item["pr_number"] for item in ordered])
 
@@ -392,7 +395,7 @@ class MergeTrainTests(unittest.TestCase):
                     module.order_sources(
                         sources, self.provider_identity,
                         self.observer_registry, now=NOW,
-                        trusted_owner_ids=["owner-1"])
+                        trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
 
     def test_source_review_cannot_authorize_batch(self):
         module = merge_train()
@@ -464,7 +467,7 @@ class MergeTrainTests(unittest.TestCase):
             module.freeze_generation(
                 "AWF-54-batch", "main", self.target, [forged], 1,
                 self.provider_identity, self.observer_registry, now=NOW,
-                trusted_owner_ids=["owner-1"])
+                trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
 
     def test_generation_rejects_wrong_or_mixed_admission_targets(self):
         module = merge_train()
@@ -488,7 +491,7 @@ class MergeTrainTests(unittest.TestCase):
                     module.freeze_generation(
                         "AWF-54-batch", target_branch, self.target, sources, 1,
                         self.provider_identity, self.observer_registry, now=NOW,
-                        trusted_owner_ids=["owner-1"])
+                        trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
 
     def test_generation_rejects_admissions_from_different_repositories(self):
         module = merge_train()
@@ -509,13 +512,13 @@ class MergeTrainTests(unittest.TestCase):
         second = module.admit_source(
             second_source, "main", other_provider_identity, observer_id,
             self.observer_registry, now=NOW,
-            trusted_owner_ids=["owner-1"])
+            trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
 
         with self.assertRaisesRegex(ValidationError, "provider identity"):
             module.freeze_generation(
                 "AWF-54-batch", "main", self.target, [first, second], 1,
                 self.provider_identity, self.observer_registry, now=NOW,
-                trusted_owner_ids=["owner-1"])
+                trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
 
     def test_generation_invalidates_on_target_head_or_evidence_drift(self):
         module = merge_train()
@@ -523,13 +526,13 @@ class MergeTrainTests(unittest.TestCase):
         generation = module.freeze_generation(
             "AWF-54-batch", "main", self.target, [admitted], 1,
             self.provider_identity, self.observer_registry, now=NOW,
-            trusted_owner_ids=["owner-1"])
+            trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
         self.assertEqual(self.provider_identity,
                          generation["provider_identity"])
         self.assertEqual("CURRENT", module.generation_status(
             generation, self.target, [admitted], self.provider_identity,
             self.observer_registry,
-            now=NOW, trusted_owner_ids=["owner-1"])["status"])
+            now=NOW, trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)["status"])
         changed_head_source = self._source(
             head=self.head2, tree=self.tree2, commits=[self.head2])
         changed_head = self._admit(
@@ -546,7 +549,7 @@ class MergeTrainTests(unittest.TestCase):
                 status = module.generation_status(
                     generation, target, sources, self.provider_identity,
                     self.observer_registry,
-                    now=NOW, trusted_owner_ids=["owner-1"])
+                    now=NOW, trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
                 self.assertEqual("ABANDONED", status["status"])
                 self.assertIn(reason, status["reasons"])
 
@@ -655,7 +658,7 @@ class MergeTrainTests(unittest.TestCase):
         generation = module.freeze_generation(
             "AWF-54-batch", "main", self.target, [admitted], 1,
             self.provider_identity, self.observer_registry, now=NOW,
-            trusted_owner_ids=["owner-1"])
+            trusted_owner_ids=["owner-1"], accepted_policy_root=self.owner_fixture.root)
         commit_sha = hashlib.sha1(b"batch-commit").hexdigest()
         result = {
             "generation_id": generation["generation_id"],

@@ -1,6 +1,6 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.6; AWF-16 ships in 1.9.5. Code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative.
+1.9.6. Code and [lifecycle](23-TICKET-LIFECYCLE.md) govern.
 
 ## Risk tiers
 
@@ -26,11 +26,13 @@ BLOCKER/MAJOR findings carry `{criterion_id}` or `{boundary_code}` from `PROTECT
 
 Every lane review critic run needs an AWF-native `review-verdict` and `critic_artifact_binding`; auxiliary critic analyses are not rounds. `disposition-request` verifies head/bytes, creates a unique `authorization_request_id` and renders exact `AWF1.2 DISPOSE`. Only the resulting unedited comment from `merge_gate.trusted_owner_ids` supports close/extend/merge. `cap-plan` requires that verdict and matching project, ticket, policy and candidate.
 
-Release 1.9.5 adds project `merge_gate.trusted_owner_ids` immediately after #154; until then tests inject it and live dispositions remain unavailable.
+Release 1.9.5 adds `merge_gate.trusted_owner_ids` after #154; earlier injected tests grant no live dispositions.
 
 ## Automation account separation
 
-Use a least-privilege bot/App for publication/collection. Its credential stays in the host secret store, never worktrees/records. The configured bot must be absent from `trusted_owner_ids`; ambiguity refuses. Owner credentials remain human-held; automation never uses or impersonates the owner account.
+Separate publication/collection bot/App credentials stay in the host secret store, never worktrees/records. With the setting unset, the configured bot must be absent from `trusted_owner_ids`; ambiguity refuses. Owner credentials stay human-held; automation never uses or impersonates the owner account.
+
+Unmerged GitHub candidate bindings/refusals: [exact inventory](SHARED-OWNER-PATHS.md). Jira opt-out remains unavailable O2.
 
 ## Closure standard
 

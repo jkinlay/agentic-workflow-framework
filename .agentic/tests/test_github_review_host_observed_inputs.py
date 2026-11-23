@@ -15,11 +15,18 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 
+from accepted_owner_fixture import AcceptedOwnerFixture
+
+
 class ObservedInputTests(unittest.TestCase):
+    def setUp(self):
+        self.owner_fixture = AcceptedOwnerFixture(self)
+
     def host(self, *, before=None, after=None, pages=None):
         from agentic.providers.github_review_host import HostDriver
 
         driver = HostDriver.__new__(HostDriver)
+        driver.worker = self.owner_fixture.root
         driver.c = {
             'repository': 'fixture/project', 'repository_id': 12, 'pr': 7,
             'head_branch': 'codex/test', 'base_branch': 'main',
@@ -64,13 +71,13 @@ class ObservedInputTests(unittest.TestCase):
 
         record = record_owner_override(
             {}, who=101, when='2026-10-13T20:00:00Z', why='Owner fallback',
-            pr=7, covered_shas=['a' * 40], trusted_owner_ids=[101])
+            pr=7, covered_shas=['a' * 40], trusted_owner_ids=[101], accepted_policy_root=self.owner_fixture.root)
         pages = {'issues/7/comments?per_page=100&page=1': [
             self.comment(91, render_owner_override(record))]}
         driver, pr, calls = self.host(pages=pages)
         observed = driver.collect_provenance_observation()
         verified = verify_provider_owner_override(
-            record, observed, repository_id=12, config_sha256='f' * 64)
+            record, observed, repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
         self.assertEqual(verified['provider_comment_id'], 91)
         self.assertEqual(calls.count('pulls/7'), 2)
 
@@ -85,13 +92,13 @@ class ObservedInputTests(unittest.TestCase):
                 self.assertEqual(fresh['labels'],
                                  [label['name'] for label in labels])
                 fresh_verified = verify_provider_owner_override(
-                    record, fresh, repository_id=12, config_sha256='f' * 64)
+                    record, fresh, repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
                 baseline_host, _, _ = self.host(
                     before=dict(pr, labels=[]), pages=pages)
                 baseline = baseline_host.collect_provenance_observation()
                 self.assertEqual(baseline['labels'], [])
                 baseline_verified = verify_provider_owner_override(
-                    record, baseline, repository_id=12, config_sha256='f' * 64)
+                    record, baseline, repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
                 self.assertEqual(fresh_verified['provider_comment_id'], 91)
                 self.assertEqual(fresh_verified, baseline_verified)
                 self.assertEqual(fresh_verified, verified)
@@ -126,6 +133,7 @@ class ObservedInputTests(unittest.TestCase):
         # assert acceptance or rejection only, using the existing host interface.
         with tempfile.TemporaryDirectory() as directory:
             driver.worker = Path(directory)
+            self.owner_fixture.root = driver.worker.resolve()
             with patch.object(github_review_host, 'check_commit_range',
                               return_value={'status': 'PASS', 'refusals': []}) as gate:
                 driver.validate_local_provenance('b' * 40, 'a' * 40,
@@ -169,6 +177,7 @@ class ObservedInputTests(unittest.TestCase):
         driver, _, _ = self.host()
         driver.c.update(pr=0, first_draft=True)
         driver.worker = Path(directory)
+        self.owner_fixture.root = driver.worker.resolve()
         driver.api = lambda suffix: ({'id': 12} if suffix == '' else
                                     {'commit': {'sha': 'b' * 40}})
         driver.git = lambda root, *args: {
@@ -358,7 +367,7 @@ class ObservedInputTests(unittest.TestCase):
 
         record = record_owner_override(
             {}, who=101, when='2026-10-13T20:00:00Z', why='Owner fallback',
-            pr=7, covered_shas=['a' * 40], trusted_owner_ids=[101])
+            pr=7, covered_shas=['a' * 40], trusted_owner_ids=[101], accepted_policy_root=self.owner_fixture.root)
         body = render_owner_override(record)
         for rows in ([self.comment(1, body, actor=202)],
                      [self.comment(1, body + '\n')],
@@ -369,7 +378,7 @@ class ObservedInputTests(unittest.TestCase):
                 observed = host.collect_provenance_observation()
                 with self.assertRaises(ValidationError):
                     verify_provider_owner_override(record, observed,
-                        repository_id=12, config_sha256='f' * 64)
+                        repository_id=12, config_sha256=self.owner_fixture.config_sha256, accepted_policy_root=self.owner_fixture.root)
 
         for labels in ([{'id': 1, 'name': 'same'}, {'id': 2, 'name': 'same'}],
                        [{'id': 1, 'name': 'x' * 256}],

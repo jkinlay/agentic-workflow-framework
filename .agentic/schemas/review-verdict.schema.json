@@ -416,7 +416,108 @@
           "pattern": "^[0-9a-f]{64}$"
         }
       }
+    },
+    "shared_owner_automation_account": {
+      "const": true
+    },
+    "owner_policy_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "accepted_owner_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "shared_owner_automation_actor_id",
+        "policy_sha256",
+        "config_sha256",
+        "workflow_sha256",
+        "default_branch_ref",
+        "default_branch_commit",
+        "warnings",
+        "execution_authority"
+      ],
+      "properties": {
+        "status": {
+          "const": "OBSERVED"
+        },
+        "shared_owner_automation_actor_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "policy_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "config_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "workflow_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "default_branch_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^refs/remotes/origin/.+$"
+        },
+        "default_branch_commit": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "code",
+              "message"
+            ],
+            "properties": {
+              "path": {
+                "const": "$.merge_gate.shared_owner_automation_actor_id"
+              },
+              "code": {
+                "const": "SHARED_OWNER_AUTOMATION_ACCOUNT"
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "execution_authority": {
+          "const": false
+        }
+      }
     }
+  },
+  "dependentRequired": {
+    "shared_owner_automation_account": [
+      "owner_policy_sha256",
+      "accepted_owner_policy"
+    ],
+    "owner_policy_sha256": [
+      "shared_owner_automation_account",
+      "accepted_owner_policy"
+    ],
+    "accepted_owner_policy": [
+      "shared_owner_automation_account",
+      "owner_policy_sha256"
+    ]
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:awf:1.2:review-verdict",

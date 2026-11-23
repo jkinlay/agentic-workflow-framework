@@ -585,24 +585,25 @@ class RemainderGateTests(unittest.TestCase):
         self.assertEqual("REFUSE" if refusing else "PASS", checked["status"])
         if refusing:
             self.assertIn("missing Writer trailer", checked["refusals"][0]["reason"])
-        payload = {"config_sha256": "a" * 64, "trusted_owner_ids": [1001]}
-        self.owner_config = {**payload,
-            "binding_sha256": fingerprint("provenance_owner_config", payload)}
+        from accepted_owner_fixture import AcceptedOwnerFixture
+        self.owner_fixture = AcceptedOwnerFixture(self, owners=(1001,), root=self.repository)
+        payload = self.owner_fixture.projection()
+        self.owner_config = payload
         state = {}
         record = record_owner_override(state, who=1001, when="2026-09-09T11:30:00Z",
             why="Reviewed exceptional provenance", pr=candidate["pr_number"],
-            covered_shas=[candidate["head_sha"]], reviewed_owner_config=self.owner_config)
+            covered_shas=[candidate["head_sha"]], reviewed_owner_config=self.owner_config, accepted_policy_root=self.repository)
         predecessors = []
         if superseding:
             predecessors = [record]
             record = supersede_owner_override(state, who=1001, when="2026-09-09T11:40:00Z",
                 why="Reviewed superseding provenance", pr=candidate["pr_number"],
                 covered_shas=[candidate["head_sha"]], supersedes=record["override_sha256"],
-                reviewed_owner_config=self.owner_config)
+                reviewed_owner_config=self.owner_config, accepted_policy_root=self.repository)
         self.context.update(override=record, override_predecessors=predecessors,
                             reviewed_owner_config=self.owner_config)
         provider = self.context["provider_observation"]
-        provider.update(config_sha256=payload["config_sha256"], trusted_owner_ids=[9999],
+        provider.update(config_sha256=payload["config_sha256"], expected_actor_id=1002, trusted_owner_ids=[9999],
                         labels=["fallback: bot-written"] if labels else [])
         self.refresh_override_comment()
 

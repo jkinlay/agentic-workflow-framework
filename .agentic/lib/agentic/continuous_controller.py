@@ -323,7 +323,104 @@ def replan_trigger_command(event):
 	_require(isinstance(ids, list) and ids == sorted(ids) and len(ids) == len(set(ids)) and ids and all(isinstance(value, str) and value.strip() == value and value for value in ids), 'Round-boundary replan dispatch identities are not canonical')
 	return 'AWF-ROUND-REPLAN 1\n' + canonical(event).decode('utf-8') + '\n'
 
-def validate_replan_trigger_observation(config, request, observation, *, now):
+def _controller_owner_policy(config, accepted_policy_root):
+	"""Only the host root can enroll a shared account; legacy policy stays strict."""
+	from .shared_owner_policy import configured_shared_owner_actor_id, accepted_owner_evidence
+	from .authorization import trusted_owner_ids
+	_require(isinstance(config, dict), 'Shared-owner controller use requires reviewed owner configuration')
+	shared = configured_shared_owner_actor_id(config)
+	if shared is None or accepted_policy_root is None:
+		# Preserve minimal ordinary controller fixtures and historical records.
+		# An overlap always retains the public validator's refusal and message.
+		if config.get('github', {}).get('expected_actor_id') in config.get('merge_gate', {}).get('trusted_owner_ids', []):
+			trusted_owner_ids(config)
+		if shared is not None:
+			trusted_owner_ids(config)
+		from .shared_owner_policy import _has_git_metadata
+		if accepted_policy_root is not None and _has_git_metadata(accepted_policy_root):
+			# An unset proposal may also hide the accepted automation identity.
+			# Inspect immutable default bytes only to detect that downgrade; an
+			# ordinary unset policy retains its historical validation and bytes.
+			from .shared_owner_policy import _default_ref, _git, _policy_blob
+			from .canonical import load_yaml
+			ref, _ = _default_ref(accepted_policy_root)
+			if ref is not None:
+				commit = _git(accepted_policy_root, 'rev-parse', '--verify', ref + '^{commit}').decode('ascii').strip()
+				raw = _policy_blob(accepted_policy_root, commit, '.agentic/PROJECT_CONFIG.yaml')
+				accepted = load_yaml(raw) if raw is not None else {}
+				_require(isinstance(accepted, dict) and isinstance(accepted.get('github', {}), dict) and isinstance(accepted.get('merge_gate', {}), dict), 'Shared-owner accepted default-branch policy is malformed')
+				accepted_actor = accepted.get('github', {}).get('expected_actor_id')
+				if (configured_shared_owner_actor_id(accepted) is not None or
+						type(accepted_actor) is int and accepted_actor in config.get('merge_gate', {}).get('trusted_owner_ids', [])):
+					# Full accepted-policy validation refuses the hidden setting or
+					# changed identity; this read can never enable the exception.
+					accepted_owner_evidence(accepted_policy_root, config, None)
+		return {}
+	return accepted_owner_evidence(accepted_policy_root, config, shared)
+
+
+def _controller_owner_evidence(config, actor_id, accepted_policy_root):
+	policy = _controller_owner_policy(config, accepted_policy_root)
+	return policy if policy and policy['accepted_owner_policy']['shared_owner_automation_actor_id'] == actor_id else {}
+
+
+def _retained_controller_owner_evidence(evidence, actor_id, config, root):
+	from .shared_owner_policy import validate_retained_owner_evidence
+	retained = validate_retained_owner_evidence(evidence, actor_id)
+	if retained or config is not None:
+		expected = _controller_owner_evidence(config, actor_id, root)
+		_require(retained == expected, 'Shared-owner controller policy changed or retained evidence is missing or altered')
+	return retained
+
+
+def _overlap_owner_evidence(record, config=None, root=None):
+	from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+	from .canonical import fingerprint
+	fields = {'schema_version', 'allowance_id', 'source_id', 'binding', 'approval', 'expires_at', 'provider_binding_sha256', 'allowance_sha256'}
+	approval_fields = {'actor_id', 'actor_login', 'comment_id', 'comment_node_id', 'created_at', 'body', 'body_sha256'}
+	_require(isinstance(record, dict) and set(record) in (fields, fields | OWNER_EVIDENCE_FIELDS), 'Overlap allowance record is malformed or mutated')
+	approval = record['approval']
+	_require(isinstance(approval, dict) and set(approval) in (approval_fields, approval_fields | OWNER_EVIDENCE_FIELDS), 'Overlap allowance approval is not closed')
+	evidence = _retained_controller_owner_evidence(record, approval['actor_id'], config, root)
+	other = _retained_controller_owner_evidence(approval, approval['actor_id'], config, root)
+	_require(evidence == other, 'Overlap allowance approval and record policy annotations differ')
+	if evidence:
+		_require(isinstance(record['binding'], dict) and record['binding'].get('repository_id') == str(config['github']['repository_id']), 'Shared-owner overlap repository differs from accepted owner policy')
+	_require(record['allowance_sha256'] == fingerprint('controller-overlap-allowance-record', {k: v for k, v in record.items() if k != 'allowance_sha256'}), 'Overlap allowance record is malformed or mutated')
+	return evidence
+
+
+def _replan_owner_evidence(trigger, config=None, root=None):
+	evidence = trigger.get('shared_owner_evidence', {})
+	_require(isinstance(evidence, dict), 'Replan shared-owner evidence is malformed')
+	from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+	from .canonical import fingerprint
+	_require(trigger.get('trigger_sha256') == fingerprint('controller-replan-trigger', {k: v for k, v in trigger.items() if k != 'trigger_sha256'}), 'Replan trigger digest is mismatched')
+	_require('shared_owner_evidence' not in trigger or set(evidence) == OWNER_EVIDENCE_FIELDS, 'Replan shared-owner evidence is incomplete')
+	retained = _retained_controller_owner_evidence(evidence, trigger['provider_artifact']['actor_id'], config, root)
+	if retained:
+		_require(trigger['repository_id'] == str(config['github']['repository_id']), 'Shared-owner replan repository differs from accepted owner policy')
+	return retained
+
+
+def _active_overlap_owner_evidence(allowances, config=None, root=None):
+	if not allowances:
+		return
+	from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+	policy = _controller_owner_policy(config, root) if config is not None else {}
+	_require(config is not None or root is None or not allowances, 'Rooted overlap scheduling requires reviewed owner configuration')
+	enrolled = bool(policy)
+	for allowance in allowances:
+		if isinstance(allowance, dict) and 'record' in allowance:
+			record = allowance['record']
+			evidence = _overlap_owner_evidence(record, config, root)
+			if evidence or enrolled:
+				_require(allowance.get('path') == record['binding']['path'] and allowance.get('tickets') == record['binding']['tickets'] and ('allowance_id' not in allowance or allowance['allowance_id'] == record['allowance_id']), 'Overlap scheduling scope differs from its retained owner approval')
+		else:
+			_require(not enrolled and not (isinstance(allowance, dict) and OWNER_EVIDENCE_FIELDS.intersection(allowance)), 'Shared-owner overlap scheduling requires the complete retained approval')
+
+
+def validate_replan_trigger_observation(config, request, observation, *, now, accepted_policy_root=None):
 	from .canonical import fingerprint
 	timestamp(now)
 	required_request = {'comment_id', 'repository_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'nonterminal_dispatch_ids'}
@@ -340,6 +437,10 @@ def validate_replan_trigger_observation(config, request, observation, *, now):
 	_require(isinstance(comment, dict) and set(comment) == comment_fields and comment['id'] == request['comment_id'] and isinstance(comment['node_id'], str) and comment['node_id'].strip() and type(comment['actor_id']) is int and comment['actor_id'] > 0 and isinstance(comment['actor_login'], str) and comment['actor_login'].strip() and comment['author_association'] in {'OWNER', 'MEMBER', 'COLLABORATOR'}, 'Replan trigger comment provider identity is malformed')
 	_provider_fresh(comment, now, 'Replan trigger comment')
 	_require(comment['actor_id'] in set(trusted), 'Replan trigger comment author is not a configured owner')
+	owner_policy = _controller_owner_policy(config, accepted_policy_root)
+	if owner_policy:
+		_require(request['repository_id'] == str(config['github']['repository_id']), 'Replan repository differs from accepted owner policy')
+	owner_evidence = owner_policy if owner_policy and owner_policy['accepted_owner_policy']['shared_owner_automation_actor_id'] == comment['actor_id'] else {}
 	created, updated, current = timestamp(comment['created_at']), timestamp(comment['updated_at']), timestamp(now)
 	_require(created == updated, 'Replan trigger comment was edited or mutated')
 	_require(created <= current and (current - created).total_seconds() <= OVERLAP_OBSERVATION_MAX_AGE_SECONDS, 'Replan trigger comment is stale or future-dated')
@@ -353,6 +454,9 @@ def validate_replan_trigger_observation(config, request, observation, *, now):
 	artifact['artifact_sha256'] = fingerprint('controller-replan-provider-artifact', artifact)
 	trigger_id = fingerprint('controller-replan-trigger-id', {'repository_id': request['repository_id'], 'comment_id': comment['id'], 'node_id': comment['node_id']})
 	trigger = {'schema_version': REPLAN_TRIGGER_SCHEMA_VERSION, 'source': 'github.com', 'trigger_id': trigger_id, **event, 'observed_at': now, 'provider_artifact': artifact, 'owner_policy_sha256': fingerprint('controller-replan-owner-policy', {'trusted_owner_ids': sorted(trusted)})}
+	_require(_controller_owner_policy(config, accepted_policy_root) == owner_policy, 'Shared-owner controller policy changed before replan retention')
+	if owner_evidence:
+		trigger['shared_owner_evidence'] = deepcopy(owner_evidence)
 	trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
 	return trigger
 
@@ -370,7 +474,7 @@ def _post_provider_controller_time(clock, previous):
 	_require(timestamp(observed) >= timestamp(previous), 'Controller clock moved backwards during provider observation')
 	return observed
 
-def validate_overlap_allowance_observation(config, request, observation, inventory, *, now, expected_repository_id, expected_cycle_id, allow_expired=False):
+def validate_overlap_allowance_observation(config, request, observation, inventory, *, now, expected_repository_id, expected_cycle_id, allow_expired=False, accepted_policy_root=None):
 	from .canonical import fingerprint
 	current = timestamp(now)
 	request = _allowance_request(request, expected_repository_id, expected_cycle_id)
@@ -384,6 +488,10 @@ def validate_overlap_allowance_observation(config, request, observation, invento
 	_provider_fresh(comment, now, 'Overlap allowance comment')
 	trusted = set(config['merge_gate'].get('trusted_owner_ids', []))
 	_require(comment['actor_id'] in trusted, 'Overlap allowance comment author is not a configured owner')
+	owner_policy = _controller_owner_policy(config, accepted_policy_root)
+	if owner_policy:
+		_require(request['repository_id'] == str(config['github']['repository_id']), 'Overlap repository differs from accepted owner policy')
+	owner_evidence = owner_policy if owner_policy and owner_policy['accepted_owner_policy']['shared_owner_automation_actor_id'] == comment['actor_id'] else {}
 	created = timestamp(comment['created_at'])
 	updated = timestamp(comment['updated_at'])
 	expires = timestamp(request['expires_at'])
@@ -410,6 +518,10 @@ def validate_overlap_allowance_observation(config, request, observation, invento
 	seed = {'binding': binding, 'expires_at': request['expires_at'], 'comment_body_sha256': fingerprint('overlap-comment-body', comment['body'])}
 	allowance_id = fingerprint('controller-overlap-allowance', seed)
 	record = {'schema_version': 1, 'allowance_id': allowance_id, 'source_id': source_id, 'binding': binding, 'approval': {'actor_id': comment['actor_id'], 'actor_login': comment['actor_login'], 'comment_id': comment['id'], 'comment_node_id': comment['node_id'], 'created_at': comment['created_at'], 'body': comment['body'], 'body_sha256': seed['comment_body_sha256']}, 'expires_at': request['expires_at'], 'provider_binding_sha256': fingerprint('overlap-provider-observation', observation)}
+	_require(_controller_owner_policy(config, accepted_policy_root) == owner_policy, 'Shared-owner controller policy changed before overlap retention')
+	if owner_evidence:
+		record.update(deepcopy(owner_evidence))
+		record['approval'].update(deepcopy(owner_evidence))
 	record['allowance_sha256'] = fingerprint('controller-overlap-allowance-record', record)
 	return record
 
@@ -1034,11 +1146,10 @@ class ContinuousControllerStore:
 			_require(prior is None or prior[0] == encoded, 'Controller repository/worktree binding changed; use an explicit state migration')
 			db.execute("INSERT OR IGNORE INTO controller_meta VALUES('repository_binding',?)", (encoded,))
 
-	def register_overlap_allowance(self, record, now):
-		from .canonical import fingerprint
+	def register_overlap_allowance(self, record, now, *, owner_config=None, accepted_policy_root=None):
 		timestamp(now)
-		required = {'schema_version', 'allowance_id', 'source_id', 'binding', 'approval', 'expires_at', 'provider_binding_sha256', 'allowance_sha256'}
-		_require(isinstance(record, dict) and set(record) == required and (record['schema_version'] == 1) and (record['allowance_sha256'] == fingerprint('controller-overlap-allowance-record', {key: value for key, value in record.items() if key != 'allowance_sha256'})), 'Overlap allowance record is malformed or mutated')
+		_overlap_owner_evidence(record, owner_config, accepted_policy_root)
+		_require(record['schema_version'] == 1, 'Overlap allowance record is malformed or mutated')
 		binding = record['binding']
 		_require(isinstance(binding, dict) and set(binding) == {'repository_id', 'cycle_id', 'path', 'tickets', 'pull_requests', 'heads', 'changed_files'}, 'Overlap allowance binding is not closed')
 		with self.transaction() as db:
@@ -1061,14 +1172,16 @@ class ContinuousControllerStore:
 				return None
 			return {**loads(row['record_json']), 'status': row['status']}
 
-	def recheck_overlap_allowance(self, allowance_id, record, now):
+	def recheck_overlap_allowance(self, allowance_id, record, now, *, owner_config=None, accepted_policy_root=None):
 		timestamp(now)
+		_overlap_owner_evidence(record, owner_config, accepted_policy_root)
 		with self.transaction() as db:
 			row = db.execute('SELECT status,record_json FROM controller_overlap_allowance WHERE allowance_id=?', (allowance_id,)).fetchone()
 			_require(row is not None and row['status'] == 'ACTIVE', 'Overlap allowance is not active at lane start')
 			prior = loads(row['record_json'])
 			stable = {'schema_version', 'allowance_id', 'source_id', 'binding', 'approval', 'expires_at'}
 			_require(all((prior[key] == record.get(key) for key in stable)), 'Overlap allowance live scope changed between plan and lane start')
+			_require(_overlap_owner_evidence(prior, owner_config, accepted_policy_root) == _overlap_owner_evidence(record, owner_config, accepted_policy_root), 'Overlap allowance retained policy changed at lane start')
 			_require(timestamp(now) < timestamp(record['expires_at']), 'Overlap allowance expired before lane start')
 			refreshed = deepcopy(record)
 			db.execute('UPDATE controller_overlap_allowance SET record_json=?,updated_at=? WHERE allowance_id=?', (canonical(refreshed).decode(), now, allowance_id))
@@ -1087,8 +1200,16 @@ class ContinuousControllerStore:
 				return loads(prior['record_json'])
 			binding = record['binding']
 			sequence = db.execute('SELECT COUNT(*) FROM controller_overlap_sync_gate WHERE allowance_id=?', (allowance_id,)).fetchone()[0]
-			gate_id = fingerprint('controller-overlap-sync-gate', {'allowance_id': allowance_id, 'binding': binding, 'expired_at': now, 'sequence': sequence})
+			from .shared_owner_policy import validate_retained_owner_evidence
+			actor = record['approval']['actor_id']
+			evidence = validate_retained_owner_evidence(record, actor)
+			_require(evidence == validate_retained_owner_evidence(record['approval'], actor), 'Expired overlap approval and record policy annotations differ')
+			seed = {'allowance_id': allowance_id, 'binding': binding, 'expired_at': now, 'sequence': sequence}
+			annotation = {'shared_owner_evidence': deepcopy(evidence), 'owner_actor_id': actor} if evidence else {}
+			seed.update(annotation)
+			gate_id = fingerprint('controller-overlap-sync-gate', seed)
 			gate = {'schema_version': 1, 'gate_id': gate_id, 'allowance_id': allowance_id, 'repository_id': binding['repository_id'], 'cycle_id': binding['cycle_id'], 'path': binding['path'], 'tickets': binding['tickets'], 'pull_requests': binding['pull_requests'], 'heads': binding['heads'], 'status': 'PENDING', 'expired_at': now, 'decision': None, 'execution': None, 'critic_evidence': None}
+			gate.update(annotation)
 			db.execute('INSERT INTO controller_overlap_sync_gate VALUES(?,?,?,?,?)', (gate_id, allowance_id, 'PENDING', canonical(gate).decode(), now))
 			db.execute("UPDATE controller_overlap_allowance SET status='EXPIRED',updated_at=? WHERE allowance_id=?", (now, allowance_id))
 			revision = int(self._meta(db, 'revision')) + 1
@@ -1150,15 +1271,32 @@ class ContinuousControllerStore:
 			row = db.execute('SELECT record_json FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
 			return None if row is None else loads(row['record_json'])
 
-	def _finish_overlap_sync_receipt(self, gate_id, payload, receipt, *, expected_status, not_before):
+	@staticmethod
+	def _sync_gate_owner_evidence(db, gate, owner_config, accepted_policy_root):
+		from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+		row = db.execute('SELECT record_json FROM controller_overlap_allowance WHERE allowance_id=?', (gate['allowance_id'],)).fetchone()
+		_require(row is not None, 'Overlap synchronization lost its retained owner approval')
+		source = loads(row['record_json'])
+		expected = _overlap_owner_evidence(source, owner_config, accepted_policy_root)
+		retained = gate.get('shared_owner_evidence', {})
+		_require(isinstance(retained, dict) and ('shared_owner_evidence' not in gate or set(retained) == OWNER_EVIDENCE_FIELDS), 'Overlap synchronization shared-owner evidence is incomplete')
+		_require(retained == expected and (not expected or type(gate.get('owner_actor_id')) is int and gate['owner_actor_id'] == source['approval']['actor_id']), 'Overlap synchronization policy evidence is missing or altered')
+		if expected:
+			_require(all(gate.get(key) == source['binding'][key] for key in ('repository_id', 'cycle_id', 'path', 'tickets', 'pull_requests', 'heads')), 'Overlap synchronization scope differs from its retained owner approval')
+		return retained
+
+	def _finish_overlap_sync_receipt(self, gate_id, payload, receipt, *, expected_status, not_before, owner_config=None, accepted_policy_root=None):
 		from .canonical import fingerprint
 		with self.transaction() as db:
 			row = db.execute('SELECT status,record_json FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
 			_require(row is not None and row['status'] == expected_status, 'Overlap synchronization gate changed during receipt processing')
 			gate = loads(row['record_json'])
+			annotation = self._sync_gate_owner_evidence(db, gate, owner_config, accepted_policy_root)
 			_require(gate.get('execution') == payload, 'Overlap synchronization execution identity changed before receipt processing')
 			receipt = _validated_overlap_sync_receipt(gate, payload, receipt, not_before)
 			evidence = {'gate_id': gate_id, 'allowance_id': gate['allowance_id'], 'tickets': gate['tickets'], 'pull_requests': gate['pull_requests'], 'heads': gate['heads'], 'pre_sync_heads': gate['heads'], 'post_sync_heads': receipt['post_sync_heads'], 'path': gate['path'], 'diff': receipt['diff'], 'diff_sha256': receipt['diff_sha256'], 'changed_files': receipt['changed_files'], 'executor_receipt_sha256': fingerprint('controller-overlap-sync-receipt', receipt)}
+			if annotation:
+				evidence.update(shared_owner_evidence=deepcopy(annotation), owner_actor_id=gate['owner_actor_id'])
 			gate['status'] = 'SYNCED'
 			gate['execution'] = deepcopy(receipt)
 			gate['critic_evidence'] = evidence
@@ -1167,12 +1305,13 @@ class ContinuousControllerStore:
 			db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
 			return deepcopy(gate)
 
-	def reconcile_overlap_sync_gate(self, gate_id, receipt_reader, now):
+	def reconcile_overlap_sync_gate(self, gate_id, receipt_reader, now, *, owner_config=None, accepted_policy_root=None):
 		timestamp(now)
 		with self.connection() as db:
 			row = db.execute('SELECT status,record_json,updated_at FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
 			_require(row is not None, 'Unknown overlap synchronization gate')
 			gate = loads(row['record_json'])
+			self._sync_gate_owner_evidence(db, gate, owner_config, accepted_policy_root)
 			if row['status'] in {'CLEARED', 'SYNCED', 'EXECUTED'}:
 				return gate
 			_require(row['status'] == 'UNKNOWN', 'Only an unknown overlap synchronization outcome can be reconciled')
@@ -1181,15 +1320,16 @@ class ContinuousControllerStore:
 			not_before = row['updated_at']
 		_require(callable(receipt_reader), 'Unknown overlap synchronization outcome needs a receipt-only reconciler')
 		receipt = receipt_reader(deepcopy(payload))
-		return self._finish_overlap_sync_receipt(gate_id, payload, receipt, expected_status='UNKNOWN', not_before=not_before)
+		return self._finish_overlap_sync_receipt(gate_id, payload, receipt, expected_status='UNKNOWN', not_before=not_before, owner_config=owner_config, accepted_policy_root=accepted_policy_root)
 
-	def execute_overlap_sync_gate(self, gate_id, observation, sync_writer, now):
+	def execute_overlap_sync_gate(self, gate_id, observation, sync_writer, now, *, owner_config=None, accepted_policy_root=None):
 		from .canonical import fingerprint
 		timestamp(now)
 		with self.transaction() as db:
 			row = db.execute('SELECT status,record_json FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
 			_require(row is not None, 'Unknown overlap synchronization gate')
 			gate = loads(row['record_json'])
+			self._sync_gate_owner_evidence(db, gate, owner_config, accepted_policy_root)
 			if row['status'] in {'CLEARED', 'SYNCED', 'EXECUTED'}:
 				return gate
 			_require(row['status'] == 'PENDING', 'Overlap synchronization executor outcome is unresolved')
@@ -1218,14 +1358,14 @@ class ContinuousControllerStore:
 				db.execute("UPDATE controller_overlap_sync_gate SET status='UNKNOWN',record_json=?,updated_at=? WHERE gate_id=?", (canonical(gate).decode(), now, gate_id))
 			raise
 		try:
-			return self._finish_overlap_sync_receipt(gate_id, payload, receipt, expected_status='IN_FLIGHT', not_before=now)
+			return self._finish_overlap_sync_receipt(gate_id, payload, receipt, expected_status='IN_FLIGHT', not_before=now, owner_config=owner_config, accepted_policy_root=accepted_policy_root)
 		except Exception:
 			with self.transaction() as db:
 				gate['status'] = 'UNKNOWN'
 				db.execute("UPDATE controller_overlap_sync_gate SET status='UNKNOWN',record_json=?,updated_at=? WHERE gate_id=? AND status='IN_FLIGHT'", (canonical(gate).decode(), now, gate_id))
 			raise
 
-	def confirm_overlap_sync_inventory(self, gate_id, inventory, *, inventory_sha256, observed_at, provider_observation):
+	def confirm_overlap_sync_inventory(self, gate_id, inventory, *, inventory_sha256, observed_at, provider_observation, owner_config=None, accepted_policy_root=None):
 		timestamp(observed_at)
 		_require(isinstance(inventory_sha256, str) and re.fullmatch('[0-9a-f]{64}', inventory_sha256) is not None, 'Post-sync inventory digest is malformed')
 		_require(isinstance(inventory, list), 'Post-sync inventory must be a complete ticket list')
@@ -1236,6 +1376,7 @@ class ContinuousControllerStore:
 			row = db.execute('SELECT status,record_json FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
 			_require(row is not None, 'Unknown overlap synchronization gate')
 			gate = loads(row['record_json'])
+			self._sync_gate_owner_evidence(db, gate, owner_config, accepted_policy_root)
 			_require(row['status'] in {'SYNCED', 'EXECUTED'}, 'Overlap synchronization has no completed executor receipt')
 			evidence = gate.get('critic_evidence')
 			_require(isinstance(evidence, dict) and isinstance(evidence.get('post_sync_heads'), list), 'Overlap synchronization post-sync heads are unavailable')
@@ -1317,11 +1458,11 @@ class ContinuousControllerStore:
 		_require(restore['state'] in STREAM_STATES and restore['state'] != 'COMPLETE' and (restore['ticket'] == payload['ticket']) and (restore['exact_tuple'] == payload['exact_tuple']), 'UNKNOWN dispatch stream restoration state is mismatched')
 		db.execute('UPDATE stream_status SET state=?,ticket=?,actor=?,reason=?,next_action=?,resume_trigger=?,exact_tuple=?,activity=?,verification_gate=?,reviewer_completion=?,open_findings=?,jira_status=?,paths=?,updated_at=? WHERE stream_id=?', (restore['state'], restore['ticket'], restore['actor'], restore['reason'], restore['next_action'], restore['resume_trigger'], restore['exact_tuple'], restore['activity'], restore['verification_gate'], canonical(_reviewer_counts(restore['reviewer_completion'])).decode(), restore['open_findings'], restore['jira_status'], canonical(restore['paths']).decode(), now, payload['stream']))
 
-	def seal_round_boundary_replan(self, trigger, now):
+	def seal_round_boundary_replan(self, trigger, now, *, owner_config=None, accepted_policy_root=None):
 		from .canonical import fingerprint
 		timestamp(now)
 		required = {'schema_version', 'source', 'trigger_id', 'repository_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'round_id', 'observed_at', 'nonterminal_dispatch_ids', 'provider_artifact', 'owner_policy_sha256', 'trigger_sha256'}
-		_require(isinstance(trigger, dict) and set(trigger) == required, 'Replan trigger is partial or malformed')
+		_require(isinstance(trigger, dict) and set(trigger) in (required, required | {'shared_owner_evidence'}), 'Replan trigger is partial or malformed')
 		_require(trigger['schema_version'] == REPLAN_TRIGGER_SCHEMA_VERSION and trigger['source'] == 'github.com', 'Replan trigger is not an authenticated provider artifact')
 		for key in ('trigger_id', 'repository_id', 'round_id'):
 			_require(isinstance(trigger[key], str) and trigger[key].strip() == trigger[key] and trigger[key], 'Replan trigger identity is invalid')
@@ -1340,6 +1481,7 @@ class ContinuousControllerStore:
 		_require(re.fullmatch('[0-9a-f]{64}', trigger['owner_policy_sha256'] or '') is not None, 'Replan trigger owner policy binding is malformed')
 		seed = {key: deepcopy(value) for key, value in trigger.items() if key != 'trigger_sha256'}
 		_require(trigger['trigger_sha256'] == fingerprint('controller-replan-trigger', seed), 'Replan trigger digest is mismatched')
+		_replan_owner_evidence(trigger, owner_config, accepted_policy_root)
 		with self.transaction() as db:
 			binding = db.execute("SELECT value FROM controller_meta WHERE key='repository_binding'").fetchone()
 			if binding is not None:
@@ -1366,7 +1508,7 @@ class ContinuousControllerStore:
 			return {'prior_inventory_sha256': None if prior is None else prior[0], 'nonterminal': rows}
 
 	@staticmethod
-	def _round_boundary_seal(db, tickets, inventory_sha256):
+	def _round_boundary_seal(db, tickets, inventory_sha256, owner_config=None, accepted_policy_root=None):
 		inventory = {item['ticket']: item for item in tickets}
 		nonterminal = list(db.execute("SELECT dispatch_id,ticket,stream_id,exact_tuple,status FROM controller_dispatch WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN','LAUNCHED') ORDER BY dispatch_id"))
 		prior_inventory = db.execute("SELECT value FROM controller_meta WHERE key='last_inventory_sha256'").fetchone()
@@ -1381,10 +1523,12 @@ class ContinuousControllerStore:
 		for row in db.execute("SELECT seal_id,record_json FROM controller_replan_seal WHERE status='SEALED' ORDER BY rowid"):
 			record = loads(row['record_json'])
 			trigger = record['trigger']
+			_replan_owner_evidence(trigger, owner_config, accepted_policy_root)
 			if trigger['next_inventory_sha256'] == inventory_sha256 and trigger['nonterminal_dispatch_ids'] == ids and record.get('nonterminal') == current:
 				return (True, row['seal_id'], False)
 		for row in db.execute("SELECT seal_id,record_json FROM controller_replan_seal WHERE status='CONSUMED' ORDER BY rowid DESC"):
 			record = loads(row['record_json'])
+			_replan_owner_evidence(record['trigger'], owner_config, accepted_policy_root)
 			admission = record.get('admission')
 			if not isinstance(admission, dict) or admission.get('inventory_sha256') != inventory_sha256:
 				continue
@@ -1396,14 +1540,15 @@ class ContinuousControllerStore:
 				return (True, row['seal_id'], True)
 		return (True, None, False)
 
-	def schedule(self, inventory, now, host_capacity, overlap_allowances=(), *, reservations=(), inventory_sha256=None):
+	def schedule(self, inventory, now, host_capacity, overlap_allowances=(), *, reservations=(), inventory_sha256=None, owner_config=None, accepted_policy_root=None):
 		timestamp(now)
 		_require(type(host_capacity) is int and host_capacity >= 0, 'Observed host capacity must be nonnegative')
 		tickets = [_ticket(item) for item in inventory]
 		_require(len(tickets) == len({item['ticket'] for item in tickets}), 'Scoped inventory has duplicate tickets')
 		validated_reservations = [_reservation_record(item) for item in reservations]
+		_active_overlap_owner_evidence(overlap_allowances, owner_config, accepted_policy_root)
 		with self.transaction() as db:
-			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256)
+			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256, owner_config, accepted_policy_root)
 			if boundary and seal_id is None:
 				return self._snapshot(db)
 			if admitted:
@@ -1421,10 +1566,10 @@ class ContinuousControllerStore:
 				db.execute("INSERT OR REPLACE INTO controller_meta VALUES('last_inventory_sha256',?)", (inventory_sha256,))
 			return self._snapshot(db)
 
-	def round_boundary_ready(self, inventory, inventory_sha256):
+	def round_boundary_ready(self, inventory, inventory_sha256, *, owner_config=None, accepted_policy_root=None):
 		tickets = [_ticket(item) for item in inventory]
 		with self.connection() as db:
-			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256)
+			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256, owner_config, accepted_policy_root)
 			return (not boundary) or seal_id is not None or admitted
 
 	def _schedule(self, db, tickets, now, host_capacity, overlap_allowances=(), reservations=()):
@@ -1511,16 +1656,17 @@ class ContinuousControllerStore:
 			else:
 				self._update_stream(db, row['stream_id'], 'COMPLETE', None, now)
 
-	def finish_and_refill(self, stream_id, ticket, inventory, now, host_capacity, overlap_allowances=(), *, reservations=(), inventory_sha256=None):
+	def finish_and_refill(self, stream_id, ticket, inventory, now, host_capacity, overlap_allowances=(), *, reservations=(), inventory_sha256=None, owner_config=None, accepted_policy_root=None):
 		timestamp(now)
 		tickets = [_ticket(item) for item in inventory]
+		_active_overlap_owner_evidence(overlap_allowances, owner_config, accepted_policy_root)
 		repeated = next((item for item in tickets if item['ticket'] == ticket), None)
 		_require(repeated is None or repeated['disposition'] == 'COMPLETE', 'Completed ticket remains dispatch-eligible; record its terminal lifecycle state before refill')
 		with self.transaction() as db:
 			row = db.execute('SELECT * FROM stream_status WHERE stream_id=?', (stream_id,)).fetchone()
 			_require(row is not None and row['state'] == 'WORKING' and (row['ticket'] == ticket), "Completed run does not match the stream's active ticket")
 			self._update_stream(db, stream_id, 'COMPLETE', None, now)
-			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256)
+			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256, owner_config, accepted_policy_root)
 			_require(not boundary or seal_id is not None, 'Round-boundary refill requires an authenticated durable replan seal')
 			_require(not admitted, 'Round-boundary refill admission was already consumed')
 			self._schedule(db, tickets, now, host_capacity, overlap_allowances, [_reservation_record(item) for item in reservations])
@@ -1544,8 +1690,14 @@ class ContinuousControllerStore:
 		with self.connection() as db:
 			return self._snapshot(db)
 
-	def digest(self, now, *, calendar=None):
+	def digest(self, now, *, calendar=None, owner_config=None, accepted_policy_root=None):
 		current = timestamp(now)
+		warnings = []
+		from .shared_owner_policy import configured_shared_owner_actor_id
+		if owner_config is not None and configured_shared_owner_actor_id(owner_config) is not None:
+			evidence = _controller_owner_evidence(owner_config, owner_config.get("github", {}).get("expected_actor_id"), accepted_policy_root)
+			if evidence:
+				warnings = evidence["accepted_owner_policy"]["warnings"]
 		with self.transaction() as db:
 			pending = db.execute("SELECT payload_json FROM controller_outbox WHERE acknowledged_at IS NULL AND kind<>'REPORT' ORDER BY rowid LIMIT 1").fetchone()
 			if pending is not None:
@@ -1574,6 +1726,8 @@ class ContinuousControllerStore:
 			kind = 'REGULAR' if regular_due else 'CHANGE'
 			from .canonical import fingerprint
 			body = {'schema_version': 3, 'observed_at': now, 'kind': kind, 'cadence_seconds': cadence, 'all_complete': all_complete, 'streams': streams, 'unresolved_dispatches': unresolved_dispatches, 'review_batching': reviews}
+			if warnings:
+				body['owner_policy_warnings'] = deepcopy(warnings)
 			delivery_id = fingerprint('controller-status-digest', {'revision': revision, **body})
 			body['delivery_id'] = delivery_id
 			db.execute('INSERT INTO controller_outbox VALUES(?,?,?,?,?,NULL)', (delivery_id, kind, revision, now, canonical(body).decode()))
@@ -1626,12 +1780,13 @@ class ContinuousControllerStore:
 			self._create_dispatch_intents(db, now)
 			return [dict(row) | {'payload': loads(row['payload_json'])} for row in db.execute("SELECT * FROM controller_dispatch WHERE status IN ('PENDING','UNKNOWN','LAUNCHED') ORDER BY stream_id,dispatch_id")]
 
-	def bind_dispatch_waivers(self, allowance_records, now):
+	def bind_dispatch_waivers(self, allowance_records, now, *, owner_config=None, accepted_policy_root=None):
 		from .canonical import fingerprint
 		timestamp(now)
 		_require(isinstance(allowance_records, list), 'Lane-start waiver binding needs validated allowance records')
 		by_ticket = {}
 		for record in allowance_records:
+			_overlap_owner_evidence(record, owner_config, accepted_policy_root)
 			_require(isinstance(record, dict) and record.get('schema_version') == 1 and isinstance(record.get('binding'), dict), 'Lane-start waiver source is malformed')
 			for ticket in record['binding'].get('tickets', []):
 				by_ticket.setdefault(ticket, []).append(record)
@@ -1645,12 +1800,16 @@ class ContinuousControllerStore:
 						continue
 					waiver_binding = {'dispatch_id': row['dispatch_id'], 'ticket': payload['ticket'], 'stream': payload['stream'], 'exact_tuple': payload['exact_tuple'], 'allowance_id': allowance['allowance_id'], 'path': binding['path'], 'tickets': binding['tickets']}
 					waiver = {'schema_version': 1, 'binding': waiver_binding, 'persisted_at': now, 'observation_sha256': allowance['provider_binding_sha256']}
+					evidence = _overlap_owner_evidence(allowance, owner_config, accepted_policy_root)
+					if evidence:
+						waiver['shared_owner_evidence'] = deepcopy(evidence)
+						waiver['owner_actor_id'] = allowance['approval']['actor_id']
 					waiver['waiver_sha256'] = fingerprint('controller-dispatch-waiver', waiver)
 					waiver_id = fingerprint('controller-dispatch-waiver-id', waiver_binding)
 					prior = db.execute('SELECT record_json FROM controller_dispatch_waiver WHERE waiver_id=?', (waiver_id,)).fetchone()
 					if prior is not None:
 						retained = loads(prior['record_json'])
-						_require(retained.get('binding') == waiver_binding, 'Dispatch waiver scope changed before launch')
+						_require(retained.get('binding') == waiver_binding and retained.get('shared_owner_evidence', {}) == evidence, 'Dispatch waiver scope changed before launch')
 						waiver = retained
 					else:
 						db.execute('INSERT INTO controller_dispatch_waiver VALUES(?,?,?,?,?)', (waiver_id, row['dispatch_id'], allowance['allowance_id'], canonical(waiver).decode(), now))
@@ -1677,14 +1836,34 @@ class ContinuousControllerStore:
 			db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
 			return dict(row) | {'status': 'CANCELLED', 'payload': payload}
 
-	def begin_dispatch(self, dispatch_id, now):
+	def begin_dispatch(self, dispatch_id, now, *, owner_config=None, accepted_policy_root=None):
 		timestamp(now)
 		with self.transaction() as db:
 			row = db.execute('SELECT * FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
 			_require(row is not None and row['status'] == 'PENDING', 'Dispatch is not pending')
 			payload = loads(row['payload_json'])
 			_require(payload.get('dispatch_schema_version') == DISPATCH_SCHEMA_VERSION, 'Dispatch payload schema version is not current')
-			waivers = sorted(loads(item['record_json'])['waiver_sha256'] for item in db.execute('SELECT record_json FROM controller_dispatch_waiver WHERE dispatch_id=? ORDER BY allowance_id', (dispatch_id,)))
+			waiver_records = [loads(item['record_json']) for item in db.execute('SELECT record_json FROM controller_dispatch_waiver WHERE dispatch_id=? ORDER BY allowance_id', (dispatch_id,))]
+			from .canonical import fingerprint
+			for waiver in waiver_records:
+				_require(waiver['waiver_sha256'] == fingerprint('controller-dispatch-waiver', {k: v for k, v in waiver.items() if k != 'waiver_sha256'}), 'Dispatch waiver digest is mismatched')
+				if 'shared_owner_evidence' in waiver or 'owner_actor_id' in waiver:
+					from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+					_require(isinstance(waiver.get('shared_owner_evidence'), dict) and set(waiver['shared_owner_evidence']) == OWNER_EVIDENCE_FIELDS, 'Dispatch waiver shared-owner evidence is incomplete')
+					_retained_controller_owner_evidence(waiver.get('shared_owner_evidence', {}), waiver.get('owner_actor_id'), owner_config, accepted_policy_root)
+					binding = waiver['binding']
+					source_row = db.execute('SELECT record_json FROM controller_overlap_allowance WHERE allowance_id=?', (binding['allowance_id'],)).fetchone()
+					_require(source_row is not None, 'Dispatch waiver lost its retained owner approval')
+					source = loads(source_row['record_json'])
+					_require(_overlap_owner_evidence(source, owner_config, accepted_policy_root) == waiver['shared_owner_evidence'] and all(binding.get(key) == source['binding'][key] for key in ('path', 'tickets')) and all(binding.get(key) == payload[key] for key in ('dispatch_id', 'ticket', 'stream', 'exact_tuple')), 'Dispatch waiver scope differs from its retained owner approval')
+			for evidence in payload.get('overlap_sync_evidence', []):
+				gate_row = db.execute('SELECT record_json FROM controller_overlap_sync_gate WHERE gate_id=?', (evidence.get('gate_id'),)).fetchone()
+				_require(gate_row is not None, 'Critic dispatch lost its retained overlap synchronization gate')
+				gate = loads(gate_row['record_json'])
+				expected = self._sync_gate_owner_evidence(db, gate, owner_config, accepted_policy_root)
+				_require(evidence.get('shared_owner_evidence', {}) == expected and (not expected or type(evidence.get('owner_actor_id')) is int and evidence['owner_actor_id'] == gate['owner_actor_id']), 'Critic dispatch overlap policy evidence is missing or altered')
+				_require(not expected or evidence == gate.get('critic_evidence'), 'Critic dispatch differs from its retained overlap synchronization evidence')
+			waivers = sorted(item['waiver_sha256'] for item in waiver_records)
 			_require(payload.get('lane_start_waivers') == waivers, 'Dispatch lane-start waiver binding is missing or mismatched')
 			_require('begun_at' not in payload, 'Pending dispatch already has a begin time')
 			payload['begun_at'] = now
@@ -3628,8 +3807,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		request = {**replan_request, 'repository_id': inventory_binding['repository_id'], 'prior_inventory_sha256': context['prior_inventory_sha256'], 'next_inventory_sha256': observation['inventory_sha256'], 'nonterminal_dispatch_ids': [item['dispatch_id'] for item in context['nonterminal']]}
 		raw_trigger = observe_replan_trigger(deepcopy(request))
 		trigger_now = post_provider_time()
-		trigger = validate_replan_trigger_observation(publication_config, request, raw_trigger, now=trigger_now)
-		store.seal_round_boundary_replan(trigger, trigger_now)
+		trigger = validate_replan_trigger_observation(publication_config, request, raw_trigger, now=trigger_now, accepted_policy_root=policy_root)
+		store.seal_round_boundary_replan(trigger, trigger_now, owner_config=publication_config, accepted_policy_root=policy_root)
 	from .publication_readiness import require_publication_readiness
 	publication_reports, errors = ({}, [])
 	allowance_plans, allowance_audit, allowance_blocked_tickets = ([], [], set())
@@ -3645,8 +3824,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			request = _allowance_request(raw_request, inventory_binding['repository_id'], cycle_id)
 			plan_observation = observe_overlap_allowance(deepcopy(request), 'PLAN')
 			plan_now = post_provider_time()
-			record = validate_overlap_allowance_observation(publication_config, request, plan_observation, tickets, now=plan_now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id, allow_expired=True)
-			store.register_overlap_allowance(record, plan_now)
+			record = validate_overlap_allowance_observation(publication_config, request, plan_observation, tickets, now=plan_now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id, allow_expired=True, accepted_policy_root=policy_root)
+			store.register_overlap_allowance(record, plan_now, owner_config=publication_config, accepted_policy_root=policy_root)
 			if timestamp(plan_now) >= timestamp(record['expires_at']):
 				gate = store.expire_overlap_allowance(record['allowance_id'], plan_now)
 				allowance_audit.append({'allowance_id': record['allowance_id'], 'phase': 'EXPIRED', 'status': gate['status'], 'gate_id': gate['gate_id']})
@@ -3669,7 +3848,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		if gate['status'] == 'UNKNOWN':
 			try:
 				_require(callable(reconcile_overlap_sync), 'Unknown overlap synchronization outcome needs a receipt-only reconciler')
-				reconciled = store.reconcile_overlap_sync_gate(gate['gate_id'], reconcile_overlap_sync, now)
+				reconciled = store.reconcile_overlap_sync_gate(gate['gate_id'], reconcile_overlap_sync, now, owner_config=publication_config, accepted_policy_root=policy_root)
 				allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_RECEIPT_RECONCILIATION', 'status': reconciled['status'], 'gate_id': gate['gate_id']})
 				if reconciled['status'] == 'SYNCED':
 					newly_synced.append(reconciled)
@@ -3704,7 +3883,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			_require(callable(observe_overlap_conflict), 'Expired overlap allowance needs a conflict observer')
 			decision = observe_overlap_conflict(deepcopy(gate))
 			decision_now = post_provider_time()
-			decided = store.execute_overlap_sync_gate(gate['gate_id'], decision, sync_writer, decision_now)
+			decided = store.execute_overlap_sync_gate(gate['gate_id'], decision, sync_writer, decision_now, owner_config=publication_config, accepted_policy_root=policy_root)
 			allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_DECISION', 'status': decided['status'], 'gate_id': gate['gate_id']})
 			if decided['status'] == 'SYNCED':
 				newly_synced.append(decided)
@@ -3720,7 +3899,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			_require(callable(observe_overlap_sync_inventory), 'Post-sync inventory requires a fresh provider PR-head observer')
 			provider_heads = observe_overlap_sync_inventory(deepcopy(gate))
 			provider_heads_now = post_provider_time()
-			completed = store.confirm_overlap_sync_inventory(gate['gate_id'], tickets, inventory_sha256=observation['inventory_sha256'], observed_at=provider_heads_now, provider_observation=provider_heads)
+			completed = store.confirm_overlap_sync_inventory(gate['gate_id'], tickets, inventory_sha256=observation['inventory_sha256'], observed_at=provider_heads_now, provider_observation=provider_heads, owner_config=publication_config, accepted_policy_root=policy_root)
 			allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'POST_SYNC_INVENTORY', 'status': completed['status'], 'gate_id': gate['gate_id']})
 		except Exception as exc:
 			allowance_blocked_tickets.update(gate['tickets'])
@@ -3738,7 +3917,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 				_require(callable(observe_overlap_sync_inventory), 'Post-sync inventory requires a fresh provider PR-head observer')
 				provider_heads = observe_overlap_sync_inventory(deepcopy(gate))
 				provider_heads_now = post_provider_time()
-				completed = store.confirm_overlap_sync_inventory(gate['gate_id'], tickets, inventory_sha256=observation['inventory_sha256'], observed_at=provider_heads_now, provider_observation=provider_heads)
+				completed = store.confirm_overlap_sync_inventory(gate['gate_id'], tickets, inventory_sha256=observation['inventory_sha256'], observed_at=provider_heads_now, provider_observation=provider_heads, owner_config=publication_config, accepted_policy_root=policy_root)
 				allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'POST_SYNC_INVENTORY', 'status': completed['status'], 'gate_id': gate['gate_id']})
 		except Exception as exc:
 			for gate in newly_synced:
@@ -3759,7 +3938,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
 			errors.append({'operation': 'overlap_allowance_inventory', 'state': 'BLOCKED', 'reason': reason})
 	# Preserve the boundary presented by the fresh inventory before policy refusals.
-	cancellation_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
+	cancellation_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'], owner_config=publication_config, accepted_policy_root=policy_root)
 	for index, item in enumerate(tickets):
 		if item['disposition'] != 'ELIGIBLE':
 			continue
@@ -3786,8 +3965,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		try:
 			lane_observation = observe_overlap_allowance(deepcopy(request), 'LANE_START')
 			lane_now = post_provider_time()
-			current = validate_overlap_allowance_observation(publication_config, request, lane_observation, tickets, now=lane_now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id)
-			store.recheck_overlap_allowance(planned['allowance_id'], current, lane_now)
+			current = validate_overlap_allowance_observation(publication_config, request, lane_observation, tickets, now=lane_now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id, accepted_policy_root=policy_root)
+			store.recheck_overlap_allowance(planned['allowance_id'], current, lane_now, owner_config=publication_config, accepted_policy_root=policy_root)
 			active_allowances.append({'allowance_id': current['allowance_id'], 'path': current['binding']['path'], 'tickets': current['binding']['tickets'], 'record': current})
 			allowance_audit.append({'allowance_id': current['allowance_id'], 'phase': 'LANE_START', 'status': 'ACTIVE'})
 		except Exception as exc:
@@ -3803,7 +3982,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	if not budget_settings['enforcement_enabled']:
 		tickets = [{**item, 'budget_available': True} for item in tickets]
 	ticket_by_id = {item['ticket']: item for item in tickets}
-	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
+	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'], owner_config=publication_config, accepted_policy_root=policy_root)
 	_require({item['key'] for item in backlog} == {item['ticket'] for item in tickets}, 'Authenticated backlog ticket keys differ from dispatch inventory')
 	backlog_by_key = {item['key']: item for item in backlog}
 	for item in tickets:
@@ -3824,6 +4003,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	def verify_planning_allowance(record, binding):
 		_require(binding == overlap_binding and record in planning_allowances,
 			'Planning allowance was not authenticated by this controller cycle')
+		_overlap_owner_evidence(record, publication_config, policy_root)
 		return deepcopy(record)
 	plan = store.plan_production_cycle(planning_state_store, tickets, planning_config,
 		backlog=backlog, events=event_snapshot['events'], verify_owner_source=verify_planning_owner,
@@ -3842,7 +4022,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 				tickets[index] = {**item, 'priority': priority[item['ticket']]}
 			elif item['disposition'] == 'ELIGIBLE':
 				tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': 'Authenticated durable plan did not admit this ticket'}
-	streams = (store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
+	streams = (store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'], owner_config=publication_config, accepted_policy_root=policy_root)
 		if plan is not None else store.snapshot())
 	# Evaluate and consume any authenticated boundary seal before cancellation.
 	# A closed boundary retains pending intents across restarts.
@@ -3855,7 +4035,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	operations = []
 	if round_boundary_ready:
 		store.prepare_dispatches(now)
-		store.bind_dispatch_waivers([item['record'] for item in active_allowances], now)
+		store.bind_dispatch_waivers([item['record'] for item in active_allowances], now, owner_config=publication_config, accepted_policy_root=policy_root)
 		operations = store.prepare_dispatches(now)
 	else:
 		# A closed round boundary still permits read-only observation of uncertain launches.
@@ -3904,7 +4084,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 					store.cancel_pending_dispatch(dispatch_id, now, reason)
 					errors.append({'operation': 'dispatch', 'dispatch_id': dispatch_id, 'state': 'REFUSED', 'reason': reason})
 					continue
-				payload = store.begin_dispatch(dispatch_id, now)
+				payload = store.begin_dispatch(dispatch_id, now, owner_config=publication_config, accepted_policy_root=policy_root)
 				role = payload.get('role')
 				lifecycle_stage = payload.get('lifecycle_stage')
 				if role is None or lifecycle_stage is None:
@@ -3924,7 +4104,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 			except Exception:
 				pass
 			errors.append({'operation': 'dispatch', 'dispatch_id': dispatch_id, 'state': 'UNKNOWN', 'reason': type(exc).__name__})
-	digest = store.digest(now, calendar=calendar)
+	digest = store.digest(now, calendar=calendar, owner_config=publication_config, accepted_policy_root=policy_root)
 	delivery = None
 	if digest is not None:
 		try:
