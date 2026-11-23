@@ -738,6 +738,15 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
     if missing_runtime:
         result['next_command'] = result['next_action']
     result['warnings'] = runtime_backup_warnings(root)
+    from ..shared_owner_policy import shared_owner_warnings
+    try:
+        with Tree(root) as tree:
+            warning_config = load_yaml(tree.read(CONFIG))
+        result['warnings'].extend(item['code'] + ': ' + item['message']
+                                  for item in shared_owner_warnings(warning_config))
+    except (ValidationError, OSError, ValueError, KeyError, TypeError, UnicodeError):
+        # Keep diagnostics available when integrity or configuration refuses.
+        pass
     result['activation'] = activation_summary(result)
     return result
 

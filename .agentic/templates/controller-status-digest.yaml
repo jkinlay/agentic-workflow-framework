@@ -39,6 +39,13 @@
         "jira_status": "UNFILLED",
         "updated_at": "1970-01-01T00:00:00Z"
       }
+    ],
+    "owner_policy_warnings": [
+      {
+        "path": "$.merge_gate.shared_owner_automation_actor_id",
+        "code": "SHARED_OWNER_AUTOMATION_ACCOUNT",
+        "message": "UNFILLED"
+      }
     ]
   }
 }

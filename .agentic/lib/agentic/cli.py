@@ -272,8 +272,17 @@ def main(argv=None, default_root=None):
     handoff_parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown")
     handoff_parser.add_argument("--output", type=Path, help="Also create this new JSON file; never overwrites")
     args = parser.parse_args(argv)
+    diagnostic_warnings = []
     try:
         root = args.root.absolute()
+        if args.command in {'verify-installation', 'verify-authorization', 'validate-config'}:
+            from .shared_owner_policy import shared_owner_warnings
+            try:
+                diagnostic_warnings = shared_owner_warnings(load(
+                    getattr(args, 'config', None) or root / '.agentic/PROJECT_CONFIG.yaml'))
+            except (ValidationError, OSError, ValueError):
+                # Reporting cannot replace the command's existing diagnostics.
+                pass
         if args.command == 'reporting-status':
             from .operating import read_operating
             from .reporting.observations import inspect_reporting
@@ -644,6 +653,9 @@ def main(argv=None, default_root=None):
                     output = verify_record(load(args.record), load(args.request), load(args.gate), config, contracts, args.now or now_text())
                 else:
                     raise ValidationError("Unsupported command")
+        if diagnostic_warnings:
+            warnings = output.setdefault('warnings', [])
+            warnings.extend(item for item in diagnostic_warnings if item not in warnings)
         emit_json(output)
         return 0
     except (ValidationError, OSError, ValueError, KeyError) as exc:
@@ -657,5 +669,7 @@ def main(argv=None, default_root=None):
         else:
             output = {"status": "REJECTED", "reason": render_bounded_diagnostic(
                 str(exc), code="DIAGNOSTIC_INVALID"), "execution_authority": False}
+        if diagnostic_warnings:
+            output['warnings'] = diagnostic_warnings
         emit_json(output, stream=sys.stderr)
         return 2

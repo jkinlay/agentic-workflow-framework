@@ -100,20 +100,23 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
 
     The project root is supplied by the trusted host, never by an owner record.
     No observation object or ref can be supplied in place of immutable reads.
-    A null/absent automation account retains legacy authority without new Git
+    A null/absent opt-out retains legacy authority without new Git
     prerequisites and cannot acquire shared-account evidence. An observable
-    accepted account still detects a hidden proposal. Numeric account paths
-    require production policy, except explicitly synthetic unset-setting reports.
+    accepted shared account still detects a hidden proposal. An enabled opt-out
+    requires production policy, including for synthetic reports.
     Source authentication and replay checks remain the consumer's.
     """
     # Intake's documented process-local assignment map is not reviewed policy.
     # Strip only that context; every reviewed configuration byte still binds.
     config = {key: value for key, value in config.items() if key != "_awf_runtime"}
     shared = configured_shared_owner_actor_id(config)
-    if shared is None and config.get("github", {}).get("expected_actor_id") is None:
-        # No configured automation account can exercise the exception. Preserve
-        # legacy owner authority without requiring a repository or origin/HEAD.
-        # An observable accepted account must still expose a hidden proposal.
+    if shared is None:
+        if config.get("github", {}).get("expected_actor_id") in config.get("merge_gate", {}).get("trusted_owner_ids", []):
+            from .authorization import trusted_owner_ids
+            trusted_owner_ids(config)
+        # An unset opt-out adds no Git prerequisite to legacy owner authority.
+        # This optional downgrade probe can refuse a hidden accepted exception,
+        # but can never enable one or make an unavailable Git read mandatory.
         if root is None:
             return {}
         try:
@@ -123,25 +126,17 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
             raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
         except ValidationError:
-            # This optional downgrade probe cannot add a Git-read prerequisite
-            # to legacy null-account authority or enable the shared exception.
             return {}
         accepted = load_yaml(raw) if raw is not None else {}
         if (isinstance(accepted, dict) and
-                accepted.get("github", {}).get("expected_actor_id") is None and
-                configured_shared_owner_actor_id(accepted) is None):
+                configured_shared_owner_actor_id(accepted) is None and
+                (accepted.get("github", {}).get("expected_actor_id") ==
+                 config.get("github", {}).get("expected_actor_id") or
+                 accepted.get("github", {}).get("expected_actor_id") not in
+                 config.get("merge_gate", {}).get("trusted_owner_ids", []))):
             return {}
-    if shared is None:
-        if config.get("github", {}).get("expected_actor_id") in config.get("merge_gate", {}).get("trusted_owner_ids", []):
-            from .authorization import trusted_owner_ids
-            trusted_owner_ids(config)
     if root is None:
-        if shared is None and synthetic:
-            return {}
         raise ValidationError("Owner records require an accepted default-branch policy observation")
-    if shared is None and synthetic:
-        if not _has_git_metadata(root) or _default_ref(root)[0] is None:
-            return {}
     from pathlib import Path
     from .contracts import Contracts
     from .lifecycle import definition

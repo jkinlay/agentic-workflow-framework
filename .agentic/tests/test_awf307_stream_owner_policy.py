@@ -225,7 +225,8 @@ class StreamOwnerPolicyTests(unittest.TestCase):
                 self.accepted = deepcopy(self.config)
                 self.blobs[".agentic/PROJECT_CONFIG.yaml"] = canonical(self.accepted)
                 with self.policy_reads(), self.assertRaisesRegex(
-                        ValidationError, "inventory.*accepted.*repository"):
+                        ValidationError, "^Existing plan belongs to a different project/schema$"
+                        if shared is None else "inventory.*accepted.*repository"):
                     self.plan()
 
     def test_null_proposal_cannot_hide_default_branch_shared_policy(self):
@@ -239,14 +240,27 @@ class StreamOwnerPolicyTests(unittest.TestCase):
                         ValidationError, "accepted policy digest changed"):
                     self.plan()
 
-    def test_real_inventory_needs_policy_even_when_proposed_setting_is_null(self):
+    def test_real_inventory_null_setting_preserves_legacy_owner_reassignment(self):
         self.config["merge_gate"][KEY] = None
         self.config["github"]["expected_actor_id"] = 1003
         self.value["inventory"]["source"] = "jira_snapshot"
         self.raw = canonical(self.value)
         self.before = plan_inventory(self.raw, sha256(self.raw), NOW)
-        with self.assertRaisesRegex(ValidationError, "accepted default-branch policy observation"):
-            self.plan(rooted=False)
+        result = self.plan(rooted=False)
+        self.assertEqual(result["tickets"]["DEMO-31"]["stream"], "B")
+        self.assertEqual(self.owner_event(result), {
+            "ticket_id": "DEMO-31", "who": 1002, "when": NOW,
+            "why": "Synthetic owner stream decision", "old": "C", "new": "B",
+            "kind": "owner_reassignment",
+            "previous_assignment_id": "7f3cd430-468a-5b42-a07a-2f23078b1318",
+            "source_id": "github_pr_comment:48",
+            "intake_assignment_id": "7f3cd430-468a-5b42-a07a-2f23078b1318",
+            "previous_stream_assignment_id": "d9e1c964fbee8076aa4b60993d7ec7bda46909664afbc821b4db683df452dfb7",
+            "owner_source_sha256": "4f691a7e83ab5c39c3c0f56560b3997d5f782dcccf5aaed897aeedf38cfa9d8c",
+            "assignment_id": "bf380e916d40eac849899fc9be3487c5fac9080d80e7f8446ee4deacf511f38e",
+        })
+        retained = self.plan(previous=result, directives=[], rooted=False)
+        self.assertEqual(retained["stream_assignment_history"], result["stream_assignment_history"])
 
     def test_project_writer_refuses_hidden_setting_without_changing_plan(self):
         options = dict(allow_synthetic=True, governance=self.config,

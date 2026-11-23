@@ -691,6 +691,9 @@ def catalog(*, include_ticket_plan=True):
              "then": {"properties": {"streams": {"contains": {"properties": {"state": {"not": const("COMPLETE")}}}}}}}])
     controller_status_digest["required"].remove("unresolved_dispatches")
     controller_status_digest["required"].remove("review_batching")
+    controller_status_digest["properties"]["owner_policy_warnings"] = arr(obj({
+        "path": const("$.merge_gate.shared_owner_automation_actor_id"),
+        "code": const("SHARED_OWNER_AUTOMATION_ACCOUNT"), "message": text()}), 1, maxItems=1)
     schemas["controller-status-digest"] = controller_status_digest
     count_or_unobserved = {"oneOf": [integer(), const("UNOBSERVED")]}
     schemas["jira-progress"] = obj({"schema_version": const(3), "merged_ticket": text(), "scope": text(),

@@ -323,6 +323,13 @@ def replan_trigger_command(event):
 	_require(isinstance(ids, list) and ids == sorted(ids) and len(ids) == len(set(ids)) and ids and all(isinstance(value, str) and value.strip() == value and value for value in ids), 'Round-boundary replan dispatch identities are not canonical')
 	return 'AWF-ROUND-REPLAN 1\n' + canonical(event).decode('utf-8') + '\n'
 
+def _controller_unset_overlap_guard(config):
+	"""Preserve controller account separation when the opt-out is unset."""
+	if config.get('github', {}).get('expected_actor_id') in config.get('merge_gate', {}).get('trusted_owner_ids', []):
+		from .authorization import trusted_owner_ids
+		trusted_owner_ids(config)
+
+
 def _controller_owner_policy(config, accepted_policy_root):
 	"""Only the host root can enroll a shared account; legacy policy stays strict."""
 	from .shared_owner_policy import configured_shared_owner_actor_id, accepted_owner_evidence
@@ -332,8 +339,7 @@ def _controller_owner_policy(config, accepted_policy_root):
 	if shared is None or accepted_policy_root is None:
 		# Preserve minimal ordinary controller fixtures and historical records.
 		# An overlap always retains the public validator's refusal and message.
-		if config.get('github', {}).get('expected_actor_id') in config.get('merge_gate', {}).get('trusted_owner_ids', []):
-			trusted_owner_ids(config)
+		_controller_unset_overlap_guard(config)
 		if shared is not None:
 			trusted_owner_ids(config)
 		from .shared_owner_policy import _has_git_metadata
