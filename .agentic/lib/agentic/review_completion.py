@@ -220,7 +220,10 @@ def review_authority_binding(config, project_root, worktree_roots, candidate, *,
     if accepted_policy_root is not None:
         _require(resolved(accepted_policy_root) == resolved(project_root),
                  "Reviewer-removal policy root differs from the protected project root")
-    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, _refuse_hidden_owner_policy
+    # A rootless binding still names its protected project root.
+    if accepted_policy_root is None:
+        _refuse_hidden_owner_policy(config, project_root)
     policy = {key: authority[key] for key in OWNER_EVIDENCE_FIELDS if key in authority}
     value = {
         "schema_version": 1,

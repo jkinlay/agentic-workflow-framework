@@ -1,5 +1,5 @@
 """O1c: reviewer differentials, diagnostic warnings and closed digest schema."""
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
 import inspect
@@ -961,6 +961,233 @@ class DistinctOwnerCompatibility(unittest.TestCase):
                 policy.validate_config(self.config(setting), definition(),
                                        Contracts(ROOT / ".agentic/schemas"))
             self.assertEqual(SEPARATION, str(raised.exception))
+
+
+    def hidden_policy_case(self):
+        """An accepted default branch with the opt-out set, hidden by the proposal."""
+        from test_awf307_provider_owner_policy import ProviderPolicyFixture
+        case = ProviderPolicyFixture("runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        return case
+
+    def lifecycle_overcap(self, setting, root, signer=1001, *, empty=False, config=None):
+        import test_review_tiers_195_overcap as fixture
+        from agentic.lifecycle import review_round_transition
+        fixture.Tier3OvercapGateTests.setUpClass()
+        case = fixture.Tier3OvercapGateTests("runTest")
+        case.setUp()
+        try:
+            case.config["github"]["expected_actor_id"] = 1002
+            case.config["merge_gate"].update(trusted_owner_ids=[1001, 1002],
+                shared_owner_automation_actor_id=1002 if setting == "set" else None)
+            if setting == "absent":
+                case.config["merge_gate"].pop("shared_owner_automation_actor_id")
+            fixture.bind_review_admission(case.bundle)
+            registry = fixture.bind_production_posting_fixture(case.config, case.bundle)
+            approvals = [] if empty else [case.authenticated_approval(registry, actor_id=signer,
+                body=fixture.GATE_CANONICAL.replace("1001", str(signer)))]
+            return review_round_transition(3, fixture.ROUND,
+                accepted_policy_root=case.owner_fixture.root if root is fixture else root,
+                overcap_approval_context={"config": case.config, "approvals": approvals,
+                    "candidate": case.bundle["candidate"],
+                    "runs": {run["run_id"]: run for run in case.bundle["runs"]},
+                    "trusted_posting_collectors": registry})
+        finally:
+            case.doCleanups()
+
+    def lifecycle_outcome(self, *arguments, **keywords):
+        try:
+            return self.lifecycle_overcap(*arguments, **keywords)["status"]
+        except ValidationError as refusal:
+            return str(refusal)
+
+    def test_lifecycle_overcap_hidden_opt_out_refuses(self):
+        case = self.hidden_policy_case()
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                self.assertEqual("Shared-owner accepted policy digest changed",
+                                 self.lifecycle_outcome(setting, case.project))
+            with self.subTest(setting=setting, signer=1002), case.policy_reads():
+                self.assertEqual(SEPARATION, self.lifecycle_outcome(setting, case.project, 1002))
+
+    def test_lifecycle_overcap_other_roots_keep_their_results(self):
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    # Round admission keeps its own excluded identity prerequisite.
+                    self.assertEqual(
+                        "OWNER_TRUST_UNBOUND: accepted_policy_root is required" if root is None
+                        else "Default-branch settings Git read failed or exceeded its bound",
+                        self.lifecycle_outcome(setting, root))
+                with self.subTest(setting=setting, rooted=root is not None, empty=True):
+                    self.assertEqual(
+                        "Tier 3 review cap is 3; a canonical owner approval must be present on "
+                        "the PR before the round starts",
+                        self.lifecycle_outcome(setting, root, empty=True))
+        case = self.hidden_policy_case()
+        with self.subTest(setting="set"), case.policy_reads():
+            for signer in (1001, 1002):
+                self.assertEqual(SEPARATION, self.lifecycle_outcome("set", case.project, signer))
+
+    def test_jira_cli_hidden_opt_out_refuses(self):
+        from agentic import cli, provider_identity
+        case = self.hidden_policy_case()
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            plan = provider_identity.jira_binding_plan(config, provider.connections(), now=provider.NOW)
+            candidate = plan["candidates"][0]
+            confirmation = {"format": "awf-jira-binding-confirmation-1", "decision": "BIND",
+                "candidate_sha256": plan["candidate_sha256"],
+                **{key: candidate[key] for key in (
+                    "cloud_id", "site", "project_id", "project_key", "account_id")},
+                "owner_id": 1001, "confirmed_at": provider.NOW,
+                "authentication_evidence": ["urn:awf:fixture:owner-auth"]}
+            paths = {}
+            for name, value in (("config", config), ("connections", provider.connections()),
+                                ("confirmation", confirmation)):
+                paths[name] = self.root / (setting + name + ".json")
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+            for root, hidden in ((case.project, True), (self.root, False)):
+                project = root
+                (project / ".agentic").mkdir(exist_ok=True)
+                (project / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+                arguments = ["--root", str(project), "jira", "bind", "--config", str(paths["config"]),
+                    "--connections", str(paths["connections"]), "--confirmation", str(paths["confirmation"])]
+                output = io.StringIO()
+                with patch.object(cli, "verify_installed", return_value="0" * 64), \
+                        patch.object(cli, "Contracts"), \
+                        patch.object(cli, "now_text", return_value=provider.NOW), \
+                        redirect_stdout(output), redirect_stderr(output), \
+                        (case.policy_reads() if hidden else nullcontext()):
+                    status = cli.main(arguments)
+                with self.subTest(setting=setting, hidden=hidden):
+                    if hidden:
+                        self.assertNotEqual(0, status)
+                        self.assertIn("Shared-owner accepted policy digest changed", output.getvalue())
+                    else:
+                        self.assertEqual(0, status, output.getvalue())
+                        self.assertIn("CONFIRMED", output.getvalue())
+
+    def test_rootless_review_binding_detects_hidden_opt_out_in_its_project(self):
+        import test_review_completion as completion_fixture
+        case = self.hidden_policy_case()
+        worktree = case.project / "candidate"
+        worktree.mkdir()
+        current = completion_fixture.candidate()
+        current["repository"] = provider.config()["github"]["repository"]
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    review_completion.review_authority_binding(
+                        self.config(setting), case.project, [worktree], current)
+
+    def test_review_freeze_command_hidden_opt_out_refuses(self):
+        # This command inspects configuration without the separation rule, so
+        # its binding is where the hidden accepted opt-out must be found.
+        import importlib.util
+        import test_review_completion as completion_fixture
+        specification = importlib.util.spec_from_file_location(
+            "review_completion_command", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        case = self.hidden_policy_case()
+        ordinary = self.root / "freeze-ordinary"
+        ordinary.mkdir()
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        current = completion_fixture.candidate()
+        current["repository"] = provider.config()["github"]["repository"]
+        for setting in ("null", "absent"):
+            for project, hidden in ((case.project, True), (ordinary, False)):
+                (project / ".agentic").mkdir(exist_ok=True)
+                (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(self.config(setting)))
+                (project / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+                folder = self.root / f"freeze-{setting}-{hidden}"
+                (folder / "worktree").mkdir(parents=True)
+                (folder / "candidate.json").write_bytes(canonical(current))
+                (folder / "reviewers.json").write_bytes(canonical(["a", "b"]))
+                arguments = ["--state", str(folder / "state.sqlite3"),
+                    "--worktree-root", str(folder / "worktree"), "freeze",
+                    "--candidate", str(folder / "candidate.json"),
+                    "--reviewers", str(folder / "reviewers.json")]
+                output = io.StringIO()
+                with self.subTest(setting=setting, hidden=hidden),                         patch.object(module, "Contracts", return_value=contracts),                         redirect_stdout(output), redirect_stderr(output):
+                    if hidden:
+                        with case.policy_reads(), self.assertRaisesRegex(
+                                ValidationError, "accepted policy digest changed"):
+                            module.main(arguments, default_root=project)
+                        self.assertFalse((folder / "state.sqlite3").exists())
+                    else:
+                        module.main(arguments, default_root=project)
+                        self.assertIn("COLLECTING", output.getvalue())
+
+    def intake_change(self, setting, *, store=None, bootstrap=None):
+        """Change one assignment through the library or the bootstrap entry point."""
+        from types import SimpleNamespace
+        config = intake_fixture.config()
+        config["github"]["expected_actor_id"] = 1002
+        config["jira"]["enabled"] = False
+        config["merge_gate"]["shared_owner_automation_actor_id"] = None
+        if setting == "absent":
+            config["merge_gate"].pop("shared_owner_automation_actor_id")
+        state, reason = {}, "Synthetic owner decision"
+        current = intake_assignment.assign_intake(config, intake_fixture.ticket(), state, None,
+            now=intake_fixture.NOW, controller_actor_id="fixture-controller")
+        source = intake_fixture.owner_source("AWF-100", current["assignment_id"], 3, 3, reason)
+        if bootstrap is None:
+            return intake_assignment.change_assignment(config, "AWF-100", state, None,
+                requested_tier=3, requested_cap=3, owner_source=source,
+                verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
+                now=intake_fixture.NOW, controller_actor_id="fixture-controller", store=store)
+        import importlib.util
+        specification = importlib.util.spec_from_file_location(
+            "bootstrap_project_hidden_policy", ROOT / "scripts/bootstrap_project.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        (bootstrap / ".agentic").mkdir(exist_ok=True)
+        config.pop("_awf_runtime", None)
+        (bootstrap / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(config), encoding="utf-8")
+        folder = self.root / ("bootstrap-" + setting + bootstrap.name)
+        folder.mkdir()
+        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        (folder / "change.json").write_text(json.dumps({"ticket_key": "AWF-100",
+            "requested_tier": 3, "requested_cap": 3, "reason": reason, "owner_source": source}),
+            encoding="utf-8")
+        return module._run_assignment_path(SimpleNamespace(project_start_inventory=None,
+            ticket_intake=None, assignment_change=folder / "change.json",
+            assignment_state=folder / "state.json", controller_actor_id="fixture-controller",
+            assignment_now=intake_fixture.NOW, dest=bootstrap, recover=False, dry_run=False),
+            None, intake_fixture.verify_owner_source)
+
+    def test_bootstrap_assignment_change_hidden_opt_out_refuses(self):
+        case = self.hidden_policy_case()
+        ordinary = self.root / "ordinary"
+        ordinary.mkdir()
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    self.intake_change(setting, bootstrap=case.project)
+            with self.subTest(setting=setting, hidden=False):
+                self.assertEqual(3, self.intake_change(setting, bootstrap=ordinary)["AWF-100"]["tier"])
+
+    def test_intake_several_protected_worktrees_hidden_opt_out_refuses(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        case = self.hidden_policy_case()
+        other = self.root / "other"
+        other.mkdir()
+
+        def store(name, root):
+            folder = self.root / ("store-" + name)
+            folder.mkdir()
+            return ContinuousControllerStore(folder / "controller.sqlite", ["B"],
+                                             worktree_roots=(root, root))
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    self.intake_change(setting, store=store(setting + "-hidden", case.project))
+            with self.subTest(setting=setting, hidden=False):
+                self.assertEqual(3, self.intake_change(
+                    setting, store=store(setting + "-ordinary", other))["tier"])
 
 
 PARENT_STREAM_RESULTS = dict.fromkeys((False, True),

@@ -52,8 +52,9 @@ opt-out never bypasses separation here. Distinct owners retain their existing
 controls when accepted identity context is supplied.
 
 With the opt-out null or absent and the automation account also listed in
-`trusted_owner_ids`, configuration validation and identity preflight refuse that
-overlap. Below validation:
+`trusted_owner_ids`, `policy.validate_config` and identity preflight refuse that
+overlap; `inspect_config`, which the review freeze command uses, does not. Below
+`validate_config`:
 
 - `review_completion.review_authority_from_config` and the
   `integration_queue` authority projections return the whole owner list, both
@@ -62,6 +63,8 @@ overlap. Below validation:
 - A distinct owner's ready, Jira-binding, intake and stream decisions and
   over-cap approvals keep their pre-opt-out results. The automation account's
   own records refuse there, and a record replaced during verification refuses.
+- With the opt-out unset, over-cap collection refuses a signer outside
+  `trusted_owner_ids`.
 - Empty gate collections return empty and accept no approval.
 - Controller overlap and replan approvals refuse. Excluded round-admission
   prerequisites remain.

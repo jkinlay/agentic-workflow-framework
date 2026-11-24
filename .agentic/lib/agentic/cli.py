@@ -464,11 +464,13 @@ def main(argv=None, default_root=None):
                 workflow = load(root / ".agentic/workflow.yaml")
                 if args.command == "jira":
                     from .provider_identity import jira_binding_plan
+                    from .shared_owner_policy import _legacy_owner_root
                     config_path = args.config or root / ".agentic/PROJECT_CONFIG.yaml"
                     config = load(config_path)
                     confirmation = load(args.confirmation) if args.confirmation else None
                     output = jira_binding_plan(config, load(args.connections), confirmation,
-                                               now=now_text())
+                                               now=now_text(),
+                                               accepted_policy_root=_legacy_owner_root(config, root))
                     if args.output:
                         if confirmation is None or output["status"] != "CONFIRMED":
                             raise ValidationError("--output requires an exact owner-confirmed binding")

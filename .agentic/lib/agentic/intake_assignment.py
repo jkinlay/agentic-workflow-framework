@@ -517,7 +517,8 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
     if not isinstance(current, dict):
         raise ValidationError(f"No current review assignment for {ticket_key}")
     from .shared_owner_policy import (consumer_policy_root, shared_owner_warnings,
-                                      _detach_legacy_record, _require_detached_unchanged)
+                                      _detach_legacy_record, _refuse_hidden_owner_policy,
+                                      _require_detached_unchanged)
     supplied, current = current, _detach_legacy_record(config, current)
     verify_assignment_record(current)
     if not isinstance(reason, str) or not reason.strip():
@@ -525,6 +526,11 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
     if requested_tier not in DEFAULT_CAPS or type(requested_cap) is not int:
         raise ValidationError("Review assignment changes require tier 1, 2 or 3 and an integer cap")
     accepted_policy_root = consumer_policy_root(accepted_policy_root, store)
+    # Several protected worktrees select no single root, but each can still
+    # show that an accepted opt-out is hidden by this default-off overlap.
+    known_roots = (tuple(getattr(store, "worktree_roots", ()))
+                   if accepted_policy_root is None else ())
+    _refuse_hidden_owner_policy(config, *known_roots)
     audit = current.get("change_audit")
     if isinstance(audit, dict):
         _revalidate_owner_audit(config, audit, accepted_policy_root)
@@ -533,6 +539,7 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
         requested_cap=requested_cap, reason=reason, now=now,
         owner_source=owner_source, verify_owner_source=verify_owner_source,
         accepted_policy_root=accepted_policy_root)
+    _refuse_hidden_owner_policy(config, *known_roots)
     _require_detached_unchanged(supplied, current)
     if any(item.get("change_audit", {}).get("owner_source_id") == verified_owner["source_id"]
            for item in state.get("tier_assignment_history", {}).get(ticket_key, [])

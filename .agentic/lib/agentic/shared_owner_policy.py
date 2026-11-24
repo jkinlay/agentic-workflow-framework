@@ -200,6 +200,22 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             "accepted_owner_policy": observation}
 
 
+def _refuse_hidden_owner_policy(config, *roots):
+    """Detect a hidden accepted opt-out where a caller knows more than its root.
+
+    Only the default-off overlap reads anything. A root without an observable
+    default branch changes nothing, and no result ever grants authority.
+    """
+    if _legacy_owner_overlap(config):
+        for root in roots:
+            accepted_owner_evidence(root, config, None, legacy_unsigned=True)
+
+
+def _legacy_owner_root(config, root):
+    """Supply a known root to a rootless caller only in the default-off overlap."""
+    return root if _legacy_owner_overlap(config) else None
+
+
 def _origin_matches(url, github):
     """Compare local origin identity without resolving or contacting a provider."""
     expected = urlsplit(github["host"])
