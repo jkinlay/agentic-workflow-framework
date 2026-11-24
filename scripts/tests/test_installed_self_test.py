@@ -560,6 +560,31 @@ def git(cwd, *args):
 
 @unittest.skipUnless((ROOT / "MANIFEST.json").is_file(), "source repository only")
 class InstalledSelfTestTests(unittest.TestCase):
+    def test_installed_workflow_sibling_dispatch_and_managed_integrity(self):
+        from agentic.installer import managed
+        from agentic.canonical import sha256
+        relative = '.agentic/scripts/workflow.py'
+        self.assertTrue(managed(relative))
+        with tempfile.TemporaryDirectory(prefix='awf-installed-workflow-') as raw:
+            project = Path(raw) / 'project'
+            interpreter = prepare_project(
+                ROOT, project, run=run_with_timeout,
+                env=child_env(dict(os.environ)), installer=install, paths=installed_paths)
+            entry = project / relative
+            self.assertEqual(sha256((ROOT / relative).read_bytes()), sha256(entry.read_bytes()))
+            for command in ('controller', 'review-completion', 'verify-installation'):
+                with self.subTest(command=command):
+                    arguments = [str(interpreter), '-B', '-I', str(entry), '--root', str(project), command]
+                    if command != 'verify-installation':
+                        arguments.append('--help')
+                    done = run_with_timeout(arguments, cwd=raw, capture_output=True, text=True,
+                                            timeout=INSTALL_TIMEOUT_SECONDS, env=child_env(dict(os.environ)))
+                    self.assertEqual(0, done.returncode, done.stderr)
+                    if command == 'verify-installation':
+                        self.assertTrue(json.loads(done.stdout)['integrity_valid'])
+                    else:
+                        self.assertIn('usage:', done.stdout)
+
     def test_budgeting_document_links_are_present_in_manifest_only_install(self):
         from urllib.parse import unquote
         from agentic.installer import managed
