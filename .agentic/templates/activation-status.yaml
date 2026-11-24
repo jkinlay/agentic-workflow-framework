@@ -58,7 +58,8 @@
     },
     "activation": {
       "blockers": [],
-      "next_command": "UNFILLED"
+      "next_command": "UNFILLED",
+      "warnings": []
     },
     "execution_authority": false
   }

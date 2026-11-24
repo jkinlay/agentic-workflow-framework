@@ -3292,10 +3292,12 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 						{'merge_confirmed': True, 'closeout_valid': True})
 				if key is None:
 					with store.transaction() as db:
-						db.execute('INSERT INTO controller_meta VALUES(?,?)',
-							('jira-held-before-write:' + operation_id, canonical({
-								'operation_id': operation_id, 'intent_sha256': row['intent_sha256'],
-								'identity': _jira_operation_identity(config, record), 'mutation_attempted': False}).decode()))
+						from .shared_owner_policy import configured_shared_jira_actor_id
+						if configured_shared_jira_actor_id(config) is not None:
+							db.execute('INSERT INTO controller_meta VALUES(?,?)',
+								('jira-held-before-write:' + operation_id, canonical({
+									'operation_id': operation_id, 'intent_sha256': row['intent_sha256'],
+									'identity': _jira_operation_identity(config, record), 'mutation_attempted': False}).decode()))
 						db.execute("UPDATE controller_batch_jira_operation SET status='HELD',readback_json=?,updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical({'reason': reason}).decode(), now, operation_id))
 					continue
 				observation = read_current_status(deepcopy(record['binding']))

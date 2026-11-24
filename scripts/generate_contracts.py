@@ -1038,6 +1038,7 @@ def catalog(*, include_ticket_plan=True):
                 "branch_publication", "pr_creation", "independent_review", "jira_read", "jira_write", "merge_execution"]}),
             "activation": obj({"blockers": arr(activation_check), "next_command": text()}),
             "execution_authority": FALSE}}
+    schemas["activation-status"]["properties"]["activation"]["properties"]["warnings"] = arr(text())
     schemas["evidence-bundle"] = obj({"schema_version": const(3), "candidate": ref("candidate"),
         "snapshot": ref("jira-snapshot"), "contract": ref("ticket-contract"), "dispatch": ref("work-dispatch"),
         "worker": ref("worker-result"), "critic": ref("critic-review"), "specialists": arr(ref("specialist-review")),

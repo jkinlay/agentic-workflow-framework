@@ -41,8 +41,10 @@ def project_context_available():
 
 @contextmanager
 def project_policy_scope(store, config):
-    """Read issue scope when both opt-outs are set, without global GH lift."""
-    if configured_shared_jira_actor_id(config) is None:
+    """Bind accepted project reads independently of either account opt-out."""
+    from .shared_owner_policy import configured_shared_owner_actor_id
+    if (configured_shared_jira_actor_id(config) is None
+            and configured_shared_owner_actor_id(config) is None):
         yield
         return
     root = consumer_policy_root(root=getattr(store, 'accepted_policy_root', None), store=store)

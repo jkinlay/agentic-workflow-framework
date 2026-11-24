@@ -109,7 +109,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `d95c1cd22a61fb7d4c0d8d25a551d836f425324412e359bdf50c3c32af7713e5` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `ec6e82a6dc48893df3465d28cc0f8da08d569d43189ed6e9d1de0a3334a6e1d4` |
+| `.agentic/lib/agentic/continuous_controller.py` | `9b5496cf991bddae1dad000966d316cc5d71d20070f54253838dea9271c550f3` |
 | `.agentic/lib/agentic/contracts.py` | `e63c4049e9073b0e0b0835efb603063da705b40858c3c4d9ebc550e3c3557671` |
 | `.agentic/lib/agentic/controller_state.py` | `71cf3884ba8a309b049d37c203c5ce3c84b8d14d4ba6078b8b898c0f03eb4b50` |
 | `.agentic/lib/agentic/digest.py` | `c453939caa93fca1eab7f96e760736dc9c23f34f2d520349f709ec323190b7b0` |
@@ -129,7 +129,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/integration_queue.py` | `2fb60336286f336a504d9cf056d7f77154291b9759c92a5585d101b54f1f54fa` |
 | `.agentic/lib/agentic/interaction.py` | `ccdf2ac25c3e069cfc3d539f880659ab0cdb8680b81d885c460aed6080964e91` |
 | `.agentic/lib/agentic/jira_lifecycle.py` | `0faddbfe956688f636b4ab49a72f4c4659cec3bb4b2c2c2ffee076f6aaf89f5f` |
-| `.agentic/lib/agentic/jira_owner_policy.py` | `1d2753eb744c1a05116cd957e029124fa4ec65f429b2c4575873ceee81c69cbd` |
+| `.agentic/lib/agentic/jira_owner_policy.py` | `13305efe93647110f3efd0a437de033a1fbc3ee9004de157af85e17cc40a83e5` |
 | `.agentic/lib/agentic/jira_owner_visibility.py` | `1f38f71fe614b4a76e8db4b2972277dbb251b7b460fbcf3061a5b7e0a841f630` |
 | `.agentic/lib/agentic/lane_labels.py` | `3f4c4e86405f88fe496a833ebc3f4670b23441020eef2652a059b2f5dec880d2` |
 | `.agentic/lib/agentic/launch_surfaces.py` | `441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d` |
@@ -215,7 +215,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/review-loop/worker-prompt.md` | `41fdc2f23c7ba34063afe7482146618d75aa9e277f1e0f803e4214d4992241e7` |
 | `.agentic/review-loop/worker-result.schema.json` | `cb6f0e3c2a57810b62a627492216a3d5a0739f0d159cb389b36007f8fcaffe9a` |
 | `.agentic/routing.yaml` | `df98a354f1617c94f4c2d211b84f1b8c432e6058f2cdc9010d9a942dcb0f08f4` |
-| `.agentic/schemas/activation-status.schema.json` | `dbb3533683012a6154960535d863e88d2008d2252df807fb03a0946d90e594e5` |
+| `.agentic/schemas/activation-status.schema.json` | `0d3bab062bd2f1176afadd0cd4f2cdff40fe07c33eb308c0bba80725cbb598ad` |
 | `.agentic/schemas/amendment-result.schema.json` | `ee5344a659b5544ce368cb6beee945a61fdb46dcc7dcf6d3e2c2da92926bd669` |
 | `.agentic/schemas/authorization-request.schema.json` | `e757c82d6f0909230fe0c4c1a24924f48c686724ce208db5f9b98676c2dae7a0` |
 | `.agentic/schemas/blocker.schema.json` | `833c0fc90d21ce6ba2597fd29921a982bef276f447745ee93f23f1aaec94c475` |
@@ -301,7 +301,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/self_test.py` | `5f06ad2e414ca95b86ebc9d54293d92669084e2bbfede1f3d4a0519e6391bbee` |
 | `.agentic/scripts/validate_config.py` | `527a8c219ec19f1c7b669476788a50dcc4bce829050c63eba297df6d74b86fc7` |
 | `.agentic/scripts/workflow.py` | `feb37f2628fb44baa29d170b8a46383b03e2ad5db12a082189ffdc4d908e9c1b` |
-| `.agentic/templates/activation-status.yaml` | `22e16493101cddd369309f08c06639b2af1e53bbf43333b5ed76c0132308bbc1` |
+| `.agentic/templates/activation-status.yaml` | `1f0c164923a41bdf29c2aede49efc5efb0df1c3fc1f2d9245c1850f90eab8ec8` |
 | `.agentic/templates/adoption-pr.md` | `b9e679a726273ab508ebb584eab480ce27e90ff92bdd8d65480a4d751d0dd826` |
 | `.agentic/templates/amendment-result.yaml` | `50495e1e398182e22f586e7c3fe45e84b81cf14d094fd00963ac52b98e68bf07` |
 | `.agentic/templates/authorization-request.yaml` | `08509a289322a764cd5a313bda1f507999eaa30f7e95b1f81a58483d6d92f10d` |
@@ -481,6 +481,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf307_review_completion_owner_policy.py` | `63f9e7ef5b91959f9e7687e52e9bf12b4a1acff056b54284a2787336049bcbe5` |
 | `.agentic/tests/test_awf307_shared_owner_policy.py` | `65f091ac4185e9e21ba2238b27778883b991d4a06ca552a80849b7d768db5464` |
 | `.agentic/tests/test_awf307_stream_owner_policy.py` | `2b1f4c68e4c3b1e3b044dd70426fd5e30013ff680467a30390a16978bace8c17` |
+| `.agentic/tests/test_awf307_sync2_regressions.py` | `47d2195de096a68a83d20562574b85bf8c9efa63bf66df4351e7e9eb918185f0` |
 | `.agentic/tests/test_awf312_junction_state.py` | `b2a728e23314891f65e9997268ecae467acb51728904be6c9cabb682240479aa` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `b458c1df63a738f95d9ef26d2de1d3f815894784ea795bc737bd3acf8c63d0aa` |
@@ -803,7 +804,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/build_release.py` | `a3e2265cfc66506305fca098c8148db0e9297e458fa9f05602d2b76da5fa6ce6` |
 | `scripts/build_skill_distribution.py` | `4deacc432d525694fcd2f1c17956c6053b9b15e5665af292702477a127439a46` |
 | `scripts/check_installed_self_test_shards.py` | `3eff232f5ae37ddf6aba008bcfaaa58d7bd09349135eca4b54ddf4e58af930dc` |
-| `scripts/generate_contracts.py` | `db8023175d3f0f130849f08cda95c8470b200601057008fb0d4d8f485a7d0768` |
+| `scripts/generate_contracts.py` | `a5af1ac434ff2cf7b1d17e67a489de28c3177dcdff8e535311e28f8159eb9951` |
 | `scripts/generate_examples.py` | `e1a9149c1ad6f11bd6bccf6b4c70fd1fd56804c5e531748d61fe52aff3d34d56` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
