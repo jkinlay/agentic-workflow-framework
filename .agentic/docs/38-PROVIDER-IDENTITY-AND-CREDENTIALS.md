@@ -63,6 +63,8 @@ warn `SHARED_OWNER_AUTOMATION_ACCOUNT`; prefer separate accounts. Jira O2 unavai
 Null/absent exception to legacy preservation: controller overlap/replan approvals
 refuse configured automation actors in `trusted_owner_ids` for account separation.
 
+[`jira.shared_owner_controller_actor_id`](SHARED-JIRA-OWNER-POLICY.md).
+
 ## Jira identity and binding
 
 For reviewed credential modes, status IDs and search guarantees, see the

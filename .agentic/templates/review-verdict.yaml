@@ -93,7 +93,8 @@
           "message": "UNFILLED"
         }
       ],
-      "execution_authority": false
+      "execution_authority": false,
+      "shared_owner_controller_actor_id": "UNFILLED"
     }
   }
 }

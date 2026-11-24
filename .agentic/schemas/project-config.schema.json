@@ -129,6 +129,18 @@
             }
           ]
         },
+        "shared_owner_controller_actor_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:(?:\\s|\\S)*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "scope": {
           "type": "object",
           "additionalProperties": false,

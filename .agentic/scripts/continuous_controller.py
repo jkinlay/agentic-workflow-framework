@@ -131,7 +131,9 @@ def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapte
 			from agentic.continuous_controller import adopted_jira_reconciliation, retained_jira_owner_closure
 			owner = retained_jira_owner_closure(store, config, request)
 			if owner is not None:
-				return adapters['observe_jira_reconciliation'](request, retained_owner_closure=owner)
+				from agentic.jira_owner_policy import retained_scope
+				with retained_scope(store, config, owner):
+					return adapters['observe_jira_reconciliation'](request, retained_owner_closure=owner)
 			retained = adopted_jira_reconciliation(store, config, request) if store is not None else None
 			if retained is not None:
 				return adapters['observe_jira_reconciliation'](request, retained_success=retained)
@@ -231,7 +233,14 @@ def main(argv=None, default_root=ROOT):
 	if args.command.startswith('owner-publication-'):
 		store = OwnerPublicationStore(args.state, worktree_roots=args.worktree_root)
 	else:
-		store = ContinuousControllerStore(args.state, args.streams, cadence_seconds, worktree_roots=args.worktree_root, periodic_status_enabled=not args.disable_periodic_status, migrate_cadence=args.migrate_status_cadence)
+		roots, owner_policy_options = args.worktree_root, {}
+		jira_policy = config.get('jira')
+		if isinstance(jira_policy, dict) and jira_policy.get('shared_owner_controller_actor_id') is not None:
+			# The controller's own checkout is host context, never an adapter or
+			# owner-record path. Include it in protected state containment too.
+			roots = (*roots, default_root)
+			owner_policy_options['accepted_policy_root'] = default_root
+		store = ContinuousControllerStore(args.state, args.streams, cadence_seconds, worktree_roots=roots, periodic_status_enabled=not args.disable_periodic_status, migrate_cadence=args.migrate_status_cadence, **owner_policy_options)
 	adapters = None
 	if args.command in {'cycle', 'jira-lifecycle', 'merge-observed', 'owner-publication-prepare', 'owner-publication-resume', 'batch-operation', 'batch-closeout'}:
 		adapters = _load_reviewed_adapters(args.adapter_module, args.adapter_sha256, args.adapter_config)

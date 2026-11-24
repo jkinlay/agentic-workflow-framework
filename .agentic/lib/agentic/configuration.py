@@ -208,11 +208,14 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
         def require(condition, path, reason):
             if not condition:
                 problems.append(issue(path, reason))
-        from .shared_owner_policy import configured_shared_owner_actor_id, SETTING_PATH
-        try:
-            configured_shared_owner_actor_id(config)
-        except ValidationError as exc:
-            problems.append(issue(SETTING_PATH, str(exc)))
+        from .shared_owner_policy import (configured_shared_owner_actor_id, SETTING_PATH,
+                                         configured_shared_jira_actor_id, JIRA_SETTING_PATH)
+        for validator, setting_path in ((configured_shared_owner_actor_id, SETTING_PATH),
+                                        (configured_shared_jira_actor_id, JIRA_SETTING_PATH)):
+            try:
+                validator(config)
+            except ValidationError as exc:
+                problems.append(issue(setting_path, str(exc)))
         require(type(config['github']['repository_id']) is int and config['github']['repository_id'] > 0,
                 '$.github.repository_id', 'numeric repository identity is unresolved')
         if not isinstance(workflow, dict):
