@@ -96,6 +96,18 @@ def steps_with(job, fragment):
 
 
 class CiSuiteCoverageTests(unittest.TestCase):
+    def test_awf312_real_junction_regressions_run_on_every_windows_python(self):
+        runner = runner_module()
+        allocation = runner.allocate(runner.inventory(ROOT))
+        job = workflow()["jobs"]["windows_unittests"]
+        self.assertEqual(["3.11", "3.12", "3.13"], job["strategy"]["matrix"]["python-version"])
+        for suite, module in (
+                (".agentic/tests", ".agentic/tests/test_awf312_junction_state.py"),
+                ("scripts/tests", "scripts/tests/test_awf312_link_checks.py")):
+            selected = [path for shard in job["strategy"]["matrix"]["shard"]
+                        for path in allocation[suite][shard] if path == module]
+            self.assertEqual([module], selected)
+
     def test_linux_jobs_do_not_pin_patch_level_python_versions(self):
         def python_versions(value):
             if isinstance(value, dict):
