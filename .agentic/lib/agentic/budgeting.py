@@ -330,13 +330,16 @@ class ControllerBudgeting:
     def _recovery_database(self):
         """Open existing protected recovery evidence read-only, never create it."""
         import sqlite3
+        from .controller_state import is_link_component
         from .path_containment import is_within
-        if self.database is None or not self.database.path.is_file():
+        if self.database is None:
             return None
         path = self.database.path
         for parent in (path, *path.parents):
-            require(not (parent.is_symlink() or (hasattr(parent, 'is_junction') and parent.is_junction())),
+            require(not is_link_component(parent),
                     'Protected state path traverses a link/reparse point')
+        if not path.is_file():
+            return None
         require(path.stat().st_nlink == 1, 'Protected state has multiple hardlinks')
         require(not any(is_within(path, root) for root in self.database.worktree_roots),
                 'Protected state must be outside worker worktrees')

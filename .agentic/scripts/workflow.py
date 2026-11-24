@@ -25,6 +25,9 @@ if __name__ == "__main__":
     if options.command == "operating":
         from agentic.operating import main as operating_main
         raise SystemExit(operating_main(remaining, default_root=options.root))
+    if options.command in {"controller", "review-completion"}:
+        # Isolated Python omits the entry-point directory from sys.path.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
     if options.command == "controller":
         from continuous_controller import main as controller_main
         raise SystemExit(controller_main(remaining, default_root=options.root))

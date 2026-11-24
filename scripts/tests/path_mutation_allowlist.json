@@ -4222,5 +4222,16 @@
     "created_by_us": false,
     "disposition": "NON-MUTATING",
     "justification": "Copies the os.environ mapping into a new dictionary before setting validation child variables; no pathname or file contents are copied or mutated."
+  },
+  {
+    "path": "scripts/upgrade_release.py",
+    "context": "release_entry",
+    "line": 50,
+    "call": "tempfile.mkdtemp(prefix='awf-upgrade-registration-')",
+    "fingerprint": "81c03cfbd1951346329f5d37ba59e78649057b130f8ac60cc8b0600ee8df277e",
+    "object": "fresh retained external release-tag materialization wrapper",
+    "created_by_us": "yes (exclusive mkdtemp creation)",
+    "disposition": "SAFE-UNDER-BOUNDARY",
+    "justification": "Creates a new external wrapper for raw local-tag verification; no pathname cleanup, existing-object mutation or adopter destination is permitted; retained materializations remain for owner-controlled cleanup."
   }
 ]

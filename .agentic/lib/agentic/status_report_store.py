@@ -16,6 +16,7 @@ from . import ValidationError
 from .canonical import MAX_DOCUMENT_BYTES, canonical, fingerprint, load, loads, timestamp
 from .child_process import render_bounded_diagnostic
 from .contracts import Contracts
+from .controller_state import is_link_component
 from .intake_assignment import verify_assignment_record
 from .operating import read_operating, validate_snapshot
 from .path_containment import is_within
@@ -324,7 +325,7 @@ class ReportStore(Store):
     def __init__(self, path, project_id, worktree_roots=()):
         self.path = Path(path).absolute()
         for parent in (self.path, *self.path.parents):
-            _require(not parent.is_symlink() and not getattr(parent, 'is_junction', lambda: False)(),
+            _require(not is_link_component(parent),
                      'Report store traverses a link/reparse point')
         _require(self.path.is_file() and self.path.stat().st_nlink == 1, 'Existing report store required')
         _require(not any(is_within(self.path, Path(root).resolve()) for root in worktree_roots),
