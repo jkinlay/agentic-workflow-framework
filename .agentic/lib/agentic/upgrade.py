@@ -247,6 +247,14 @@ def _version_tuple(value):
     return tuple(int(part) for part in value.split("."))
 
 
+def crosses_budget_milestone(previous, target):
+    """The compatibility record belongs to crossing 1.9.6, not a final target."""
+    start, end = _version_tuple(previous), _version_tuple(target)
+    if start is None or end is None or start > end:
+        raise ValidationError('Invalid budget upgrade version range')
+    return start < (1, 9, 6) <= end
+
+
 def _load_receipt_variants(entry, version):
     raw_variants = entry.get("receipt_variants", [])
     if not isinstance(raw_variants, list):
