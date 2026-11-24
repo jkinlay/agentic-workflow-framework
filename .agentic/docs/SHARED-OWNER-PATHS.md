@@ -51,6 +51,24 @@ accepted default-branch configuration. Missing identity fails closed; the
 opt-out never bypasses separation here. Distinct owners retain their existing
 controls when accepted identity context is supplied.
 
+With the opt-out null or absent and the automation account also listed in
+`trusted_owner_ids`, configuration validation and identity preflight refuse that
+overlap. Below validation:
+
+- `review_completion.review_authority_from_config` and the
+  `integration_queue` authority projections return the whole owner list, both
+  accounts included. Reviewer removal and queue owner instructions validated
+  against them therefore accept either account's authenticated record.
+- A distinct owner's ready, Jira-binding, intake and stream decisions and
+  over-cap approvals keep their pre-opt-out results. The automation account's
+  own records refuse there, and a record replaced during verification refuses.
+- Empty gate collections return empty and accept no approval.
+- Controller overlap and replan approvals refuse. Excluded round-admission
+  prerequisites remain.
+
+An accepted default branch with the opt-out set still refuses a proposal that
+hides it.
+
 The closed provenance owner projection now requires `expected_actor_id` beside
 `config_sha256`, `trusted_owner_ids` and `binding_sha256`; its binding payload
 includes that identity. Verification matches the configuration digest and

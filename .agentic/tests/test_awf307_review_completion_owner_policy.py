@@ -1,6 +1,7 @@
 """Rooted reviewer-removal authority, pins and retained owner evidence."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import unittest
 import uuid
@@ -97,10 +98,20 @@ class SourceCases:
             result = self.call()
         self.assert_annotation(dict(result, execution_authority=False))
 
-    def test_rootless_and_unset_refuse_with_separation_message(self):
+    def test_rootless_refuses_and_unset_keeps_parent_result(self):
         self.refuses(rooted=False, message="^The configured automation actor must not be a trusted owner$")
         self.config["merge_gate"][KEY] = None
-        self.refuses(rooted=False, message="^The configured automation actor must not be a trusted owner$")
+        authority = {"trusted_owner_ids": (1001, 1002), "provider_identity": {
+            "host": "https://github.com", "repository": "fixture/example", "repository_id": 101}}
+        expected = authority if self.consumer == "authority" else {
+            "schema_version": 1, "project_root": os.path.normcase(str(self.project.resolve())),
+            "worktree_roots": [os.path.normcase(str(self.worktree.resolve()))],
+            "project_config_sha256": fingerprint("accepted-project-config", self.config),
+            "tuple": self.current, "tuple_sha256": fingerprint("review-tuple", self.current),
+            "review_authority_sha256": fingerprint("review-authority", {
+                "trusted_owner_ids": [1001, 1002],
+                "provider_identity": authority["provider_identity"]})}
+        self.assertEqual(expected, self.call(rooted=False))
 
     def test_supplied_working_feature_and_missing_policy_refuse(self):
         original = self.blobs[".agentic/PROJECT_CONFIG.yaml"]

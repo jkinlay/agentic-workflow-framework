@@ -323,7 +323,9 @@ def load_runtime_assignments(config, state, *, ticket_key=None, accepted_policy_
     if not isinstance(assignments, dict):
         raise ValidationError("AWF state tier_assignments must be an object keyed by ticket")
     loaded = {}
-    for key, record in assignments.items():
+    from .shared_owner_policy import _detach_legacy_record, _require_detached_unchanged
+    for key, supplied in assignments.items():
+        record = _detach_legacy_record(config, supplied)
         if not isinstance(key, str) or not key or not isinstance(record, dict):
             raise ValidationError("AWF state tier_assignments must contain ticket-keyed records")
         verify_assignment_record(record)
@@ -332,6 +334,7 @@ def load_runtime_assignments(config, state, *, ticket_key=None, accepted_policy_
             _revalidate_owner_audit(config, audit, accepted_policy_root)
         if record.get("ticket_key") != key:
             raise ValidationError("AWF state tier assignment key disagrees with its record")
+        _require_detached_unchanged(supplied, record)
         loaded[key] = copy.deepcopy(record)
     runtime = config.setdefault("_awf_runtime", {})
     if not isinstance(runtime, dict):
@@ -442,6 +445,9 @@ def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, r
             or not isinstance(owner_source.get("actor_login"), str)
             or not owner_source["actor_login"]):
         raise ValidationError("Owner-source record lacks an immutable provider comment identity")
+    from .shared_owner_policy import (accepted_owner_evidence, _detach_legacy_record,
+                                      _require_detached_unchanged)
+    supplied, owner_source = owner_source, _detach_legacy_record(config, owner_source)
     binding = {"ticket_key": ticket_key, "current_assignment_id": current["assignment_id"]}
     if owner_source.get("binding") != binding:
         raise ValidationError("Owner-source binding differs from the current ticket assignment")
@@ -449,8 +455,8 @@ def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, r
     owners = config.get("merge_gate", {}).get("trusted_owner_ids", [])
     if type(actor) is not int or actor < 1 or actor not in owners:
         raise ValidationError("Review assignment changes require an authenticated trusted owner")
-    from .shared_owner_policy import accepted_owner_evidence
-    owner_evidence = accepted_owner_evidence(accepted_policy_root, config, actor)
+    owner_evidence = accepted_owner_evidence(accepted_policy_root, config, actor,
+                                             legacy_distinct_signer=True)
     created = owner_source.get("created_at")
     if owner_source.get("updated_at") != created:
         raise ValidationError("Edited owner-source records are invalid; obtain a new immutable observation")
@@ -480,8 +486,11 @@ def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, r
         raise ValidationError("Owner-source verifier did not authenticate the exact assignment request")
     if timestamp(verified["observed_at"]) > timestamp(now):
         raise ValidationError("Owner-source verification is future-dated")
-    if owner_evidence != accepted_owner_evidence(accepted_policy_root, config, actor):
+    verified = _detach_legacy_record(config, verified)
+    if owner_evidence != accepted_owner_evidence(accepted_policy_root, config, actor,
+                                                 legacy_distinct_signer=True):
         raise ValidationError("Shared-owner policy changed during owner-source verification")
+    _require_detached_unchanged(supplied, owner_source)
     return actor, verified, owner_evidence
 
 
@@ -493,7 +502,7 @@ def _revalidate_owner_audit(config, audit, root):
     # New decisions always observe policy, even when a proposal hides the key.
     if not retained and root is None and configured_shared_owner_actor_id(config) is None:
         return
-    current = accepted_owner_evidence(root, config, audit.get("who"))
+    current = accepted_owner_evidence(root, config, audit.get("who"), legacy_distinct_signer=True)
     if retained != current:
         raise ValidationError("Shared-owner retained assignment differs from accepted policy")
 
@@ -507,12 +516,14 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
     current = state.get("tier_assignments", {}).get(ticket_key)
     if not isinstance(current, dict):
         raise ValidationError(f"No current review assignment for {ticket_key}")
+    from .shared_owner_policy import (consumer_policy_root, shared_owner_warnings,
+                                      _detach_legacy_record, _require_detached_unchanged)
+    supplied, current = current, _detach_legacy_record(config, current)
     verify_assignment_record(current)
     if not isinstance(reason, str) or not reason.strip():
         raise ValidationError("Review assignment changes require a non-empty reason")
     if requested_tier not in DEFAULT_CAPS or type(requested_cap) is not int:
         raise ValidationError("Review assignment changes require tier 1, 2 or 3 and an integer cap")
-    from .shared_owner_policy import consumer_policy_root, shared_owner_warnings
     accepted_policy_root = consumer_policy_root(accepted_policy_root, store)
     audit = current.get("change_audit")
     if isinstance(audit, dict):
@@ -522,6 +533,7 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
         requested_cap=requested_cap, reason=reason, now=now,
         owner_source=owner_source, verify_owner_source=verify_owner_source,
         accepted_policy_root=accepted_policy_root)
+    _require_detached_unchanged(supplied, current)
     if any(item.get("change_audit", {}).get("owner_source_id") == verified_owner["source_id"]
            for item in state.get("tier_assignment_history", {}).get(ticket_key, [])
            if isinstance(item.get("change_audit"), dict)):

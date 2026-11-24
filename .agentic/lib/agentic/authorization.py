@@ -321,9 +321,21 @@ def trusted_owner_ids(config):
     return tuple(owners)
 
 
-def _authorization_owner_policy(config, accepted_policy_root, *, identity_optional=False):
+def _authorization_owner_policy(config, accepted_policy_root, *, identity_optional=False,
+                                legacy_signer=None, legacy_unsigned=False):
     """A separate rooted path; the public rootless validator is unchanged."""
     from .shared_owner_policy import configured_shared_owner_actor_id, accepted_owner_evidence
+    from .shared_owner_policy import _distinct_legacy_signer, _legacy_owner_overlap
+    # Only consumers that did not call trusted_owner_ids in the parent opt in:
+    # with their distinct signer, or unsigned for an empty collection and for
+    # the owner-approved review and queue projections of the owner list. Every
+    # other caller keeps its configuration refusal.
+    if legacy_unsigned and _legacy_owner_overlap(config):
+        return accepted_owner_evidence(accepted_policy_root, config, None,
+                                       legacy_unsigned=True)
+    if _distinct_legacy_signer(config, legacy_signer):
+        return accepted_owner_evidence(accepted_policy_root, config, legacy_signer,
+                                       legacy_distinct_signer=True)
     if identity_optional and config.get("github", {}).get("expected_actor_id") is None:
         return accepted_owner_evidence(accepted_policy_root, config, None)
     if accepted_policy_root is None:
@@ -352,8 +364,11 @@ def _retained_authorization_policy(record, policy, actor_id):
     return expected
 
 
-def _recheck_authorization_policy(config, accepted_policy_root, policy, *, identity_optional=False):
-    if _authorization_owner_policy(config, accepted_policy_root, identity_optional=identity_optional) != policy:
+def _recheck_authorization_policy(config, accepted_policy_root, policy, *, identity_optional=False,
+                                  legacy_signer=None, legacy_unsigned=False):
+    if _authorization_owner_policy(config, accepted_policy_root, identity_optional=identity_optional,
+                                   legacy_signer=legacy_signer,
+                                   legacy_unsigned=legacy_unsigned) != policy:
         raise ValidationError("Shared-owner policy changed before authorization use")
 
 
@@ -567,9 +582,13 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
     if (isinstance(repository_id, bool) or not isinstance(repository_id, int) or repository_id < 1 or
             not isinstance(trusted_owner_ids, list) or isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 1):
         raise ValidationError("Ready authorization configuration is invalid")
+    from .shared_owner_policy import _detach_legacy_record, _require_detached_unchanged
+    supplied, record = record, _detach_legacy_record(config, record)
+    request, source = record["request"], record["owner_source"]
     # Preserve the original shape/configuration refusals before policy admission.
     # Older host configurations without automation identity cannot opt out.
-    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True,
+                                         legacy_signer=source["actor_id"])
     evidence = _retained_authorization_policy(record, policy, source["actor_id"])
     if source["actor_id"] not in trusted_owner_ids:
         raise ValidationError("Ready authorization uses an untrusted numeric owner/manager identity")
@@ -614,6 +633,7 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
     }
     if not isinstance(observed, dict) or set(observed) != expected_observation:
         raise ValidationError("Ready authorization provider observation has invalid fields")
+    observed = _detach_legacy_record(config, observed)
     for field in ("actor_id", "actor_login", "repository_id", "pr_number", "created_at", "updated_at",
                   "raw_body_sha256"):
         if observed[field] != source[field]:
@@ -627,7 +647,9 @@ def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_sou
         raise ValidationError("Ready authorization trusted observation time is outside the request window")
     if ready_authorization_config_sha256(config) != config_sha256:
         raise ValidationError("Ready authorization configuration changed during provider observation")
-    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True,
+                                  legacy_signer=source["actor_id"])
+    _require_detached_unchanged(supplied, record)
     return {"action": "MARK_READY", "role": request["role"], "actor_id": source["actor_id"],
             "actor_login": source["actor_login"], "source_id": observed["source_id"],
             "observed_at": observed["observed_at"], "configuration_sha256": config_sha256,

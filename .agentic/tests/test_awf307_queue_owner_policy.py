@@ -153,11 +153,40 @@ class ConsumerCases:
         with self.assertRaisesRegex(ValidationError, SEPARATION):
             self.call(rooted=False)
 
-    def test_unset_keeps_global_separation_message(self):
+    def test_unset_keeps_parent_result_or_refusal(self):
         self.config["merge_gate"][KEY] = None
         self.accept()
-        with self.policy_reads(), self.assertRaisesRegex(ValidationError, SEPARATION):
-            self.call()
+        if self.consumer == "accepted":
+            with self.policy_reads(), self.assertRaisesRegex(ValidationError, SEPARATION):
+                self.call()
+            return
+        if self.consumer == "instruction":
+            # The parent's closed record shape has no shared-account evidence.
+            with self.policy_reads(), self.assertRaises(ValidationError) as raised:
+                self.call()
+            self.assertEqual("owner instruction fields differ from the closed record shape",
+                             str(raised.exception))
+            for actor in (1001, 1002):
+                self.annotation = {}
+                self.instruction = self.make_instruction("ENABLE_EPIC_MODE", self.settings(), actor=actor)
+                with self.subTest(actor=actor), self.policy_reads():
+                    self.assertEqual(self.instruction, self.call())
+            return
+        expected = {"project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d", "base_branch": "main",
+            "provider_identity": {"host": "https://github.com", "repository": "fixture/example",
+                                  "repository_id": 101}, "integration_app_id": 42}
+        if self.consumer == "authority":
+            expected.update(trusted_owner_ids=(1001, 1002),
+                            integration_check_contexts=("awf-integration",))
+        else:
+            expected.update(trusted_owner_ids=[1001, 1002],
+                integration_check_contexts=["awf-integration"],
+                max_evidence_age_seconds=self.config["validation"]["max_evidence_age_seconds"],
+                jira={key: self.config["jira"][key] for key in (
+                    "enabled", "cloud_id", "site", "provider_project_id", "project_key",
+                    "controller_actor_id", "status_map", "lifecycle_writes")})
+        with self.policy_reads():
+            self.assertEqual(expected, self.call())
 
 
 class AuthorityPolicyTests(ConsumerCases, QueuePolicyFixture):

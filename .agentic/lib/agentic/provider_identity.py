@@ -331,7 +331,10 @@ def jira_binding_plan(config, connections, confirmation=None, *, now=None, accep
     # This is GitHub owner authority for a binding proposal, not Jira closure
     # authority. Never infer a Jira shared-controller exception from it.
     from .authorization import _authorization_owner_policy, _actor_authorization_policy
-    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    from .shared_owner_policy import _detach_legacy_record, _require_detached_unchanged
+    supplied, confirmation = confirmation, _detach_legacy_record(config, confirmation)
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True,
+                                         legacy_signer=confirmation["owner_id"])
     owner_evidence = _actor_authorization_policy(policy, confirmation["owner_id"])
     if (type(confirmation["owner_id"]) is not int or
             confirmation["owner_id"] not in config["merge_gate"]["trusted_owner_ids"]):
@@ -345,7 +348,9 @@ def jira_binding_plan(config, connections, confirmation=None, *, now=None, accep
     if len(chosen) != 1 or not chosen[0]["browse"]:
         raise ProviderIdentityError("IDENTITY_MISMATCH", "Confirmed Jira binding is absent, ambiguous, or unreadable")
     from .authorization import _recheck_authorization_policy
-    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True,
+                                  legacy_signer=confirmation["owner_id"])
+    _require_detached_unchanged(supplied, confirmation)
     result.update(status="CONFIRMED", binding_patch={"cloud_id": chosen[0]["cloud_id"],
         "site": chosen[0]["site"], "provider_project_id": chosen[0]["project_id"],
         "project_key": chosen[0]["project_key"], "controller_actor_id": chosen[0]["account_id"]},

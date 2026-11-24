@@ -62,6 +62,7 @@ expected and observed identities without including token values.
 warn `SHARED_OWNER_AUTOMATION_ACCOUNT`; prefer separate accounts. Jira O2 unavailable.
 Null/absent exception to legacy preservation: controller overlap/replan approvals
 refuse configured automation actors in `trusted_owner_ids` for account separation.
+Exceptions: linked inventory.
 
 ## Jira identity and binding
 

@@ -327,7 +327,7 @@ def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
     require(isinstance(owners, list) and directive["who"] in owners,
             "Owner stream reassignment requires an authenticated trusted owner")
     from .shared_owner_policy import accepted_owner_evidence
-    policy_context = {"synthetic": synthetic,
+    policy_context = {"synthetic": synthetic, "legacy_distinct_signer": True,
                       "repository": policy_project["repository"] if policy_project else None,
                       "project_key": policy_project["key"] if policy_project else None}
     owner_evidence = accepted_owner_evidence(
@@ -467,7 +467,8 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
             evidence = (accepted_owner_evidence(
                             accepted_policy_root, governance, event["who"], synthetic=synthetic,
                             repository=policy_project["repository"] if policy_project else None,
-                            project_key=policy_project["key"] if policy_project else None)
+                            project_key=policy_project["key"] if policy_project else None,
+                            legacy_distinct_signer=True)
                         if governance is not None else {})
             shared_fields = {"shared_owner_automation_account", "owner_policy_sha256", "accepted_owner_policy"}
             retained_fields = shared_fields.intersection(event)
@@ -498,7 +499,9 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
     if directives:
         require(callable(verifier), "Owner stream reassignment requires a trusted owner-source verifier")
     seen = set()
-    for directive in directives:
+    from .shared_owner_policy import _detach_legacy_record, _require_detached_unchanged
+    for supplied in directives:
+        directive = _detach_legacy_record(governance, supplied)
         fields(directive, "ticket_id who when why old new owner_source", "owner stream reassignment")
         ticket_id = directive["ticket_id"]
         require(ticket_id in tickets and ticket_id not in seen,
@@ -523,6 +526,7 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
         intake_assignment_id, verified, authenticated_when, owner_evidence = _authenticate_owner_reassignment(
             governance, ticket_id, intake_assignments, directive, verifier, now,
             accepted_policy_root, policy_project, synthetic)
+        _require_detached_unchanged(supplied, directive)
         require(changed_at == timestamp(authenticated_when),
                 "Owner stream reassignment time must match the authenticated owner-source creation time")
         require(verified["source_id"] not in consumed_owner_source_ids,
