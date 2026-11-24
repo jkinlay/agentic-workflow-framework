@@ -1700,17 +1700,44 @@ class ContinuousControllerStore:
 			return self._snapshot(db)
 
 	def digest(self, now, *, calendar=None, owner_config=None, accepted_policy_root=None):
+		from .canonical import fingerprint
 		current = timestamp(now)
+		root = accepted_policy_root or getattr(self, 'accepted_policy_root', None)
+		if root is None and len(self.worktree_roots) == 1:
+			root = self.worktree_roots[0]
 		warnings = []
 		from .shared_owner_policy import configured_shared_owner_actor_id
 		if owner_config is not None and configured_shared_owner_actor_id(owner_config) is not None:
-			evidence = _controller_owner_evidence(owner_config, owner_config.get("github", {}).get("expected_actor_id"), accepted_policy_root)
+			evidence = _controller_owner_evidence(owner_config, owner_config.get("github", {}).get("expected_actor_id"), root)
 			if evidence:
 				warnings = evidence["accepted_owner_policy"]["warnings"]
+		from .jira_owner_visibility import CODE as JIRA_WARNING_CODE, jira_owner_warnings
+		jira_warnings = jira_owner_warnings(root, owner_config)
+		if jira_warnings:
+			warnings = [item for item in warnings if item['code'] != JIRA_WARNING_CODE]
+		warnings += jira_warnings
 		with self.transaction() as db:
-			pending = db.execute("SELECT payload_json FROM controller_outbox WHERE acknowledged_at IS NULL AND kind<>'REPORT' ORDER BY rowid LIMIT 1").fetchone()
+			pending = db.execute("SELECT * FROM controller_outbox WHERE acknowledged_at IS NULL AND kind NOT IN ('REPORT','SUPERSEDED') ORDER BY rowid LIMIT 1").fetchone()
 			if pending is not None:
-				return loads(pending['payload_json'])
+				body = loads(pending['payload_json'])
+				missing = [item for item in warnings if item not in body.get('owner_policy_warnings', [])]
+				if missing:
+					# Retain the old immutable delivery and issue a newly bound
+					# snapshot. Never rewrite a delivery already seen by a host.
+					prior_id = body.pop('delivery_id')
+					# The status snapshot remains historical. Only the owner policy
+					# observation is current; never relabel old stream facts as new.
+					body['supersedes_delivery_id'] = prior_id
+					if jira_warnings:
+						body['jira_owner_policy_observed_at'] = now
+					if any(item['code'] == 'SHARED_OWNER_AUTOMATION_ACCOUNT' for item in missing):
+						body['owner_policy_observed_at'] = now
+					body['owner_policy_warnings'] = deepcopy(warnings)
+					delivery_id = fingerprint('controller-status-digest', {'revision': pending['revision'], **body})
+					body['delivery_id'] = delivery_id
+					db.execute("UPDATE controller_outbox SET kind='SUPERSEDED' WHERE delivery_id=?", (prior_id,))
+					db.execute('INSERT INTO controller_outbox VALUES(?,?,?,?,?,NULL)', (delivery_id, body['kind'], pending['revision'], body['observed_at'], canonical(body).decode()))
+				return body
 			revision = int(self._meta(db, 'revision'))
 			last_revision = int(self._meta(db, 'last_digest_revision'))
 			last_regular = self._meta(db, 'last_regular_digest')
@@ -1750,12 +1777,19 @@ class ContinuousControllerStore:
 			if row['acknowledged_at'] is not None:
 				return loads(row['payload_json'])
 			_require(timestamp(delivered_at) >= timestamp(row['observed_at']), 'Digest acknowledgement predates its observation')
+			payload = loads(row['payload_json'])
+			if isinstance(payload, dict) and 'jira_owner_policy_observed_at' in payload:
+				_require(timestamp(delivered_at) >= timestamp(payload['jira_owner_policy_observed_at']),
+					'Digest acknowledgement predates its Jira policy warning observation')
+			if isinstance(payload, dict) and 'owner_policy_observed_at' in payload:
+				_require(timestamp(delivered_at) >= timestamp(payload['owner_policy_observed_at']),
+					'Digest acknowledgement predates its owner policy warning observation')
 			db.execute('UPDATE controller_outbox SET acknowledged_at=? WHERE delivery_id=?', (delivered_at, delivery_id))
 			prior_revision = int(self._meta(db, 'last_digest_revision'))
 			db.execute("UPDATE controller_meta SET value=? WHERE key='last_digest_revision'", (str(max(prior_revision, row['revision'])),))
 			if row['kind'] == 'REGULAR':
 				db.execute("UPDATE controller_meta SET value=? WHERE key='last_regular_digest'", (row['observed_at'],))
-			return loads(row['payload_json'])
+			return payload
 
 	@staticmethod
 	def _create_dispatch_intents(db, now):
@@ -4379,7 +4413,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		# Newly stuck/exhausted reviews alert through the existing immediate status
 		# port, even with periodic reports OFF. They never block work or reporting.
 		if review_batching.get('owner_alerts'):
-			alert = store.digest(post_provider_time(), calendar=calendar)
+			alert = store.digest(post_provider_time(), calendar=calendar, owner_config=publication_config, accepted_policy_root=policy_root)
 			if alert is not None:
 				try:
 					receipt = deliver_status(alert)

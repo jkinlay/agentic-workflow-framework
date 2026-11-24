@@ -39,7 +39,8 @@ def footer(applicable=AUTHORITIES):
             "Evidence comment; not a lifecycle transition.")
 
 
-def render(state, *, audience="owner", gate=None, findings=(), validation=None, reviewer=None, ci=None):
+def render(state, *, audience="owner", gate=None, findings=(), validation=None, reviewer=None, ci=None,
+           owner_config=None, accepted_policy_root=None):
     """Render one digest. `state` carries AWF state, PR, head, base, tree and tier."""
     if audience not in AUDIENCES:
         raise ValidationError("Digest audience must be jira, pr or owner")
@@ -77,6 +78,17 @@ def render(state, *, audience="owner", gate=None, findings=(), validation=None, 
         lines.append("CI: " + "; ".join(f"{c['name']} {c['conclusion']} tests_executed={c['tests_executed']} depth={c.get('checkout_depth', 'unknown')}" for c in ci))
     if reviewer:
         lines.append(f"Reviewer: engine={reviewer.get('engine', '-')} run={reviewer.get('run_id', '-')}")
+    from .jira_owner_visibility import jira_owner_warnings, retained_jira_warnings, warning_lines
+    from .shared_owner_policy import shared_owner_warnings
+    github_warnings = [item for item in shared_owner_warnings(owner_config)
+                       if item['code'] == 'SHARED_OWNER_AUTOMATION_ACCOUNT']
+    lines.extend(warning_lines(github_warnings))
+    warnings = jira_owner_warnings(accepted_policy_root, owner_config)
+    if warnings:
+        lines.extend(warning_lines(warnings))
+        for line in warning_lines(retained_jira_warnings((state, gate))):
+            if line not in lines:
+                lines.append(line)
     authorities = tuple(state.get("authorities", AUTHORITIES))
     if not authorities or not set(authorities) <= set(AUTHORITIES):
         raise ValidationError("Digest authorities must be a non-empty subset of the generated footer's list")

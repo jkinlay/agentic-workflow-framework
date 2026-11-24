@@ -111,13 +111,16 @@ def command_catalog(root, *, platform=None):
     from . import ValidationError
     from .canonical import load
     from .shared_owner_policy import shared_owner_warnings
+    from .jira_owner_visibility import jira_owner_warnings, warning_lines
     warnings = runtime_backup_warnings(root)
     try:
         warnings.extend(item['code'] + ': ' + item['message'] for item in
-                        shared_owner_warnings(load(root / '.agentic/PROJECT_CONFIG.yaml')))
+                        shared_owner_warnings(load(root / '.agentic/PROJECT_CONFIG.yaml'))
+                        if item['code'] == 'SHARED_OWNER_AUTOMATION_ACCOUNT')
     except (ValidationError, OSError, ValueError):
         # Doctor remains available for missing or invalid configuration.
         pass
+    warnings.extend(item for item in warning_lines(jira_owner_warnings(root)) if item not in warnings)
     commands = [
         ("adoption", ["preflight"], 0),
         ("verification", ["verify-installation"], 0),

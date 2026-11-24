@@ -62,9 +62,6 @@ audit data but cannot verify overrides without the identity. Signed v1/v2
 override record formats, digests and rendering remain unchanged. Legacy sealing
 alone grants no override authority.
 
-## Jira remains separate
+## Jira owner closure
 
-The Jira opt-out is slice O2 and is not yet available. Shared owner/controller
-closure remains held; controllers never write Done for owner-closure tickets
-or transition Epics. A future controller-history check can rule out only its
-own instrumented operations, not direct writes using the same credentials.
+The [Jira exception](SHARED-JIRA-OWNER-POLICY.md) defaults null. Accepted default-branch policy may name exactly the controller account. Closure requires contract plus keyword, complete latest actor-bound Jira history and protected controller history under exclusive issue ownership. Proven-unsent HELD intents are permitted; attempted/unknown/abandoned/in-flight Done stays held. History rules out only instrumented controller operations. Prefer separate accounts; controllers never write owner-closure Done or transition Epics.

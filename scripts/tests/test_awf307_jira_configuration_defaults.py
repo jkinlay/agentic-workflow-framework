@@ -46,7 +46,7 @@ class JiraSourceDefaultsTests(unittest.TestCase):
         self.assertIn('jira-shared-owner-evidence', checked)
 
     def test_source_and_generated_defaults_null(self):
-        for relative in ('PROJECT_CONFIG.yaml', 'templates/source-config/PROJECT_CONFIG.yaml',
+        for relative in ('defaults/PROJECT_CONFIG.yaml', 'PROJECT_CONFIG.yaml', 'templates/source-config/PROJECT_CONFIG.yaml',
                          'examples/PROJECT_CONFIG.yaml', 'examples/unconfigured-project.yaml',
                          'examples/workflow-content-binding-project.yaml'):
             with self.subTest(path=relative):

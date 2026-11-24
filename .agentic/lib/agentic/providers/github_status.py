@@ -739,15 +739,23 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
         result['next_command'] = result['next_action']
     result['warnings'] = runtime_backup_warnings(root)
     from ..shared_owner_policy import shared_owner_warnings
+    owner_warnings = []
     try:
         with Tree(root) as tree:
             warning_config = load_yaml(tree.read(CONFIG))
-        result['warnings'].extend(item['code'] + ': ' + item['message']
-                                  for item in shared_owner_warnings(warning_config))
+        owner_warnings = [item['code'] + ': ' + item['message']
+                          for item in shared_owner_warnings(warning_config)
+                          if item['code'] == 'SHARED_OWNER_AUTOMATION_ACCOUNT']
     except (ValidationError, OSError, ValueError, KeyError, TypeError, UnicodeError):
         # Keep diagnostics available when integrity or configuration refuses.
         pass
+    from ..jira_owner_visibility import jira_owner_warnings, warning_lines
+    jira_warnings = warning_lines(jira_owner_warnings(root, config))
+    owner_warnings.extend(jira_warnings)
+    result['warnings'].extend(item for item in owner_warnings if item not in result['warnings'])
     result['activation'] = activation_summary(result)
+    if owner_warnings:
+        result['activation']['warnings'] = owner_warnings
     return result
 
 
