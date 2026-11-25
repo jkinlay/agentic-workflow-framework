@@ -1121,9 +1121,8 @@ class DistinctOwnerCompatibility(unittest.TestCase):
                         module.main(arguments, default_root=project)
                         self.assertIn("COLLECTING", output.getvalue())
 
-    def intake_change(self, setting, *, store=None, bootstrap=None):
-        """Change one assignment through the library or the bootstrap entry point."""
-        from types import SimpleNamespace
+    def intake_inputs(self, setting):
+        """One assigned ticket and the owner source that changes it."""
         config = intake_fixture.config()
         config["github"]["expected_actor_id"] = 1002
         config["jira"]["enabled"] = False
@@ -1134,44 +1133,14 @@ class DistinctOwnerCompatibility(unittest.TestCase):
         current = intake_assignment.assign_intake(config, intake_fixture.ticket(), state, None,
             now=intake_fixture.NOW, controller_actor_id="fixture-controller")
         source = intake_fixture.owner_source("AWF-100", current["assignment_id"], 3, 3, reason)
-        if bootstrap is None:
-            return intake_assignment.change_assignment(config, "AWF-100", state, None,
-                requested_tier=3, requested_cap=3, owner_source=source,
-                verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
-                now=intake_fixture.NOW, controller_actor_id="fixture-controller", store=store)
-        import importlib.util
-        specification = importlib.util.spec_from_file_location(
-            "bootstrap_project_hidden_policy", ROOT / "scripts/bootstrap_project.py")
-        module = importlib.util.module_from_spec(specification)
-        specification.loader.exec_module(module)
-        (bootstrap / ".agentic").mkdir(exist_ok=True)
-        config.pop("_awf_runtime", None)
-        (bootstrap / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(config), encoding="utf-8")
-        folder = self.root / ("bootstrap-" + setting + bootstrap.name)
-        folder.mkdir()
-        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
-        (folder / "change.json").write_text(json.dumps({"ticket_key": "AWF-100",
-            "requested_tier": 3, "requested_cap": 3, "reason": reason, "owner_source": source}),
-            encoding="utf-8")
-        return module._run_assignment_path(SimpleNamespace(project_start_inventory=None,
-            ticket_intake=None, assignment_change=folder / "change.json",
-            assignment_state=folder / "state.json", controller_actor_id="fixture-controller",
-            assignment_now=intake_fixture.NOW, dest=bootstrap, recover=False, dry_run=False),
-            None, intake_fixture.verify_owner_source)
+        return config, state, reason, source
 
-    @source_only.skip_unless_source_repo(
-        "Source bootstrap entry point is not shipped in installed runtimes",
-        "scripts/bootstrap_project.py")
-    def test_bootstrap_assignment_change_hidden_opt_out_refuses(self):
-        case = self.hidden_policy_case()
-        ordinary = self.root / "ordinary"
-        ordinary.mkdir()
-        for setting in ("null", "absent"):
-            with self.subTest(setting=setting), case.policy_reads():
-                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
-                    self.intake_change(setting, bootstrap=case.project)
-            with self.subTest(setting=setting, hidden=False):
-                self.assertEqual(3, self.intake_change(setting, bootstrap=ordinary)["AWF-100"]["tier"])
+    def intake_change(self, setting, *, store=None, propose=lambda config: config):
+        config, state, reason, source = self.intake_inputs(setting)
+        return intake_assignment.change_assignment(propose(config), "AWF-100", state, None,
+            requested_tier=3, requested_cap=3, owner_source=source,
+            verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
+            now=intake_fixture.NOW, controller_actor_id="fixture-controller", store=store)
 
     def test_intake_several_protected_worktrees_hidden_opt_out_refuses(self):
         from agentic.continuous_controller import ContinuousControllerStore
@@ -1191,6 +1160,405 @@ class DistinctOwnerCompatibility(unittest.TestCase):
             with self.subTest(setting=setting, hidden=False):
                 self.assertEqual(3, self.intake_change(
                     setting, store=store(setting + "-ordinary", other))["tier"])
+
+
+DIGEST_CHANGED = "Shared-owner accepted policy digest changed"
+
+
+def hidden_proposals(original):
+    """Every proposal that leaves the accepted opt-out of account 1002 unset."""
+    for setting in ("null", "absent"):
+        for name, identity, owners in (
+                ("identity changed", 1003, [1001, 1002]), ("identity null", None, [1001, 1002]),
+                ("identity absent", "absent", [1001, 1002]), ("identity malformed", "1002", [1001, 1002]),
+                ("owners without the account", 1002, [1001]), ("owners empty", 1002, []),
+                ("owners empty, identity changed", 1003, []),
+                ("owners reordered, identity changed", 1003, [1002, 1001])):
+            value = deepcopy(original)
+            value["github"]["expected_actor_id"] = identity
+            if identity == "absent":
+                value["github"].pop("expected_actor_id")
+            value["merge_gate"].update(trusted_owner_ids=list(owners),
+                                       shared_owner_automation_actor_id=None)
+            if setting == "absent":
+                value["merge_gate"].pop("shared_owner_automation_actor_id")
+            yield setting + ": " + name, value
+
+
+def malformed_proposals(original):
+    for section in ("github", "merge_gate"):
+        for name, replacement in (("null", None), ("list", []), ("text", "x"), ("absent", "absent")):
+            value = deepcopy(original)
+            value["merge_gate"]["shared_owner_automation_actor_id"] = None
+            value[section] = replacement
+            if replacement == "absent":
+                value.pop(section)
+            yield section + " " + name, value
+
+
+def different_account_proposals(original):
+    for name, identity, account, owners in (
+            ("mismatched identity", 1003, 1004, [1001, 1002]), ("identity null", None, 1003, [1001, 1002]),
+            ("not an owner", 1003, 1003, [1001, 1002]), ("owners empty", 1002, 1002, []),
+            ("boolean", 1003, False, [1001, 1002])):
+        value = deepcopy(original)
+        value["github"]["expected_actor_id"] = identity
+        value["merge_gate"].update(trusted_owner_ids=owners,
+                                   shared_owner_automation_actor_id=account)
+        yield "different account: " + name, value
+
+
+class AcceptedPolicyDecidesHiddenOptOut(unittest.TestCase):
+    """A known root decides by its accepted policy, whatever the proposal says."""
+
+    def setUp(self):
+        self.enterContext(shipped_routing())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.case = DistinctOwnerCompatibility.hidden_policy_case(self)
+
+    def accept_unset(self, setting="null"):
+        """The accepted default branch leaves the opt-out null or absent."""
+        accepted = deepcopy(self.case.accepted)
+        accepted["merge_gate"]["shared_owner_automation_actor_id"] = None
+        if setting == "absent":
+            accepted["merge_gate"].pop("shared_owner_automation_actor_id")
+        blobs = {**self.case.blobs, ".agentic/PROJECT_CONFIG.yaml": canonical(accepted)}
+        return patch.object(self.case, "blobs", blobs)
+
+    def refuses(self, call, message=DIGEST_CHANGED):
+        with self.case.policy_reads(), self.assertRaises(ValidationError) as raised:
+            call()
+        self.assertIn(message, str(raised.exception))
+
+    def unaffected(self, call, reached=lambda result: None):
+        """Accepted unset, unobserved, or unreadable default branches change nothing."""
+        for setting in ("null", "absent"):
+            with self.subTest(accepted=setting), self.accept_unset(setting), self.case.policy_reads():
+                reached(call())
+        for name, reader in (("unobserved", {"return_value": (None, "unobserved")}),
+                             ("unreadable", {"side_effect": ValidationError("unreadable")})):
+            with self.subTest(root=name), patch("agentic.shared_owner_policy._default_ref", **reader):
+                reached(call())
+
+    def every_proposal(self):
+        yield from hidden_proposals(self.case.config)
+        yield from malformed_proposals(self.case.config)
+
+    def test_guard_refuses_every_hiding_proposal_and_only_those(self):
+        from agentic.shared_owner_policy import _refuse_hidden_opt_out as guard
+        for name, config in (*self.every_proposal(), *different_account_proposals(self.case.config)):
+            with self.subTest(proposal=name):
+                self.refuses(lambda: guard(config, None, self.case.project))
+                self.unaffected(lambda: guard(config, self.case.project))
+                guard(config)
+                guard(config, None)
+                guard(config, self.root / "missing")
+                guard(config, self.root)
+        # The accepted opt-out itself hides nothing and reads nothing here.
+        guard(self.case.config, self.case.project)
+
+    def test_rooted_evidence_refuses_every_hiding_proposal(self):
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        for name, config in self.every_proposal():
+            with self.subTest(proposal=name):
+                for signer in (1001, 1002, None):
+                    self.refuses(lambda: accepted_owner_evidence(self.case.project, config, signer))
+
+    def completion(self):
+        import test_review_completion as completion_fixture
+        current = completion_fixture.candidate()
+        current["repository"] = self.case.config["github"]["repository"]
+        return completion_fixture, current
+
+    def test_review_authority_binding_refuses_every_hiding_proposal(self):
+        worktree = self.case.project / "candidate"
+        worktree.mkdir()
+        _, current = self.completion()
+        for name, config in hidden_proposals(self.case.config):
+            def binding():
+                return review_completion.review_authority_binding(
+                    config, self.case.project, [worktree], current)
+            with self.subTest(proposal=name):
+                if not config["merge_gate"]["trusted_owner_ids"] or "malformed" in name:
+                    continue  # These shapes never reach the binding.
+                self.refuses(binding)
+                if not name.endswith("identity changed"):
+                    continue
+                self.unaffected(binding, lambda value: self.assertNotIn("owner_policy_sha256", value))
+
+    def test_review_freeze_removal_cannot_hide_the_accepted_opt_out(self):
+        # The exact round 3 reproduction, through the production command.
+        import importlib.util
+        specification = importlib.util.spec_from_file_location(
+            "review_completion_hidden_command", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        _, current = self.completion()
+        project = self.case.project
+        (project / ".agentic").mkdir(exist_ok=True)
+        (project / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+        for index, (name, config) in enumerate(hidden_proposals(self.case.config)):
+            if "identity changed" not in name and "identity null" not in name or "empty" in name:
+                continue
+            with self.subTest(proposal=name):
+                folder = self.root / str(index)
+                (folder / "worktree").mkdir(parents=True)
+                (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+                (folder / "candidate.json").write_bytes(canonical(current))
+                (folder / "reviewers.json").write_bytes(canonical(["a", "b", "c"]))
+                arguments = ["--state", str(folder / "state.sqlite3"),
+                    "--worktree-root", str(folder / "worktree"), "freeze",
+                    "--candidate", str(folder / "candidate.json"),
+                    "--reviewers", str(folder / "reviewers.json")]
+                output = io.StringIO()
+                with patch.object(module, "Contracts", return_value=self.case.contracts), \
+                        redirect_stdout(output):
+                    self.refuses(lambda: module.main(arguments, default_root=project))
+                    self.assertFalse((folder / "state.sqlite3").exists())
+                    if "identity changed" in name:
+                        # The accepted unset result is the same freeze as before.
+                        with self.accept_unset(), self.case.policy_reads():
+                            module.main(arguments, default_root=project)
+                        self.assertIn("COLLECTING", output.getvalue())
+
+    def command(self, config, *arguments, root=None):
+        from agentic import cli
+        root = root or self.case.project
+        (root / ".agentic").mkdir(exist_ok=True)
+        (root / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+        (root / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+        output = io.StringIO()
+        with patch.object(cli, "verify_installed", return_value="0" * 64), \
+                patch.object(cli, "Contracts"), patch.object(cli, "now_text", return_value=provider.NOW), \
+                redirect_stdout(output), redirect_stderr(output):
+            status = cli.main(["--root", str(root), *arguments])
+        return status, output.getvalue()
+
+    def document(self, name, value):
+        path = self.root / (name + ".json")
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return str(path)
+
+    def test_jira_bind_cannot_hide_the_accepted_opt_out(self):
+        connections = self.document("connections", self.case.connections)
+        for name, config in hidden_proposals(self.case.config):
+            for signer in (1001, 1002):
+                if signer not in config["merge_gate"]["trusted_owner_ids"] or "malformed" in name:
+                    continue
+                confirmation = self.document("confirmation", {**self.case.confirmation, "owner_id": signer})
+                def bind():
+                    return self.command(config, "jira", "bind", "--connections", connections,
+                                        "--confirmation", confirmation)
+                with self.subTest(proposal=name, signer=signer):
+                    with self.case.policy_reads():
+                        status, text = bind()
+                    self.assertEqual(2, status, text)
+                    self.assertNotIn("CONFIRMED", text)
+                    self.assertIn(DIGEST_CHANGED, text)
+                    if "identity" in name:
+                        self.unaffected(bind, lambda result: self.assertEqual(0, result[0], result[1]))
+                        self.assertEqual(0, self.command(config, "jira", "bind",
+                            "--connections", connections)[0])
+
+    def test_cli_owner_record_commands_cannot_hide_the_accepted_opt_out(self):
+        from agentic import authorization, cli, gates, review_policy
+        accepted = {"synthetic": "verified owner record"}
+        record = self.document("record", {"binding": {}, "cycles": 1, "cap_extensions": 0})
+        findings = self.document("findings", [])
+        assigned = ({"assignment_id": "fixture", "tier": 2})
+        for name, config in hidden_proposals(self.case.config):
+            commands = {
+                "validate-record": ["review-cap-disposition", record],
+                "disposition-request": ["tier-reassignment", record, "--head", "-"],
+                "cap-plan": ["--disposition", record, "--review-verdict", record, "--findings", findings,
+                             "--bundle", record, "--assignment-state", record, "--ticket", "EX-1",
+                             "--head", "a" * 40, "--cycles", "1", "--extensions", "0"],
+                "verify-authorization": ["--config", str(self.case.project / ".agentic/PROJECT_CONFIG.yaml"),
+                                         "--record", record, "--request", record, "--gate", record],
+            }
+            for command, arguments in commands.items():
+                def run():
+                    # Stand in for a record authenticated by the existing verifiers.
+                    with patch.object(authorization, "verify_owner_record", return_value=accepted), \
+                            patch.object(authorization, "make_owner_disposition_request", return_value=dict(accepted)), \
+                            patch.object(cli, "verify_record", return_value=dict(accepted)), \
+                            patch.object(cli, "validate_config"), patch.object(cli, "local_semantics"), \
+                            patch.object(cli, "_load_cli_intake_assignment", return_value=(config, assigned)), \
+                            patch.object(cli, "_load_cli_disposition_context", return_value=({"candidate": {}}, {})), \
+                            patch.object(gates, "verify_disposition_review_binding", return_value={}), \
+                            patch.object(review_policy, "cap_disposition_plan", return_value=dict(accepted)):
+                        return self.command(config, command, *arguments)
+                with self.subTest(proposal=name, command=command):
+                    with self.case.policy_reads():
+                        status, text = run()
+                    self.assertEqual(2, status, text)
+                    self.assertIn(DIGEST_CHANGED, text)
+                    if name == "null: identity changed":
+                        self.unaffected(run, lambda result: self.assertEqual(0, result[0], result[1]))
+
+    def test_gate_evaluation_of_a_known_repository_cannot_hide_the_opt_out(self):
+        from agentic import gates
+        for name, config in hidden_proposals(self.case.config):
+            config["jira"]["enabled"] = False
+            def evaluate(**root):
+                with patch.object(gates, "validate_config", return_value="0" * 64):
+                    return gates.evaluate(config, definition(), {}, self.case.contracts, provider.NOW, **root)
+            with self.subTest(proposal=name):
+                self.refuses(lambda: evaluate(repository=self.case.project))
+                # The next existing check is still reached by every other evaluation.
+                for setting in ("null", "absent"):
+                    with self.accept_unset(setting):
+                        self.refuses(lambda: evaluate(repository=self.case.project), "Jira is disabled")
+                self.refuses(evaluate, "Jira is disabled")
+
+    def test_lifecycle_owner_approvals_cannot_hide_the_opt_out(self):
+        from agentic import authorization, gates, lifecycle
+        for name, config in hidden_proposals(self.case.config):
+            candidate = {"head_sha": "a" * 40, "repository_id": config["github"]["repository_id"], "pr_number": 1}
+            binding = {}
+            with patch("agentic.canonical.candidate_id", return_value="candidate"), \
+                    patch("agentic.policy.policy_hash", return_value="0" * 64):
+                binding.update(project_id=config["project"]["id"], policy_hash="0" * 64,
+                    repository_id=config["github"]["repository_id"], candidate_id="candidate")
+                context = {"config": config, "candidate": candidate, "head_sha": candidate["head_sha"],
+                    "binding": binding, "assignment_record": {"ticket_key": "EX-1"},
+                    "contracts": self.case.contracts, "now": provider.NOW, "review_verdict": {}}
+                approvals = {"config": config, "candidate": candidate, "runs": {},
+                    "trusted_posting_collectors": {}, "approvals": [{"actor_id": 1002}]}
+
+                def transition(**options):
+                    # Stand in for records authenticated by the existing verifiers.
+                    with patch.object(authorization, "verify_owner_record"), \
+                            patch.object(gates, "verify_disposition_review_binding"), \
+                            patch.object(gates, "verified_overcap_approvals", return_value=[]), \
+                            patch.object(lifecycle, "validate_round"), \
+                            patch.object(lifecycle, "review_decision", return_value={}):
+                        return lifecycle.review_round_transition(2, 1,
+                            accepted_policy_root=self.case.project, **options)
+                for options in ({"owner_cap_disposition": {}, "owner_cap_context": context},
+                                {"overcap_approval_context": approvals}):
+                    with self.subTest(proposal=name, authority=sorted(options)):
+                        self.refuses(lambda: transition(**options))
+                        self.unaffected(lambda: transition(**options))
+                # No approval means no owner authority to hide.
+                with self.case.policy_reads():
+                    transition(overcap_approval_context={**approvals, "approvals": []})
+
+    def test_rooted_preflight_without_owners_cannot_hide_the_opt_out(self):
+        from agentic.provider_identity import github_identity_preflight
+        for gate in (None, [], {}, "absent", {"trusted_owner_ids": []},
+                     {"trusted_owner_ids": [], "shared_owner_automation_actor_id": 1002}):
+            config = deepcopy(self.case.config)
+            config["merge_gate"] = gate
+            if gate == "absent":
+                config.pop("merge_gate")
+            def preflight(**root):
+                return github_identity_preflight(config, self.case.observation, **root)
+            with self.subTest(gate=gate):
+                self.refuses(lambda: preflight(accepted_policy_root=self.case.project))
+                self.unaffected(lambda: preflight(accepted_policy_root=self.case.project),
+                                lambda result: self.assertEqual("PASS", result["status"]))
+                self.assertEqual("PASS", preflight()["status"])
+
+    def test_intake_store_roots_cannot_hide_the_opt_out(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+
+        def changed(config):
+            config["github"]["expected_actor_id"] = 1003
+            return config
+
+        def without_identity(config):
+            config["github"]["expected_actor_id"] = None
+            return config
+        for name, propose in (("changed", changed), ("null", without_identity)):
+            for setting in ("null", "absent"):
+                folder = self.root / (name + setting)
+                folder.mkdir()
+                store = ContinuousControllerStore(folder / "controller.sqlite", ["B"],
+                    worktree_roots=(self.case.project, self.case.project))
+                def change():
+                    return DistinctOwnerCompatibility.intake_change(self, setting, store=store, propose=propose)
+                with self.subTest(identity=name, setting=setting):
+                    self.refuses(change)
+                    with self.accept_unset(setting), self.case.policy_reads():
+                        self.assertEqual(3, change()["tier"])
+
+    intake_inputs = DistinctOwnerCompatibility.intake_inputs
+
+    def test_queue_store_protected_roots_cannot_hide_the_opt_out(self):
+        from agentic import integration_queue
+        for name, config in hidden_proposals(self.case.config):
+            def refresh(roots):
+                store = integration_queue.IntegrationQueueStore(self.root / "queue.sqlite", roots)
+                with patch.object(integration_queue, "_accepted_project_config", return_value=(config, {})), \
+                        patch.object(integration_queue, "_authority", return_value={}), \
+                        patch.object(integration_queue, "_authority_projection", return_value={}):
+                    return store._refresh_project_config(provider.NOW)
+            with self.subTest(proposal=name):
+                self.refuses(lambda: refresh([self.case.project]))
+                self.unaffected(lambda: refresh([self.case.project]))
+                refresh([])
+
+    def test_controller_root_without_git_metadata_cannot_hide_the_opt_out(self):
+        from agentic import continuous_controller
+        for name, config in hidden_proposals(self.case.config):
+            def policy():
+                return continuous_controller._controller_owner_policy(config, self.case.project)
+            with self.subTest(proposal=name):
+                self.refuses(policy)
+                self.unaffected(policy, lambda value: self.assertEqual({}, value))
+
+    def test_post_merge_count_gate_cannot_hide_the_opt_out(self):
+        from agentic import closeout, integration_queue, policy
+        for name, config in hidden_proposals(self.case.config):
+            contracts = unittest.mock.Mock()
+            contracts.validate.side_effect = ValidationError("next existing check")
+            def gate():
+                with patch.object(integration_queue, "_accepted_project_config", return_value=(config, {})), \
+                        patch.object(policy, "validate_config"):
+                    return closeout.require_jira_reconciliation_before_counts({},
+                        repository=self.case.project, project_config=config,
+                        contracts=contracts, now=provider.NOW)
+            with self.subTest(proposal=name):
+                self.refuses(gate)
+                with self.accept_unset():
+                    self.refuses(gate, "next existing check")
+
+    def test_production_cycle_root_cannot_hide_the_opt_out(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from agentic import continuous_controller as controller, operating
+        from agentic.canonical import fingerprint
+        from agentic.reporting import policy as reporting_policy
+        from agentic.store import Store
+        called = lambda *a, **k: self.fail("an adapter ran before the policy check")
+        proposals = list(hidden_proposals(self.case.config))
+        ordinary = deepcopy(self.case.config)
+        for name, config in proposals:
+            for planning in (config, ordinary):
+                def cycle():
+                    with patch.object(operating, "validate_snapshot"), patch.object(reporting_policy,
+                            "ReportingPolicy", side_effect=ValidationError("next existing check")):
+                        return controller.production_controller_cycle(
+                            Mock(spec=controller.ContinuousControllerStore),
+                            controller_config=dict.fromkeys(("dispatch_enabled", "auto_dispatch",
+                                "auto_request_critic", "auto_resume_amendments"), False),
+                            now=provider.NOW, inventory_binding={"project_id": "p", "repository_id": "1",
+                                "scope_sha256": "0" * 64},
+                            repository_root=self.case.project, repository_head_sha="a" * 40,
+                            repository_tree_sha="b" * 40, observe_inventory=called, dispatch_ticket=called,
+                            observe_dispatch=called, deliver_status=called, publication_config=config,
+                            observe_host_resources=called, verify_host_observation=called,
+                            project_config_sha256=fingerprint("accepted-project-config", planning),
+                            operating_config_sha256="0" * 64, planning_state_store=Mock(spec=Store),
+                            planning_config=planning, planning_operating_snapshot=SimpleNamespace(
+                                operating_hash="0" * 64),
+                            observe_planning_backlog=called, verify_planning_backlog=called,
+                            observe_planning_events=called, verify_planning_events=called)
+                with self.subTest(proposal=name, planning=planning is config):
+                    self.refuses(cycle)
+                    with self.accept_unset():
+                        self.refuses(cycle, "next existing check")
 
 
 PARENT_STREAM_RESULTS = dict.fromkeys((False, True),

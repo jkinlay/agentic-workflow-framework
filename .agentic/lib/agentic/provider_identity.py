@@ -89,6 +89,13 @@ def github_identity_preflight(config, observation, *, accepted_policy_root=None)
     owner_evidence = {}
     absent_policy = gate is None or gate == [] or gate == {}
     empty_allowlist = isinstance(gate, dict) and gate.get("trusted_owner_ids") == []
+    if absent_policy or empty_allowlist or not isinstance(gate, dict):
+        from .shared_owner_policy import _refuse_hidden_opt_out
+        try:
+            _refuse_hidden_opt_out(config, accepted_policy_root)
+        except ValidationError as exc:
+            raise ProviderIdentityError("IDENTITY_UNBOUND", str(exc),
+                                        expected=expected, observed=observation) from exc
     if not (absent_policy or empty_allowlist):
         from .authorization import trusted_owner_ids
         # Bind profile-only admission to the validated observation without

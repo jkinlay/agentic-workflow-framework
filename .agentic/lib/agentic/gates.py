@@ -733,6 +733,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                                 _recheck_authorization_policy)
     policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
               if accepted_policy_root is not None else {})
+    # A rootless evaluation still names its host repository; it can only refuse.
+    from .shared_owner_policy import _refuse_hidden_opt_out
+    if accepted_policy_root is None:
+        _refuse_hidden_opt_out(config, repository)
     if config["jira"].get("enabled", True) is False:
         raise ValidationError("Jira is disabled; this Jira evidence evaluator requires Jira scope. Continue provisional local planning through the native host.")
     if not config["merge_gate"]["trusted_owner_ids"]:

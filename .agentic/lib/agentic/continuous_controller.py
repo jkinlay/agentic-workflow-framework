@@ -361,6 +361,9 @@ def _controller_owner_policy(config, accepted_policy_root):
 					# Full accepted-policy validation refuses the hidden setting or
 					# changed identity; this read can never enable the exception.
 					accepted_owner_evidence(accepted_policy_root, config, None)
+		elif accepted_policy_root is not None:
+			from .shared_owner_policy import _refuse_hidden_opt_out
+			_refuse_hidden_opt_out(config, accepted_policy_root)
 		return {}
 	return accepted_owner_evidence(accepted_policy_root, config, shared)
 
@@ -3742,6 +3745,9 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots
 	# All protected domains use the independently selected repository and refusal.
 	policy_root = Path(repository_root).resolve(strict=True)
+	from .shared_owner_policy import _refuse_hidden_opt_out
+	if publication_config is not None:
+		_refuse_hidden_opt_out(publication_config, policy_root)
 	from .reporting.policy import ReportingPolicy
 	report_policy = ReportingPolicy(policy_root, planning_config, planning_operating_snapshot)
 	accepted_operating = report_policy.snapshot

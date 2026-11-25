@@ -237,6 +237,8 @@ def review_authority_binding(config, project_root, worktree_roots, candidate, *,
     }
     _require(review_authority_from_config(config, accepted_policy_root=accepted_policy_root) == authority,
              "Shared-owner policy changed before authority binding")
+    if accepted_policy_root is None:
+        _refuse_hidden_owner_policy(config, project_root)
     return value
 
 

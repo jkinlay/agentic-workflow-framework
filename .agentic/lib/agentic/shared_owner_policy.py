@@ -147,6 +147,8 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
     # Intake's documented process-local assignment map is not reviewed policy.
     # Strip only that context; every reviewed configuration byte still binds.
     config = {key: value for key, value in config.items() if key != "_awf_runtime"}
+    if not all(isinstance(config.get(key, {}), dict) for key in ("github", "merge_gate")):
+        _refuse_hidden_opt_out(config, root)
     shared = configured_shared_owner_actor_id(config)
     if shared is None:
         if (config.get("github", {}).get("expected_actor_id") in config.get("merge_gate", {}).get("trusted_owner_ids", [])
@@ -200,15 +202,49 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             "accepted_owner_policy": observation}
 
 
+def _accepted_opt_out(root):
+    """Read only the accepted setting; an unobservable policy stays unknown."""
+    try:
+        ref, _ = _default_ref(root)
+        if ref is None:
+            return None
+        commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+        raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
+        accepted = load_yaml(raw) if raw is not None else None
+    except (ValidationError, OSError, ValueError, TypeError):
+        return None
+    gate = accepted.get("merge_gate") if isinstance(accepted, dict) else None
+    return gate.get(SETTING) if isinstance(gate, dict) else None
+
+
+def _refuse_hidden_opt_out(config, *roots):
+    """Let the accepted policy, never the proposal, decide that nothing is hidden.
+
+    Any proposal without a valid opt-out is checked, whatever its identity,
+    owners or section shapes. An accepted unset setting, or a root without an
+    observable default branch, changes nothing. No result grants authority.
+    """
+    try:
+        if configured_shared_owner_actor_id(config) is not None:
+            return  # A valid proposal meets each caller's own accepted-policy rules.
+    except (ValidationError, AttributeError, TypeError):
+        pass
+    for root in roots:
+        if root is not None and _accepted_opt_out(root) is not None:
+            raise ValidationError("Shared-owner accepted policy digest changed")
+
+
 def _refuse_hidden_owner_policy(config, *roots):
     """Detect a hidden accepted opt-out where a caller knows more than its root.
 
-    Only the default-off overlap reads anything. A root without an observable
-    default branch changes nothing, and no result ever grants authority.
+    The default-off overlap keeps its complete accepted-policy comparison; every
+    other proposal is refused only when the accepted opt-out is set.
     """
     if _legacy_owner_overlap(config):
         for root in roots:
             accepted_owner_evidence(root, config, None, legacy_unsigned=True)
+    else:
+        _refuse_hidden_opt_out(config, *roots)
 
 
 def _legacy_owner_root(config, root):

@@ -69,8 +69,14 @@ overlap; `inspect_config`, which the review freeze command uses, does not. Below
 - Controller overlap and replan approvals refuse. Excluded round-admission
   prerequisites remain.
 
-An accepted default branch with the opt-out set still refuses a proposal that
-hides it.
+A caller that knows its policy root decides by the accepted policy: with the
+accepted opt-out set, owner authority refuses any proposal that leaves it unset
+or invalid, whatever its identity, owners or section shapes. This includes
+review freeze, Jira binding, over-cap and cap dispositions, CLI owner records
+and gate evaluation, intake, streams, the queue store, controller cycles
+(their publication configuration) and post-merge counts. The check can only refuse; an unobservable default branch
+changes nothing. Rootless interfaces and reports that consume no owner record
+(doctor, status, publication, gate handoff) are unchanged.
 
 The closed provenance owner projection now requires `expected_actor_id` beside
 `config_sha256`, `trusted_owner_ids` and `binding_sha256`; its binding payload

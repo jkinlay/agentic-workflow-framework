@@ -1475,6 +1475,8 @@ class IntegrationQueueStore:
         self.path = Path(path).resolve()
         self.accepted_policy_root = accepted_policy_root
         worktree_roots = tuple(worktree_roots)
+        # Host-protected roots can show a hidden accepted opt-out, never enable one.
+        self._known_policy_roots = worktree_roots if accepted_policy_root is None else ()
         if accepted_policy_root is not None:
             from .shared_owner_policy import consumer_policy_root
             self.worktree_roots = worktree_roots
@@ -1552,6 +1554,8 @@ class IntegrationQueueStore:
             self.project_config_observer_registry, now=observed_at,
             return_attestation=True, match_expected=match_expected,
             accepted_policy_root=self.accepted_policy_root)
+        from .shared_owner_policy import _refuse_hidden_opt_out
+        _refuse_hidden_opt_out(accepted, *self._known_policy_roots)
         self.accepted_project_config = accepted
         self.authority = _authority(accepted, accepted_policy_root=self.accepted_policy_root)
         self.authority_projection_sha256 = fingerprint(

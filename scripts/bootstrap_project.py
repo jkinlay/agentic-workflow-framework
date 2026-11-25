@@ -103,6 +103,11 @@ def _run_assignment_path(args, jira_client, owner_source_verifier, store=None, *
         raise ValidationError("Assignment state must be an object")
     from agentic.intake_assignment import load_runtime_assignments
     load_runtime_assignments(config, state)
+    if any(isinstance(record.get("change_audit"), dict)
+           for record in state.get("tier_assignments", {}).values()):
+        # Retained owner decisions are owner authority for this destination too.
+        from agentic.shared_owner_policy import _refuse_hidden_opt_out
+        _refuse_hidden_opt_out(config, args.dest)
     assigned_at = args.assignment_now or now_text()
     try:
         if args.project_start_inventory is not None:
@@ -131,7 +136,10 @@ def _run_assignment_path(args, jira_client, owner_source_verifier, store=None, *
             if not isinstance(change, dict) or not required.issubset(change):
                 raise ValidationError("Assignment change is missing required fields")
             from agentic.shared_owner_policy import _refuse_hidden_owner_policy
-            _refuse_hidden_owner_policy(config, args.dest)
+            # A store that protects this destination supplies its own root spelling.
+            known = [root for root in getattr(store, "worktree_roots", ())
+                     if Path(root).resolve() == Path(args.dest).resolve()]
+            _refuse_hidden_owner_policy(config, *(known[:1] or [args.dest]))
             record = change_assignment(
                 config, change["ticket_key"], state, jira_client,
                 requested_tier=change["requested_tier"], requested_cap=change["requested_cap"],
