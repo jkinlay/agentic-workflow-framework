@@ -1476,7 +1476,9 @@ class IntegrationQueueStore:
         self.accepted_policy_root = accepted_policy_root
         worktree_roots = tuple(worktree_roots)
         # Host-protected roots can show a hidden accepted opt-out, never enable one.
-        self._known_policy_roots = worktree_roots if accepted_policy_root is None else ()
+        from .shared_owner_policy import _known_root
+        self._known_policy_roots = tuple(_known_root(root) for root in (
+            worktree_roots if accepted_policy_root is None else (accepted_policy_root,)))
         if accepted_policy_root is not None:
             from .shared_owner_policy import consumer_policy_root
             self.worktree_roots = worktree_roots

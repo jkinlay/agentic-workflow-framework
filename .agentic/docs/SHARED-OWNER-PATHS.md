@@ -1,7 +1,7 @@
 # Shared owner account candidate boundary
 
-AWF-307 O1b is an unmerged candidate. The GitHub setting is reserved and must
-stay null until its bindings ship. The global separation refusal remains.
+This is AWF-307's GitHub slice; the Jira slice (O2) is separate. Keep the GitHub
+setting null until a release ships it. The global separation refusal remains.
 Separate owner and automation accounts are recommended wherever possible.
 Agents never propose an opt-out without explicit human direction.
 
@@ -38,8 +38,8 @@ round ceilings and extension limits remain unchanged.
 | `providers/github_review_host` | `collect_provenance_observation`, `collect_default_branch_observation` |
 
 Rootless callers retain their refusal or non-authoritative result:
-`cli.main`, `closeout.require_jira_reconciliation_before_counts`,
-`host_preflight._provider_identity_rows`, `interaction.gate_handoff`,
+`cli.main`, `closeout.require_jira_reconciliation_before_counts` (both also make
+the hidden-setting check below), `host_preflight._provider_identity_rows`, `interaction.gate_handoff`,
 `owner_publication.resume_owner_publication`,
 `publication_readiness.publication_readiness`, `status_report_store._identity`,
 `provider_identity.observe_github_identity`.
@@ -69,14 +69,28 @@ overlap; `inspect_config`, which the review freeze command uses, does not. Below
 - Controller overlap and replan approvals refuse. Excluded round-admission
   prerequisites remain.
 
-A caller that knows its policy root decides by the accepted policy: with the
-accepted opt-out set, owner authority refuses any proposal that leaves it unset
-or invalid, whatever its identity, owners or section shapes. This includes
-review freeze, Jira binding, over-cap and cap dispositions, CLI owner records
-and gate evaluation, intake, streams, the queue store, controller cycles
-(their publication configuration) and post-merge counts. The check can only refuse; an unobservable default branch
-changes nothing. Rootless interfaces and reports that consume no owner record
-(doctor, status, publication, gate handoff) are unchanged.
+These callers refuse when their known root's accepted setting is set
+and the proposal leaves it unset or invalid, whatever its identity, owners or
+section shapes: review freeze, confirmed Jira binding, over-cap and cap
+dispositions, CLI owner records and gate evaluation, intake, bootstrap
+assignment, streams, rooted preflight and authorization, the queue store and
+review-store removals (protected roots), controller owner approvals, the
+production cycle's publication configuration, and post-merge counts. Relative
+roots count. The check only refuses.
+
+Limits: a root is unobservable, and this check changes nothing, when Git or
+`origin/HEAD` is missing, its ref dangles, isolated Git fails (no native Git,
+unpinnable filters, missing objects, timeout) or the accepted file is absent at
+that root, not mode 100644, malformed, oversized or without mappings. Controller,
+provenance and shared-account reads may refuse instead. Protect Git metadata and
+refresh `origin/HEAD`. Protected roots are checked without comparing
+repositories (that field is also proposed), so another opted-in project's
+worktree can refuse. CLI evaluation and authorization refuse a retiring
+proposal and accepted shared policy; only library `accepted_policy_root` gates it.
+
+Unchanged: rootless interfaces; reports consuming no owner record (doctor,
+status, publication, gate handoff); and planning overrides, which accept either
+account's owner signature as before.
 
 The closed provenance owner projection now requires `expected_actor_id` beside
 `config_sha256`, `trusted_owner_ids` and `binding_sha256`; its binding payload

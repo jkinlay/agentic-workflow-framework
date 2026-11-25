@@ -168,6 +168,8 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
             raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
         except ValidationError:
+            # Only this spelling failed; an accepted opt-out still refuses.
+            _refuse_hidden_opt_out(config, root)
             return {}
         accepted = load_yaml(raw) if raw is not None else {}
         if (isinstance(accepted, dict) and
@@ -202,19 +204,49 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             "accepted_owner_policy": observation}
 
 
+def _known_root(root):
+    """Fix a relative root where its host supplies it; keep an absolute spelling."""
+    from pathlib import Path
+    path = Path(root)
+    return path if path.is_absolute() else path.resolve()
+
+
+def _root_spellings(root):
+    """Spell one directory every way the isolated Git reader may need it.
+
+    That reader uses its root as both working directory and -C argument, so a
+    relative root is applied twice; Git also refuses some extended spellings.
+    """
+    from pathlib import Path
+    known = _known_root(root)
+    resolved = known.resolve()
+    plain = resolved.as_posix()
+    if plain.startswith("//?/UNC/"):
+        plain = "//" + plain[len("//?/UNC/"):]
+    elif plain.startswith(("//?/", "//./")):
+        plain = plain[len("//?/"):]
+    return tuple(dict.fromkeys((known, resolved, Path(plain))))
+
+
 def _accepted_opt_out(root):
     """Read only the accepted setting; an unobservable policy stays unknown."""
     try:
-        ref, _ = _default_ref(root)
-        if ref is None:
-            return None
-        commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
-        raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
-        accepted = load_yaml(raw) if raw is not None else None
-    except (ValidationError, OSError, ValueError, TypeError):
+        spellings = _root_spellings(root)
+    except (OSError, RuntimeError, ValueError, TypeError):
         return None
-    gate = accepted.get("merge_gate") if isinstance(accepted, dict) else None
-    return gate.get(SETTING) if isinstance(gate, dict) else None
+    for spelling in spellings:
+        try:
+            ref, _ = _default_ref(spelling)
+            if ref is None:
+                continue
+            commit = _git(spelling, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+            raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
+            accepted = load_yaml(raw) if raw is not None else None
+        except (ValidationError, OSError, ValueError, TypeError):
+            continue
+        gate = accepted.get("merge_gate") if isinstance(accepted, dict) else None
+        return gate.get(SETTING) if isinstance(gate, dict) else None
+    return None
 
 
 def _refuse_hidden_opt_out(config, *roots):
