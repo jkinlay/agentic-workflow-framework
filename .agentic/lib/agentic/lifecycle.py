@@ -438,9 +438,14 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                 or not isinstance(runs, dict) or not isinstance(collectors, dict)):
             raise ValidationError("Lifecycle requires an authenticated over-cap approval context")
         from .gates import verified_overcap_approvals
+        from .shared_owner_policy import _legacy_owner_root
+        supplied_approvals = overcap_approval_context["approvals"]
+        # This excluded path gains no shared-account exception. Its policy root
+        # only lets the default-off overlap detect a hidden accepted opt-out.
         overcap_approvals = verified_overcap_approvals(
-            approval_config, overcap_approval_context["approvals"], candidate,
-            runs, collectors,
+            approval_config, supplied_approvals, candidate, runs, collectors,
+            accepted_policy_root=(_legacy_owner_root(approval_config, accepted_policy_root)
+                                  if supplied_approvals else None),
         )
         from .policy import parse_overcap_approval
         matching_approvals = []

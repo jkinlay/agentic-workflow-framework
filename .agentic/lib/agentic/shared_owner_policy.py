@@ -5,6 +5,7 @@ its owner source and retain the returned policy evidence with its own binding.
 """
 from __future__ import annotations
 
+import copy
 from urllib.parse import urlsplit
 
 from . import ValidationError
@@ -119,8 +120,45 @@ def _has_git_metadata(root):
     return True
 
 
+def _legacy_owner_overlap(config):
+    """Recognize the well-formed default-off overlap affected by compatibility."""
+    github, gate = ((config.get("github"), config.get("merge_gate"))
+                    if isinstance(config, dict) else (None, None))
+    if not isinstance(github, dict) or not isinstance(gate, dict) or gate.get(SETTING) is not None:
+        return False
+    expected, owners = github.get("expected_actor_id"), gate.get("trusted_owner_ids")
+    return (type(expected) is int and expected > 0 and isinstance(owners, list)
+            and all(type(owner) is int and owner > 0 for owner in owners)
+            and len(owners) == len(set(owners))
+            and expected in owners)
+
+
+def _distinct_legacy_signer(config, actor_id):
+    """Identify a signer other than the automation account; grant no authority.
+
+    Each consumer keeps its own original trusted-owner check for that signer.
+    """
+    return (_legacy_owner_overlap(config) and type(actor_id) is int
+            and actor_id != config["github"]["expected_actor_id"])
+
+
+def _detach_legacy_record(config, record):
+    """Bind the compatible decision to bytes no later policy read can replace.
+
+    Every other mode keeps the caller's object and its existing behaviour.
+    """
+    return copy.deepcopy(record) if _legacy_owner_overlap(config) else record
+
+
+def _require_detached_unchanged(record, detached):
+    """A record replaced while it was checked keeps the separation refusal."""
+    if record is not detached and record != detached:
+        raise ValidationError("The configured automation actor must not be a trusted owner")
+
+
 def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
-                            repository=None, project_key=None):
+                            repository=None, project_key=None, legacy_distinct_signer=False,
+                            legacy_unsigned=False):
     """Bind one enrolled consumer without relaxing the global owner validator.
 
     The project root is supplied by the trusted host, never by an owner record.
@@ -136,7 +174,9 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
     config = {key: value for key, value in config.items() if key != "_awf_runtime"}
     shared = configured_shared_owner_actor_id(config)
     if shared is None:
-        if config.get("github", {}).get("expected_actor_id") in config.get("merge_gate", {}).get("trusted_owner_ids", []):
+        if (config.get("github", {}).get("expected_actor_id") in config.get("merge_gate", {}).get("trusted_owner_ids", [])
+                and not (legacy_distinct_signer and _distinct_legacy_signer(config, actor_id))
+                and not (legacy_unsigned and actor_id is None and _legacy_owner_overlap(config))):
             from .authorization import trusted_owner_ids
             trusted_owner_ids(config)
         # An unset opt-out adds no Git prerequisite to legacy owner authority.
@@ -183,6 +223,22 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
     return {"shared_owner_automation_account": True,
             "owner_policy_sha256": observation["policy_sha256"],
             "accepted_owner_policy": observation}
+
+
+def _refuse_hidden_owner_policy(config, *roots):
+    """Detect a hidden accepted opt-out where a caller knows more than its root.
+
+    Only the default-off overlap reads anything. A root without an observable
+    default branch changes nothing, and no result ever grants authority.
+    """
+    if _legacy_owner_overlap(config):
+        for root in roots:
+            accepted_owner_evidence(root, config, None, legacy_unsigned=True)
+
+
+def _legacy_owner_root(config, root):
+    """Supply a known root to a rootless caller only in the default-off overlap."""
+    return root if _legacy_owner_overlap(config) else None
 
 
 def _origin_matches(url, github):

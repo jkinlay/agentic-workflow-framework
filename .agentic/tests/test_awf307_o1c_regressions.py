@@ -1,10 +1,13 @@
 """O1c: reviewer differentials, diagnostic warnings and closed digest schema."""
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
+import inspect
 import json
+import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -261,6 +264,975 @@ class DigestSchema(unittest.TestCase):
         invalid["owner_policy_warnings"][0]["unexpected"] = True
         with self.assertRaises(ValidationError):
             contracts.validate("controller-status-digest", invalid)
+
+
+@contextmanager
+def replacing_during_policy_read(number, replace):
+    """Inject one caller mutation while the real immutable policy read runs."""
+    if number is None:
+        yield
+        return
+    from agentic import shared_owner_policy
+    original, reads = shared_owner_policy._policy_blob, []
+
+    def read(*arguments):
+        reads.append(arguments)
+        if len(reads) == number:
+            replace()
+        return original(*arguments)
+    with patch.object(shared_owner_policy, "_policy_blob", side_effect=read):
+        yield
+    if len(reads) < number:
+        raise AssertionError("policy read was not reached")
+
+
+def review_removal_record(current, old, provider_identity, signer):
+    from datetime import datetime, timedelta, timezone
+    from agentic.canonical import fingerprint
+    now = datetime.now(timezone.utc)
+    return {"schema_version": 1, "disposition_id": "11111111-1111-4111-8111-111111111111",
+            "decision": "REMOVE_REQUIRED_REVIEWERS", "old_cycle_id": old["cycle_id"],
+            "tuple": deepcopy(current), "tuple_sha256": old["tuple_sha256"],
+            "old_required_reviewers": ["a", "b", "c"],
+            "old_reviewer_set_sha256": old["reviewer_set_sha256"],
+            "new_required_reviewers": ["a", "b"],
+            "new_reviewer_set_sha256": fingerprint("reviewer-set", ["a", "b"]),
+            "removed_reviewers": ["c"], "reason": "Owner approved the revised set.",
+            "owner_actor_id": signer, "provider_identity": deepcopy(provider_identity),
+            "issued_at": now.isoformat().replace("+00:00", "Z"),
+            "expires_at": (now + timedelta(minutes=4)).isoformat().replace("+00:00", "Z")}
+
+
+def review_projection_scenario(consumer, config, call, root, signer, replace_on_read):
+    import test_review_completion as completion_fixture
+    from agentic.canonical import fingerprint
+    with tempfile.TemporaryDirectory() as name:
+        folder = Path(name)
+        worktree = folder / "worktree"
+        worktree.mkdir()
+        project = folder if root is None else root
+        current = completion_fixture.candidate()
+        current["repository"] = config["github"]["repository"]
+        binding = call(review_completion.review_authority_binding, config, project,
+                       [worktree], current)
+        if consumer == "review-binding":
+            paths = [os.path.normcase(str(Path(item).resolve())) for item in (project, worktree)]
+            if [binding["project_root"], *binding["worktree_roots"]] != paths:
+                raise AssertionError("binding paths differ")
+            return {**binding, "project_root": "ROOT", "worktree_roots": ["WORKTREE"]}
+        observations = []
+
+        def observer(request):
+            observations.append(request)
+            return completion_fixture.ReviewCompletionTests.provider_review(request)
+        ledger = call(review_completion.ReviewCompletionStore, folder / "state.sqlite3", [worktree],
+            authority=call(review_completion.review_authority_from_config, config),
+            authority_binding=binding, provider_observer=observer)
+        old = ledger.freeze(current, ["a", "b", "c"])
+        ledger.dispatch("c", current, ["a", "b", "c"])
+        record = review_removal_record(current, old, ledger.authority["provider_identity"], signer)
+        authenticated = deepcopy(record)
+        disposition = {"record": record, "record_sha256": fingerprint(
+            "reviewer-removal-disposition", record)}
+        replaced = []
+
+        def replace():
+            # Only after the provider authenticated this record.
+            record.update(owner_actor_id=1002 if signer == 1001 else 1001)
+            replaced.append(True)
+        if replace_on_read:
+            from agentic import shared_owner_policy
+            original = shared_owner_policy._policy_blob
+
+            def read(*arguments):
+                if observations and not replaced:
+                    replace()
+                return original(*arguments)
+            with patch.object(shared_owner_policy, "_policy_blob", side_effect=read):
+                result = ledger.freeze(current, ["a", "b"], disposition)
+        else:
+            result = ledger.freeze(current, ["a", "b"], disposition)
+        audit = ledger.reviewer_set_audit()
+        return {"reviewers": result["required_reviewers"], "entries": len(audit),
+                "authenticated_record_retained": audit[0]["record"] == authenticated,
+                "replaced": bool(replaced)}
+
+
+def projection_scenario(consumer, config, root=None, signer=1001, *, replace_on_read=False):
+    """Run the two unsigned projections and what accepts owner records from them."""
+    import test_integration_queue as queue_fixture
+    from agentic.canonical import fingerprint
+
+    def call(function, *arguments, **keywords):
+        names = inspect.signature(function).parameters
+        optional = {"accepted_policy_root": root, "project_config": config,
+                    "accepted_policy_config": config if root is not None else None}
+        for key, value in optional.items():
+            if (key in names and value is not None and key not in keywords
+                    and list(names).index(key) >= len(arguments)):
+                keywords[key] = value
+        return function(*arguments, **keywords)
+
+    if consumer == "review-authority":
+        # The owner list is a tuple, which canonical JSON cannot represent.
+        return {"repr": repr(call(review_completion.review_authority_from_config, config))}
+    if consumer.startswith("review-"):
+        return review_projection_scenario(consumer, config, call, root, signer, replace_on_read)
+    config = deepcopy(config)
+    config["validation"]["required_ci_checks"][0]["name"] = "awf-integration"
+    if consumer == "queue-authority":
+        return {"repr": repr(call(integration_queue._authority, config))}
+    if consumer == "queue-projection":
+        return call(integration_queue._authority_projection, config)
+    registry = {}
+
+    def observe(request):
+        if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+            return queue_fixture.accepted_config_result(config)
+        return {"instruction": deepcopy(request["instruction"])}
+    queue_fixture.register_integration_observer("fixture-mode-provider", observe, registry,
+                                                observed_at=queue_fixture.NOW)
+    if consumer == "queue-accepted":
+        return call(integration_queue._accepted_project_config, config,
+            {"producer_id": "fixture-mode-provider"}, registry, now=queue_fixture.NOW)
+    settings = {"test_command": "python -B -m unittest", "stall_after_hours": 24,
+                "max_stack_depth": 2}
+    value = queue_fixture.instruction("ENABLE_EPIC_MODE", settings, "projection-1")
+    value["owner_actor_id"] = signer
+    value["instruction_id"] = fingerprint("integration_owner_instruction",
+        {key: item for key, item in value.items() if key != "instruction_id"})
+    authority = call(integration_queue._authority, config)
+    return call(integration_queue._owner_instruction, value, "ENABLE_EPIC_MODE", "AWF-EPIC",
+        settings, authority=authority, registry=registry, now=queue_fixture.NOW, max_age=3600)
+
+
+def stream_owner_scenario(config, root=None, signer=1001, *, retained=False, replace_during=None):
+    """A live owner move, or a later plan over a move retained before the overlap."""
+    from agentic.streams import plan_inventory
+    config = deepcopy(config)
+    config["github"]["repository"] = "fixture-only/awf-demo"
+    config["jira"]["project_key"] = "DEMO"
+    raw = canonical(load(ROOT / ".agentic/examples/stream-input.json"))
+    now, reason = "2026-09-11T10:00:00Z", "Synthetic owner stream decision"
+    assignment = stream_fixture.intake_assignment()
+    directive = {"ticket_id": "DEMO-31", "who": signer, "when": now, "why": reason,
+                 "old": "C", "new": "B", "owner_source": stream_fixture.stream_owner_source(
+                     "DEMO-31", assignment["assignment_id"], "C", "B", reason, actor_id=signer)}
+
+    def replace():
+        directive.update(who=1002, owner_source={**directive["owner_source"], "actor_id": 1002})
+
+    def verify(source, expected):
+        result = stream_fixture.verify_stream_owner_source(source, expected)
+        if replace_during == "verifier":
+            replace()
+        return result
+
+    def plan(governance, previous, directives):
+        options = ({"accepted_policy_root": root}
+                   if "accepted_policy_root" in inspect.signature(plan_inventory).parameters else {})
+        return plan_inventory(raw, sha256(raw), now, allow_synthetic=True, previous=previous,
+            governance=governance, intake_assignments={"DEMO-31": assignment},
+            owner_reassignments=directives, verify_owner_reassignment=verify, **options)
+    before = plan_inventory(raw, sha256(raw), now, allow_synthetic=True)
+    if not retained:
+        with replacing_during_policy_read(1 if replace_during == "read" else None, replace):
+            return plan(config, before, [directive])
+    prior = plan_inventory(raw, sha256(raw), now, allow_synthetic=True, previous=before,
+        governance={"merge_gate": {"trusted_owner_ids": [1001, 1002, 1003]}},
+        intake_assignments={"DEMO-31": assignment}, owner_reassignments=[directive],
+        verify_owner_reassignment=verify)
+    return plan(config, prior, None)
+
+
+SEPARATION = "The configured automation actor must not be a trusted owner"
+
+
+def distinct_owner_scenario(consumer, config, root=None, signer=1001, *, replace_on_read=None):
+    """Execute unchanged public entry points on the parent and corrective tree."""
+    def options(function):
+        return ({"accepted_policy_root": root}
+                if "accepted_policy_root" in inspect.signature(function).parameters else {})
+    if consumer in ("ready", "lifecycle-ready", "lifecycle-revalidate", "lifecycle-transition"):
+        case = ready.ReadyAuthorizationTests("runTest")
+        case.setUp()
+        try:
+            case.config = deepcopy(config)
+            case.config["github"]["repository_id"] = ready.REPOSITORY_ID
+            case.provider = ready.FakeImmutableCommentProvider(case.config)
+            record = case.authorization(actor_id=signer)
+            if consumer != "ready":
+                from agentic import lifecycle
+                transition_record = lifecycle.ready_transition_record(67, ready.HEAD, record,
+                    config=case.config, verify_owner_source=case.provider.verify)
+                if consumer == "lifecycle-ready":
+                    return transition_record
+                if consumer == "lifecycle-revalidate":
+                    return lifecycle.revalidate_ready_transition_record(transition_record, 67, ready.HEAD,
+                        config=case.config, verify_owner_source=case.provider.verify)
+                return lifecycle.transition("PR_DRAFT", "PR_READY", case.ready_facts(transition_record))
+            replacement = case.authorization(actor_id=1002) if replace_on_read else {}
+            with replacing_during_policy_read(replace_on_read, lambda: record.update(replacement)):
+                return authorization.verify_ready_authorization(record, case.config, pr=67,
+                    head_sha=ready.HEAD, verify_owner_source=case.provider.verify,
+                    **options(authorization.verify_ready_authorization))
+        finally:
+            case.doCleanups()
+    if consumer == "jira-binding":
+        from agentic.provider_identity import jira_binding_plan
+        plan = jira_binding_plan(config, provider.connections(), now=provider.NOW)
+        candidate = plan["candidates"][0]
+        confirmation = {"format": "awf-jira-binding-confirmation-1", "decision": "BIND",
+            "candidate_sha256": plan["candidate_sha256"],
+            **{k: candidate[k] for k in ("cloud_id", "site", "project_id", "project_key", "account_id")},
+            "owner_id": signer, "confirmed_at": provider.NOW,
+            "authentication_evidence": ["urn:awf:fixture:owner-auth"]}
+        with replacing_during_policy_read(replace_on_read, lambda: confirmation.update(owner_id=1002)):
+            return jira_binding_plan(config, provider.connections(), confirmation, now=provider.NOW,
+                                     **options(jira_binding_plan))
+    if consumer == "intake":
+        value = intake_fixture.config()
+        value["github"]["expected_actor_id"] = config["github"].get("expected_actor_id")
+        if "expected_actor_id" not in config["github"]:
+            value["github"].pop("expected_actor_id")
+        value["merge_gate"] = deepcopy(config["merge_gate"])
+        value["jira"]["enabled"] = False
+        state = {}
+        current = intake_assignment.assign_intake(value, intake_fixture.ticket(), state, None,
+            now=intake_fixture.NOW, controller_actor_id="fixture-controller")
+        intake_assignment.inherit_pr_assignment(state, "AWF-100", 48, "Fixture PR body")
+        reason = "Synthetic owner decision"
+        source = intake_fixture.owner_source("AWF-100", current["assignment_id"], 3, 3, reason,
+                                            actor_id=signer)
+        with replacing_during_policy_read(replace_on_read, lambda: source.update(actor_id=1002)):
+            return intake_assignment.change_assignment(value, "AWF-100", state, None,
+                requested_tier=3, requested_cap=3, owner_source=source,
+                verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
+                now=intake_fixture.NOW, controller_actor_id="fixture-controller",
+                **options(intake_assignment.change_assignment))
+    raise AssertionError(consumer)
+
+
+def overcap_owner_scenario(setting, root=None, signer=1001, *, identity="numeric", overlap=True, append_automation_during_policy=False,
+                           replace_automation_during_recheck=False):
+    """Retain the exact authenticated parent approval list, without admitting a round."""
+    import test_review_tiers_195_overcap as fixture
+    from agentic import gates
+    fixture.Tier3OvercapGateTests.setUpClass()
+    case = fixture.Tier3OvercapGateTests("runTest")
+    case.setUp()
+    try:
+        case.config["github"]["expected_actor_id"] = 1002 if identity == "numeric" else None
+        if identity == "absent":
+            case.config["github"].pop("expected_actor_id")
+        case.config["merge_gate"].update(trusted_owner_ids=[1001, 1002] if overlap else [1001],
+            shared_owner_automation_actor_id=1002 if setting == "set" else None)
+        if setting == "absent":
+            case.config["merge_gate"].pop("shared_owner_automation_actor_id")
+        fixture.bind_review_admission(case.bundle)
+        registry = fixture.bind_production_posting_fixture(case.config, case.bundle)
+        approval = case.authenticated_approval(registry, actor_id=signer,
+            body=fixture.GATE_CANONICAL.replace("1001", str(signer)))
+        expected = deepcopy([approval])
+        options = ({"accepted_policy_root": root}
+                   if "accepted_policy_root" in inspect.signature(gates.verified_overcap_approvals).parameters else {})
+        approvals = [approval]
+        if append_automation_during_policy or replace_automation_during_recheck:
+            from agentic import shared_owner_policy
+            automation = case.authenticated_approval(registry, actor_id=1002,
+                body=fixture.GATE_CANONICAL.replace("1001", "1002"))
+            read_policy = shared_owner_policy._policy_blob
+            reads = 0
+            def append_during_read(*args, **kwargs):
+                nonlocal reads
+                reads += 1
+                if append_automation_during_policy and len(approvals) == 1:
+                    approvals.append(automation)
+                if replace_automation_during_recheck and reads == 2:
+                    approval.clear()
+                    approval.update(automation)
+                return read_policy(*args, **kwargs)
+            with patch.object(shared_owner_policy, "_policy_blob", side_effect=append_during_read):
+                result = gates.verified_overcap_approvals(case.config, approvals,
+                    case.bundle["candidate"], {run["run_id"]: run for run in case.bundle["runs"]},
+                    registry, **options)
+        else:
+            result = gates.verified_overcap_approvals(case.config, approvals, case.bundle["candidate"],
+                {run["run_id"]: run for run in case.bundle["runs"]}, registry, **options)
+        return {"actual": result, "expected": expected}
+    finally:
+        case.doCleanups()
+
+
+def empty_gate_scenario(consumer, config, root=None):
+    from agentic import gates
+    function = (gates.verified_owner_records if consumer == "owner-records"
+                else gates.verified_overcap_approvals)
+    options = ({"accepted_policy_root": root}
+               if "accepted_policy_root" in inspect.signature(function).parameters else {})
+    if consumer == "owner-records":
+        return function(config, Contracts(ROOT / ".agentic/schemas"),
+            {"candidate": {"head_sha": ready.HEAD}}, {}, {}, [], [], provider.NOW, **options)
+    return function(config, [], {}, {}, {}, **options)
+
+
+def retained_intake_scenario(setting, root=None, *, followup=False, signer=1001,
+                             replace_on_read=None):
+    """Use a genuinely generated ordinary audit before changing owner context."""
+    config = intake_fixture.config()
+    config["jira"]["enabled"] = False
+    config["merge_gate"]["shared_owner_automation_actor_id"] = None
+    if setting == "absent":
+        config["merge_gate"].pop("shared_owner_automation_actor_id")
+    state = {}
+    current = intake_assignment.assign_intake(config, intake_fixture.ticket(), state, None,
+        now=intake_fixture.NOW, controller_actor_id="fixture-controller")
+    reason = "Synthetic owner decision"
+    source = intake_fixture.owner_source("AWF-100", current["assignment_id"], 3, 3, reason, actor_id=signer)
+    prior = intake_assignment.change_assignment(config, "AWF-100", state, None,
+        requested_tier=3, requested_cap=3, owner_source=source,
+        verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
+        now=intake_fixture.NOW, controller_actor_id="fixture-controller")
+    config["github"]["expected_actor_id"] = 1002
+    function = intake_assignment.change_assignment if followup else intake_assignment.load_runtime_assignments
+    options = ({"accepted_policy_root": root}
+               if "accepted_policy_root" in inspect.signature(function).parameters else {})
+    if not followup:
+        with replacing_during_policy_read(replace_on_read,
+                lambda: state["tier_assignments"]["AWF-100"].update(round_cap=1)):
+            actual = function(config, state, **options)
+        return {"actual": actual, "expected": {"AWF-100": prior}}
+    reason = "Second synthetic owner decision"
+    source = intake_fixture.owner_source("AWF-100", prior["assignment_id"], 2, 2, reason, actor_id=signer)
+    source["comment_id"] = 18
+    return function(config, "AWF-100", state, None, requested_tier=2, requested_cap=2,
+        owner_source=source, verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
+        now=intake_fixture.NOW, controller_actor_id="fixture-controller", **options)
+
+
+class DistinctOwnerCompatibility(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(shipped_routing())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def config(self, setting):
+        value = provider.config()
+        value["merge_gate"].update(trusted_owner_ids=[1001, 1002],
+                                    shared_owner_automation_actor_id=None)
+        if setting == "absent":
+            value["merge_gate"].pop("shared_owner_automation_actor_id")
+        return value
+
+    def restored(self, consumer):
+        # Canonical hashes cover the complete deterministic parent results.
+        expected = PARENT_DISTINCT_RESULTS[consumer]
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    result = distinct_owner_scenario(consumer, self.config(setting), root)
+                    self.assertEqual(expected[setting], sha256(canonical(result)))
+
+    def test_ready_distinct_owner_exact_parent_result(self):
+        self.restored("ready")
+
+    def test_jira_binding_distinct_owner_exact_parent_result(self):
+        self.restored("jira-binding")
+
+    def test_intake_distinct_owner_exact_parent_result(self):
+        self.restored("intake")
+
+    def test_lifecycle_ready_exact_parent_result(self):
+        self.restored("lifecycle-ready")
+
+    def test_lifecycle_revalidation_exact_parent_result(self):
+        self.restored("lifecycle-revalidate")
+
+    def test_lifecycle_transition_exact_parent_result(self):
+        self.restored("lifecycle-transition")
+
+    def test_overcap_collector_preserves_exact_parent_approval_list(self):
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    value = overcap_owner_scenario(setting, root)
+                    self.assertEqual(value["expected"], value["actual"])
+
+    def test_untargeted_collections_retain_head_validation_order(self):
+        from agentic import gates
+        config = self.config("null")
+        config["merge_gate"]["shared_owner_automation_actor_id"] = 1002
+        with self.assertRaises(ValidationError) as raised:
+            gates.verified_overcap_approvals(config, 5, {}, {}, {})
+        self.assertEqual("The configured automation actor must not be a trusted owner",
+                         str(raised.exception))
+        for identity in ("null", "absent"):
+            config = self.config("null")
+            config["github"]["expected_actor_id"] = None
+            if identity == "absent":
+                config["github"].pop("expected_actor_id")
+            with self.subTest(identity=identity):
+                with self.assertRaises(TypeError) as raised:
+                    gates.verified_overcap_approvals(config, 5, {}, {}, {})
+                self.assertEqual("'int' object is not iterable", str(raised.exception))
+
+    def test_overcap_automation_appended_during_policy_read_is_refused(self):
+        # The initial list is a valid distinct-owner approval. The immutable
+        # Git read remains real; only concurrent input mutation is injected.
+        for setting in ("null", "absent"):
+            root = self.policy_repository(self.config(setting), "mutating-" + setting)
+            with self.subTest(setting=setting):
+                with self.assertRaises(ValidationError) as raised:
+                    overcap_owner_scenario(setting, root, append_automation_during_policy=True)
+                self.assertEqual("The configured automation actor must not be a trusted owner",
+                                 str(raised.exception))
+
+    def test_overcap_automation_replacement_during_recheck_is_refused(self):
+        for setting in ("null", "absent"):
+            root = self.policy_repository(self.config(setting), "replaced-" + setting)
+            with self.subTest(setting=setting):
+                with self.assertRaises(ValidationError) as raised:
+                    overcap_owner_scenario(setting, root, replace_automation_during_recheck=True)
+                self.assertEqual("The configured automation actor must not be a trusted owner",
+                                 str(raised.exception))
+
+    def test_overcap_automation_signer_retains_head_refusal(self):
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    with self.assertRaises(ValidationError) as raised:
+                        overcap_owner_scenario(setting, root, 1002)
+                    self.assertEqual("The configured automation actor must not be a trusted owner",
+                                     str(raised.exception))
+
+    def empty_collection(self, consumer, expected):
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    self.assertEqual(expected, empty_gate_scenario(consumer, self.config(setting), root))
+
+    def test_empty_owner_record_collection_exact_parent_result(self):
+        self.empty_collection("owner-records", ([], None))
+
+    def test_empty_overcap_collection_exact_parent_result(self):
+        self.empty_collection("overcap", [])
+
+    def test_retained_intake_reload_exact_parent_result(self):
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    value = retained_intake_scenario(setting, root)
+                    self.assertEqual(value["expected"], value["actual"])
+
+    def test_intake_followup_exact_parent_result(self):
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    value = retained_intake_scenario(setting, root, followup=True)
+                    self.assertEqual(PARENT_INTAKE_FOLLOWUP, sha256(canonical(value)))
+
+    def test_retained_intake_automation_refusals_remain(self):
+        for setting in ("null", "absent"):
+            for followup in (False, True):
+                with self.subTest(setting=setting, followup=followup):
+                    with self.assertRaises(ValidationError) as raised:
+                        retained_intake_scenario(setting, self.root, followup=followup, signer=1002)
+                    self.assertEqual("The configured automation actor must not be a trusted owner",
+                                     str(raised.exception))
+
+    def policy_repository(self, config, name, *, observed=True, origin=True):
+        """Build immutable policy bytes in disposable Git metadata only."""
+        project = self.root / name
+        project.mkdir()
+        environment = dict(os.environ, GIT_AUTHOR_NAME="Fixture owner",
+            GIT_AUTHOR_EMAIL="owner@example.invalid", GIT_COMMITTER_NAME="Fixture owner",
+            GIT_COMMITTER_EMAIL="owner@example.invalid")
+        def git(*arguments, raw=None):
+            return subprocess.run(["git", "-C", str(project), *arguments], input=raw,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, env=environment).stdout.strip()
+        git("init", "-q")
+        if origin:
+            git("config", "remote.origin.url", "https://github.com/fixture/example.git")
+        if observed:
+            config_blob = git("hash-object", "-w", "--stdin", raw=canonical(config))
+            workflow_blob = git("hash-object", "-w", "--stdin", raw=canonical(definition()))
+            subtree = git("mktree", raw=b"100644 blob " + config_blob + b"\tPROJECT_CONFIG.yaml\n"
+                          + b"100644 blob " + workflow_blob + b"\tworkflow.yaml\n")
+            tree = git("mktree", raw=b"040000 tree " + subtree + b"\t.agentic\n")
+            commit = git("commit-tree", tree.decode(), raw=b"Synthetic accepted policy\n")
+            git("update-ref", "refs/remotes/origin/main", commit.decode())
+            git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        return project
+
+    def test_real_git_roots_preserve_exact_parent_results(self):
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            for observed, origin in ((False, False), (True, False), (True, True)):
+                root = self.policy_repository(config, f"{setting}-{observed}-{origin}",
+                                              observed=observed, origin=origin)
+                for consumer in ("ready", "jira-binding", "intake"):
+                    with self.subTest(setting=setting, observed=observed, origin=origin,
+                                      consumer=consumer):
+                        result = distinct_owner_scenario(consumer, config, root)
+                        self.assertEqual(PARENT_DISTINCT_RESULTS[consumer][setting], sha256(canonical(result)))
+                        with self.assertRaises(ValidationError) as raised:
+                            distinct_owner_scenario(consumer, config, root, 1002)
+                        self.assertEqual("The configured automation actor must not be a trusted owner",
+                                         str(raised.exception))
+                value = overcap_owner_scenario(setting, root)
+                self.assertEqual(value["expected"], value["actual"])
+                self.assertEqual(([], None), empty_gate_scenario("owner-records", config, root))
+                self.assertEqual([], empty_gate_scenario("overcap", config, root))
+                retained = retained_intake_scenario(setting, root)
+                self.assertEqual(retained["expected"], retained["actual"])
+
+    def test_automation_signer_retains_head_exact_refusal(self):
+        for consumer in ("ready", "jira-binding", "intake"):
+            for setting in ("null", "absent"):
+                for root in (None, self.root):
+                    with self.subTest(consumer=consumer, setting=setting, rooted=root is not None):
+                        with self.assertRaises(ValidationError) as raised:
+                            distinct_owner_scenario(consumer, self.config(setting), root, 1002)
+                        self.assertEqual("The configured automation actor must not be a trusted owner",
+                                         str(raised.exception))
+
+    def test_lifecycle_automation_signer_retains_head_refusals(self):
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            with self.subTest(setting=setting):
+                record = distinct_owner_scenario("lifecycle-ready", config, signer=1002)
+                self.assertEqual(("REFUSED", "AUTHORIZATION_RECORD_INVALID"),
+                                 (record["decision"], record["reason"]))
+                for consumer, message in (
+                    ("lifecycle-revalidate", "PR ready transition retains a refusal, not authorization"),
+                    ("lifecycle-transition", "PR ready refused: explicit owner/manager authorization record is required; retain the refusal record"),
+                ):
+                    with self.assertRaises(ValidationError) as raised:
+                        distinct_owner_scenario(consumer, config, signer=1002)
+                    self.assertEqual(message, str(raised.exception))
+
+    def test_hidden_accepted_shared_policy_still_refuses_distinct_signer(self):
+        from test_awf307_provider_owner_policy import ProviderPolicyFixture
+        case = ProviderPolicyFixture("runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        for consumer in ("ready", "jira-binding", "intake"):
+            for setting in ("null", "absent"):
+                with self.subTest(consumer=consumer, setting=setting), case.policy_reads():
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        distinct_owner_scenario(consumer, self.config(setting), case.project)
+        for setting in ("null", "absent"):
+            with self.subTest(consumer="overcap", setting=setting), case.policy_reads():
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    overcap_owner_scenario(setting, case.project)
+            for consumer in ("owner-records", "overcap"):
+                with self.subTest(consumer=consumer, setting=setting), case.policy_reads():
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        empty_gate_scenario(consumer, self.config(setting), case.project)
+            for followup in (False, True):
+                with self.subTest(consumer="retained-intake", followup=followup), case.policy_reads():
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        retained_intake_scenario(setting, case.project, followup=followup)
+
+
+    def test_record_replaced_during_either_policy_read_is_refused(self):
+        """Ready, Jira binding, intake, reload and streams drop replaced records."""
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            root = self.policy_repository(config, "windows-" + setting)
+            for number in (1, 2):
+                for consumer in ("ready", "jira-binding", "intake"):
+                    with self.subTest(setting=setting, read=number, consumer=consumer):
+                        with self.assertRaises(ValidationError) as raised:
+                            distinct_owner_scenario(consumer, config, root, replace_on_read=number)
+                        self.assertEqual(SEPARATION, str(raised.exception))
+            with self.subTest(setting=setting, consumer="intake-reload"):
+                with self.assertRaises(ValidationError) as raised:
+                    retained_intake_scenario(setting, root, replace_on_read=1)
+                self.assertEqual(SEPARATION, str(raised.exception))
+            for moment in ("read", "verifier"):
+                with self.subTest(setting=setting, consumer="streams", moment=moment):
+                    with self.assertRaises(ValidationError) as raised:
+                        stream_owner_scenario(config, root, replace_during=moment)
+                    self.assertEqual(SEPARATION, str(raised.exception))
+
+    def roots(self, config, name):
+        yield "rootless", None
+        yield "empty", self.root
+        for observed, origin in ((False, False), (True, False), (True, True)):
+            yield f"git-{observed}-{origin}", self.policy_repository(
+                config, f"{name}-{observed}-{origin}", observed=observed, origin=origin)
+
+    def test_streams_distinct_owner_exact_parent_result(self):
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            for label, root in self.roots(config, "streams-" + setting):
+                for retained in (False, True):
+                    with self.subTest(setting=setting, root=label, retained=retained):
+                        result = stream_owner_scenario(config, root, retained=retained)
+                        self.assertEqual(PARENT_STREAM_RESULTS[retained], sha256(canonical(result)))
+
+    def test_untrusted_signers_exact_parent_results(self):
+        # A removed owner's retained move stays readable; a new one refuses.
+        # Over-cap collection keeps its stricter existing trusted-owner refusal.
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    result = stream_owner_scenario(config, root, 1003, retained=True)
+                    self.assertEqual(PARENT_FORMER_OWNER_STREAM, sha256(canonical(result)))
+                    for message, call in (
+                            ("Ready authorization uses an untrusted numeric owner/manager identity",
+                             lambda: distinct_owner_scenario("ready", config, root, 1003)),
+                            ("Jira binding confirmation owner is not trusted",
+                             lambda: distinct_owner_scenario("jira-binding", config, root, 1003)),
+                            ("Review assignment changes require an authenticated trusted owner",
+                             lambda: distinct_owner_scenario("intake", config, root, 1003)),
+                            ("Owner stream reassignment requires an authenticated trusted owner",
+                             lambda: stream_owner_scenario(config, root, 1003)),
+                            ("Tier 3 over-cap approval lacks a matching authenticated provider observation",
+                             lambda: overcap_owner_scenario(setting, root, 1003))):
+                        with self.assertRaises(ValidationError) as raised:
+                            call()
+                        self.assertEqual(message, str(raised.exception))
+
+    def test_streams_automation_signer_retains_head_refusal(self):
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            for label, root in self.roots(config, "stream-automation-" + setting):
+                for retained in (False, True):
+                    with self.subTest(setting=setting, root=label, retained=retained):
+                        with self.assertRaises(ValidationError) as raised:
+                            stream_owner_scenario(config, root, 1002, retained=retained)
+                        self.assertEqual(SEPARATION, str(raised.exception))
+
+    def test_review_and_queue_projections_exact_parent_results(self):
+        # Removal and instruction accept the automation account too, as the
+        # parent did. No other consumer of the two projections does.
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            for label, root in self.roots(config, "projections-" + setting):
+                for consumer, signer, expected in PARENT_PROJECTION_RESULTS:
+                    with self.subTest(setting=setting, root=label, consumer=consumer, signer=signer):
+                        result = projection_scenario(consumer, config, root, signer)
+                        self.assertEqual(expected[setting], sha256(canonical(result)))
+                with self.subTest(setting=setting, root=label, consumer="queue-accepted"):
+                    with self.assertRaises(ValidationError) as raised:
+                        projection_scenario("queue-accepted", config, root)
+                    self.assertEqual(SEPARATION, str(raised.exception))
+
+    def test_review_removal_retains_only_the_authenticated_record(self):
+        config = self.config("null")
+        root = self.policy_repository(config, "removal-window")
+        for signer in (1001, 1002):
+            with self.subTest(signer=signer):
+                result = projection_scenario("review-removal", config, root, signer,
+                                             replace_on_read=True)
+                self.assertEqual({"reviewers": ["a", "b"], "entries": 1, "replaced": True,
+                                  "authenticated_record_retained": True}, result)
+
+    def test_projections_still_refuse_untrusted_signers(self):
+        config = self.config("null")
+        for consumer, message in PARENT_UNTRUSTED_REFUSALS.items():
+            with self.subTest(consumer=consumer):
+                with self.assertRaises(ValidationError) as raised:
+                    projection_scenario(consumer, config, signer=1003)
+                self.assertEqual(message, str(raised.exception))
+
+    def test_hidden_accepted_shared_policy_refuses_projections_and_streams(self):
+        from test_awf307_provider_owner_policy import ProviderPolicyFixture
+        case = ProviderPolicyFixture("runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        for setting in ("null", "absent"):
+            for consumer in ("review-authority", "review-binding", "queue-authority",
+                             "queue-projection"):
+                with self.subTest(consumer=consumer, setting=setting), case.policy_reads():
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        projection_scenario(consumer, self.config(setting), case.project)
+            for retained in (False, True):
+                with self.subTest(consumer="streams", setting=setting, retained=retained), \
+                        case.policy_reads():
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        stream_owner_scenario(self.config(setting), case.project, retained=retained)
+
+    def test_configuration_validation_still_refuses_the_overlap(self):
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), self.assertRaises(ValidationError) as raised:
+                policy.validate_config(self.config(setting), definition(),
+                                       Contracts(ROOT / ".agentic/schemas"))
+            self.assertEqual(SEPARATION, str(raised.exception))
+
+
+    def hidden_policy_case(self):
+        """An accepted default branch with the opt-out set, hidden by the proposal."""
+        from test_awf307_provider_owner_policy import ProviderPolicyFixture
+        case = ProviderPolicyFixture("runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        return case
+
+    def lifecycle_overcap(self, setting, root, signer=1001, *, empty=False, config=None):
+        import test_review_tiers_195_overcap as fixture
+        from agentic.lifecycle import review_round_transition
+        fixture.Tier3OvercapGateTests.setUpClass()
+        case = fixture.Tier3OvercapGateTests("runTest")
+        case.setUp()
+        try:
+            case.config["github"]["expected_actor_id"] = 1002
+            case.config["merge_gate"].update(trusted_owner_ids=[1001, 1002],
+                shared_owner_automation_actor_id=1002 if setting == "set" else None)
+            if setting == "absent":
+                case.config["merge_gate"].pop("shared_owner_automation_actor_id")
+            fixture.bind_review_admission(case.bundle)
+            registry = fixture.bind_production_posting_fixture(case.config, case.bundle)
+            approvals = [] if empty else [case.authenticated_approval(registry, actor_id=signer,
+                body=fixture.GATE_CANONICAL.replace("1001", str(signer)))]
+            return review_round_transition(3, fixture.ROUND,
+                accepted_policy_root=case.owner_fixture.root if root is fixture else root,
+                overcap_approval_context={"config": case.config, "approvals": approvals,
+                    "candidate": case.bundle["candidate"],
+                    "runs": {run["run_id"]: run for run in case.bundle["runs"]},
+                    "trusted_posting_collectors": registry})
+        finally:
+            case.doCleanups()
+
+    def lifecycle_outcome(self, *arguments, **keywords):
+        try:
+            return self.lifecycle_overcap(*arguments, **keywords)["status"]
+        except ValidationError as refusal:
+            return str(refusal)
+
+    def test_lifecycle_overcap_hidden_opt_out_refuses(self):
+        case = self.hidden_policy_case()
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                self.assertEqual("Shared-owner accepted policy digest changed",
+                                 self.lifecycle_outcome(setting, case.project))
+            with self.subTest(setting=setting, signer=1002), case.policy_reads():
+                self.assertEqual(SEPARATION, self.lifecycle_outcome(setting, case.project, 1002))
+
+    def test_lifecycle_overcap_other_roots_keep_their_results(self):
+        for setting in ("null", "absent"):
+            for root in (None, self.root):
+                with self.subTest(setting=setting, rooted=root is not None):
+                    # Round admission keeps its own excluded identity prerequisite.
+                    self.assertEqual(
+                        "OWNER_TRUST_UNBOUND: accepted_policy_root is required" if root is None
+                        else "Default-branch settings Git read failed or exceeded its bound",
+                        self.lifecycle_outcome(setting, root))
+                with self.subTest(setting=setting, rooted=root is not None, empty=True):
+                    self.assertEqual(
+                        "Tier 3 review cap is 3; a canonical owner approval must be present on "
+                        "the PR before the round starts",
+                        self.lifecycle_outcome(setting, root, empty=True))
+        case = self.hidden_policy_case()
+        with self.subTest(setting="set"), case.policy_reads():
+            for signer in (1001, 1002):
+                self.assertEqual(SEPARATION, self.lifecycle_outcome("set", case.project, signer))
+
+    def test_jira_cli_hidden_opt_out_refuses(self):
+        from agentic import cli, provider_identity
+        case = self.hidden_policy_case()
+        for setting in ("null", "absent"):
+            config = self.config(setting)
+            plan = provider_identity.jira_binding_plan(config, provider.connections(), now=provider.NOW)
+            candidate = plan["candidates"][0]
+            confirmation = {"format": "awf-jira-binding-confirmation-1", "decision": "BIND",
+                "candidate_sha256": plan["candidate_sha256"],
+                **{key: candidate[key] for key in (
+                    "cloud_id", "site", "project_id", "project_key", "account_id")},
+                "owner_id": 1001, "confirmed_at": provider.NOW,
+                "authentication_evidence": ["urn:awf:fixture:owner-auth"]}
+            paths = {}
+            for name, value in (("config", config), ("connections", provider.connections()),
+                                ("confirmation", confirmation)):
+                paths[name] = self.root / (setting + name + ".json")
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+            for root, hidden in ((case.project, True), (self.root, False)):
+                project = root
+                (project / ".agentic").mkdir(exist_ok=True)
+                (project / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+                arguments = ["--root", str(project), "jira", "bind", "--config", str(paths["config"]),
+                    "--connections", str(paths["connections"]), "--confirmation", str(paths["confirmation"])]
+                output = io.StringIO()
+                with patch.object(cli, "verify_installed", return_value="0" * 64), \
+                        patch.object(cli, "Contracts"), \
+                        patch.object(cli, "now_text", return_value=provider.NOW), \
+                        redirect_stdout(output), redirect_stderr(output), \
+                        (case.policy_reads() if hidden else nullcontext()):
+                    status = cli.main(arguments)
+                with self.subTest(setting=setting, hidden=hidden):
+                    if hidden:
+                        self.assertNotEqual(0, status)
+                        self.assertIn("Shared-owner accepted policy digest changed", output.getvalue())
+                    else:
+                        self.assertEqual(0, status, output.getvalue())
+                        self.assertIn("CONFIRMED", output.getvalue())
+
+    def test_rootless_review_binding_detects_hidden_opt_out_in_its_project(self):
+        import test_review_completion as completion_fixture
+        case = self.hidden_policy_case()
+        worktree = case.project / "candidate"
+        worktree.mkdir()
+        current = completion_fixture.candidate()
+        current["repository"] = provider.config()["github"]["repository"]
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    review_completion.review_authority_binding(
+                        self.config(setting), case.project, [worktree], current)
+
+    def test_review_freeze_command_hidden_opt_out_refuses(self):
+        # This command inspects configuration without the separation rule, so
+        # its binding is where the hidden accepted opt-out must be found.
+        import importlib.util
+        import test_review_completion as completion_fixture
+        specification = importlib.util.spec_from_file_location(
+            "review_completion_command", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        case = self.hidden_policy_case()
+        ordinary = self.root / "freeze-ordinary"
+        ordinary.mkdir()
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        current = completion_fixture.candidate()
+        current["repository"] = provider.config()["github"]["repository"]
+        for setting in ("null", "absent"):
+            for project, hidden in ((case.project, True), (ordinary, False)):
+                (project / ".agentic").mkdir(exist_ok=True)
+                (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(self.config(setting)))
+                (project / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+                folder = self.root / f"freeze-{setting}-{hidden}"
+                (folder / "worktree").mkdir(parents=True)
+                (folder / "candidate.json").write_bytes(canonical(current))
+                (folder / "reviewers.json").write_bytes(canonical(["a", "b"]))
+                arguments = ["--state", str(folder / "state.sqlite3"),
+                    "--worktree-root", str(folder / "worktree"), "freeze",
+                    "--candidate", str(folder / "candidate.json"),
+                    "--reviewers", str(folder / "reviewers.json")]
+                output = io.StringIO()
+                with self.subTest(setting=setting, hidden=hidden),                         patch.object(module, "Contracts", return_value=contracts),                         redirect_stdout(output), redirect_stderr(output):
+                    if hidden:
+                        with case.policy_reads(), self.assertRaisesRegex(
+                                ValidationError, "accepted policy digest changed"):
+                            module.main(arguments, default_root=project)
+                        self.assertFalse((folder / "state.sqlite3").exists())
+                    else:
+                        module.main(arguments, default_root=project)
+                        self.assertIn("COLLECTING", output.getvalue())
+
+    def intake_change(self, setting, *, store=None, bootstrap=None):
+        """Change one assignment through the library or the bootstrap entry point."""
+        from types import SimpleNamespace
+        config = intake_fixture.config()
+        config["github"]["expected_actor_id"] = 1002
+        config["jira"]["enabled"] = False
+        config["merge_gate"]["shared_owner_automation_actor_id"] = None
+        if setting == "absent":
+            config["merge_gate"].pop("shared_owner_automation_actor_id")
+        state, reason = {}, "Synthetic owner decision"
+        current = intake_assignment.assign_intake(config, intake_fixture.ticket(), state, None,
+            now=intake_fixture.NOW, controller_actor_id="fixture-controller")
+        source = intake_fixture.owner_source("AWF-100", current["assignment_id"], 3, 3, reason)
+        if bootstrap is None:
+            return intake_assignment.change_assignment(config, "AWF-100", state, None,
+                requested_tier=3, requested_cap=3, owner_source=source,
+                verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
+                now=intake_fixture.NOW, controller_actor_id="fixture-controller", store=store)
+        import importlib.util
+        specification = importlib.util.spec_from_file_location(
+            "bootstrap_project_hidden_policy", ROOT / "scripts/bootstrap_project.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        (bootstrap / ".agentic").mkdir(exist_ok=True)
+        config.pop("_awf_runtime", None)
+        (bootstrap / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(config), encoding="utf-8")
+        folder = self.root / ("bootstrap-" + setting + bootstrap.name)
+        folder.mkdir()
+        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        (folder / "change.json").write_text(json.dumps({"ticket_key": "AWF-100",
+            "requested_tier": 3, "requested_cap": 3, "reason": reason, "owner_source": source}),
+            encoding="utf-8")
+        return module._run_assignment_path(SimpleNamespace(project_start_inventory=None,
+            ticket_intake=None, assignment_change=folder / "change.json",
+            assignment_state=folder / "state.json", controller_actor_id="fixture-controller",
+            assignment_now=intake_fixture.NOW, dest=bootstrap, recover=False, dry_run=False),
+            None, intake_fixture.verify_owner_source)
+
+    def test_bootstrap_assignment_change_hidden_opt_out_refuses(self):
+        case = self.hidden_policy_case()
+        ordinary = self.root / "ordinary"
+        ordinary.mkdir()
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    self.intake_change(setting, bootstrap=case.project)
+            with self.subTest(setting=setting, hidden=False):
+                self.assertEqual(3, self.intake_change(setting, bootstrap=ordinary)["AWF-100"]["tier"])
+
+    def test_intake_several_protected_worktrees_hidden_opt_out_refuses(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+        case = self.hidden_policy_case()
+        other = self.root / "other"
+        other.mkdir()
+
+        def store(name, root):
+            folder = self.root / ("store-" + name)
+            folder.mkdir()
+            return ContinuousControllerStore(folder / "controller.sqlite", ["B"],
+                                             worktree_roots=(root, root))
+        for setting in ("null", "absent"):
+            with self.subTest(setting=setting), case.policy_reads():
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    self.intake_change(setting, store=store(setting + "-hidden", case.project))
+            with self.subTest(setting=setting, hidden=False):
+                self.assertEqual(3, self.intake_change(
+                    setting, store=store(setting + "-ordinary", other))["tier"])
+
+
+PARENT_STREAM_RESULTS = dict.fromkeys((False, True),
+    "934b786230df96b82d27f1029d488f24ed68c6328432eeeb70ca8eb5dd8e87d3")
+
+PARENT_FORMER_OWNER_STREAM = (
+    "b5530dbce3e83eba4899fb512b628a8ba6f1ada20df2d2f40d304cbc3d226b13")
+
+PARENT_PROJECTION_RESULTS = (
+    ("review-authority", 1001, dict.fromkeys(("null", "absent"),
+        "d3e326c1af0d522f72b7a7a45485118bf682db1335607d347c7be3b4ff2b06cf")),
+    ("review-binding", 1001, {
+        "null": "2a3462f69d2e90d39bdc0de8e74f5a3d2c90f43c99c07025a4f93221f91f66d5",
+        "absent": "804386dd5e688be901c16753d842fda4615d6c07469e6346c813044a402f6292"}),
+    ("review-removal", 1001, dict.fromkeys(("null", "absent"),
+        "34a19f79c441347b35509e60f9856b6d4ea13be210e1dcdb708f76dfbca898e7")),
+    ("review-removal", 1002, dict.fromkeys(("null", "absent"),
+        "34a19f79c441347b35509e60f9856b6d4ea13be210e1dcdb708f76dfbca898e7")),
+    ("queue-authority", 1001, dict.fromkeys(("null", "absent"),
+        "bce8e3f6d63d7c04ba0d9ef6e6bb2c93a60c3598381458fe2aca513040c6903e")),
+    ("queue-projection", 1001, dict.fromkeys(("null", "absent"),
+        "a83aad8ccd52c6968f98e920b287e1c80100b529076e09427887ae3e4b8be17f")),
+    ("queue-instruction", 1001, dict.fromkeys(("null", "absent"),
+        "dd49062b3eb0cefca680646c02152b38aee2dbf5c20c11f23883a1161c7e9e3e")),
+    ("queue-instruction", 1002, dict.fromkeys(("null", "absent"),
+        "d415144f726b208bde28e2916689c637225275963a53a42c3a60647f0a359ada")),
+)
+
+PARENT_UNTRUSTED_REFUSALS = {
+    "review-removal": "Reviewer removal actor is not a configured trusted owner",
+    "queue-instruction": "owner instruction actor is not a configured trusted owner"}
+
+PARENT_INTAKE_FOLLOWUP = "8fb137c310ca3e3ec0c1b1be452e0e19b79832d9509a7fa3ef00f5a6dfc882b4"
+
+PARENT_DISTINCT_RESULTS = {
+    'lifecycle-ready': {'null': '9c70cb34965a108272a1d09adbe6607c408c2d0eca2e342c6c03131afd5da703', 'absent': '35eedc52bbe28b7865de2164fc6226482a78cc18df92d153f8e02f3883619971'},
+    'lifecycle-revalidate': {'null': 'b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b', 'absent': 'b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b'},
+    'lifecycle-transition': {'null': '034310671cca84ff0b00fca3e9e6ae4bfd75df088638bffb77e1790d29362f58', 'absent': '034310671cca84ff0b00fca3e9e6ae4bfd75df088638bffb77e1790d29362f58'},
+    "ready": {"null": "07d7deff3b3ee27393aa99cac06c07fc20b256653bbc9fc91df71c7954d6df4c",
+              "absent": "aec3dce05ab20779378643d6f83db6daf41805ceb6205b456daee8c0ca9f1e0d"},
+    "jira-binding": dict.fromkeys(("null", "absent"),
+        "4fcf2c9c92b8b20d3cadcd2cce474d2d04d1127ae6fd1a7a73a9faeac788eac8"),
+    "intake": dict.fromkeys(("null", "absent"),
+        "83d23d375704f2f91c7501e0dc4e02a18e0ce8677fa6e60527bbc1eab297eef1"),
+}
 
 
 if __name__ == "__main__":

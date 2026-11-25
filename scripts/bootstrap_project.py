@@ -130,6 +130,8 @@ def _run_assignment_path(args, jira_client, owner_source_verifier, store=None, *
             required = {"ticket_key", "requested_tier", "requested_cap", "reason", "owner_source"}
             if not isinstance(change, dict) or not required.issubset(change):
                 raise ValidationError("Assignment change is missing required fields")
+            from agentic.shared_owner_policy import _refuse_hidden_owner_policy
+            _refuse_hidden_owner_policy(config, args.dest)
             record = change_assignment(
                 config, change["ticket_key"], state, jira_client,
                 requested_tier=change["requested_tier"], requested_cap=change["requested_cap"],
