@@ -349,7 +349,10 @@ def _controller_owner_policy(config, accepted_policy_root):
 			# ordinary unset policy retains its historical validation and bytes.
 			from .shared_owner_policy import _default_ref, _git, _policy_blob
 			from .canonical import load_yaml
+			from .shared_owner_policy import _refuse_hidden_opt_out
 			ref, _ = _default_ref(accepted_policy_root)
+			# A relative root can name another directory; this can only refuse.
+			_refuse_hidden_opt_out(config, accepted_policy_root)
 			if ref is not None:
 				commit = _git(accepted_policy_root, 'rev-parse', '--verify', ref + '^{commit}').decode('ascii').strip()
 				raw = _policy_blob(accepted_policy_root, commit, '.agentic/PROJECT_CONFIG.yaml')

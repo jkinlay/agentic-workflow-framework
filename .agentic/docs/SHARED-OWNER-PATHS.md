@@ -1,6 +1,6 @@
 # Shared owner account candidate boundary
 
-This is AWF-307's GitHub slice; the Jira slice (O2) is separate. Keep the GitHub
+This is AWF-307's GitHub slice. Keep the GitHub
 setting null until a release ships it. The global separation refusal remains.
 Separate owner and automation accounts are recommended wherever possible.
 Agents never propose an opt-out without explicit human direction.
@@ -79,11 +79,13 @@ production cycle's publication configuration, and post-merge counts. Relative
 roots count. The check only refuses.
 
 Limits: a root is unobservable, and this check changes nothing, when Git or
-`origin/HEAD` is missing, its ref dangles, isolated Git fails (no native Git,
-unpinnable filters, missing objects, timeout) or the accepted file is absent at
-that root, not mode 100644, malformed, oversized or without mappings. Controller,
-provenance and shared-account reads may refuse instead. Protect Git metadata and
-refresh `origin/HEAD`. Protected roots are checked without comparing
+`origin/HEAD` is missing, its ref dangles, isolated Git fails (no native Git
+on absolute PATH entries outside the project and current directory, missing
+objects, broken repository configuration, timeout) or the accepted file is absent at
+that root, not mode 100644, malformed, oversized or without mappings. Controller, provenance and
+shared-account reads may refuse instead. Working configuration,
+filters, the current directory and nested repositories cannot cause this. Protect
+Git metadata and refresh `origin/HEAD`. Protected roots are checked without comparing
 repositories (that field is also proposed), so another opted-in project's
 worktree can refuse. CLI evaluation and authorization refuse a retiring
 proposal and accepted shared policy; only library `accepted_policy_root` gates it.
@@ -94,12 +96,11 @@ account's owner signature as before.
 
 The closed provenance owner projection now requires `expected_actor_id` beside
 `config_sha256`, `trusted_owner_ids` and `binding_sha256`; its binding payload
-includes that identity. Verification matches the configuration digest and
-automation identity to accepted bytes. Reviewed owner IDs may narrow the
-accepted owner list; they cannot add owners. Host narrowing is preserved. Provider snapshots remain
+includes that identity. Verification matches both to accepted bytes.
+Reviewed owner IDs may only narrow the accepted owner list. Provider snapshots remain
 version 1 with additive identity and accepted project-configuration digest;
-the host-file digest is not project policy. Old projections/snapshots remain
-audit data but cannot verify overrides without the identity. Signed v1/v2
+the host-file digest is not project policy. Old projections/snapshots without
+identity remain audit data only. Signed v1/v2
 override record formats, digests and rendering remain unchanged. Legacy sealing
 alone grants no override authority.
 

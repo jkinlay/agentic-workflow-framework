@@ -1561,8 +1561,7 @@ class AcceptedPolicyDecidesHiddenOptOut(unittest.TestCase):
                         self.refuses(cycle, "next existing check")
 
 
-class KnownRootRealGit(unittest.TestCase):
-    """Real Git decides which spelling or layout of a known root is observable."""
+class RealGitPolicyFixture(unittest.TestCase):
     policy_repository = DistinctOwnerCompatibility.policy_repository
 
     def setUp(self):
@@ -1615,6 +1614,10 @@ class KnownRootRealGit(unittest.TestCase):
         for name in ("guard", "evidence"):
             with self.subTest(root=str(root), caller=name, accepted="unset"):
                 self.callers(root)[name]()
+
+
+class KnownRootRealGit(RealGitPolicyFixture):
+    """Real Git decides which spelling or layout of a known root is observable."""
 
     def test_relative_roots_refuse_for_every_caller(self):
         os.chdir(self.root)
@@ -1685,11 +1688,8 @@ class KnownRootRealGit(unittest.TestCase):
         self.git(headless, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
         dangling = self.policy_repository(self.accepted, "dangling")
         self.git(dangling, "update-ref", "-d", "refs/remotes/origin/main")
-        unpinnable = self.policy_repository(self.accepted, "unpinnable")
-        with (unpinnable / ".git/config").open("a", encoding="utf-8") as stream:
-            stream.write('[filter "a=b"]\n\tsmudge = fixture\n')
         (self.on / "nested").mkdir()
-        for root in (unborn, headless, dangling, unpinnable, self.root / "missing", self.on / "nested"):
+        for root in (unborn, headless, dangling, self.root / "missing", self.on / "nested"):
             self.accepted_unset_passes(root)
 
     def freeze(self, root, config, folder):
@@ -1799,6 +1799,229 @@ class KnownRootRealGit(unittest.TestCase):
                     finally:
                         os.chdir(self.root)
                         case.doCleanups()
+
+
+class PolicyReadInputs(RealGitPolicyFixture):
+    """No file, variable or directory a candidate controls decides the read."""
+
+    def test_proposed_configuration_never_reaches_the_policy_read(self):
+        from agentic import child_process
+        bodies = {"oversized": canonical(self.hidden) + b" " * (1024 * 1024), "malformed": b"{",
+            "execution list": b'{"execution": []}', "execution null": b'{"execution": null}',
+            "not a mapping": b"[]", "not UTF-8": bytes([255, 254]),
+            "invalid strip": b'{"execution": {"child_env_strip_extra": ["GH_TOKEN"]}}',
+            "strips paths": b'{"execution": {"child_env_strip_extra": ["SYSTEMROOT", "WINDIR", "PATHEXT", "GIT_DIR"]}}'}
+        for name, body in bodies.items():
+            path = self.root / "PROPOSED.yaml"
+            path.write_bytes(body)
+            with self.subTest(configuration=name), patch.object(child_process, "_DEFAULT_CONFIG", path):
+                self.refused(self.on, "guard", "evidence" if name == "malformed" else "guard")
+                self.callers(self.off)["guard"]()
+        # Every other child still fails closed on the same file.
+        path.write_bytes(b"{")
+        with patch.object(child_process, "_DEFAULT_CONFIG", path), \
+                self.assertRaises(child_process.ChildEnvironmentError):
+            child_process.child_env()
+
+    def test_installed_freeze_process_ignores_a_padded_proposal(self):
+        import shutil
+        import test_review_completion as completion_fixture
+        shutil.copytree(ROOT / ".agentic", self.on / ".agentic", ignore=shutil.ignore_patterns(
+            "tests", "docs", ".venv", "__pycache__", "examples", "benchmarks"))
+        current = completion_fixture.candidate()
+        current["repository"] = self.hidden["github"]["repository"]
+        (self.root / "candidate.json").write_bytes(canonical(current))
+        (self.root / "reviewers.json").write_bytes(canonical(["a", "b", "c"]))
+        (self.root / "worktree").mkdir()
+        for name, padding in (("plain", b""), ("padded", b" " * (1024 * 1024))):
+            (self.on / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(self.hidden) + padding)
+            with self.subTest(configuration=name):
+                done = subprocess.run([sys.executable, "-B", str(self.on / ".agentic/scripts/workflow.py"),
+                    "review-completion", "--state", str(self.root / (name + ".sqlite3")),
+                    "--worktree-root", str(self.root / "worktree"), "freeze",
+                    "--candidate", str(self.root / "candidate.json"),
+                    "--reviewers", str(self.root / "reviewers.json")],
+                    cwd=self.root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                self.assertNotEqual(0, done.returncode, done.stdout)
+                self.assertIn("accepted policy digest changed", done.stderr)
+                self.assertFalse((self.root / (name + ".sqlite3")).exists())
+
+    def planted(self):
+        """Executable decoys that record a run; none may start or stop the check."""
+        marker = self.root / "planted-ran"
+        names = {"git.exe": b"MZ" + bytes(62), "git.com": b"MZ" + bytes(62),
+            "git.bat": b"@echo x>" + os.fsencode(str(marker)) + b"\r\n",
+            "git.cmd": b"@echo x>" + os.fsencode(str(marker)) + b"\r\n",
+            "git.ps1": b"exit 1\n", "git": b"#!/bin/sh\ntouch '" + os.fsencode(str(marker)) + b"'\n"}
+        return marker, names
+
+    def test_planted_git_in_the_current_directory_is_neither_run_nor_able_to_hide(self):
+        marker, names = self.planted()
+        for name, body in names.items():
+            for place in (self.on, self.root / ("cwd-" + name)):
+                place.mkdir(exist_ok=True)
+                target = place / name
+                target.write_bytes(body)
+                target.chmod(0o755)
+                os.chdir(place)
+                for search in ((None, "1") if name in ("git.exe", "git.bat") else (None,)):
+                    with self.subTest(name=name, place=place.name, search=search), patch.dict(os.environ):
+                        os.environ.pop("NoDefaultCurrentDirectoryInExePath", None)
+                        if search:
+                            os.environ["NoDefaultCurrentDirectoryInExePath"] = search
+                        self.refused(self.on, "guard")
+                        if name == "git.exe":
+                            self.refused(self.on, "evidence")
+                            self.callers(self.off)["guard"]()
+                os.chdir(self.root)
+                target.unlink()
+        self.assertFalse(marker.exists())
+
+    def test_path_entries_a_project_controls_never_supply_git(self):
+        marker, names = self.planted()
+        (self.on / "bin").mkdir()
+        for name, body in names.items():
+            (self.on / "bin" / name).write_bytes(body)
+            (self.on / "bin" / name).chmod(0o755)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / ("git.exe" if os.name == "nt" else "git")).write_bytes(b"not native")
+        os.chdir(self.on)
+        real = os.environ["PATH"]
+        for entry in ("", ".", "bin", os.path.join("..", "on", "bin"), str(self.on / "bin"),
+                      str(self.on), str(self.root / "bin"), str(self.root / "missing")):
+            with self.subTest(entry=entry), patch.dict(os.environ, PATH=entry + os.pathsep + real):
+                self.refused(self.on, "guard")
+        for value in ("", ".BAT;.CMD", ".COM"):
+            with self.subTest(pathext=value), patch.dict(os.environ, PATHEXT=value):
+                self.refused(self.on, "guard")
+        # A protected root supplied beside the project is excluded too.
+        from agentic import git_isolation
+        with patch.object(git_isolation, "_native_executable", return_value=True), \
+                patch.object(git_isolation, "_worker_writable", return_value=False), \
+                patch.dict(os.environ, PATH=str(self.on / "bin")):
+            with git_isolation.independent_policy_read(self.on), self.assertRaises(ValidationError):
+                git_isolation.native_git_executable(self.off)
+            if os.name == "nt":
+                with git_isolation.independent_policy_read():
+                    self.assertEqual(self.on / "bin" / "git.exe",
+                                     Path(git_isolation.native_git_executable(self.off)))
+        self.assertFalse(marker.exists())
+
+    def test_other_git_readers_keep_their_lookup_and_configuration(self):
+        import shutil
+        from agentic import child_process, git_isolation
+        with patch.object(shutil, "which", return_value="git.bat"), \
+                self.assertRaisesRegex(ValidationError, "absolute native executable"):
+            git_isolation.native_git_executable(self.off)
+        malformed = self.root / "malformed.yaml"
+        malformed.write_bytes(b"{")
+        with patch.object(child_process, "_DEFAULT_CONFIG", malformed), \
+                self.assertRaises(child_process.ChildEnvironmentError):
+            git_isolation.isolated_git_environment()
+        with (self.off / ".git/config").open("a", encoding="utf-8") as stream:
+            stream.write('[filter "a=b"]\n\tsmudge = fixture\n')
+        with self.assertRaisesRegex(ValidationError, "cannot be pinned"):
+            git_isolation.run_isolated_git(self.off, ["rev-parse", "--git-dir"], maximum=100,
+                                           timeout=30, label="fixture")
+
+    def test_filter_configuration_cannot_hide_an_observable_root(self):
+        with (self.on / ".git/config").open("a", encoding="utf-8") as stream:
+            stream.write('[filter "a=b"]\n\tsmudge = fixture\n')
+            for index in range(400):
+                stream.write(f'[filter "{"x" * 200}{index}"]\n\tsmudge = fixture\n')
+        self.refused(self.on, "guard", "evidence")
+
+    def test_relative_root_applied_twice_cannot_hide_the_opt_out(self):
+        from agentic import continuous_controller
+        inner = self.on / "on"
+        (inner / ".agentic").mkdir(parents=True)
+        os.chdir(self.root)
+
+        def check(label):
+            with self.subTest(inner=label):
+                self.refused("on")
+                self.refused(Path("on"), "evidence", "jira")
+                for root in ("on", self.on):
+                    with self.assertRaises(ValidationError):
+                        continuous_controller._controller_owner_policy(self.hidden, root)
+        check("directory")
+        self.git(inner, "init", "-q")
+        check("nested repository")
+        self.git(inner, "fetch", "-q", str(self.off), "refs/remotes/origin/main:refs/remotes/origin/main")
+        self.git(inner, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        check("nested forged policy")
+
+    def test_relative_root_cannot_borrow_a_forged_inner_opt_out(self):
+        # A forged inner repository must not supply the accepted setting either.
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        inner = self.off / "off"
+        inner.mkdir()
+        self.git(inner, "init", "-q")
+        self.git(inner, "fetch", "-q", str(self.on), "refs/remotes/origin/main:refs/remotes/origin/main")
+        self.git(inner, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        os.chdir(self.root)
+        for root in ("off", self.off):
+            with self.subTest(root=str(root)), self.assertRaises(ValidationError):
+                accepted_owner_evidence(root, self.accepted, 1002)
+
+    def subdirectory_project(self, config, name):
+        """One accepted repository that holds its project in a subdirectory."""
+        outer = self.policy_repository(config, name)
+        inner_tree = self.git(outer, "rev-parse", "refs/remotes/origin/main^{tree}").decode().strip()
+        tree = subprocess.run(["git", "-C", str(outer), "mktree"], check=True, capture_output=True,
+            input=f"040000 tree {inner_tree}\tproject\n".encode()).stdout.decode().strip()
+        commit = subprocess.run(["git", "-C", str(outer), "-c", "user.name=Fixture", "-c",
+            "user.email=owner@example.invalid", "commit-tree", tree, "-m", "fixture"], check=True,
+            capture_output=True).stdout.decode().strip()
+        self.git(outer, "update-ref", "refs/remotes/origin/main", commit)
+        (outer / "project").mkdir()
+        return outer / "project"
+
+    def test_nested_git_metadata_in_a_subdirectory_project_cannot_hide_or_forge(self):
+        import shutil
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        for kind in ("ordinary", "git init", "forged unset", "bare layout", "forged bare"):
+            project = self.subdirectory_project(self.accepted, "outer-" + kind.replace(" ", "-"))
+            if kind == "git init":
+                self.git(project, "init", "-q")
+            elif kind == "forged unset":
+                shutil.copytree(self.off / ".git", project / ".git")
+            elif kind == "bare layout":
+                self.git(project, "init", "-q", "--bare")
+            elif kind == "forged bare":
+                shutil.copytree(self.off / ".git", project, dirs_exist_ok=True)
+            with self.subTest(kind=kind):
+                self.refused(project, "guard", "evidence", "jira")
+        for kind in ("git init", "forged set"):
+            project = self.subdirectory_project(self.unset, "unset-" + kind.replace(" ", "-"))
+            if kind == "git init":
+                self.git(project, "init", "-q")
+            else:
+                shutil.copytree(self.on / ".git", project / ".git")
+                with self.subTest(kind=kind), self.assertRaisesRegex(ValidationError, "enclosing repository"):
+                    accepted_owner_evidence(project, self.accepted, 1002)
+                continue
+            with self.subTest(kind=kind):
+                self.accepted_unset_passes(project)
+        ordinary = self.subdirectory_project(self.unset, "unset-ordinary")
+        self.callers(ordinary)["guard"]()
+
+    def test_an_untracked_project_inside_an_opted_in_repository_is_unaffected(self):
+        inner = self.on / "vendored"
+        inner.mkdir()
+        self.git(inner, "init", "-q")
+        self.accepted_unset_passes(inner)
+
+    def test_only_the_git_reader_refusal_means_unobservable(self):
+        from agentic import shared_owner_policy
+        guard = shared_owner_policy._refuse_hidden_opt_out
+        with patch.object(shared_owner_policy, "_default_ref", side_effect=ValidationError("unobservable")):
+            guard(self.hidden, self.on)
+        for error in (ValueError, TypeError, OSError, KeyError, RuntimeError, AttributeError):
+            with self.subTest(error=error.__name__), \
+                    patch.object(shared_owner_policy, "_default_ref", side_effect=error("unexpected")), \
+                    self.assertRaisesRegex(ValidationError, "could not be checked"):
+                guard(self.hidden, self.on)
 
 
 PARENT_STREAM_RESULTS = dict.fromkeys((False, True),

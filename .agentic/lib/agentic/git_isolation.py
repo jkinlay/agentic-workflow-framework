@@ -1,6 +1,8 @@
 """Fail-closed Git reads isolated from ambient config and replacement objects."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 from pathlib import Path
 import re
@@ -12,13 +14,34 @@ from . import ValidationError
 from .child_process import child_env
 
 
+# Accepted-policy reads only: None elsewhere, so every other reader is unchanged.
+_POLICY_READ: ContextVar[tuple[Path, ...] | None] = ContextVar("policy_read", default=None)
+# Object and reference reads that never run filters, hooks or archive formats.
+_POLICY_COMMANDS = frozenset({"symbolic-ref", "check-ref-format", "rev-parse", "ls-tree", "cat-file", "config"})
+
+
+@contextmanager
+def independent_policy_read(*roots):
+    """Read accepted policy without any proposed file, current directory or filter.
+
+    The working project configuration is itself the proposal under check, so its
+    child-environment exclusions do not apply; the fixed environment below holds
+    no credential. ``roots`` never supply the Git executable.
+    """
+    token = _POLICY_READ.set((*(_POLICY_READ.get() or ()), *(Path(root) for root in roots)))
+    try:
+        yield
+    finally:
+        _POLICY_READ.reset(token)
+
+
 def isolated_git_environment() -> dict[str, str]:
     permitted = {"COMSPEC", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "WINDIR"}
     environment = {name: value for name, value in os.environ.items()
                    if name.upper() in permitted}
     # Apply project exclusions only to inherited values. Mandatory isolation
     # controls below must survive even when policy names those variables.
-    environment = child_env(environment)
+    environment = child_env(environment, strip_extra=None if _POLICY_READ.get() is None else [])
     environment.update({
         "GIT_CONFIG_COUNT": "0",
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -144,8 +167,44 @@ def _native_executable(path):
                       b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe'))
 
 
+def _policy_git_executable(excluded) -> str:
+    """Find native Git on absolute PATH entries a project file cannot supply.
+
+    Unlike shutil.which this never searches the current directory, ignores
+    PATHEXT, and passes over an unusable candidate instead of stopping at it.
+    """
+    try:
+        current = Path.cwd().resolve()
+    except OSError:
+        current = None  # A removed current directory cannot supply anything.
+    protected = [Path(os.path.abspath(root)).resolve() for root in excluded]
+
+    def outside(path):
+        return not any(path == root or root in path.parents for root in protected)
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        directory = Path(entry.strip().strip('"'))
+        if not directory.is_absolute():
+            continue
+        candidate = directory / ("git.exe" if os.name == "nt" else "git")
+        try:
+            resolved = directory.resolve(strict=True)
+            if resolved == current or not outside(resolved):
+                continue
+            path = candidate.resolve(strict=True)
+            if (path.parent != current and outside(path) and path.is_file() and os.access(path, os.X_OK)
+                    and _native_executable(path) and not _worker_writable(path)):
+                return str(path)
+        except (OSError, RuntimeError, ValidationError):
+            continue
+    raise ValidationError("Git native executable is unavailable")
+
+
 def native_git_executable(root: Path) -> str:
     """Resolve Git once; refuse scripts, relative and repository-local candidates."""
+    policy_read = _POLICY_READ.get()
+    if policy_read is not None:
+        return _policy_git_executable((root, *policy_read))
     candidate = shutil.which("git")
     if not candidate:
         raise ValidationError("Git native executable is unavailable")
@@ -208,15 +267,19 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
         # alone are NOT an isolation boundary: source configuration can change
         # after discovery. Archive/status execution uses private metadata instead.
         environment = isolated_git_environment()
-        filters = subprocess.run(
-            [*command, "config", "--null", "--name-only", "--get-regexp",
-             r"^filter\..*\.(smudge|process|required)$"],
-            cwd=str(root), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-            env=child_env(environment, strip_extra=[]), timeout=timeout, check=False)
-        if filters.returncode not in {0, 1} or len(filters.stdout) > 65536:
-            raise ValidationError(f"{label} filter configuration is unavailable")
-        for raw_key in filters.stdout.split(b"\0"):
+        filter_keys = b""
+        # A raw policy read converts nothing, so a filter name cannot block it.
+        if _POLICY_READ.get() is None or not args or args[0] not in _POLICY_COMMANDS:
+            filters = subprocess.run(
+                [*command, "config", "--null", "--name-only", "--get-regexp",
+                 r"^filter\..*\.(smudge|process|required)$"],
+                cwd=str(root), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+                env=child_env(environment, strip_extra=[]), timeout=timeout, check=False)
+            if filters.returncode not in {0, 1} or len(filters.stdout) > 65536:
+                raise ValidationError(f"{label} filter configuration is unavailable")
+            filter_keys = filters.stdout
+        for raw_key in filter_keys.split(b"\0"):
             if not raw_key:
                 continue
             key = raw_key.decode("utf-8")

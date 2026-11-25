@@ -10,12 +10,33 @@ from urllib.parse import urlsplit
 
 from . import ValidationError
 from .canonical import load_yaml, sha256
-from .protected_settings import _blob, _default_ref, _git, _origin_url
+from . import protected_settings as _settings
+from .git_isolation import independent_policy_read
 
 SETTING = "shared_owner_automation_actor_id"
 SETTING_PATH = "$.merge_gate." + SETTING
 OWNER_EVIDENCE_FIELDS = frozenset({"shared_owner_automation_account",
                                    "owner_policy_sha256", "accepted_owner_policy"})
+
+
+def _git(root, *arguments, **options):
+    with independent_policy_read(root):
+        return _settings._git(root, *arguments, **options)
+
+
+def _default_ref(root):
+    with independent_policy_read(root):
+        return _settings._default_ref(root)
+
+
+def _blob(root, commit, path):
+    with independent_policy_read(root):
+        return _settings._blob(root, commit, path)
+
+
+def _origin_url(root):
+    with independent_policy_read(root):
+        return _settings._origin_url(root)
 
 
 def consumer_policy_root(root=None, store=None):
@@ -163,13 +184,20 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             return {}
         try:
             ref, _ = _default_ref(root)
-            if ref is None:
-                return {}
-            commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
-            raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
+            raw = None
+            if ref is not None:
+                commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+                raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
         except ValidationError:
             # Only this spelling failed; an accepted opt-out still refuses.
             _refuse_hidden_opt_out(config, root)
+            return {}
+        # An absent file, relative root or nested repository may not be the
+        # project's own accepted policy; its legacy result stands unless hidden.
+        from pathlib import Path
+        if raw is None or not Path(root).is_absolute() or any(_outer_policies(root)):
+            _refuse_hidden_opt_out(config, root)
+        if ref is None:
             return {}
         accepted = load_yaml(raw) if raw is not None else {}
         if (isinstance(accepted, dict) and
@@ -228,25 +256,59 @@ def _root_spellings(root):
     return tuple(dict.fromkeys((known, resolved, Path(plain))))
 
 
-def _accepted_opt_out(root):
-    """Read only the accepted setting; an unobservable policy stays unknown."""
+def _outer_policies(root):
+    """Accepted bytes an enclosing repository holds for this exact project path.
+
+    A project in a subdirectory cannot protect its own directory from a nested
+    ``.git`` or bare-repository files, which would replace the discovered policy.
+    """
+    import os
+    resolved = _root_spellings(root)[-1]
+    for outer in resolved.parents:
+        if not os.path.lexists(outer / ".git"):
+            continue
+        try:
+            ref, _ = _default_ref(outer)
+            if ref is None:
+                continue
+            commit = _git(outer, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+            raw = _policy_blob(outer, commit, resolved.relative_to(outer).as_posix()
+                               + "/.agentic/PROJECT_CONFIG.yaml")
+        except ValidationError:
+            continue  # Git cannot observe a repository here.
+        if raw is not None:
+            yield raw
+
+
+def _policy_setting(raw):
     try:
-        spellings = _root_spellings(root)
-    except (OSError, RuntimeError, ValueError, TypeError):
-        return None
-    for spelling in spellings:
+        accepted = load_yaml(raw)
+    except ValidationError:
+        return None  # Malformed accepted bytes are no usable policy.
+    gate = accepted.get("merge_gate") if isinstance(accepted, dict) else None
+    return gate.get(SETTING) if isinstance(gate, dict) else None
+
+
+def _accepted_opt_out(root):
+    """Read only the accepted setting; an unobservable policy stays unknown.
+
+    Only the closed Git reader's own refusal means unobservable.
+    """
+    for spelling in _root_spellings(root):
         try:
             ref, _ = _default_ref(spelling)
             if ref is None:
                 continue
             commit = _git(spelling, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
             raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
-            accepted = load_yaml(raw) if raw is not None else None
-        except (ValidationError, OSError, ValueError, TypeError):
+        except ValidationError:
             continue
-        gate = accepted.get("merge_gate") if isinstance(accepted, dict) else None
-        return gate.get(SETTING) if isinstance(gate, dict) else None
-    return None
+        if raw is not None:
+            value = _policy_setting(raw)
+            if value is not None:
+                return value
+            break
+    return next((value for value in map(_policy_setting, _outer_policies(root)) if value is not None), None)
 
 
 def _refuse_hidden_opt_out(config, *roots):
@@ -261,9 +323,16 @@ def _refuse_hidden_opt_out(config, *roots):
             return  # A valid proposal meets each caller's own accepted-policy rules.
     except (ValidationError, AttributeError, TypeError):
         pass
-    for root in roots:
-        if root is not None and _accepted_opt_out(root) is not None:
-            raise ValidationError("Shared-owner accepted policy digest changed")
+    known = [root for root in roots if root is not None]
+    with independent_policy_read(*known):
+        for root in known:
+            try:
+                hidden = _accepted_opt_out(root) is not None
+            except Exception as exc:
+                # An unexpected failure is not an observation that nothing is set.
+                raise ValidationError("Shared-owner accepted policy could not be checked") from exc
+            if hidden:
+                raise ValidationError("Shared-owner accepted policy digest changed")
 
 
 def _refuse_hidden_owner_policy(config, *roots):
@@ -314,6 +383,7 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
     from .configuration import inspect_config
     from .policy import policy_hash
 
+    root = _known_root(root)
     ref, _ = _default_ref(root)
     if ref is None:
         raise ValidationError("Shared-owner default branch is unobserved")
@@ -326,6 +396,8 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
     raw_instructions = _policy_blob(root, commit, "PROJECT_INSTRUCTIONS.md")
     if raw_config is None or raw_workflow is None:
         raise ValidationError("Shared-owner accepted default-branch policy is missing")
+    if any(outer != raw_config for outer in _outer_policies(root)):
+        raise ValidationError("Shared-owner accepted policy differs from its enclosing repository")
     try:
         accepted = load_yaml(raw_config)
         accepted_workflow = load_yaml(raw_workflow)
