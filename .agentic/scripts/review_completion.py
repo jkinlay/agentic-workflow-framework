@@ -59,7 +59,8 @@ def main(argv=None, default_root=ROOT, observer_factory=github_reviewer_removal_
         instructions_path = default_root / "PROJECT_INSTRUCTIONS.md"
         report = inspect_config(
             config, workflow, contracts,
-            instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else None)
+            instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else None,
+            project_root=default_root)
         if report["status"] != "ACCEPTED":
             raise ValueError("Review freeze requires an accepted PROJECT_CONFIG")
         authority = review_authority_from_config(config)

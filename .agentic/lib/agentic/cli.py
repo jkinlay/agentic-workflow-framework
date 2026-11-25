@@ -495,7 +495,8 @@ def main(argv=None, default_root=None):
                     instructions = root / "PROJECT_INSTRUCTIONS.md"
                     before_instructions = instructions.read_bytes() if instructions.is_file() else None
                     output = inspect_config(config, workflow, contracts, project_instructions=(
-                        before_instructions.decode("utf-8") if before_instructions is not None else None))
+                        before_instructions.decode("utf-8") if before_instructions is not None else None),
+                        project_root=root)
                     from .operating_status import with_operating
                     output = with_operating(root, config, output)
                     after_instructions = instructions.read_bytes() if instructions.is_file() else None

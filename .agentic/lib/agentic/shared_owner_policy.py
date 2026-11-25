@@ -20,22 +20,22 @@ OWNER_EVIDENCE_FIELDS = frozenset({"shared_owner_automation_account",
 
 
 def _git(root, *arguments, **options):
-    with independent_policy_read(root):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
         return _settings._git(root, *arguments, **options)
 
 
 def _default_ref(root):
-    with independent_policy_read(root):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
         return _settings._default_ref(root)
 
 
 def _blob(root, commit, path):
-    with independent_policy_read(root):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
         return _settings._blob(root, commit, path)
 
 
 def _origin_url(root):
-    with independent_policy_read(root):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
         return _settings._origin_url(root)
 
 
@@ -192,16 +192,18 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             # Only this spelling failed; an accepted opt-out still refuses.
             _refuse_hidden_opt_out(config, root)
             return {}
-        # An absent file, relative root or nested repository may not be the
+        # An absent file, relative root or linked subfolder may not be the
         # project's own accepted policy; its legacy result stands unless hidden.
         from pathlib import Path
-        if raw is None or not Path(root).is_absolute() or any(_outer_policies(root)):
+        _, own, above = _enclosing(root)
+        subfolder = bool(above) and not own
+        if raw is None or not Path(root).is_absolute() or subfolder:
             _refuse_hidden_opt_out(config, root)
         if ref is None:
             return {}
         accepted = load_yaml(raw) if raw is not None else {}
         if (isinstance(accepted, dict) and
-                configured_shared_owner_actor_id(accepted) is None and
+                (subfolder or configured_shared_owner_actor_id(accepted) is None) and
                 (accepted.get("github", {}).get("expected_actor_id") ==
                  config.get("github", {}).get("expected_actor_id") or
                  accepted.get("github", {}).get("expected_actor_id") not in
@@ -209,6 +211,8 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             return {}
     if root is None:
         raise ValidationError("Owner records require an accepted default-branch policy observation")
+    if shared is not None:
+        require_whole_repository(root)
     from pathlib import Path
     from .contracts import Contracts
     from .lifecycle import definition
@@ -257,160 +261,100 @@ def _root_spellings(root):
     return tuple({str(path): path for path in (Path(plain), resolved, known)}.values())[::-1]
 
 
-_PATH_DIFFERS = "Shared-owner accepted policy path differs in spelling or file type"
-
-
-class _PolicyPathDiffers(ValidationError):
-    """The accepted tree holds this project's policy path under another form."""
-
-
-def _known_layouts(root):
-    """Name each repository directory above a root and the project path inside it.
-
-    Both the typed and the resolved path count: a replaced symbolic link changes
-    the second, and a directory renamed only in case changes either.
-    """
-    import os
-    import sys
-    import unicodedata
-    from pathlib import Path
-    resolved = _root_spellings(root)[-1]
-    layouts = {}
-    typed = Path(os.path.abspath(_known_root(root)))
-    for path in {str(path): path for path in (resolved, typed)}.values():
-        for outer in path.parents:
-            if os.path.lexists(outer / ".git"):
-                parts = path.relative_to(outer).parts
-                known = layouts.setdefault(outer.resolve(), [])
-                if sys.platform == "darwin":  # Git itself composes names there.
-                    known.append(tuple(unicodedata.normalize("NFC", part) for part in parts))
-                known.append(parts)
-    return {outer: tuple(dict.fromkeys(paths)) for outer, paths in layouts.items()}
-
-
-def _names_equate(directory, name, part):
-    """Compare names as a case-insensitive or normalizing filesystem would."""
-    import os
-    import unicodedata
-
-    def fold(value):
-        value = unicodedata.normalize("NFD", value).casefold()
-        return unicodedata.normalize("NFD", value).rstrip(" .")
-
-    if fold(name) == fold(part):
-        return True
-    if name.isascii() and part.isascii() and "~" not in name + part:
-        return False
-    try:  # Short names and unlisted forms: only the filesystem can tell.
-        known, other = os.lstat(directory / part), os.lstat(directory / name)
-    except (OSError, ValueError):
-        return False
-    return bool(known.st_ino) and os.path.samestat(known, other)
-
-
-def _accepted_forms(outer, commit, wanted, depth=0):
-    """Find an absent path in the accepted tree under another form.
-
-    Returns bytes reached through the accepted tree's own symbolic links, and
-    whether a near match, or a submodule that is now an ordinary directory,
-    stands in its place. A near match is never read as policy.
-    """
-    import os
-    import posixpath
-    trees, directory = [(commit, True)], outer
-    linked, differs = [], False
-    for index, part in enumerate(wanted):
-        found = []
-        for tree, exact in trees:
-            for line in _git(outer, "ls-tree", "-z", "--full-tree", tree,
-                             maximum=64 * 1024 * 1024).split(bytes(1)):
-                if not line:
-                    continue
-                fields, raw_name = line.split(b"\t", 1)
-                mode, _, identity = fields.split()
-                identity = identity.decode("ascii")
-                name = raw_name.decode("utf-8", "surrogateescape")
-                same = exact and name == part
-                if name != part and not _names_equate(directory, name, part):
-                    continue
-                if index == len(wanted) - 1:
-                    if same:
-                        return linked, False  # Present but unusable: no other form applies.
-                    differs = True
-                elif mode == b"040000":
-                    found.append((identity, same))
-                elif mode == b"160000":
-                    target = directory / part
-                    differs |= target.is_dir() and not os.path.lexists(target / ".git")
-                elif mode == b"120000":
-                    target = _git(outer, "cat-file", "blob", identity).decode("utf-8", "surrogateescape")
-                    target = posixpath.normpath("/".join((*wanted[:index], target)))
-                    if depth > 8 or target == ".." or target.startswith(("../", "/")):
-                        continue  # Its accepted policy was never in this repository.
-                    following = (*(piece for piece in target.split("/") if piece != "."),
-                                 *wanted[index + 1:])
-                    try:
-                        raw = _policy_blob(outer, commit, "/".join(following))
-                    except ValidationError:
-                        raw = None  # An unusable target cannot stop the rest of this search.
-                    nested = ([raw], False) if raw is not None else _accepted_forms(
-                        outer, commit, following, depth + 1)
-                    if not same:
-                        differs |= bool(nested[0]) or nested[1]
-                    else:
-                        linked += nested[0]
-                        differs |= nested[1]
-        trees, directory = found, directory / part
-    return linked, differs
-
-
-def _outer_policies(root):
-    """Accepted bytes an enclosing repository holds for this exact project path.
-
-    A project in a subdirectory cannot protect its own directory from a nested
-    ``.git`` or bare-repository files, which would replace the discovered policy.
-    A path absent there, but present under another form, refuses; a path with no
-    such form is legitimately absent.
-    """
-    for outer, paths in _known_layouts(root).items():
-        policies, differs = [], False
-        try:
-            ref, _ = _default_ref(outer)
-            if ref is None:
-                continue
-            commit = _git(outer, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
-            for parts in paths:
-                wanted = (*parts, ".agentic", "PROJECT_CONFIG.yaml")
-                try:
-                    raw = _policy_blob(outer, commit, "/".join(wanted))
-                except ValidationError:
-                    raw = None
-                if raw is not None:
-                    policies.append(raw)
-                    continue
-                linked, other = _accepted_forms(outer, commit, wanted)
-                policies += linked
-                differs |= other
-        except ValidationError:
-            pass  # Git cannot observe the rest of a repository here.
-        if differs and not policies:
-            raise _PolicyPathDiffers(_PATH_DIFFERS)
-        yield from policies
-
-
-def _own_forms(root, commit):
-    """Check the root's own repository for another form of its absent path."""
-    import os
-    resolved = _root_spellings(root)[-1]
-    if not os.path.lexists(resolved / ".git"):
-        return []  # An enclosing repository is checked by its own layout.
+def _common_directory(path):
+    """Resolve the common Git directory of one ``.git`` entry, or None."""
     try:
-        linked, differs = _accepted_forms(resolved, commit, (".agentic", "PROJECT_CONFIG.yaml"))
-    except ValidationError:
-        return []
-    if differs and not linked:
-        raise _PolicyPathDiffers(_PATH_DIFFERS)
-    return linked
+        marker = path / ".git"
+        if marker.is_dir():
+            return marker.resolve() if (marker / "HEAD").exists() else None
+        text = marker.read_text(encoding="utf-8").strip()
+        if not text.startswith("gitdir:") or "\n" in text:
+            return None
+        admin = (path / text[len("gitdir:"):].strip()).resolve(strict=True)
+        if not (admin / "commondir").exists():
+            return admin
+        shared = (admin / (admin / "commondir").read_text(encoding="utf-8").strip()).resolve(strict=True)
+        backlink = admin / (admin / "gitdir").read_text(encoding="utf-8").strip()
+        return (shared if admin.parent == shared / "worktrees"
+                and backlink.resolve(strict=True) == marker.resolve(strict=True) else None)
+    except (OSError, UnicodeError):
+        return None
+
+
+def _enclosing(root):
+    """Return the resolved root, whether it has its own ``.git``, and those above it."""
+    import os
+    from pathlib import Path
+    if chr(0) in str(root):
+        raise ValidationError("Owner policy root is not a path")
+    resolved = _root_spellings(root)[-1]
+    own = os.path.lexists(resolved / ".git")
+    above = list(resolved.parents)
+    if not own:  # Git may discover a repository above the typed spelling instead.
+        above += Path(os.path.abspath(_known_root(root))).parents
+    return resolved, own, tuple(dict.fromkeys(path for path in above if os.path.lexists(path / ".git")))
+
+
+def _enclosing_checkouts(root):
+    """Checkouts of the same repository that hold this root never supply Git."""
+    resolved, own, above = _enclosing(root)
+    common = _common_directory(resolved) if own and above else None
+    return tuple(path for path in above if not own or common and _common_directory(path) == common)
+
+
+def _whole_repository(root):
+    """The opt-out needs the project root to be its repository's top level.
+
+    Tracked files cannot form a ``.git`` entry. A linked worktree inside its own
+    main checkout qualifies; a subfolder, bare layout or nested repository does
+    not. A root in no repository passes: Git itself cannot observe it.
+    """
+    import os
+    resolved, own, above = _enclosing(root)
+
+    def bare(path):
+        return os.path.lexists(path / "HEAD") and (os.path.lexists(path / "commondir") or (
+            os.path.lexists(path / "objects") and os.path.lexists(path / "refs")))
+
+    if not own:
+        return not above and not any(map(bare, (resolved, *resolved.parents)))
+    common = _common_directory(resolved)
+    if above:
+        return common is not None and all(_common_directory(path) == common for path in above)
+    return common is not None or not bare(resolved)
+
+
+def require_whole_repository(root):
+    """Refuse a set opt-out, or its authority, anywhere else."""
+    if not _whole_repository(root):
+        raise ValidationError(SETTING_PATH + ": allowed only when the project root is the top level of its "
+                              "own repository, not a subfolder, bare or nested repository")
+
+
+def _checked_root(root):
+    """Choose the root whose accepted setting could be hidden, or None.
+
+    A subfolder project cannot accept the setting. A tracked link can still
+    resolve an enclosing project's own ``.agentic`` files into a subfolder; the
+    enclosing project is then the one its host runs.
+    """
+    import os
+    resolved, own, above = _enclosing(root)
+    if own or not above and _whole_repository(root):
+        return root
+    for outer in (path.resolve() for path in above):
+        agentic = outer / ".agentic"
+        paths = [agentic, agentic / "PROJECT_CONFIG.yaml", agentic / "lib"]
+        for directory in (agentic / "scripts", agentic / "lib/agentic"):
+            paths.append(directory)
+            try:
+                with os.scandir(directory) as entries:
+                    paths += [directory / entry.name for entry in entries if entry.is_symlink()]
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+        if resolved != agentic and any(resolved in path.resolve().parents for path in paths if path.exists()):
+            return outer
+    return None
 
 
 def _policy_setting(raw):
@@ -422,27 +366,13 @@ def _policy_setting(raw):
     return gate.get(SETTING) if isinstance(gate, dict) else None
 
 
-def _bare_layout(root):
-    """Tracked files can form a bare repository but never a ``.git`` entry."""
-    import os
-    resolved = _root_spellings(root)[-1]
-    for path in (resolved, *resolved.parents):
-        # Git also takes objects and references from a common directory it names.
-        if os.path.lexists(path / "HEAD") and (os.path.lexists(path / "commondir") or (
-                os.path.lexists(path / "objects") and os.path.lexists(path / "refs"))):
-            return True
-        if os.path.lexists(path / ".git"):
-            return False
-    return False
-
-
 def _accepted_opt_out(root):
     """Read only the accepted setting; an unobservable policy stays unknown.
 
     Only the closed Git reader's own refusal means unobservable.
     """
-    own, observed, checked = [], False, None
-    for spelling in _root_spellings(root):
+    root = _checked_root(root)
+    for spelling in _root_spellings(root) if root is not None else ():
         try:
             ref, _ = _default_ref(spelling)
             if ref is None:
@@ -451,17 +381,9 @@ def _accepted_opt_out(root):
             raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
         except ValidationError:
             continue
-        checked = commit
         if raw is not None:
-            observed = True
-            value = _policy_setting(raw)
-            if value is not None:
-                return value
-            break
-    if checked is not None and not observed:
-        own = _own_forms(root, checked)
-    return next((value for value in map(_policy_setting, (*own, *_outer_policies(root)))
-                 if value is not None), None)
+            return _policy_setting(raw)
+    return None
 
 
 def _refuse_hidden_opt_out(config, *roots):
@@ -481,8 +403,6 @@ def _refuse_hidden_opt_out(config, *roots):
         try:
             with independent_policy_read(*known):
                 hidden = _accepted_opt_out(root) is not None
-        except _PolicyPathDiffers:
-            raise
         except Exception as exc:
             # An unexpected failure is not an observation that nothing is set.
             raise ValidationError("Shared-owner accepted policy could not be checked") from exc
@@ -539,6 +459,8 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
     from .policy import policy_hash
 
     root = _known_root(root)
+    if shared_owner_warnings(config):
+        require_whole_repository(root)
     ref, _ = _default_ref(root)
     if ref is None:
         raise ValidationError("Shared-owner default branch is unobserved")
@@ -551,8 +473,6 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
     raw_instructions = _policy_blob(root, commit, "PROJECT_INSTRUCTIONS.md")
     if raw_config is None or raw_workflow is None:
         raise ValidationError("Shared-owner accepted default-branch policy is missing")
-    if any(outer != raw_config for outer in _outer_policies(root)):
-        raise ValidationError("Shared-owner accepted policy differs from its enclosing repository")
     try:
         accepted = load_yaml(raw_config)
         accepted_workflow = load_yaml(raw_workflow)
@@ -563,13 +483,13 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
                             project_instructions=instructions)
     if report["status"] != "ACCEPTED":
         raise ValidationError("Shared-owner accepted default-branch policy is invalid")
-    if configured_shared_owner_actor_id(accepted) is not None and _bare_layout(root):
-        raise ValidationError("Shared-owner accepted policy comes from bare repository files")
     digest = report["policy_sha256"]
     if digest != policy_sha256:
         raise ValidationError("Shared-owner accepted policy digest changed")
     if policy_hash(config, workflow) != digest:
         raise ValidationError("Supplied configuration differs from accepted default-branch policy")
+    if configured_shared_owner_actor_id(accepted) is not None:
+        require_whole_repository(root)
     github = accepted["github"]
     if ref != "refs/remotes/origin/" + github["base_branch"]:
         raise ValidationError("Shared-owner accepted default-branch identity differs")
