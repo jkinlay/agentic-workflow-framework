@@ -192,12 +192,12 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             # Only this spelling failed; an accepted opt-out still refuses.
             _refuse_hidden_opt_out(config, root)
             return {}
-        # An absent file, relative root or linked subfolder may not be the
+        # An absent file, relative root, subfolder or link target may not be the
         # project's own accepted policy; its legacy result stands unless hidden.
         from pathlib import Path
         _, own, above = _enclosing(root)
         subfolder = bool(above) and not own
-        if raw is None or not Path(root).is_absolute() or subfolder:
+        if raw is None or not Path(root).is_absolute() or subfolder or _linking_projects(root):
             _refuse_hidden_opt_out(config, root)
         if ref is None:
             return {}
@@ -261,18 +261,21 @@ def _root_spellings(root):
     return tuple({str(path): path for path in (Path(plain), resolved, known)}.values())[::-1]
 
 
-def _common_directory(path):
-    """Resolve the common Git directory of one ``.git`` entry, or None."""
+def _common_directory(path, *, linked=False):
+    """Resolve the common Git directory of one ``.git`` entry, or None.
+
+    ``linked`` accepts only a linked worktree with its matching backlink.
+    """
     try:
         marker = path / ".git"
         if marker.is_dir():
-            return marker.resolve() if (marker / "HEAD").exists() else None
+            return marker.resolve() if not linked and (marker / "HEAD").exists() else None
         text = marker.read_text(encoding="utf-8").strip()
         if not text.startswith("gitdir:") or "\n" in text:
             return None
         admin = (path / text[len("gitdir:"):].strip()).resolve(strict=True)
         if not (admin / "commondir").exists():
-            return admin
+            return None if linked else admin
         shared = (admin / (admin / "commondir").read_text(encoding="utf-8").strip()).resolve(strict=True)
         backlink = admin / (admin / "gitdir").read_text(encoding="utf-8").strip()
         return (shared if admin.parent == shared / "worktrees"
@@ -320,6 +323,7 @@ def _whole_repository(root):
         return not above and not any(map(bare, (resolved, *resolved.parents)))
     common = _common_directory(resolved)
     if above:
+        common = _common_directory(resolved, linked=True)
         return common is not None and all(_common_directory(path) == common for path in above)
     return common is not None or not bare(resolved)
 
@@ -331,17 +335,35 @@ def require_whole_repository(root):
                               "own repository, not a subfolder, bare or nested repository")
 
 
-def _checked_root(root):
-    """Choose the root whose accepted setting could be hidden, or None.
+def _invoked_projects(resolved):
+    """Projects whose invoked script or imported library resolves into this root.
 
-    A subfolder project cannot accept the setting. A tracked link can still
-    resolve an enclosing project's own ``.agentic`` files into a subfolder; the
-    enclosing project is then the one its host runs.
+    The host chose the unresolved path; a tracked link can redirect only what it
+    resolves to, including out of the repository.
     """
     import os
-    resolved, own, above = _enclosing(root)
-    if own or not above and _whole_repository(root):
-        return root
+    import sys
+    from pathlib import Path
+    for entry, tail in ((sys.argv[0] if sys.argv else "", (".agentic", "scripts")),
+                        (__file__, (".agentic", "lib", "agentic"))):
+        typed = Path(os.path.abspath(entry))
+        if typed.parts[-len(tail) - 1:-1] != tail:
+            continue
+        project, target = typed.parents[len(tail)], typed.resolve()
+        if (len(target.parents) > len(tail) and target.parents[len(tail)] == resolved
+                and os.path.lexists(project / ".git") and project.resolve() != resolved):
+            yield project
+
+
+def _linking_projects(root):
+    """Enclosing or invoked projects whose own ``.agentic`` files resolve into this root.
+
+    A tracked link can resolve a project's scripts, library or configuration into
+    a subfolder, submodule or nested checkout; its host still runs that project.
+    """
+    import os
+    resolved, _, above = _enclosing(root)
+    found = dict.fromkeys(_invoked_projects(resolved))
     for outer in (path.resolve() for path in above):
         agentic = outer / ".agentic"
         paths = [agentic, agentic / "PROJECT_CONFIG.yaml", agentic / "lib"]
@@ -353,8 +375,17 @@ def _checked_root(root):
             except (FileNotFoundError, NotADirectoryError):
                 continue
         if resolved != agentic and any(resolved in path.resolve().parents for path in paths if path.exists()):
-            return outer
-    return None
+            found[outer] = None
+    return tuple(found)
+
+
+def _checked_roots(root):
+    """Choose the roots whose accepted setting could be hidden.
+
+    A subfolder project cannot accept the setting, so it has none of its own.
+    """
+    _, own, above = _enclosing(root)
+    return (*_linking_projects(root), *((root,) if own or not above and _whole_repository(root) else ()))
 
 
 def _policy_setting(raw):
@@ -371,18 +402,21 @@ def _accepted_opt_out(root):
 
     Only the closed Git reader's own refusal means unobservable.
     """
-    root = _checked_root(root)
-    for spelling in _root_spellings(root) if root is not None else ():
-        try:
-            ref, _ = _default_ref(spelling)
-            if ref is None:
+    for checked in _checked_roots(root):
+        for spelling in _root_spellings(checked):
+            try:
+                ref, _ = _default_ref(spelling)
+                if ref is None:
+                    continue
+                commit = _git(spelling, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+                raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
+            except ValidationError:
                 continue
-            commit = _git(spelling, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
-            raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
-        except ValidationError:
-            continue
-        if raw is not None:
-            return _policy_setting(raw)
+            if raw is not None:
+                value = _policy_setting(raw)
+                if value is not None:
+                    return value
+                break
     return None
 
 

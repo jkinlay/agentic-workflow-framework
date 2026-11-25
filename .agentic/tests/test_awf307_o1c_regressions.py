@@ -2151,6 +2151,184 @@ class WholeRepositoryRule(RealGitPolicyFixture):
                 if os.name == "nt":
                     os.rmdir(root / link)
 
+    def link(self, path, target):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(target), str(path))
+            # Remove the junction itself before the fixture removes its target.
+            self.addCleanup(lambda: os.rmdir(path) if os.path.lexists(path) else None)
+        else:
+            os.symlink(os.path.relpath(target, path.parent), path, target_is_directory=True)
+
+    def own_git_target(self, root, kind):
+        """A committed submodule, or an untracked clone, with its own unset accepted policy."""
+        import shutil
+        target = root / "deep/target"
+        target.mkdir(parents=True)
+        if kind == "submodule":
+            shutil.copytree(self.off / ".git", root / ".git/modules/target")
+            (target / ".git").write_text("gitdir: ../../.git/modules/target\n", encoding="utf-8")
+        else:
+            shutil.copytree(self.off / ".git", target / ".git")
+        return target
+
+    def test_links_into_a_repository_of_their_own_cannot_hide_the_opt_out(self):
+        for kind in ("submodule", "nested clone"):
+            for link in (".agentic", ".agentic/scripts", ".agentic/lib"):
+                for state, config in (("set", self.accepted), ("unset", self.unset)):
+                    name = f"{kind}-{link}-{state}".replace("/", "-").replace(" ", "-").replace(".", "")
+                    root = self.policy_repository(config, name)
+                    target = self.own_git_target(root, kind)
+                    self.callers(target)["guard"]()  # Nothing links here yet.
+                    (target / link).mkdir(parents=True)
+                    self.link(root / link, target / link)
+                    with self.subTest(kind=kind, link=link, accepted=state):
+                        if state == "set":
+                            self.refused(target, "guard", "evidence", "jira")
+                            self.refused(root, "guard")
+                        else:
+                            self.callers(target)["guard"]()
+                        if link == ".agentic":
+                            self.set_refused(target)
+
+    def install(self, root, config):
+        import shutil
+        for name in ("lib", "scripts", "schemas"):
+            shutil.copytree(ROOT / ".agentic" / name, root / ".agentic" / name,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        (root / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+        (root / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+
+    def test_linked_scripts_cannot_hide_the_opt_out_wherever_they_resolve(self):
+        import shutil
+        import test_review_completion as completion_fixture
+        current = completion_fixture.candidate()
+        current["repository"] = self.hidden["github"]["repository"]
+        (self.root / "candidate.json").write_bytes(canonical(current))
+        (self.root / "reviewers.json").write_bytes(canonical(["a", "b", "c"]))
+        (self.root / "worktree").mkdir()
+        for kind in ("submodule", "no git", "other checkout"):
+            for link in (".agentic", ".agentic/scripts"):
+                for state, config in (("set", self.accepted), ("unset", self.unset)):
+                    if state == "unset" and kind != "submodule":
+                        continue
+                    name = f"run-{kind}-{link}-{state}".replace("/", "-").replace(" ", "-").replace(".", "")
+                    root = self.policy_repository(config, name)
+                    if kind == "submodule":
+                        target = self.own_git_target(root, kind)
+                    elif kind == "no git":
+                        target = self.root / (name + "-outside")
+                        target.mkdir()
+                    else:
+                        target = self.policy_repository(self.unset, name + "-other") / "sub"
+                        target.mkdir()
+                    self.install(target, self.hidden)
+                    if link != ".agentic":
+                        shutil.copytree(target / ".agentic/lib", root / ".agentic/lib")
+                    self.link(root / link, target / link)
+                    state_file = self.root / (name + ".sqlite3")
+                    done = subprocess.run([sys.executable, "-B", str(root / ".agentic/scripts/review_completion.py"),
+                        "--state", str(state_file), "--worktree-root", str(self.root / "worktree"), "freeze",
+                        "--candidate", str(self.root / "candidate.json"),
+                        "--reviewers", str(self.root / "reviewers.json")],
+                        cwd=self.root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                    with self.subTest(kind=kind, link=link, accepted=state):
+                        if state == "unset":
+                            self.assertEqual(0, done.returncode, done.stderr)
+                        else:
+                            self.assertNotEqual(0, done.returncode, done.stdout)
+                            self.assertIn("accepted policy digest changed", done.stderr)
+                            self.assertFalse(state_file.exists())
+
+    def test_a_full_reviewer_removal_through_a_linked_submodule_refuses(self):
+        import importlib.util
+        from types import SimpleNamespace
+        import test_review_completion as completion_fixture
+        from agentic.canonical import fingerprint
+        specification = importlib.util.spec_from_file_location(
+            "review_completion_linked_command", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        helper = completion_fixture.ReviewCompletionTests("runTest")
+        for state, config in (("unset", self.unset), ("set", self.accepted)):
+            root = self.policy_repository(config, "removal-" + state)
+            target = self.own_git_target(root, "submodule")
+            self.install(target, self.hidden)
+            folder = self.root / ("removal-state-" + state)
+            (folder / "worktree").mkdir(parents=True)
+            helper.current = completion_fixture.candidate()
+            helper.current["repository"] = self.hidden["github"]["repository"]
+            for name, value in (("candidate", helper.current), ("reviewers", ["a", "b", "c"])):
+                (folder / (name + ".json")).write_bytes(canonical(value))
+
+            def run(*arguments):
+                output = io.StringIO()
+                with patch.object(module, "Contracts", return_value=Contracts(ROOT / ".agentic/schemas")),                         redirect_stdout(output):
+                    module.main(["--state", str(folder / "state.sqlite3"), "--worktree-root",
+                        str(folder / "worktree"), "freeze", "--candidate", str(folder / "candidate.json"),
+                        "--reviewers", str(folder / "reviewers.json"), *arguments], default_root=target,
+                        observer_factory=lambda *_: helper.provider_review)
+                return json.loads(output.getvalue())
+
+            old = run()  # The target's own cycle, before anything links to it.
+            self.link(root / ".agentic", target / ".agentic")
+            store = review_completion.ReviewCompletionStore(folder / "state.sqlite3", [folder / "worktree"])
+            store.dispatch("c", helper.current, ["a", "b", "c"])
+            disposition = helper.removal_disposition(SimpleNamespace(
+                authority=review_completion.review_authority_from_config(self.hidden)), old, ["a", "b"])
+            disposition["record"].update(owner_actor_id=1002, provider_identity={
+                key: self.hidden["github"][key] for key in ("host", "repository", "repository_id")})
+            disposition["record_sha256"] = fingerprint("reviewer-removal-disposition", disposition["record"])
+            (folder / "reviewers.json").write_bytes(canonical(["a", "b"]))
+            (folder / "removal.json").write_bytes(canonical(disposition))
+
+            def remove():
+                return run("--reviewer-removal-disposition", str(folder / "removal.json"),
+                           "--reviewer-removal-artifact-id", "91")
+            with self.subTest(accepted=state):
+                if state == "set":
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        remove()
+                    self.assertEqual([], store.reviewer_set_audit())
+                else:
+                    remove()
+                    self.assertEqual(1, len(store.reviewer_set_audit()))
+
+    def test_the_invoked_library_path_names_its_project(self):
+        from agentic import shared_owner_policy
+        outside = self.root / "outside"
+        (outside / ".agentic/lib/agentic").mkdir(parents=True)
+        for state, root in (("set", self.on), ("unset", self.off)):
+            self.link(root / ".agentic/lib", outside / ".agentic/lib")
+            for name, value in (("library", {"__file__": str(root / ".agentic/lib/agentic/shared_owner_policy.py")}),
+                                ("unrelated", {"__file__": str(root / "lib/agentic/shared_owner_policy.py")})):
+                with self.subTest(accepted=state, entry=name), \
+                        patch.multiple(shared_owner_policy, **value):
+                    if state == "set" and name == "library":
+                        self.refused(outside, "guard")
+                    else:
+                        self.callers(outside)["guard"]()
+
+    def test_a_git_file_naming_the_enclosing_directory_is_not_a_worktree(self):
+        inside = self.on / "sub"
+        inside.mkdir()
+        (inside / ".git").write_text("gitdir: ../.git\n", encoding="utf-8")
+        self.set_refused(inside)
+        separate = self.policy_repository(self.accepted, "separate")
+        (separate / ".git").rename(self.root / "separate.git")
+        (separate / ".git").write_text("gitdir: ../separate.git\n", encoding="utf-8")
+        self.set_accepted(separate)
+
+    def test_rules_activation_reports_the_rule_early(self):
+        from agentic import rules_activation
+        outer = self.accepted_tree("activation", self.project("proj", self.unset))
+        (outer / "proj").mkdir()
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        with self.assertRaisesRegex(ValidationError, self.RULE):
+            rules_activation._configuration(self.accepted, definition(), contracts, outer / "proj")
+        rules_activation._configuration(self.unset, definition(), contracts, outer / "proj")
+
     def test_only_the_exact_accepted_path_is_policy(self):
         from agentic.shared_owner_policy import accepted_owner_evidence
         for index, name in enumerate((".Agentic/PROJECT_CONFIG.yaml", ".agentic/project_config.yaml")):

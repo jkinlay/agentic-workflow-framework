@@ -1,6 +1,6 @@
 # Shared owner account candidate boundary
 
-AWF-307's GitHub slice: keep the GitHub setting null until a release ships it.
+AWF-307's GitHub slice: keep its setting null until released.
 The global separation refusal remains.
 Separate owner and automation accounts are recommended wherever possible.
 Agents never propose an opt-out without explicit human direction.
@@ -12,8 +12,8 @@ shared GitHub account: `streams`, `intake_assignment`, `provider_identity`,
 be the named trusted owner, explicit trusted host policy-root context and
 unchanged accepted merged default-branch bytes. The project root must be its
 repository's top level; subfolder (monorepo), bare and nested projects are
-refused. Linked worktrees qualify, inside only their own checkout. Supplied, working-tree and
-feature-branch policy cannot enable acceptance or authorize their own merge.
+refused. Linked worktrees qualify, inside a checkout only if their own. Supplied,
+working-tree and feature-branch policy cannot enable acceptance or authorize their own merge.
 Retained evidence binds the accepted policy digest, shared-account annotation
 and warning. Request, expiry, replay, candidate, provider, reviewer-floor and
 tier protections remain. Signed provider bodies remain unchanged.
@@ -69,28 +69,29 @@ With the opt-out null or absent and the automation account also in
 - Controller overlap and replan approvals refuse. Excluded round-admission
   prerequisites remain.
 
-These refuse when their known root's accepted setting is set and the proposal's
-is unset or invalid, whatever its identity, owners or section shapes: review
+These refuse when their known root accepts a setting the proposal leaves unset or
+invalid, whatever its identity, owners or section shapes: review
 freeze, confirmed Jira binding, over-cap and cap dispositions, CLI owner records
 and gate evaluation, intake, bootstrap assignment, streams, rooted preflight and
 authorization, queue store, review-store removals (protected roots), controller
 owner approvals, production-cycle publication configuration, post-merge
 counts. Relative roots count. The check only refuses.
 
-Limits: it changes nothing for subfolder projects, or when Git or `origin/HEAD`
+Limits: it changes nothing for subfolder projects unless an enclosing
+project's `.agentic` links there, or when Git or `origin/HEAD`
 is missing, its ref dangles, isolated Git fails (no native Git on absolute PATH
 outside the project and current directory, missing objects, broken configuration,
 timeout) or the accepted file is absent, not mode 100644, malformed, oversized or
 without mappings. Controller, provenance and shared-account reads may refuse.
-Protect Git metadata: a worker owning a linked worktree can rewrite its `.git`
-file unless the host protects it. Refresh `origin/HEAD`. Protected roots are
+Protect Git metadata: an owning worker can rewrite or remove an unprotected
+linked worktree's `.git` file. Refresh `origin/HEAD`. Protected roots are
 checked without comparing repositories (also proposed), so another opted-in project's worktree can refuse. CLI evaluation and
 authorization refuse a retiring proposal and accepted shared policy; only
 library `accepted_policy_root` gates it.
 
 Unchanged: rootless interfaces; reports consuming no owner record (doctor,
-status, publication, gate handoff); planning overrides, which accept either
-account's owner signature.
+status, publication, gate handoff); planning overrides (either
+account's owner signature).
 
 The closed provenance owner projection now requires `expected_actor_id` beside
 `config_sha256`, `trusted_owner_ids` and `binding_sha256`; its binding payload
