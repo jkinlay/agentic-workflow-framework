@@ -253,7 +253,115 @@ def _root_spellings(root):
         plain = "//" + plain[len("//?/UNC/"):]
     elif plain.startswith(("//?/", "//./")):
         plain = plain[len("//?/"):]
-    return tuple(dict.fromkeys((known, resolved, Path(plain))))
+    # Windows paths that differ only in case compare equal, so compare their text.
+    return tuple({str(path): path for path in (Path(plain), resolved, known)}.values())[::-1]
+
+
+_PATH_DIFFERS = "Shared-owner accepted policy path differs in spelling or file type"
+
+
+class _PolicyPathDiffers(ValidationError):
+    """The accepted tree holds this project's policy path under another form."""
+
+
+def _known_layouts(root):
+    """Name each repository directory above a root and the project path inside it.
+
+    Both the typed and the resolved path count: a replaced symbolic link changes
+    the second, and a directory renamed only in case changes either.
+    """
+    import os
+    import sys
+    import unicodedata
+    from pathlib import Path
+    resolved = _root_spellings(root)[-1]
+    layouts = {}
+    typed = Path(os.path.abspath(_known_root(root)))
+    for path in {str(path): path for path in (resolved, typed)}.values():
+        for outer in path.parents:
+            if os.path.lexists(outer / ".git"):
+                parts = path.relative_to(outer).parts
+                known = layouts.setdefault(outer.resolve(), [])
+                if sys.platform == "darwin":  # Git itself composes names there.
+                    known.append(tuple(unicodedata.normalize("NFC", part) for part in parts))
+                known.append(parts)
+    return {outer: tuple(dict.fromkeys(paths)) for outer, paths in layouts.items()}
+
+
+def _names_equate(directory, name, part):
+    """Compare names as a case-insensitive or normalizing filesystem would."""
+    import os
+    import unicodedata
+
+    def fold(value):
+        value = unicodedata.normalize("NFD", value).casefold()
+        return unicodedata.normalize("NFD", value).rstrip(" .")
+
+    if fold(name) == fold(part):
+        return True
+    if name.isascii() and part.isascii() and "~" not in name + part:
+        return False
+    try:  # Short names and unlisted forms: only the filesystem can tell.
+        known, other = os.lstat(directory / part), os.lstat(directory / name)
+    except (OSError, ValueError):
+        return False
+    return bool(known.st_ino) and os.path.samestat(known, other)
+
+
+def _accepted_forms(outer, commit, wanted, depth=0):
+    """Find an absent path in the accepted tree under another form.
+
+    Returns bytes reached through the accepted tree's own symbolic links, and
+    whether a near match, or a submodule that is now an ordinary directory,
+    stands in its place. A near match is never read as policy.
+    """
+    import os
+    import posixpath
+    trees, directory = [(commit, True)], outer
+    linked, differs = [], False
+    for index, part in enumerate(wanted):
+        found = []
+        for tree, exact in trees:
+            for line in _git(outer, "ls-tree", "-z", "--full-tree", tree,
+                             maximum=64 * 1024 * 1024).split(bytes(1)):
+                if not line:
+                    continue
+                fields, raw_name = line.split(b"\t", 1)
+                mode, _, identity = fields.split()
+                identity = identity.decode("ascii")
+                name = raw_name.decode("utf-8", "surrogateescape")
+                same = exact and name == part
+                if name != part and not _names_equate(directory, name, part):
+                    continue
+                if index == len(wanted) - 1:
+                    if same:
+                        return linked, False  # Present but unusable: no other form applies.
+                    differs = True
+                elif mode == b"040000":
+                    found.append((identity, same))
+                elif mode == b"160000":
+                    target = directory / part
+                    differs |= target.is_dir() and not os.path.lexists(target / ".git")
+                elif mode == b"120000":
+                    target = _git(outer, "cat-file", "blob", identity).decode("utf-8", "surrogateescape")
+                    target = posixpath.normpath("/".join((*wanted[:index], target)))
+                    if depth > 8 or target == ".." or target.startswith(("../", "/")):
+                        continue  # Its accepted policy was never in this repository.
+                    following = (*(piece for piece in target.split("/") if piece != "."),
+                                 *wanted[index + 1:])
+                    try:
+                        raw = _policy_blob(outer, commit, "/".join(following))
+                    except ValidationError:
+                        raw = None  # An unusable target cannot stop the rest of this search.
+                    nested = ([raw], False) if raw is not None else _accepted_forms(
+                        outer, commit, following, depth + 1)
+                    if not same:
+                        differs |= bool(nested[0]) or nested[1]
+                    else:
+                        linked += nested[0]
+                        differs |= nested[1]
+        trees, directory = found, directory / part
+    return linked, differs
 
 
 def _outer_policies(root):
@@ -261,32 +369,71 @@ def _outer_policies(root):
 
     A project in a subdirectory cannot protect its own directory from a nested
     ``.git`` or bare-repository files, which would replace the discovered policy.
+    A path absent there, but present under another form, refuses; a path with no
+    such form is legitimately absent.
     """
-    import os
-    resolved = _root_spellings(root)[-1]
-    for outer in resolved.parents:
-        if not os.path.lexists(outer / ".git"):
-            continue
+    for outer, paths in _known_layouts(root).items():
+        policies, differs = [], False
         try:
             ref, _ = _default_ref(outer)
             if ref is None:
                 continue
             commit = _git(outer, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
-            raw = _policy_blob(outer, commit, resolved.relative_to(outer).as_posix()
-                               + "/.agentic/PROJECT_CONFIG.yaml")
+            for parts in paths:
+                wanted = (*parts, ".agentic", "PROJECT_CONFIG.yaml")
+                try:
+                    raw = _policy_blob(outer, commit, "/".join(wanted))
+                except ValidationError:
+                    raw = None
+                if raw is not None:
+                    policies.append(raw)
+                    continue
+                linked, other = _accepted_forms(outer, commit, wanted)
+                policies += linked
+                differs |= other
         except ValidationError:
-            continue  # Git cannot observe a repository here.
-        if raw is not None:
-            yield raw
+            pass  # Git cannot observe the rest of a repository here.
+        if differs and not policies:
+            raise _PolicyPathDiffers(_PATH_DIFFERS)
+        yield from policies
+
+
+def _own_forms(root, commit):
+    """Check the root's own repository for another form of its absent path."""
+    import os
+    resolved = _root_spellings(root)[-1]
+    if not os.path.lexists(resolved / ".git"):
+        return []  # An enclosing repository is checked by its own layout.
+    try:
+        linked, differs = _accepted_forms(resolved, commit, (".agentic", "PROJECT_CONFIG.yaml"))
+    except ValidationError:
+        return []
+    if differs and not linked:
+        raise _PolicyPathDiffers(_PATH_DIFFERS)
+    return linked
 
 
 def _policy_setting(raw):
     try:
         accepted = load_yaml(raw)
-    except ValidationError:
+    except (ValidationError, ArithmeticError, AttributeError, LookupError, TypeError, ValueError):
         return None  # Malformed accepted bytes are no usable policy.
     gate = accepted.get("merge_gate") if isinstance(accepted, dict) else None
     return gate.get(SETTING) if isinstance(gate, dict) else None
+
+
+def _bare_layout(root):
+    """Tracked files can form a bare repository but never a ``.git`` entry."""
+    import os
+    resolved = _root_spellings(root)[-1]
+    for path in (resolved, *resolved.parents):
+        # Git also takes objects and references from a common directory it names.
+        if os.path.lexists(path / "HEAD") and (os.path.lexists(path / "commondir") or (
+                os.path.lexists(path / "objects") and os.path.lexists(path / "refs"))):
+            return True
+        if os.path.lexists(path / ".git"):
+            return False
+    return False
 
 
 def _accepted_opt_out(root):
@@ -294,6 +441,7 @@ def _accepted_opt_out(root):
 
     Only the closed Git reader's own refusal means unobservable.
     """
+    own, observed, checked = [], False, None
     for spelling in _root_spellings(root):
         try:
             ref, _ = _default_ref(spelling)
@@ -303,12 +451,17 @@ def _accepted_opt_out(root):
             raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
         except ValidationError:
             continue
+        checked = commit
         if raw is not None:
+            observed = True
             value = _policy_setting(raw)
             if value is not None:
                 return value
             break
-    return next((value for value in map(_policy_setting, _outer_policies(root)) if value is not None), None)
+    if checked is not None and not observed:
+        own = _own_forms(root, checked)
+    return next((value for value in map(_policy_setting, (*own, *_outer_policies(root)))
+                 if value is not None), None)
 
 
 def _refuse_hidden_opt_out(config, *roots):
@@ -324,15 +477,17 @@ def _refuse_hidden_opt_out(config, *roots):
     except (ValidationError, AttributeError, TypeError):
         pass
     known = [root for root in roots if root is not None]
-    with independent_policy_read(*known):
-        for root in known:
-            try:
+    for root in known:
+        try:
+            with independent_policy_read(*known):
                 hidden = _accepted_opt_out(root) is not None
-            except Exception as exc:
-                # An unexpected failure is not an observation that nothing is set.
-                raise ValidationError("Shared-owner accepted policy could not be checked") from exc
-            if hidden:
-                raise ValidationError("Shared-owner accepted policy digest changed")
+        except _PolicyPathDiffers:
+            raise
+        except Exception as exc:
+            # An unexpected failure is not an observation that nothing is set.
+            raise ValidationError("Shared-owner accepted policy could not be checked") from exc
+        if hidden:
+            raise ValidationError("Shared-owner accepted policy digest changed")
 
 
 def _refuse_hidden_owner_policy(config, *roots):
@@ -408,6 +563,8 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
                             project_instructions=instructions)
     if report["status"] != "ACCEPTED":
         raise ValidationError("Shared-owner accepted default-branch policy is invalid")
+    if configured_shared_owner_actor_id(accepted) is not None and _bare_layout(root):
+        raise ValidationError("Shared-owner accepted policy comes from bare repository files")
     digest = report["policy_sha256"]
     if digest != policy_sha256:
         raise ValidationError("Shared-owner accepted policy digest changed")

@@ -2024,6 +2024,235 @@ class PolicyReadInputs(RealGitPolicyFixture):
                 guard(self.hidden, self.on)
 
 
+class AcceptedPolicyPathForms(RealGitPolicyFixture):
+    """A differently spelled or typed accepted path is refused, never read as policy."""
+
+    freeze = KnownRootRealGit.freeze
+    DIFFERS = "differs in spelling or file type"
+
+    def accepted_tree(self, name, entries):
+        """One observed repository whose accepted tree holds exactly these entries."""
+        outer = self.policy_repository(self.unset, name, observed=False)
+        for option in ("core.protectNTFS", "core.protectHFS", "core.ignorecase", "core.precomposeunicode"):
+            self.git(outer, "config", option, "false")
+        listing = b""
+        for path, value in entries.items():
+            mode, body = value if isinstance(value, tuple) else ("100644", value)
+            if isinstance(body, dict):
+                body = canonical(body)
+            identity = "1" * 40 if mode == "160000" else subprocess.run(
+                ["git", "-C", str(outer), "hash-object", "-w", "--stdin"], input=body,
+                check=True, capture_output=True).stdout.decode().strip()
+            listing += f"{mode} {identity} 0\t{path}".encode() + bytes(1)
+        subprocess.run(["git", "-C", str(outer), "update-index", "-z", "--index-info"], check=True,
+                       input=listing, capture_output=True)
+        tree = self.git(outer, "write-tree", "--missing-ok").decode().strip()
+        commit = self.git(outer, "-c", "user.name=Fixture", "-c", "user.email=owner@example.invalid",
+                          "commit-tree", tree, "-m", "fixture").decode().strip()
+        self.git(outer, "update-ref", "refs/remotes/origin/main", commit)
+        self.git(outer, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        return outer
+
+    def project(self, directory, config, **others):
+        return {directory + "/.agentic/PROJECT_CONFIG.yaml": config,
+                directory + "/.agentic/workflow.yaml": definition(), **others}
+
+    def form_refused(self, root, *names):
+        from agentic import continuous_controller
+        callers = {name: call for name, call in self.callers(root).items() if name != "preflight"}
+        callers["controller"] = lambda: continuous_controller._controller_owner_policy(self.hidden, root)
+        for name in names or callers:
+            call = callers[name]
+            with self.subTest(root=str(root), caller=name), self.assertRaisesRegex(ValidationError, self.DIFFERS):
+                call()
+
+    def test_equivalent_accepted_spellings_refuse(self):
+        pairs = {"case": ("proj", "Proj"), "parent case": ("Group/proj", "group/proj"),
+            "both components": ("group/proj", "GROUP/PROJ"), "fold": ("straße", "STRASSE"),
+            "normalization": ("café", "café"), "normalization and case": ("café", "CAFÉ"),
+            "trailing dot": ("proj.", "proj"), "trailing space": ("proj ", "proj"),
+            "trailing both": ("proj. .", "Proj")}
+        for label, (accepted, actual) in pairs.items():
+            # A near match refuses without being read, so its setting is irrelevant.
+            states = (("set", self.accepted), ("unset", self.unset))
+            for state, config in states[:2 if label in ("case", "normalization") else 1]:
+                with self.subTest(form=label, accepted=state):
+                    outer = self.accepted_tree(f"{label}-{state}".replace(" ", "-"), self.project(accepted, config))
+                    (outer / actual).mkdir(parents=True)
+                    self.form_refused(outer / actual, *(() if label == "case" else ("guard",)))
+
+    def test_equivalent_policy_components_refuse_at_every_level(self):
+        for index, name in enumerate((".Agentic/PROJECT_CONFIG.yaml", ".agentic/project_config.yaml",
+                                      ".agentic./PROJECT_CONFIG.YAML")):
+            whole = self.accepted_tree(f"whole-{index}", {name: self.accepted})
+            self.form_refused(whole, "guard", "evidence")
+            part = self.accepted_tree(f"part-{index}", {"project/" + name: self.accepted})
+            (part / "project").mkdir()
+            self.form_refused(part / "project", "guard", "evidence")
+            # The exact accepted file decides, whatever near match stands beside it.
+            both = self.accepted_tree(f"both-{index}", {name: self.unset,
+                ".agentic/PROJECT_CONFIG.yaml": self.accepted})
+            self.refused(both, "guard")
+
+    def test_review_freeze_after_a_committed_case_rename_refuses(self):
+        outer = self.accepted_tree("renamed", self.project("proj", self.accepted))
+        (outer / "Proj").mkdir()
+        folder = self.root / "freeze"
+        with self.assertRaisesRegex(ValidationError, self.DIFFERS):
+            self.freeze((outer / "Proj").resolve(), self.hidden, folder)
+        self.assertFalse((folder / "state.sqlite3").exists())
+        if (outer / "proj").exists():  # The old spelling still names accepted policy.
+            self.refused(outer / "proj", "guard", "evidence")
+
+    def forge(self, project, kind):
+        import shutil
+        if kind == "nested":
+            shutil.copytree(self.on / ".git", project / ".git")
+        else:
+            shutil.copytree(self.on / ".git", project, dirs_exist_ok=True)
+            self.git(project, "--git-dir", str(project), "config", "core.bare", "true" if kind == "bare" else "false")
+            if kind == "bare elsewhere":
+                self.git(project, "--git-dir", str(project), "config", "core.worktree", str(self.root))
+
+    def test_renamed_or_new_directory_cannot_forge_a_set_opt_out(self):
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        for kind in ("nested", "bare", "bare elsewhere"):
+            outer = self.accepted_tree("forged-" + kind.replace(" ", "-"), self.project("proj", self.unset))
+            (outer / "Proj").mkdir()
+            self.forge(outer / "Proj", kind)
+            with self.subTest(kind=kind, place="renamed"), self.assertRaises(ValidationError) as refusal:
+                accepted_owner_evidence(outer / "Proj", self.accepted, 1002)
+            if kind != "bare elsewhere":
+                self.assertIn(self.DIFFERS, str(refusal.exception))
+        for kind in ("bare", "bare elsewhere"):
+            for depth in ("moved", "moved/inner"):
+                outer = self.accepted_tree(f"new-{kind}-{depth}".replace(" ", "-").replace("/", "-"),
+                                           self.project("proj", self.unset))
+                (outer / depth).mkdir(parents=True)
+                self.forge(outer / "moved", kind)
+                with self.subTest(kind=kind, place=depth), self.assertRaises(ValidationError) as refusal:
+                    accepted_owner_evidence(outer / depth, self.accepted, 1002)
+                if kind == "bare" and depth == "moved":
+                    self.assertIn("bare repository files", str(refusal.exception))
+
+    def test_accepted_symbolic_links_are_followed(self):
+        for state, config in (("set", self.accepted), ("unset", self.unset)):
+            for index, links in enumerate(({"current": "proj"}, {"current": "./other", "other": "proj"},
+                                           {"up/current": "../proj"})):
+                outer = self.accepted_tree(f"link-{state}-{index}", self.project("proj", config,
+                    **{path: ("120000", target.encode()) for path, target in links.items()}))
+                # The candidate replaced the accepted link by its own directory.
+                root = outer / next(iter(links))
+                root.mkdir(parents=True)
+                with self.subTest(links=links, accepted=state):
+                    if state == "set":
+                        self.refused(root, "guard", "evidence")
+                    else:
+                        self.accepted_unset_passes(root)
+            near = self.accepted_tree("near-link-" + state, self.project("proj", config,
+                Current=("120000", b"proj")))
+            (near / "current").mkdir()
+            self.form_refused(near / "current", "guard")
+
+    def test_a_retargeted_link_cannot_hide_the_accepted_target(self):
+        for state, config in (("set", self.accepted), ("unset", self.unset)):
+            outer = self.accepted_tree("retarget-" + state, self.project("proj", config,
+                current=("120000", b"proj")))
+            (outer / "moved").mkdir()
+            if os.name == "nt":
+                import _winapi
+                _winapi.CreateJunction(str(outer / "moved"), str(outer / "current"))
+            else:
+                os.symlink("moved", outer / "current")
+            with self.subTest(accepted=state):
+                if state == "set":
+                    self.refused(outer / "current", "guard", "evidence")
+                else:
+                    self.accepted_unset_passes(outer / "current")
+            if os.name == "nt":
+                os.rmdir(outer / "current")
+
+    def test_a_replaced_submodule_refuses_and_a_present_one_does_not(self):
+        for name, accepted in (("exact", "sub"), ("near", "Sub")):
+            outer = self.accepted_tree("gitlink-" + name, {accepted: ("160000", b"")})
+            (outer / "sub").mkdir()
+            self.form_refused(outer / "sub", "guard", "evidence")
+            self.git(outer / "sub", "init", "-q")
+            self.accepted_unset_passes(outer / "sub")
+
+    def test_a_legitimately_absent_path_keeps_its_result(self):
+        word = "проект"
+        outer = self.accepted_tree("absent", self.project("other", self.accepted, **{
+            "file": b"plain", "Near/readme": b"plain", "loop": ("120000", b"loop"),
+            "away": ("120000", b"../../elsewhere"), "fixed": ("120000", b"/elsewhere"),
+            "dead": ("120000", b"missing"), word + "/readme": b"plain", "long~1/readme": b"plain"}))
+        for name in ("new", "file", "near", "loop", "away", "fixed", "dead", "other2", "deep/er",
+                     word, "long~2", "other/inner"):
+            (outer / name).mkdir(parents=True, exist_ok=True)
+            self.accepted_unset_passes(outer / name)
+        self.accepted_unset_passes(self.accepted_tree("empty", {"readme": b"plain"}))
+
+    def test_an_exact_unset_path_is_unaffected_by_other_forms(self):
+        outer = self.accepted_tree("several", {**self.project("proj", self.unset),
+                                               **self.project("Proj", self.accepted)})
+        (outer / "proj").mkdir()
+        self.callers(outer / "proj")["guard"]()
+        single = self.accepted_tree("single", self.project("proj", self.unset))
+        (single / "proj").mkdir()
+        for typed in (single / "proj", Path(str(single / "proj").upper())):
+            if typed.exists():
+                self.callers(typed)["guard"]()
+
+    def test_a_short_name_the_filesystem_equates_refuses(self):
+        from agentic import shared_owner_policy
+        equate = shared_owner_policy._names_equate
+        probe = self.root / "probe"
+        (probe / "long project name").mkdir(parents=True)
+        (probe / "separate").mkdir()
+        self.assertFalse(equate(probe, "longpr~9", "separate"))
+        self.assertFalse(equate(probe, "separate", "long project name"))
+        # The filesystem, not the spelling, decides which other names are equal.
+        with patch.object(shared_owner_policy, "_names_equate",
+                          side_effect=lambda directory, name, part: (name, part) == ("LONGPR~1", "long project name")):
+            outer = self.accepted_tree("simulated", self.project("LONGPR~1", self.accepted))
+            (outer / "long project name").mkdir()
+            self.form_refused(outer / "long project name", "guard")
+        if os.name == "nt":
+            import ctypes
+            buffer = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(str(probe / "long project name"), buffer, 1024)
+            short = Path(buffer.value).name
+            if "~" in short:
+                self.assertTrue(equate(probe, short, "long project name"))
+                self.assertFalse(equate(probe, short, "separate"))
+
+    def test_a_different_name_is_a_documented_limit(self):
+        outer = self.accepted_tree("moved", self.project("proj", self.accepted))
+        (outer / "proj2").mkdir()
+        self.accepted_unset_passes(outer / "proj2")
+
+    def test_malformed_accepted_yaml_is_unusable_and_other_errors_refuse(self):
+        from agentic import shared_owner_policy
+        guard = shared_owner_policy._refuse_hidden_opt_out
+        for index, body in enumerate((b"x: 2026-13-45\n", b"x: 0x_\n", b"x: !!int ''\n", b"x: !!bool maybe\n",
+                                      b"x: !!timestamp later\n", b"? [a]\n: b\n", b"{", bytes([255]))):
+            root = self.accepted_tree(f"yaml-{index}", {".agentic/PROJECT_CONFIG.yaml": body})
+            with self.subTest(body=body):
+                guard(self.hidden, root)
+        for error in (MemoryError, OSError, RuntimeError):
+            with self.subTest(error=error.__name__), \
+                    patch.object(shared_owner_policy, "load_yaml", side_effect=error("unexpected")), \
+                    self.assertRaisesRegex(ValidationError, "could not be checked"):
+                guard(self.hidden, self.off)
+
+    def test_a_root_that_is_no_path_refuses_cleanly(self):
+        from agentic.shared_owner_policy import _refuse_hidden_opt_out
+        for root in (object(), 5, "a" + chr(0) + "b", b"bytes", ["list"]):
+            with self.subTest(root=repr(root)[:20]), \
+                    self.assertRaisesRegex(ValidationError, "could not be checked"):
+                _refuse_hidden_opt_out(self.hidden, root)
+
+
 PARENT_STREAM_RESULTS = dict.fromkeys((False, True),
     "934b786230df96b82d27f1029d488f24ed68c6328432eeeb70ca8eb5dd8e87d3")
 
