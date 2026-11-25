@@ -633,7 +633,11 @@ class DistinctOwnerCompatibility(unittest.TestCase):
                     self.assertEqual(expected[setting], sha256(canonical(result)))
 
     def test_ready_distinct_owner_exact_parent_result(self):
-        self.restored("ready")
+        config = provider.config()
+        # Frozen results predate the explicit-null Jira opt-out field.
+        config["jira"].pop("shared_owner_controller_actor_id")
+        with patch.object(provider, "config", side_effect=lambda: deepcopy(config)):
+            self.restored("ready")
 
     def test_jira_binding_distinct_owner_exact_parent_result(self):
         self.restored("jira-binding")
@@ -642,7 +646,11 @@ class DistinctOwnerCompatibility(unittest.TestCase):
         self.restored("intake")
 
     def test_lifecycle_ready_exact_parent_result(self):
-        self.restored("lifecycle-ready")
+        config = provider.config()
+        # Frozen results predate the explicit-null Jira opt-out field.
+        config["jira"].pop("shared_owner_controller_actor_id")
+        with patch.object(provider, "config", side_effect=lambda: deepcopy(config)):
+            self.restored("lifecycle-ready")
 
     def test_lifecycle_revalidation_exact_parent_result(self):
         self.restored("lifecycle-revalidate")
@@ -766,6 +774,8 @@ class DistinctOwnerCompatibility(unittest.TestCase):
     def test_real_git_roots_preserve_exact_parent_results(self):
         for setting in ("null", "absent"):
             config = self.config(setting)
+            # Frozen results predate the explicit-null Jira opt-out field.
+            config["jira"].pop("shared_owner_controller_actor_id")
             for observed, origin in ((False, False), (True, False), (True, True)):
                 root = self.policy_repository(config, f"{setting}-{observed}-{origin}",
                                               observed=observed, origin=origin)
@@ -910,6 +920,8 @@ class DistinctOwnerCompatibility(unittest.TestCase):
         # parent did. No other consumer of the two projections does.
         for setting in ("null", "absent"):
             config = self.config(setting)
+            # Frozen results predate the explicit-null Jira opt-out field.
+            config["jira"].pop("shared_owner_controller_actor_id")
             for label, root in self.roots(config, "projections-" + setting):
                 for consumer, signer, expected in PARENT_PROJECTION_RESULTS:
                     with self.subTest(setting=setting, root=label, consumer=consumer, signer=signer):
