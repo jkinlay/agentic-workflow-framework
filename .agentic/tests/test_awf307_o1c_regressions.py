@@ -1159,6 +1159,9 @@ class DistinctOwnerCompatibility(unittest.TestCase):
             assignment_now=intake_fixture.NOW, dest=bootstrap, recover=False, dry_run=False),
             None, intake_fixture.verify_owner_source)
 
+    @source_only.skip_unless_source_repo(
+        "Source bootstrap entry point is not shipped in installed runtimes",
+        "scripts/bootstrap_project.py")
     def test_bootstrap_assignment_change_hidden_opt_out_refuses(self):
         case = self.hidden_policy_case()
         ordinary = self.root / "ordinary"
