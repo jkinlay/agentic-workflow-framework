@@ -193,7 +193,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/runtime_tags.py` | `f8119f049548c026ea11718a17bf75779ee416905a3732628ee07ee40fc6d1ed` |
 | `.agentic/lib/agentic/safeio.py` | `686f09d2bbd8e1f9d54a9fedd8246ee88913befbb46b15a8051d22389427b313` |
 | `.agentic/lib/agentic/self_test_shards.py` | `87c3976c4ff0619a169960dc600ae3de2c7ad2c3d48cef527afba88e6b51bd3b` |
-| `.agentic/lib/agentic/shared_owner_policy.py` | `9e97c918aaa6ce98c70f69067467242f3e5c110b378970fbac7df6a466046fe5` |
+| `.agentic/lib/agentic/shared_owner_policy.py` | `836edfd5c4f0f2adf2fa013fcc4b54a041a1b5be547a74f077450b495776a417` |
 | `.agentic/lib/agentic/status_report.py` | `e1125f60932ecfbcec14417c10b89049c480f97b8d5d70b3b1902db4f2a08b22` |
 | `.agentic/lib/agentic/status_report_store.py` | `5d34fa6d9dc356650dd6c16753edccf05018e87b2c78efd99984563f4861c7f4` |
 | `.agentic/lib/agentic/store.py` | `9b2af868fa3bad2b8b45118dff58b200b406d59fa07f6b6e91aee0a2db71f6d7` |
@@ -474,7 +474,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf307_jira_visibility.py` | `122ab290777ecd8e762145e783a7abebc86483a73d104430175387e8032f6e34` |
 | `.agentic/tests/test_awf307_jira_whole_repository.py` | `7179da436ed8a662b75c4e8223a9c79710f3c01397781a32b274d7fb4930d91a` |
 | `.agentic/tests/test_awf307_null_owner_identity.py` | `ee1b1d3e0a7fbb2836bd492329f09208ee040d4586941304a2ec428404097a20` |
-| `.agentic/tests/test_awf307_o1c_regressions.py` | `10db3ccf67e9234c44c03d0268e54f6b81b0b8f27051c93be3b785662adc3645` |
+| `.agentic/tests/test_awf307_o1c_regressions.py` | `c11d29156b0937a6f7bd4642d911da205f9e4232ab467ac579a606eb124e881b` |
 | `.agentic/tests/test_awf307_pass9f_null_consumers.py` | `744b298ee9f39540e00c16db945e84fe3bf6112da41b194dba2a32b3256803fa` |
 | `.agentic/tests/test_awf307_policy_owner_policy.py` | `1de74b665a3a3eb5b920791a7320910159d1ae107b074b9b46fe29a920246a0b` |
 | `.agentic/tests/test_awf307_provider_owner_policy.py` | `b54277b928cc972d9bc27ceb75081fd9ea9c628f3d9f4e4a0c7747cdf238bbd2` |

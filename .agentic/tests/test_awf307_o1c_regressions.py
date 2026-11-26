@@ -2381,6 +2381,62 @@ class WholeRepositoryRule(RealGitPolicyFixture):
                     self.assertRaisesRegex(ValidationError, "could not be checked"):
                 _refuse_hidden_opt_out(self.hidden, root)
 
+    def outcomes(self, root):
+        results = {}
+        for name in ("guard", "evidence"):
+            try:
+                results[name] = ("RETURNED", repr(self.callers(root)[name]()))
+            except ValidationError as exc:
+                results[name] = ("REFUSED", str(exc))
+        return results
+
+    def test_an_absent_argv_adds_no_root(self):
+        saved = sys.argv
+        expected = {"set": ("REFUSED", DIGEST_CHANGED), "unset": ("RETURNED", "None")}
+        for state, root in (("set", self.on), ("unset", self.off)):
+            present = self.outcomes(root)
+            del sys.argv
+            try:
+                absent = self.outcomes(root)
+            finally:
+                sys.argv = saved
+            with self.subTest(accepted=state):
+                self.assertEqual(present, absent)
+                self.assertEqual(expected[state], absent["guard"])
+
+    def test_an_unreadable_enclosing_scan_adds_no_prerequisite_for_unset(self):
+        absent = deepcopy(self.unset)
+        del absent["merge_gate"]["shared_owner_automation_actor_id"]
+        real = os.scandir
+        for state, config in (("null", self.unset), ("absent", absent), ("set", self.accepted)):
+            outer = self.policy_repository(config, "unreadable-" + state)
+            (outer / ".agentic/scripts").mkdir(parents=True)
+            target = self.own_git_target(outer, "nested clone")
+            readable = self.outcomes(target)
+
+            def denied(path=".", refused=os.path.normcase(os.path.realpath(outer / ".agentic"))):
+                # POSIX safeio passes directory descriptors; only this .agentic path is denied.
+                spelled = path if isinstance(path, int) else os.fspath(path)
+                if isinstance(spelled, str):
+                    spelled = os.path.normcase(os.path.realpath(spelled))
+                    try:
+                        inside = os.path.commonpath((spelled, refused)) == refused
+                    except ValueError:
+                        inside = False
+                    if inside:
+                        raise PermissionError(13, "Permission denied", str(path))
+                return real(path)
+            with patch.object(os, "scandir", denied):
+                unreadable = self.outcomes(target)
+            with self.subTest(accepted=state):
+                self.assertEqual(("RETURNED", "None"), readable["guard"])
+                if state == "set":
+                    for name in ("guard", "evidence"):
+                        self.assertEqual("REFUSED", unreadable[name][0])
+                        self.assertIn("could not be read", unreadable[name][1])
+                else:
+                    self.assertEqual(readable, unreadable)
+
 
 PARENT_STREAM_RESULTS = dict.fromkeys((False, True),
     "934b786230df96b82d27f1029d488f24ed68c6328432eeeb70ca8eb5dd8e87d3")
