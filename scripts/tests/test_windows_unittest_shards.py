@@ -132,6 +132,13 @@ class ShardTests(unittest.TestCase):
                                        if path in paths], path)
         runner.guard(self.root, allocation)
 
+    def test_production_jira_count_regression_keeps_measured_whole_module_pin(self):
+        path = self.write(ROOTS[0], 'test_awf307_jira_production_counts.py', PASSING)
+        self.assertEqual(2, runner.HEAVY_MODULE_SHARDS[path])
+        allocation = self.allocation()
+        self.assertEqual([2], [shard for shard, paths in allocation[ROOTS[0]].items() if path in paths])
+        runner.guard(self.root, allocation)
+
     def test_budget_pr_regressions_replace_removed_terminal_module_without_losing_guard(self):
         removed = ROOTS[0] + '/test_awf242_owner_admission.py'
         replacement = self.write(ROOTS[0], 'test_awf242_settings_pr.py', PASSING)

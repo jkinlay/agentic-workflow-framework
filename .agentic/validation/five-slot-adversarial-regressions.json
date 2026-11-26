@@ -1702,6 +1702,15 @@
       "regression_id": "AWF266-R2-XATTR-CAPTURE",
       "source_finding_id": "AWF266-SECOND-LOOK-MINOR-3",
       "test_id": "RecoveryDocumentationTests.test_xattr_shell_capture_refuses_existing_evidence"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_awf307_jira_production_counts.py",
+      "name": "Shared Jira closure passes production counting under revalidated protected issue ownership",
+      "permanent": true,
+      "regression_id": "AWF307-R315r1-F01-COUNT-CONTEXT",
+      "source_finding_id": "R315r1-F01",
+      "test_id": "ProductionCountsTests.test_shared_closure_counts_through_real_adapter_and_closeout"
     }
   ]
 }

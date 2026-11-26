@@ -70,6 +70,9 @@ SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
 # fresh hosted module timings and validation are still required.
 # Keep whole-module ownership, per-suite interpreter isolation, the installed
 # acceptance exclusion and the existing upgrade-matrix halves unchanged.
+# R315r1-F01 production-count coverage measured alone on local Windows 3.13.3:
+# 14 tests, 29.354 s (26 November). Keep it with the O2 pins on shard 2;
+# this local increment does not qualify a hosted job budget.
 HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_adoption_status.py': 0,
     '.agentic/tests/test_awf242_settings_pr.py': 2,
@@ -115,6 +118,7 @@ HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_awf307_excluded_refusal_proofs.py': 5,
     '.agentic/tests/test_awf307_jira_owner_policy.py': 6,
     '.agentic/tests/test_awf307_jira_whole_repository.py': 2,
+    '.agentic/tests/test_awf307_jira_production_counts.py': 2,
 }
 ZERO_TEST_MODULES = frozenset({
     '.agentic/tests/test_awf36_automation_fixtures.py',

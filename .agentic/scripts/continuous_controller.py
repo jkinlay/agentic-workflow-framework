@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 import argparse
 from copy import deepcopy
+from contextlib import contextmanager
 import json
 import types
 from agentic import ValidationError
@@ -124,6 +125,7 @@ def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapte
 	closeout_registry = _adapter_observer_registration(closeout_producer, 'CLOSEOUT_RECORD', adapters['observe_closeout_record'], adapter_sha256, provider_identity=github_identity, repository_identity=repository_identity)
 	jira_selector = None
 	jira_registry = {}
+	owner_closure_context = {}
 	if jira.get('enabled') is True:
 		jira_producer = jira.get('controller_actor_id')
 		jira_identity = {'cloud_id': jira.get('cloud_id'), 'site': jira.get('site'), 'project_id': jira.get('provider_project_id'), 'project_key': jira.get('project_key'), 'controller_actor_id': jira_producer}
@@ -140,7 +142,23 @@ def _count_gate_inputs(value, *, config, repository, contracts, adapters, adapte
 			return adapters['observe_jira_reconciliation'](request)
 		jira_registry = _adapter_observer_registration(jira_producer, 'JIRA_RECONCILIATION', jira_observer, adapter_sha256, provider_identity=jira_identity)
 		jira_selector = {'producer_id': jira_producer}
-	return {'closeout_record': deepcopy(closeout_record), 'repository': repository, 'project_config': config, 'contracts': contracts, 'project_config_selector': {'producer_id': project_config_producer}, 'project_config_observer_registry': project_registry, 'closeout_selector': {'producer_id': closeout_producer}, 'closeout_observer_registry': closeout_registry, 'jira_reconciliation_selector': jira_selector, 'jira_observer_registry': jira_registry, 'now': observed_at}
+		@contextmanager
+		def owner_closure_scope(observed):
+			# The authenticated observer runs on another thread. Reacquire the
+			# issue lock and protected retained evidence on the validating thread;
+			# provider bytes cannot create or carry this process-local authority.
+			from agentic.jira_owner_policy import FIELD, retained_scope, require_current_issue_policy
+			if FIELD not in observed.get('owner_closure', {}):
+				yield
+				return
+			from agentic.continuous_controller import _observe_jira_write_policy
+			with retained_scope(store, config, observed):
+				policy = _observe_jira_write_policy(config, observed['owner_closure']['issue_id'],
+					adapters.get('observe_issue_policy'), observed_at, store=store)
+				require_current_issue_policy(policy)
+				yield
+		owner_closure_context['jira_owner_closure_scope'] = owner_closure_scope
+	return {'closeout_record': deepcopy(closeout_record), 'repository': repository, 'project_config': config, 'contracts': contracts, 'project_config_selector': {'producer_id': project_config_producer}, 'project_config_observer_registry': project_registry, 'closeout_selector': {'producer_id': closeout_producer}, 'closeout_observer_registry': closeout_registry, 'jira_reconciliation_selector': jira_selector, 'jira_observer_registry': jira_registry, 'now': observed_at, **owner_closure_context}
 
 def main(argv=None, default_root=ROOT):
 	parser = argparse.ArgumentParser(description=__doc__)
