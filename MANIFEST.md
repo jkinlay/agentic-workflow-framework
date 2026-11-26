@@ -465,7 +465,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf307_gates_owner_policy.py` | `38fda6c5a23a52ee01ccb410ea2ef2bd7e4f7f6e4c9b959cd810989a557faad4` |
 | `.agentic/tests/test_awf307_intake_owner_policy.py` | `f7e02a4d04ecd3aaef8d0e4078a85fd6324fd578c1871e4ae301f90f77e7b326` |
 | `.agentic/tests/test_awf307_null_owner_identity.py` | `ee1b1d3e0a7fbb2836bd492329f09208ee040d4586941304a2ec428404097a20` |
-| `.agentic/tests/test_awf307_o1c_regressions.py` | `5c04d6459d03110f9e2c6d12b47e195a9166b7f283cf2f7015c5710fa147bcf1` |
+| `.agentic/tests/test_awf307_o1c_regressions.py` | `23a34eddfcfe9bba143b5d3f1d0759ca98834d59a1e56d838f85c460f8972c56` |
 | `.agentic/tests/test_awf307_pass9f_null_consumers.py` | `744b298ee9f39540e00c16db945e84fe3bf6112da41b194dba2a32b3256803fa` |
 | `.agentic/tests/test_awf307_policy_owner_policy.py` | `1de74b665a3a3eb5b920791a7320910159d1ae107b074b9b46fe29a920246a0b` |
 | `.agentic/tests/test_awf307_provider_owner_policy.py` | `b54277b928cc972d9bc27ceb75081fd9ea9c628f3d9f4e4a0c7747cdf238bbd2` |

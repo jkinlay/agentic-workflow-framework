@@ -2402,9 +2402,17 @@ class WholeRepositoryRule(RealGitPolicyFixture):
             target = self.own_git_target(outer, "nested clone")
             readable = self.outcomes(target)
 
-            def denied(path, outer=outer):
-                if Path(path).resolve().is_relative_to(outer / ".agentic"):
-                    raise PermissionError(13, "Permission denied", str(path))
+            def denied(path=".", refused=os.path.normcase(os.path.realpath(outer / ".agentic"))):
+                # POSIX safeio passes directory descriptors; only this .agentic path is denied.
+                spelled = path if isinstance(path, int) else os.fspath(path)
+                if isinstance(spelled, str):
+                    spelled = os.path.normcase(os.path.realpath(spelled))
+                    try:
+                        inside = os.path.commonpath((spelled, refused)) == refused
+                    except ValueError:
+                        inside = False
+                    if inside:
+                        raise PermissionError(13, "Permission denied", str(path))
                 return real(path)
             with patch.object(os, "scandir", denied):
                 unreadable = self.outcomes(target)
