@@ -80,6 +80,9 @@ def validate_config(config, workflow, contracts, *, accepted_policy_root=None, r
     if report['status'] != 'ACCEPTED':
         raise ValidationError('Unresolved configuration values: ' + '; '.join(
             item['path'] + ': ' + item['reason'] for item in report['unresolved']))
+    from .shared_owner_policy import configured_shared_jira_actor_id, require_whole_repository, JIRA_SETTING_PATH
+    if accepted_policy_root is not None and configured_shared_jira_actor_id(config) is not None:
+        require_whole_repository(accepted_policy_root, setting_path=JIRA_SETTING_PATH)
     # Unbound owner/actor configuration remains an adoption warning, but once
     # both identities are configured they must satisfy the authorization
     # module's single bot/owner-separation rule before a policy is accepted.

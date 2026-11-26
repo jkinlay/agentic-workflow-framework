@@ -89,7 +89,7 @@ class JiraAcceptedPolicyTests(unittest.TestCase):
                     pass
 
     def test_jira_only_subfolder_observation_keeps_existing_scope(self):
-        # No owner decision has extended GitHub's whole-repository rule to Jira.
+        # Owner decision: 'Yes, cover Jira too'; the set subfolder now refuses.
         sub = self.project / 'application'
         sub.mkdir()
         def git(*args, raw=None):
@@ -104,13 +104,13 @@ class JiraAcceptedPolicyTests(unittest.TestCase):
             input=b'Synthetic subfolder policy\n', env=environment, check=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
         git('update-ref', 'refs/remotes/origin/main', commit.decode())
-        result = observe_accepted_owner_policy(sub, self.config, definition(),
-            Contracts(Path(__file__).resolve().parents[1] / 'schemas'),
-            policy_sha256=policy_hash(self.config, definition()))
-        self.assertEqual('fixture-controller', result[KEY])
+        with self.assertRaisesRegex(ValidationError, 'top level of its own repository'):
+            observe_accepted_owner_policy(sub, self.config, definition(),
+                Contracts(Path(__file__).resolve().parents[1] / 'schemas'),
+                policy_sha256=policy_hash(self.config, definition()))
         from agentic.jira_owner_visibility import jira_owner_warnings
         warnings = jira_owner_warnings(sub, {'jira': {KEY: None}})
-        self.assertTrue(any('Accepted default-branch policy' in row['message'] for row in warnings))
+        self.assertEqual([], warnings)
 
     def test_jira_scope_fix_preserves_github_validation_order(self):
         config = deepcopy(self.config)

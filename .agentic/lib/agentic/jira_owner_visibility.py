@@ -24,8 +24,8 @@ def jira_owner_warnings(root=None, config=None, *, config_path=None):
             from . import shared_owner_policy as policy
             from .contracts import Contracts
             from .policy import policy_hash
-            # Jira still supports subfolder projects. Git discovers their
-            # enclosing metadata; requiring this root's own .git hides policy.
+            # Reporting reads independently; observation enforces the shared
+            # whole-repository rule before describing accepted authority.
             ref, _ = policy._default_ref(root)
             if ref is not None:
                 commit = policy._git(root, 'rev-parse', '--verify', ref + '^{commit}').decode('ascii').strip()

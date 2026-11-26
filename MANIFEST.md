@@ -52,7 +52,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/36-FIVE-SLOT-ACCELERATION.md` | `5e4f105d562d7124b7844accf2cfbac79583634ff8b04ee2dc06bb55c1576402` |
 | `.agentic/docs/37-PRIVATE-DENY-SCAN.md` | `54aee43783e6bed3fa25a08f4e0e1d28553fed92d7b71c9e97d8f47ab9db0e6c` |
 | `.agentic/docs/37-PUBLICATION-READINESS.md` | `12a475024511589aa4b4291975c3b91dd1663ab4b7075a0dad173cb5bb5298d1` |
-| `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `5e7689703dfc471c985db1d09d818f75bf1ec883661b73895eb4a3cf80c04025` |
+| `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `bf7523dbd9c50cf007f9bdc55ee00d49b8a807223bf6c13dcab167c5285ae21f` |
 | `.agentic/docs/38-RELEASE-196-QUALIFICATION.md` | `421a32f014fd8cc0671ccdc3bec32e3d77984719f10905b8ae0cbcdde32d76bc` |
 | `.agentic/docs/38-RELEASE-197-QUALIFICATION.md` | `70f0f516b1557d7bb7db2a4d25e4dda2ffaa67d81690d511e94217648c532625` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `ff6df195e544f8fdaaeb867186d03bedd8b77df404a24d16030a9f5ea32822d2` |
@@ -72,7 +72,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/REFERENCE-JIRA-ADAPTER.md` | `6f26fd81e5525178084e22995863f61579a0ed4d960ca5ef28d488e2bca70e9a` |
 | `.agentic/docs/REPORTING-196.md` | `58dc759762906ca485f5a6523f243ebf362882297fd2f42b9a8f3de541458c41` |
 | `.agentic/docs/REPORTING-SETTINGS-196.md` | `b569c99c42bddd2dc0ce454a137ef17cd60de09483aa0f1aa5704a724ba61001` |
-| `.agentic/docs/SHARED-JIRA-OWNER-POLICY.md` | `67f3ff55df1f13f49d5621ce5d740ea0a487cb2fae217491be49895f174fffa0` |
+| `.agentic/docs/SHARED-JIRA-OWNER-POLICY.md` | `e140c4eb5831a24b6f42892b11a467aa6ff4e4a6c1fe96bd35ee36ba806e73e0` |
 | `.agentic/docs/SHARED-OWNER-PATHS.md` | `49c134ed2d048cc6f990dec96349274583843e0c6712d5e15936754e9daf788c` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `765124f19ce8a4b2be22ad7e2ba5e71b0624f48369b9af88fdffac1e21747806` |
 | `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
@@ -107,7 +107,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/cli.py` | `d05ce869d80ee13ed0466c0a164f0a50471917c3c3e550554c3383c18df907c7` |
 | `.agentic/lib/agentic/closeout.py` | `b27cac5d6fcdfdfd4299925cc21655c2f2fb859c6402067f063ec8956aa94431` |
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
-| `.agentic/lib/agentic/configuration.py` | `ad26f7541cf41fa201a9ed27728077c28658aa601d680af01bec97597c0bcbf4` |
+| `.agentic/lib/agentic/configuration.py` | `d7fcad045d74dd50deb62495c7c4dd7a0ceedbf6779982ee241140b06aa3472f` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
 | `.agentic/lib/agentic/continuous_controller.py` | `7b1de09fc71331308335393854d2059dfb447f225fbf25e7b3ba461053c3224e` |
 | `.agentic/lib/agentic/contracts.py` | `e63c4049e9073b0e0b0835efb603063da705b40858c3c4d9ebc550e3c3557671` |
@@ -130,7 +130,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/interaction.py` | `ccdf2ac25c3e069cfc3d539f880659ab0cdb8680b81d885c460aed6080964e91` |
 | `.agentic/lib/agentic/jira_lifecycle.py` | `0faddbfe956688f636b4ab49a72f4c4659cec3bb4b2c2c2ffee076f6aaf89f5f` |
 | `.agentic/lib/agentic/jira_owner_policy.py` | `87035f53dab5e1c136548b3982692f8fbb4f517ccf53c97052902fca27557afb` |
-| `.agentic/lib/agentic/jira_owner_visibility.py` | `362e2140b2a085d753feeceb17abaa485a007664b773c12d04f8d66ccdb21bf8` |
+| `.agentic/lib/agentic/jira_owner_visibility.py` | `5f5c18c162c8e9fa2c5be7971caffb5e7a64aa1511707a37eb1622385fbbe233` |
 | `.agentic/lib/agentic/lane_labels.py` | `3f4c4e86405f88fe496a833ebc3f4670b23441020eef2652a059b2f5dec880d2` |
 | `.agentic/lib/agentic/launch_surfaces.py` | `441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d` |
 | `.agentic/lib/agentic/lifecycle.py` | `9b715f103e130045cfc45204f232c381c64c8fda543570e6817c786730df247a` |
@@ -144,7 +144,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/path_containment.py` | `cd1747ad478c701ddf156ef242ee4a5b879f8ee6fb00ea7b64eb593551204a56` |
 | `.agentic/lib/agentic/planning.py` | `8f96e31963b5209befe2db7137224a1a059489fff5b1e8ae7a4fd0f30e4cacb3` |
 | `.agentic/lib/agentic/planning_graph.py` | `c16ecb51b8ce16ec24508ab728af3bcb55be6d358e6962a545a8236fde8a6239` |
-| `.agentic/lib/agentic/policy.py` | `a78a6c031c554891bedd4d1b8b0545c73d936ab4fe00001dd8a34549514fceb0` |
+| `.agentic/lib/agentic/policy.py` | `42055c12f4ae2f04d30d4b1c98d979320b3e6b73fff05ec029f952b4e0350e9f` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/preservation_metadata.py` | `2c444dbe1dba34f8813822c3f7ad75a7bb6d8ce0ecfdae3a0ac41849b0946cbc` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
@@ -193,7 +193,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/runtime_tags.py` | `f8119f049548c026ea11718a17bf75779ee416905a3732628ee07ee40fc6d1ed` |
 | `.agentic/lib/agentic/safeio.py` | `686f09d2bbd8e1f9d54a9fedd8246ee88913befbb46b15a8051d22389427b313` |
 | `.agentic/lib/agentic/self_test_shards.py` | `87c3976c4ff0619a169960dc600ae3de2c7ad2c3d48cef527afba88e6b51bd3b` |
-| `.agentic/lib/agentic/shared_owner_policy.py` | `984ce595b7af7e7b621768c97f2fed08351a99f421ef98db934ec06bdfb47171` |
+| `.agentic/lib/agentic/shared_owner_policy.py` | `9e97c918aaa6ce98c70f69067467242f3e5c110b378970fbac7df6a466046fe5` |
 | `.agentic/lib/agentic/status_report.py` | `e1125f60932ecfbcec14417c10b89049c480f97b8d5d70b3b1902db4f2a08b22` |
 | `.agentic/lib/agentic/status_report_store.py` | `5d34fa6d9dc356650dd6c16753edccf05018e87b2c78efd99984563f4861c7f4` |
 | `.agentic/lib/agentic/store.py` | `9b2af868fa3bad2b8b45118dff58b200b406d59fa07f6b6e91aee0a2db71f6d7` |
@@ -472,6 +472,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf307_intake_owner_policy.py` | `f7e02a4d04ecd3aaef8d0e4078a85fd6324fd578c1871e4ae301f90f77e7b326` |
 | `.agentic/tests/test_awf307_jira_owner_policy.py` | `6fd9180a54735f8d2c5b4b9ba17af317e995a7ccf97ac5c11f3ef41fa16668c4` |
 | `.agentic/tests/test_awf307_jira_visibility.py` | `122ab290777ecd8e762145e783a7abebc86483a73d104430175387e8032f6e34` |
+| `.agentic/tests/test_awf307_jira_whole_repository.py` | `7179da436ed8a662b75c4e8223a9c79710f3c01397781a32b274d7fb4930d91a` |
 | `.agentic/tests/test_awf307_null_owner_identity.py` | `ee1b1d3e0a7fbb2836bd492329f09208ee040d4586941304a2ec428404097a20` |
 | `.agentic/tests/test_awf307_o1c_regressions.py` | `10db3ccf67e9234c44c03d0268e54f6b81b0b8f27051c93be3b785662adc3645` |
 | `.agentic/tests/test_awf307_pass9f_null_consumers.py` | `744b298ee9f39540e00c16db945e84fe3bf6112da41b194dba2a32b3256803fa` |
@@ -482,7 +483,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_awf307_shared_owner_policy.py` | `65f091ac4185e9e21ba2238b27778883b991d4a06ca552a80849b7d768db5464` |
 | `.agentic/tests/test_awf307_stream_owner_policy.py` | `767c2e7e45cb34ce33aee92b229fdb08fa8897f1efbb27b433df3776dbe5cd35` |
 | `.agentic/tests/test_awf307_sync2_regressions.py` | `47d2195de096a68a83d20562574b85bf8c9efa63bf66df4351e7e9eb918185f0` |
-| `.agentic/tests/test_awf307_sync5_regressions.py` | `59b7232f92f7cca3fc4e2e674e84d4e9cf23914a02d051615fcf0a040cafc9ce` |
+| `.agentic/tests/test_awf307_sync5_regressions.py` | `4ee397b1e04b40642cca6823a0f85604ef736c80375ad294ee980205de146fce` |
 | `.agentic/tests/test_awf312_junction_state.py` | `b2a728e23314891f65e9997268ecae467acb51728904be6c9cabb682240479aa` |
 | `.agentic/tests/test_awf34_configured_allowance_closure.py` | `0c7e09f71c688cc7cfb39fad09eeaa71e31254734fa358a7bee6348ab67174b5` |
 | `.agentic/tests/test_awf36_automation_fixtures.py` | `b458c1df63a738f95d9ef26d2de1d3f815894784ea795bc737bd3acf8c63d0aa` |

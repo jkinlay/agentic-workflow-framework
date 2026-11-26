@@ -62,9 +62,8 @@ expected and observed identities without including token values.
 warn `SHARED_OWNER_AUTOMATION_ACCOUNT`; prefer separate accounts.
 Null/absent exception to legacy preservation: controller overlap/replan approvals
 refuse configured automation actors in `trusted_owner_ids` for account separation.
-Whole-repository projects only.
-
-[`jira.shared_owner_controller_actor_id`](SHARED-JIRA-OWNER-POLICY.md).
+[`jira.shared_owner_controller_actor_id`](SHARED-JIRA-OWNER-POLICY.md):
+whole-repository projects only for both settings.
 
 ## Jira identity and binding
 

@@ -353,10 +353,10 @@ def _whole_repository(root):
     return common is not None or not bare(resolved)
 
 
-def require_whole_repository(root):
+def require_whole_repository(root, *, setting_path=SETTING_PATH):
     """Refuse a set opt-out, or its authority, anywhere else."""
     if not _whole_repository(root):
-        raise ValidationError(SETTING_PATH + ": allowed only when the project root is the top level of its "
+        raise ValidationError(setting_path + ": allowed only when the project root is the top level of its "
                               "own repository, not a subfolder, bare or nested repository")
 
 
@@ -422,7 +422,7 @@ def _policy_setting(raw, section="merge_gate", setting=SETTING):
     return gate.get(setting) if isinstance(gate, dict) else None
 
 
-def _accepted_opt_out(root):
+def _accepted_opt_out(root, *, section="merge_gate", setting=SETTING):
     """Read only the accepted setting; an unobservable policy stays unknown.
 
     Only the closed Git reader's own refusal means unobservable.
@@ -438,7 +438,7 @@ def _accepted_opt_out(root):
             except ValidationError:
                 continue
             if raw is not None:
-                value = _policy_setting(raw)
+                value = _policy_setting(raw, section, setting)
                 if value is not None:
                     return value
                 break
@@ -470,39 +470,29 @@ def _refuse_hidden_opt_out(config, *roots):
 
 
 def _refuse_hidden_jira_opt_out(config, *roots):
-    """An unset Jira proposal cannot hide an observable accepted setting.
+    """Use the common root rule and independent reader for Jira as well.
 
-    This is a refusal-only read, independent of proposed files and account
-    relationships. Jira retains its existing project-root scope; GitHub's
-    whole-repository restriction does not select which Jira roots are read.
-    Unobservable or unusable accepted policy leaves the legacy result intact.
+    A set proposal refuses outside a whole repository, even before a consumer's
+    ineligible/distinct-owner return. Unset proposals gain no Git prerequisite;
+    only an observable accepted setting at a checked root can refuse them.
     """
     try:
-        if configured_shared_jira_actor_id(config) is not None:
-            return
+        shared = configured_shared_jira_actor_id(config)
     except (ValidationError, AttributeError, TypeError):
-        pass
-    for root in roots:
-        if root is None:
-            continue
+        shared = None
+    known = [root for root in roots if root is not None]
+    if shared is not None:
+        for root in known:
+            require_whole_repository(root, setting_path=JIRA_SETTING_PATH)
+        return
+    for root in known:
         try:
-            for spelling in _root_spellings(root):
-                try:
-                    ref, _ = _default_ref(spelling)
-                    if ref is None:
-                        continue
-                    commit = _git(spelling, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
-                    raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
-                except ValidationError:
-                    continue
-                if raw is not None:
-                    if _policy_setting(raw, "jira", JIRA_SETTING) is not None:
-                        raise ValidationError("Shared Jira accepted policy digest changed")
-                    break
-        except ValidationError:
-            raise
+            with independent_policy_read(*known):
+                hidden = _accepted_opt_out(root, section="jira", setting=JIRA_SETTING) is not None
         except Exception as exc:
             raise ValidationError("Shared Jira accepted policy could not be checked") from exc
+        if hidden:
+            raise ValidationError("Shared Jira accepted policy digest changed")
 
 
 def _refuse_hidden_owner_policy(config, *roots):
@@ -556,6 +546,8 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
     root = _known_root(root)
     if any(item["code"] == "SHARED_OWNER_AUTOMATION_ACCOUNT" for item in shared_owner_warnings(config)):
         require_whole_repository(root)
+    if any(item["code"] == "SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT" for item in shared_owner_warnings(config)):
+        require_whole_repository(root, setting_path=JIRA_SETTING_PATH)
     ref, _ = _default_ref(root)
     if ref is None:
         raise ValidationError("Shared-owner default branch is unobserved")
@@ -585,6 +577,8 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
         raise ValidationError("Supplied configuration differs from accepted default-branch policy")
     if configured_shared_owner_actor_id(accepted) is not None:
         require_whole_repository(root)
+    if configured_shared_jira_actor_id(accepted) is not None:
+        require_whole_repository(root, setting_path=JIRA_SETTING_PATH)
     github = accepted["github"]
     if ref != "refs/remotes/origin/" + github["base_branch"]:
         raise ValidationError("Shared-owner accepted default-branch identity differs")
