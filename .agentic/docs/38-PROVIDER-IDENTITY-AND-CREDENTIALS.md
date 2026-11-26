@@ -59,10 +59,10 @@ fails with `IDENTITY_MISMATCH`; an unbound expectation reports
 expected and observed identities without including token values.
 
 `merge_gate.shared_owner_automation_actor_id`: [bindings/refusals](SHARED-OWNER-PATHS.md)
-warn `SHARED_OWNER_AUTOMATION_ACCOUNT`; prefer separate accounts. Jira O2 unavailable.
+warn `SHARED_OWNER_AUTOMATION_ACCOUNT`; prefer separate accounts.
 Null/absent exception to legacy preservation: controller overlap/replan approvals
 refuse configured automation actors in `trusted_owner_ids` for account separation.
-Exceptions: linked inventory.
+Whole-repository projects only.
 
 [`jira.shared_owner_controller_actor_id`](SHARED-JIRA-OWNER-POLICY.md).
 

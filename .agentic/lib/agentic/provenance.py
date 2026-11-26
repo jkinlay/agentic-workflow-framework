@@ -592,13 +592,14 @@ def _accepted_owner_config(root):
     from .canonical import load_yaml
     from .contracts import Contracts
     from .policy import policy_hash
-    from .shared_owner_policy import (_default_ref, _git, _policy_blob,
+    from .shared_owner_policy import (_default_ref, _git, _known_root, _policy_blob,
                                       observe_accepted_owner_policy)
 
     if root is None and _OBSERVED_OWNER_CONFIG.get() is not None:
         return copy.deepcopy(_OBSERVED_OWNER_CONFIG.get())
     _require(root is not None,
              "OWNER_TRUST_UNBOUND: accepted_policy_root is required")
+    root = _known_root(root)
     ref, _ = _default_ref(root)
     _require(ref is not None,
              "OWNER_TRUST_UNBOUND: accepted default branch is unobserved")

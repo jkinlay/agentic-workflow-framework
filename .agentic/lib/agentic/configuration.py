@@ -164,7 +164,7 @@ def validate_publication_project_config(config, contracts):
         _validate_safe_regex(item["pattern"], "Project publication declarations")
 
 
-def inspect_config(config, workflow, contracts, project_instructions=None):
+def inspect_config(config, workflow, contracts, project_instructions=None, project_root=None):
     from .policy import PROTECTED_PATHS, policy_hash, safe_path
     problems, warnings = [], []
     if project_instructions is not None:
@@ -216,6 +216,13 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
                 validator(config)
             except ValidationError as exc:
                 problems.append(issue(setting_path, str(exc)))
+        try:
+            if configured_shared_owner_actor_id(config) is not None and project_root is not None:
+                from .shared_owner_policy import require_whole_repository
+                require_whole_repository(project_root)
+        except ValidationError as exc:
+            if not any(item['path'] == SETTING_PATH for item in problems):
+                problems.append(issue(SETTING_PATH, str(exc)))
         require(type(config['github']['repository_id']) is int and config['github']['repository_id'] > 0,
                 '$.github.repository_id', 'numeric repository identity is unresolved')
         if not isinstance(workflow, dict):

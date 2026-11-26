@@ -12,7 +12,8 @@ from pathlib import Path
 from . import ValidationError
 from .canonical import fingerprint, loads, timestamp, jira_timestamp
 from .shared_owner_policy import (JIRA_SETTING, configured_shared_jira_actor_id,
-                                  consumer_policy_root, observe_accepted_owner_policy)
+                                  consumer_policy_root, observe_accepted_owner_policy,
+                                  _known_root, _refuse_hidden_jira_opt_out)
 
 FIELD = 'shared_owner_controller_evidence'
 _context = ContextVar('awf_jira_owner_closure', default=None)
@@ -39,13 +40,26 @@ def project_context_available():
     return context_available() or value is not None and value['active']
 
 
+def _policy_roots(store):
+    """Known host roots can refuse hidden policy without granting authority."""
+    roots = (getattr(store, 'accepted_policy_root', None), *getattr(store, 'worktree_roots', ()))
+    return tuple(dict.fromkeys(_known_root(root) for root in roots if root is not None))
+
+
+def refuse_hidden_policy(store, config):
+    _refuse_hidden_jira_opt_out(config, *_policy_roots(store))
+
+
 @contextmanager
 def project_policy_scope(store, config):
     """Bind accepted project reads independently of either account opt-out."""
     from .shared_owner_policy import configured_shared_owner_actor_id
+    roots = _policy_roots(store)
+    _refuse_hidden_jira_opt_out(config, *roots)
     if (configured_shared_jira_actor_id(config) is None
             and configured_shared_owner_actor_id(config) is None):
         yield
+        _refuse_hidden_jira_opt_out(config, *roots)
         return
     root = consumer_policy_root(root=getattr(store, 'accepted_policy_root', None), store=store)
     observation = _policy(root, config)
@@ -190,8 +204,11 @@ def closure_scope(store, config, issue, contract, policy, *, owned=False):
     """Called by the trusted controller, never selected by a provider body."""
     from .continuous_controller import _batch_jira_ownership
     from .jira_lifecycle import owner_closure_required
+    roots = _policy_roots(store)
+    _refuse_hidden_jira_opt_out(config, *roots)
     if configured_shared_jira_actor_id(config) is None:
         yield
+        _refuse_hidden_jira_opt_out(config, *roots)
         return
     root = consumer_policy_root(root=getattr(store, 'accepted_policy_root', None), store=store)
     if not (contract.get('owner_closure_required') is True and policy.get('issue_type') == 'LEAF'
@@ -346,9 +363,12 @@ def validate_history(proof):
 @contextmanager
 def retained_scope(store, config, value, *, owned=False):
     """Only a closure already retained in this protected journal supplies context."""
+    roots = _policy_roots(store)
+    _refuse_hidden_jira_opt_out(config, *roots)
     proof = value['owner_closure']
     if FIELD not in proof:
         yield
+        _refuse_hidden_jira_opt_out(config, *roots)
         return
     with store.connection() as db:
         row = db.execute('SELECT value FROM controller_meta WHERE key=?',

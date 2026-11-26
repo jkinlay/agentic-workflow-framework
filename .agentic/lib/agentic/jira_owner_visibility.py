@@ -24,28 +24,29 @@ def jira_owner_warnings(root=None, config=None, *, config_path=None):
             from . import shared_owner_policy as policy
             from .contracts import Contracts
             from .policy import policy_hash
-            if policy._has_git_metadata(root):
-                ref, _ = policy._default_ref(root)
-                if ref is not None:
-                    commit = policy._git(root, 'rev-parse', '--verify', ref + '^{commit}').decode('ascii').strip()
-                    raw = policy._policy_blob(root, commit, '.agentic/PROJECT_CONFIG.yaml')
-                    if raw is not None:
-                        accepted = load_yaml(raw)
-                        # Absence in immutable default-branch bytes needs no
-                        # authority observation. Working bytes cannot hide a
-                        # non-null accepted setting; that path still rechecks.
-                        if any(item['code'] == CODE for item in shared_owner_warnings(accepted)):
-                            workflow_raw = policy._policy_blob(root, commit, '.agentic/workflow.yaml')
-                            if workflow_raw is not None:
-                                workflow = load_yaml(workflow_raw)
-                                observation = policy.observe_accepted_owner_policy(root, accepted, workflow,
-                                    Contracts(Path(__file__).resolve().parents[2] / 'schemas'),
-                                    policy_sha256=policy_hash(accepted, workflow))
-                                for item in observation['warnings']:
-                                    if item['code'] == CODE:
-                                        warnings.append({**item, 'message': item['message'] +
-                                            ' Accepted default-branch policy ' + observation['policy_sha256'] +
-                                            '; this report is not authority and does not enable the opt-out.'})
+            # Jira still supports subfolder projects. Git discovers their
+            # enclosing metadata; requiring this root's own .git hides policy.
+            ref, _ = policy._default_ref(root)
+            if ref is not None:
+                commit = policy._git(root, 'rev-parse', '--verify', ref + '^{commit}').decode('ascii').strip()
+                raw = policy._policy_blob(root, commit, '.agentic/PROJECT_CONFIG.yaml')
+                if raw is not None:
+                    accepted = load_yaml(raw)
+                    # Absence in immutable default-branch bytes needs no
+                    # authority observation. Working bytes cannot hide a
+                    # non-null accepted setting; that path still rechecks.
+                    if any(item['code'] == CODE for item in shared_owner_warnings(accepted)):
+                        workflow_raw = policy._policy_blob(root, commit, '.agentic/workflow.yaml')
+                        if workflow_raw is not None:
+                            workflow = load_yaml(workflow_raw)
+                            observation = policy.observe_accepted_owner_policy(root, accepted, workflow,
+                                Contracts(Path(__file__).resolve().parents[2] / 'schemas'),
+                                policy_sha256=policy_hash(accepted, workflow))
+                            for item in observation['warnings']:
+                                if item['code'] == CODE:
+                                    warnings.append({**item, 'message': item['message'] +
+                                        ' Accepted default-branch policy ' + observation['policy_sha256'] +
+                                        '; this report is not authority and does not enable the opt-out.'})
         except (ValidationError, OSError, ValueError, KeyError, TypeError, UnicodeError):
             # Reporting must never turn an unavailable observation into admission
             # or block an otherwise independent command.

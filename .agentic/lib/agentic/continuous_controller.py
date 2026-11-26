@@ -349,7 +349,10 @@ def _controller_owner_policy(config, accepted_policy_root):
 			# ordinary unset policy retains its historical validation and bytes.
 			from .shared_owner_policy import _default_ref, _git, _policy_blob
 			from .canonical import load_yaml
+			from .shared_owner_policy import _refuse_hidden_opt_out
 			ref, _ = _default_ref(accepted_policy_root)
+			# A relative root can name another directory; this can only refuse.
+			_refuse_hidden_opt_out(config, accepted_policy_root)
 			if ref is not None:
 				commit = _git(accepted_policy_root, 'rev-parse', '--verify', ref + '^{commit}').decode('ascii').strip()
 				raw = _policy_blob(accepted_policy_root, commit, '.agentic/PROJECT_CONFIG.yaml')
@@ -361,6 +364,9 @@ def _controller_owner_policy(config, accepted_policy_root):
 					# Full accepted-policy validation refuses the hidden setting or
 					# changed identity; this read can never enable the exception.
 					accepted_owner_evidence(accepted_policy_root, config, None)
+		elif accepted_policy_root is not None:
+			from .shared_owner_policy import _refuse_hidden_opt_out
+			_refuse_hidden_opt_out(config, accepted_policy_root)
 		return {}
 	return accepted_owner_evidence(accepted_policy_root, config, shared)
 
@@ -2541,6 +2547,9 @@ def jira_reconciliation_binding_matches(retained, current):
 def validate_jira_owner_closure(value, request, *, now, store=None, config=None):
 	"""An observed Jira closure is evidence, never merge or mutation authorization."""
 	shared = _validate_jira_owner_closure_shape(value, request, now=now)
+	if store is not None and config is not None:
+		from .jira_owner_policy import refuse_hidden_policy
+		refuse_hidden_policy(store, config)
 	if shared:
 		from .jira_owner_policy import context_available, retained_scope, validate
 		if not context_available() and store is not None and config is not None:
@@ -3830,6 +3839,9 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 	from .budgeting import project_ledger_path, resolve_settings, protected_state_roots
 	# All protected domains use the independently selected repository and refusal.
 	policy_root = Path(repository_root).resolve(strict=True)
+	from .shared_owner_policy import _refuse_hidden_opt_out
+	if publication_config is not None:
+		_refuse_hidden_opt_out(publication_config, policy_root)
 	from .reporting.policy import ReportingPolicy
 	report_policy = ReportingPolicy(policy_root, planning_config, planning_operating_snapshot)
 	accepted_operating = report_policy.snapshot

@@ -60,9 +60,10 @@ def safe_path(value):
     return value
 
 
-def inspect_config(config, workflow, contracts, project_instructions=None):
+def inspect_config(config, workflow, contracts, project_instructions=None, project_root=None):
     from .configuration import inspect_config as inspect
-    return inspect(config, workflow, contracts, project_instructions=project_instructions)
+    return inspect(config, workflow, contracts, project_instructions=project_instructions,
+                   project_root=project_root)
 
 
 def validate_config(config, workflow, contracts, *, accepted_policy_root=None, return_report=False):

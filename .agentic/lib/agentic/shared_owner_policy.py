@@ -10,7 +10,8 @@ from urllib.parse import urlsplit
 
 from . import ValidationError
 from .canonical import load_yaml, sha256
-from .protected_settings import _blob, _default_ref, _git, _origin_url
+from . import protected_settings as _settings
+from .git_isolation import independent_policy_read
 
 SETTING = "shared_owner_automation_actor_id"
 SETTING_PATH = "$.merge_gate." + SETTING
@@ -18,6 +19,26 @@ JIRA_SETTING = "shared_owner_controller_actor_id"
 JIRA_SETTING_PATH = "$.jira." + JIRA_SETTING
 OWNER_EVIDENCE_FIELDS = frozenset({"shared_owner_automation_account",
                                    "owner_policy_sha256", "accepted_owner_policy"})
+
+
+def _git(root, *arguments, **options):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
+        return _settings._git(root, *arguments, **options)
+
+
+def _default_ref(root):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
+        return _settings._default_ref(root)
+
+
+def _blob(root, commit, path):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
+        return _settings._blob(root, commit, path)
+
+
+def _origin_url(root):
+    with independent_policy_read(root, *_enclosing_checkouts(root)):
+        return _settings._origin_url(root)
 
 
 def consumer_policy_root(root=None, store=None):
@@ -172,6 +193,8 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
     # Intake's documented process-local assignment map is not reviewed policy.
     # Strip only that context; every reviewed configuration byte still binds.
     config = {key: value for key, value in config.items() if key != "_awf_runtime"}
+    if not all(isinstance(config.get(key, {}), dict) for key in ("github", "merge_gate")):
+        _refuse_hidden_opt_out(config, root)
     shared = configured_shared_owner_actor_id(config)
     if shared is None:
         if (config.get("github", {}).get("expected_actor_id") in config.get("merge_gate", {}).get("trusted_owner_ids", [])
@@ -186,15 +209,26 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             return {}
         try:
             ref, _ = _default_ref(root)
-            if ref is None:
-                return {}
-            commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
-            raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
+            raw = None
+            if ref is not None:
+                commit = _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+                raw = _policy_blob(root, commit, ".agentic/PROJECT_CONFIG.yaml")
         except ValidationError:
+            # Only this spelling failed; an accepted opt-out still refuses.
+            _refuse_hidden_opt_out(config, root)
+            return {}
+        # An absent file, relative root, subfolder or link target may not be the
+        # project's own accepted policy; its legacy result stands unless hidden.
+        from pathlib import Path
+        _, own, above = _enclosing(root)
+        subfolder = bool(above) and not own
+        if raw is None or not Path(root).is_absolute() or subfolder or _linking_projects(root):
+            _refuse_hidden_opt_out(config, root)
+        if ref is None:
             return {}
         accepted = load_yaml(raw) if raw is not None else {}
         if (isinstance(accepted, dict) and
-                configured_shared_owner_actor_id(accepted) is None and
+                (subfolder or configured_shared_owner_actor_id(accepted) is None) and
                 (accepted.get("github", {}).get("expected_actor_id") ==
                  config.get("github", {}).get("expected_actor_id") or
                  accepted.get("github", {}).get("expected_actor_id") not in
@@ -202,6 +236,8 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             return {}
     if root is None:
         raise ValidationError("Owner records require an accepted default-branch policy observation")
+    if shared is not None:
+        require_whole_repository(root)
     from pathlib import Path
     from .contracts import Contracts
     from .lifecycle import definition
@@ -225,15 +261,261 @@ def accepted_owner_evidence(root, config, actor_id, *, synthetic=False,
             "accepted_owner_policy": observation}
 
 
+def _known_root(root):
+    """Fix a relative root where its host supplies it; keep an absolute spelling."""
+    from pathlib import Path
+    path = Path(root)
+    return path if path.is_absolute() else path.resolve()
+
+
+def _root_spellings(root):
+    """Spell one directory every way the isolated Git reader may need it.
+
+    That reader uses its root as both working directory and -C argument, so a
+    relative root is applied twice; Git also refuses some extended spellings.
+    """
+    from pathlib import Path
+    known = _known_root(root)
+    resolved = known.resolve()
+    plain = resolved.as_posix()
+    if plain.startswith("//?/UNC/"):
+        plain = "//" + plain[len("//?/UNC/"):]
+    elif plain.startswith(("//?/", "//./")):
+        plain = plain[len("//?/"):]
+    # Windows paths that differ only in case compare equal, so compare their text.
+    return tuple({str(path): path for path in (Path(plain), resolved, known)}.values())[::-1]
+
+
+def _common_directory(path, *, linked=False):
+    """Resolve the common Git directory of one ``.git`` entry, or None.
+
+    ``linked`` accepts only a linked worktree with its matching backlink.
+    """
+    try:
+        marker = path / ".git"
+        if marker.is_dir():
+            return marker.resolve() if not linked and (marker / "HEAD").exists() else None
+        text = marker.read_text(encoding="utf-8").strip()
+        if not text.startswith("gitdir:") or "\n" in text:
+            return None
+        admin = (path / text[len("gitdir:"):].strip()).resolve(strict=True)
+        if not (admin / "commondir").exists():
+            return None if linked else admin
+        shared = (admin / (admin / "commondir").read_text(encoding="utf-8").strip()).resolve(strict=True)
+        backlink = admin / (admin / "gitdir").read_text(encoding="utf-8").strip()
+        return (shared if admin.parent == shared / "worktrees"
+                and backlink.resolve(strict=True) == marker.resolve(strict=True) else None)
+    except (OSError, UnicodeError):
+        return None
+
+
+def _enclosing(root):
+    """Return the resolved root, whether it has its own ``.git``, and those above it."""
+    import os
+    from pathlib import Path
+    if chr(0) in str(root):
+        raise ValidationError("Owner policy root is not a path")
+    resolved = _root_spellings(root)[-1]
+    own = os.path.lexists(resolved / ".git")
+    above = list(resolved.parents)
+    if not own:  # Git may discover a repository above the typed spelling instead.
+        above += Path(os.path.abspath(_known_root(root))).parents
+    return resolved, own, tuple(dict.fromkeys(path for path in above if os.path.lexists(path / ".git")))
+
+
+def _enclosing_checkouts(root):
+    """Checkouts of the same repository that hold this root never supply Git."""
+    resolved, own, above = _enclosing(root)
+    common = _common_directory(resolved) if own and above else None
+    return tuple(path for path in above if not own or common and _common_directory(path) == common)
+
+
+def _whole_repository(root):
+    """The opt-out needs the project root to be its repository's top level.
+
+    Tracked files cannot form a ``.git`` entry. A linked worktree inside its own
+    main checkout qualifies; a subfolder, bare layout or nested repository does
+    not. A root in no repository passes: Git itself cannot observe it.
+    """
+    import os
+    resolved, own, above = _enclosing(root)
+
+    def bare(path):
+        return os.path.lexists(path / "HEAD") and (os.path.lexists(path / "commondir") or (
+            os.path.lexists(path / "objects") and os.path.lexists(path / "refs")))
+
+    if not own:
+        return not above and not any(map(bare, (resolved, *resolved.parents)))
+    common = _common_directory(resolved)
+    if above:
+        common = _common_directory(resolved, linked=True)
+        return common is not None and all(_common_directory(path) == common for path in above)
+    return common is not None or not bare(resolved)
+
+
+def require_whole_repository(root):
+    """Refuse a set opt-out, or its authority, anywhere else."""
+    if not _whole_repository(root):
+        raise ValidationError(SETTING_PATH + ": allowed only when the project root is the top level of its "
+                              "own repository, not a subfolder, bare or nested repository")
+
+
+def _invoked_projects(resolved):
+    """Projects whose invoked script or imported library resolves into this root.
+
+    The host chose the unresolved path; a tracked link can redirect only what it
+    resolves to, including out of the repository.
+    """
+    import os
+    import sys
+    from pathlib import Path
+    for entry, tail in ((sys.argv[0] if sys.argv else "", (".agentic", "scripts")),
+                        (__file__, (".agentic", "lib", "agentic"))):
+        typed = Path(os.path.abspath(entry))
+        if typed.parts[-len(tail) - 1:-1] != tail:
+            continue
+        project, target = typed.parents[len(tail)], typed.resolve()
+        if (len(target.parents) > len(tail) and target.parents[len(tail)] == resolved
+                and os.path.lexists(project / ".git") and project.resolve() != resolved):
+            yield project
+
+
+def _linking_projects(root):
+    """Enclosing or invoked projects whose own ``.agentic`` files resolve into this root.
+
+    A tracked link can resolve a project's scripts, library or configuration into
+    a subfolder, submodule or nested checkout; its host still runs that project.
+    """
+    import os
+    resolved, _, above = _enclosing(root)
+    found = dict.fromkeys(_invoked_projects(resolved))
+    for outer in (path.resolve() for path in above):
+        agentic = outer / ".agentic"
+        paths = [agentic, agentic / "PROJECT_CONFIG.yaml", agentic / "lib"]
+        for directory in (agentic / "scripts", agentic / "lib/agentic"):
+            paths.append(directory)
+            try:
+                with os.scandir(directory) as entries:
+                    paths += [directory / entry.name for entry in entries if entry.is_symlink()]
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+        if resolved != agentic and any(resolved in path.resolve().parents for path in paths if path.exists()):
+            found[outer] = None
+    return tuple(found)
+
+
+def _checked_roots(root):
+    """Choose the roots whose accepted setting could be hidden.
+
+    A subfolder project cannot accept the setting, so it has none of its own.
+    """
+    _, own, above = _enclosing(root)
+    return (*_linking_projects(root), *((root,) if own or not above and _whole_repository(root) else ()))
+
+
+def _policy_setting(raw, section="merge_gate", setting=SETTING):
+    try:
+        accepted = load_yaml(raw)
+    except (ValidationError, ArithmeticError, AttributeError, LookupError, TypeError, ValueError):
+        return None  # Malformed accepted bytes are no usable policy.
+    gate = accepted.get(section) if isinstance(accepted, dict) else None
+    return gate.get(setting) if isinstance(gate, dict) else None
+
+
+def _accepted_opt_out(root):
+    """Read only the accepted setting; an unobservable policy stays unknown.
+
+    Only the closed Git reader's own refusal means unobservable.
+    """
+    for checked in _checked_roots(root):
+        for spelling in _root_spellings(checked):
+            try:
+                ref, _ = _default_ref(spelling)
+                if ref is None:
+                    continue
+                commit = _git(spelling, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+                raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
+            except ValidationError:
+                continue
+            if raw is not None:
+                value = _policy_setting(raw)
+                if value is not None:
+                    return value
+                break
+    return None
+
+
+def _refuse_hidden_opt_out(config, *roots):
+    """Let the accepted policy, never the proposal, decide that nothing is hidden.
+
+    Any proposal without a valid opt-out is checked, whatever its identity,
+    owners or section shapes. An accepted unset setting, or a root without an
+    observable default branch, changes nothing. No result grants authority.
+    """
+    try:
+        if configured_shared_owner_actor_id(config) is not None:
+            return  # A valid proposal meets each caller's own accepted-policy rules.
+    except (ValidationError, AttributeError, TypeError):
+        pass
+    known = [root for root in roots if root is not None]
+    for root in known:
+        try:
+            with independent_policy_read(*known):
+                hidden = _accepted_opt_out(root) is not None
+        except Exception as exc:
+            # An unexpected failure is not an observation that nothing is set.
+            raise ValidationError("Shared-owner accepted policy could not be checked") from exc
+        if hidden:
+            raise ValidationError("Shared-owner accepted policy digest changed")
+
+
+def _refuse_hidden_jira_opt_out(config, *roots):
+    """An unset Jira proposal cannot hide an observable accepted setting.
+
+    This is a refusal-only read, independent of proposed files and account
+    relationships. Jira retains its existing project-root scope; GitHub's
+    whole-repository restriction does not select which Jira roots are read.
+    Unobservable or unusable accepted policy leaves the legacy result intact.
+    """
+    try:
+        if configured_shared_jira_actor_id(config) is not None:
+            return
+    except (ValidationError, AttributeError, TypeError):
+        pass
+    for root in roots:
+        if root is None:
+            continue
+        try:
+            for spelling in _root_spellings(root):
+                try:
+                    ref, _ = _default_ref(spelling)
+                    if ref is None:
+                        continue
+                    commit = _git(spelling, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip()
+                    raw = _policy_blob(spelling, commit, ".agentic/PROJECT_CONFIG.yaml")
+                except ValidationError:
+                    continue
+                if raw is not None:
+                    if _policy_setting(raw, "jira", JIRA_SETTING) is not None:
+                        raise ValidationError("Shared Jira accepted policy digest changed")
+                    break
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise ValidationError("Shared Jira accepted policy could not be checked") from exc
+
+
 def _refuse_hidden_owner_policy(config, *roots):
     """Detect a hidden accepted opt-out where a caller knows more than its root.
 
-    Only the default-off overlap reads anything. A root without an observable
-    default branch changes nothing, and no result ever grants authority.
+    The default-off overlap keeps its complete accepted-policy comparison; every
+    other proposal is refused only when the accepted opt-out is set.
     """
     if _legacy_owner_overlap(config):
         for root in roots:
             accepted_owner_evidence(root, config, None, legacy_unsigned=True)
+    else:
+        _refuse_hidden_opt_out(config, *roots)
 
 
 def _legacy_owner_root(config, root):
@@ -271,6 +553,9 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
     from .configuration import inspect_config
     from .policy import policy_hash
 
+    root = _known_root(root)
+    if any(item["code"] == "SHARED_OWNER_AUTOMATION_ACCOUNT" for item in shared_owner_warnings(config)):
+        require_whole_repository(root)
     ref, _ = _default_ref(root)
     if ref is None:
         raise ValidationError("Shared-owner default branch is unobserved")
@@ -298,6 +583,8 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
         raise ValidationError("Shared-owner accepted policy digest changed")
     if policy_hash(config, workflow) != digest:
         raise ValidationError("Supplied configuration differs from accepted default-branch policy")
+    if configured_shared_owner_actor_id(accepted) is not None:
+        require_whole_repository(root)
     github = accepted["github"]
     if ref != "refs/remotes/origin/" + github["base_branch"]:
         raise ValidationError("Shared-owner accepted default-branch identity differs")

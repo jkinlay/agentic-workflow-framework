@@ -1133,9 +1133,8 @@ class DistinctOwnerCompatibility(unittest.TestCase):
                         module.main(arguments, default_root=project)
                         self.assertIn("COLLECTING", output.getvalue())
 
-    def intake_change(self, setting, *, store=None, bootstrap=None):
-        """Change one assignment through the library or the bootstrap entry point."""
-        from types import SimpleNamespace
+    def intake_inputs(self, setting):
+        """One assigned ticket and the owner source that changes it."""
         config = intake_fixture.config()
         config["github"]["expected_actor_id"] = 1002
         config["jira"]["enabled"] = False
@@ -1146,44 +1145,14 @@ class DistinctOwnerCompatibility(unittest.TestCase):
         current = intake_assignment.assign_intake(config, intake_fixture.ticket(), state, None,
             now=intake_fixture.NOW, controller_actor_id="fixture-controller")
         source = intake_fixture.owner_source("AWF-100", current["assignment_id"], 3, 3, reason)
-        if bootstrap is None:
-            return intake_assignment.change_assignment(config, "AWF-100", state, None,
-                requested_tier=3, requested_cap=3, owner_source=source,
-                verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
-                now=intake_fixture.NOW, controller_actor_id="fixture-controller", store=store)
-        import importlib.util
-        specification = importlib.util.spec_from_file_location(
-            "bootstrap_project_hidden_policy", ROOT / "scripts/bootstrap_project.py")
-        module = importlib.util.module_from_spec(specification)
-        specification.loader.exec_module(module)
-        (bootstrap / ".agentic").mkdir(exist_ok=True)
-        config.pop("_awf_runtime", None)
-        (bootstrap / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(config), encoding="utf-8")
-        folder = self.root / ("bootstrap-" + setting + bootstrap.name)
-        folder.mkdir()
-        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
-        (folder / "change.json").write_text(json.dumps({"ticket_key": "AWF-100",
-            "requested_tier": 3, "requested_cap": 3, "reason": reason, "owner_source": source}),
-            encoding="utf-8")
-        return module._run_assignment_path(SimpleNamespace(project_start_inventory=None,
-            ticket_intake=None, assignment_change=folder / "change.json",
-            assignment_state=folder / "state.json", controller_actor_id="fixture-controller",
-            assignment_now=intake_fixture.NOW, dest=bootstrap, recover=False, dry_run=False),
-            None, intake_fixture.verify_owner_source)
+        return config, state, reason, source
 
-    @source_only.skip_unless_source_repo(
-        "Source bootstrap entry point is not shipped in installed runtimes",
-        "scripts/bootstrap_project.py")
-    def test_bootstrap_assignment_change_hidden_opt_out_refuses(self):
-        case = self.hidden_policy_case()
-        ordinary = self.root / "ordinary"
-        ordinary.mkdir()
-        for setting in ("null", "absent"):
-            with self.subTest(setting=setting), case.policy_reads():
-                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
-                    self.intake_change(setting, bootstrap=case.project)
-            with self.subTest(setting=setting, hidden=False):
-                self.assertEqual(3, self.intake_change(setting, bootstrap=ordinary)["AWF-100"]["tier"])
+    def intake_change(self, setting, *, store=None, propose=lambda config: config):
+        config, state, reason, source = self.intake_inputs(setting)
+        return intake_assignment.change_assignment(propose(config), "AWF-100", state, None,
+            requested_tier=3, requested_cap=3, owner_source=source,
+            verify_owner_source=intake_fixture.verify_owner_source, reason=reason,
+            now=intake_fixture.NOW, controller_actor_id="fixture-controller", store=store)
 
     def test_intake_several_protected_worktrees_hidden_opt_out_refuses(self):
         from agentic.continuous_controller import ContinuousControllerStore
@@ -1203,6 +1172,1214 @@ class DistinctOwnerCompatibility(unittest.TestCase):
             with self.subTest(setting=setting, hidden=False):
                 self.assertEqual(3, self.intake_change(
                     setting, store=store(setting + "-ordinary", other))["tier"])
+
+
+DIGEST_CHANGED = "Shared-owner accepted policy digest changed"
+
+
+def hidden_proposals(original):
+    """Every proposal that leaves the accepted opt-out of account 1002 unset."""
+    for setting in ("null", "absent"):
+        for name, identity, owners in (
+                ("identity changed", 1003, [1001, 1002]), ("identity null", None, [1001, 1002]),
+                ("identity absent", "absent", [1001, 1002]), ("identity malformed", "1002", [1001, 1002]),
+                ("owners without the account", 1002, [1001]), ("owners empty", 1002, []),
+                ("owners empty, identity changed", 1003, []),
+                ("owners reordered, identity changed", 1003, [1002, 1001])):
+            value = deepcopy(original)
+            value["github"]["expected_actor_id"] = identity
+            if identity == "absent":
+                value["github"].pop("expected_actor_id")
+            value["merge_gate"].update(trusted_owner_ids=list(owners),
+                                       shared_owner_automation_actor_id=None)
+            if setting == "absent":
+                value["merge_gate"].pop("shared_owner_automation_actor_id")
+            yield setting + ": " + name, value
+
+
+def malformed_proposals(original):
+    for section in ("github", "merge_gate"):
+        for name, replacement in (("null", None), ("list", []), ("text", "x"), ("absent", "absent")):
+            value = deepcopy(original)
+            value["merge_gate"]["shared_owner_automation_actor_id"] = None
+            value[section] = replacement
+            if replacement == "absent":
+                value.pop(section)
+            yield section + " " + name, value
+
+
+def different_account_proposals(original):
+    for name, identity, account, owners in (
+            ("mismatched identity", 1003, 1004, [1001, 1002]), ("identity null", None, 1003, [1001, 1002]),
+            ("not an owner", 1003, 1003, [1001, 1002]), ("owners empty", 1002, 1002, []),
+            ("boolean", 1003, False, [1001, 1002])):
+        value = deepcopy(original)
+        value["github"]["expected_actor_id"] = identity
+        value["merge_gate"].update(trusted_owner_ids=owners,
+                                   shared_owner_automation_actor_id=account)
+        yield "different account: " + name, value
+
+
+class AcceptedPolicyDecidesHiddenOptOut(unittest.TestCase):
+    """A known root decides by its accepted policy, whatever the proposal says."""
+
+    def setUp(self):
+        self.enterContext(shipped_routing())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.case = DistinctOwnerCompatibility.hidden_policy_case(self)
+
+    def accept_unset(self, setting="null"):
+        """The accepted default branch leaves the opt-out null or absent."""
+        accepted = deepcopy(self.case.accepted)
+        accepted["merge_gate"]["shared_owner_automation_actor_id"] = None
+        if setting == "absent":
+            accepted["merge_gate"].pop("shared_owner_automation_actor_id")
+        blobs = {**self.case.blobs, ".agentic/PROJECT_CONFIG.yaml": canonical(accepted)}
+        return patch.object(self.case, "blobs", blobs)
+
+    def refuses(self, call, message=DIGEST_CHANGED):
+        with self.case.policy_reads(), self.assertRaises(ValidationError) as raised:
+            call()
+        self.assertIn(message, str(raised.exception))
+
+    def unaffected(self, call, reached=lambda result: None):
+        """Accepted unset, unobserved, or unreadable default branches change nothing."""
+        for setting in ("null", "absent"):
+            with self.subTest(accepted=setting), self.accept_unset(setting), self.case.policy_reads():
+                reached(call())
+        for name, reader in (("unobserved", {"return_value": (None, "unobserved")}),
+                             ("unreadable", {"side_effect": ValidationError("unreadable")})):
+            with self.subTest(root=name), patch("agentic.shared_owner_policy._default_ref", **reader):
+                reached(call())
+
+    def every_proposal(self):
+        yield from hidden_proposals(self.case.config)
+        yield from malformed_proposals(self.case.config)
+
+    def test_guard_refuses_every_hiding_proposal_and_only_those(self):
+        from agentic.shared_owner_policy import _refuse_hidden_opt_out as guard
+        for name, config in (*self.every_proposal(), *different_account_proposals(self.case.config)):
+            with self.subTest(proposal=name):
+                self.refuses(lambda: guard(config, None, self.case.project))
+                self.unaffected(lambda: guard(config, self.case.project))
+                guard(config)
+                guard(config, None)
+                guard(config, self.root / "missing")
+                guard(config, self.root)
+        # The accepted opt-out itself hides nothing and reads nothing here.
+        guard(self.case.config, self.case.project)
+
+    def test_rooted_evidence_refuses_every_hiding_proposal(self):
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        for name, config in self.every_proposal():
+            with self.subTest(proposal=name):
+                for signer in (1001, 1002, None):
+                    self.refuses(lambda: accepted_owner_evidence(self.case.project, config, signer))
+
+    def completion(self):
+        import test_review_completion as completion_fixture
+        current = completion_fixture.candidate()
+        current["repository"] = self.case.config["github"]["repository"]
+        return completion_fixture, current
+
+    def test_review_authority_binding_refuses_every_hiding_proposal(self):
+        worktree = self.case.project / "candidate"
+        worktree.mkdir()
+        _, current = self.completion()
+        for name, config in hidden_proposals(self.case.config):
+            def binding():
+                return review_completion.review_authority_binding(
+                    config, self.case.project, [worktree], current)
+            with self.subTest(proposal=name):
+                if not config["merge_gate"]["trusted_owner_ids"] or "malformed" in name:
+                    continue  # These shapes never reach the binding.
+                self.refuses(binding)
+                if not name.endswith("identity changed"):
+                    continue
+                self.unaffected(binding, lambda value: self.assertNotIn("owner_policy_sha256", value))
+
+    def test_review_freeze_removal_cannot_hide_the_accepted_opt_out(self):
+        # The exact round 3 reproduction, through the production command.
+        import importlib.util
+        specification = importlib.util.spec_from_file_location(
+            "review_completion_hidden_command", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        _, current = self.completion()
+        project = self.case.project
+        (project / ".agentic").mkdir(exist_ok=True)
+        (project / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+        for index, (name, config) in enumerate(hidden_proposals(self.case.config)):
+            if "identity changed" not in name and "identity null" not in name or "empty" in name:
+                continue
+            with self.subTest(proposal=name):
+                folder = self.root / str(index)
+                (folder / "worktree").mkdir(parents=True)
+                (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+                (folder / "candidate.json").write_bytes(canonical(current))
+                (folder / "reviewers.json").write_bytes(canonical(["a", "b", "c"]))
+                arguments = ["--state", str(folder / "state.sqlite3"),
+                    "--worktree-root", str(folder / "worktree"), "freeze",
+                    "--candidate", str(folder / "candidate.json"),
+                    "--reviewers", str(folder / "reviewers.json")]
+                output = io.StringIO()
+                with patch.object(module, "Contracts", return_value=self.case.contracts), \
+                        redirect_stdout(output):
+                    self.refuses(lambda: module.main(arguments, default_root=project))
+                    self.assertFalse((folder / "state.sqlite3").exists())
+                    if "identity changed" in name:
+                        # The accepted unset result is the same freeze as before.
+                        with self.accept_unset(), self.case.policy_reads():
+                            module.main(arguments, default_root=project)
+                        self.assertIn("COLLECTING", output.getvalue())
+
+    def command(self, config, *arguments, root=None):
+        from agentic import cli
+        root = root or self.case.project
+        (root / ".agentic").mkdir(exist_ok=True)
+        (root / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+        (root / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+        output = io.StringIO()
+        with patch.object(cli, "verify_installed", return_value="0" * 64), \
+                patch.object(cli, "Contracts"), patch.object(cli, "now_text", return_value=provider.NOW), \
+                redirect_stdout(output), redirect_stderr(output):
+            status = cli.main(["--root", str(root), *arguments])
+        return status, output.getvalue()
+
+    def document(self, name, value):
+        path = self.root / (name + ".json")
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return str(path)
+
+    def test_jira_bind_cannot_hide_the_accepted_opt_out(self):
+        connections = self.document("connections", self.case.connections)
+        for name, config in hidden_proposals(self.case.config):
+            for signer in (1001, 1002):
+                if signer not in config["merge_gate"]["trusted_owner_ids"] or "malformed" in name:
+                    continue
+                confirmation = self.document("confirmation", {**self.case.confirmation, "owner_id": signer})
+                def bind():
+                    return self.command(config, "jira", "bind", "--connections", connections,
+                                        "--confirmation", confirmation)
+                with self.subTest(proposal=name, signer=signer):
+                    with self.case.policy_reads():
+                        status, text = bind()
+                    self.assertEqual(2, status, text)
+                    self.assertNotIn("CONFIRMED", text)
+                    self.assertIn(DIGEST_CHANGED, text)
+                    if "identity" in name:
+                        self.unaffected(bind, lambda result: self.assertEqual(0, result[0], result[1]))
+                        self.assertEqual(0, self.command(config, "jira", "bind",
+                            "--connections", connections)[0])
+
+    def test_cli_owner_record_commands_cannot_hide_the_accepted_opt_out(self):
+        from agentic import authorization, cli, gates, review_policy
+        accepted = {"synthetic": "verified owner record"}
+        record = self.document("record", {"binding": {}, "cycles": 1, "cap_extensions": 0})
+        findings = self.document("findings", [])
+        assigned = ({"assignment_id": "fixture", "tier": 2})
+        for name, config in hidden_proposals(self.case.config):
+            commands = {
+                "validate-record": ["review-cap-disposition", record],
+                "disposition-request": ["tier-reassignment", record, "--head", "-"],
+                "cap-plan": ["--disposition", record, "--review-verdict", record, "--findings", findings,
+                             "--bundle", record, "--assignment-state", record, "--ticket", "EX-1",
+                             "--head", "a" * 40, "--cycles", "1", "--extensions", "0"],
+                "verify-authorization": ["--config", str(self.case.project / ".agentic/PROJECT_CONFIG.yaml"),
+                                         "--record", record, "--request", record, "--gate", record],
+            }
+            for command, arguments in commands.items():
+                def run():
+                    # Stand in for a record authenticated by the existing verifiers.
+                    with patch.object(authorization, "verify_owner_record", return_value=accepted), \
+                            patch.object(authorization, "make_owner_disposition_request", return_value=dict(accepted)), \
+                            patch.object(cli, "verify_record", return_value=dict(accepted)), \
+                            patch.object(cli, "validate_config"), patch.object(cli, "local_semantics"), \
+                            patch.object(cli, "_load_cli_intake_assignment", return_value=(config, assigned)), \
+                            patch.object(cli, "_load_cli_disposition_context", return_value=({"candidate": {}}, {})), \
+                            patch.object(gates, "verify_disposition_review_binding", return_value={}), \
+                            patch.object(review_policy, "cap_disposition_plan", return_value=dict(accepted)):
+                        return self.command(config, command, *arguments)
+                with self.subTest(proposal=name, command=command):
+                    with self.case.policy_reads():
+                        status, text = run()
+                    self.assertEqual(2, status, text)
+                    self.assertIn(DIGEST_CHANGED, text)
+                    if name == "null: identity changed":
+                        self.unaffected(run, lambda result: self.assertEqual(0, result[0], result[1]))
+
+    def test_gate_evaluation_of_a_known_repository_cannot_hide_the_opt_out(self):
+        from agentic import gates
+        for name, config in hidden_proposals(self.case.config):
+            config["jira"]["enabled"] = False
+            def evaluate(**root):
+                with patch.object(gates, "validate_config", return_value="0" * 64):
+                    return gates.evaluate(config, definition(), {}, self.case.contracts, provider.NOW, **root)
+            with self.subTest(proposal=name):
+                self.refuses(lambda: evaluate(repository=self.case.project))
+                # The next existing check is still reached by every other evaluation.
+                for setting in ("null", "absent"):
+                    with self.accept_unset(setting):
+                        self.refuses(lambda: evaluate(repository=self.case.project), "Jira is disabled")
+                self.refuses(evaluate, "Jira is disabled")
+
+    def test_lifecycle_owner_approvals_cannot_hide_the_opt_out(self):
+        from agentic import authorization, gates, lifecycle
+        for name, config in hidden_proposals(self.case.config):
+            candidate = {"head_sha": "a" * 40, "repository_id": config["github"]["repository_id"], "pr_number": 1}
+            binding = {}
+            with patch("agentic.canonical.candidate_id", return_value="candidate"), \
+                    patch("agentic.policy.policy_hash", return_value="0" * 64):
+                binding.update(project_id=config["project"]["id"], policy_hash="0" * 64,
+                    repository_id=config["github"]["repository_id"], candidate_id="candidate")
+                context = {"config": config, "candidate": candidate, "head_sha": candidate["head_sha"],
+                    "binding": binding, "assignment_record": {"ticket_key": "EX-1"},
+                    "contracts": self.case.contracts, "now": provider.NOW, "review_verdict": {}}
+                approvals = {"config": config, "candidate": candidate, "runs": {},
+                    "trusted_posting_collectors": {}, "approvals": [{"actor_id": 1002}]}
+
+                def transition(**options):
+                    # Stand in for records authenticated by the existing verifiers.
+                    with patch.object(authorization, "verify_owner_record"), \
+                            patch.object(gates, "verify_disposition_review_binding"), \
+                            patch.object(gates, "verified_overcap_approvals", return_value=[]), \
+                            patch.object(lifecycle, "validate_round"), \
+                            patch.object(lifecycle, "review_decision", return_value={}):
+                        return lifecycle.review_round_transition(2, 1,
+                            accepted_policy_root=self.case.project, **options)
+                for options in ({"owner_cap_disposition": {}, "owner_cap_context": context},
+                                {"overcap_approval_context": approvals}):
+                    with self.subTest(proposal=name, authority=sorted(options)):
+                        self.refuses(lambda: transition(**options))
+                        self.unaffected(lambda: transition(**options))
+                # No approval means no owner authority to hide.
+                with self.case.policy_reads():
+                    transition(overcap_approval_context={**approvals, "approvals": []})
+
+    def test_rooted_preflight_without_owners_cannot_hide_the_opt_out(self):
+        from agentic.provider_identity import github_identity_preflight
+        for gate in (None, [], {}, "absent", {"trusted_owner_ids": []},
+                     {"trusted_owner_ids": [], "shared_owner_automation_actor_id": 1002}):
+            config = deepcopy(self.case.config)
+            config["merge_gate"] = gate
+            if gate == "absent":
+                config.pop("merge_gate")
+            def preflight(**root):
+                return github_identity_preflight(config, self.case.observation, **root)
+            with self.subTest(gate=gate):
+                self.refuses(lambda: preflight(accepted_policy_root=self.case.project))
+                self.unaffected(lambda: preflight(accepted_policy_root=self.case.project),
+                                lambda result: self.assertEqual("PASS", result["status"]))
+                self.assertEqual("PASS", preflight()["status"])
+
+    def test_intake_store_roots_cannot_hide_the_opt_out(self):
+        from agentic.continuous_controller import ContinuousControllerStore
+
+        def changed(config):
+            config["github"]["expected_actor_id"] = 1003
+            return config
+
+        def without_identity(config):
+            config["github"]["expected_actor_id"] = None
+            return config
+        for name, propose in (("changed", changed), ("null", without_identity)):
+            for setting in ("null", "absent"):
+                folder = self.root / (name + setting)
+                folder.mkdir()
+                store = ContinuousControllerStore(folder / "controller.sqlite", ["B"],
+                    worktree_roots=(self.case.project, self.case.project))
+                def change():
+                    return DistinctOwnerCompatibility.intake_change(self, setting, store=store, propose=propose)
+                with self.subTest(identity=name, setting=setting):
+                    self.refuses(change)
+                    with self.accept_unset(setting), self.case.policy_reads():
+                        self.assertEqual(3, change()["tier"])
+
+    intake_inputs = DistinctOwnerCompatibility.intake_inputs
+
+    def test_queue_store_protected_roots_cannot_hide_the_opt_out(self):
+        from agentic import integration_queue
+        for name, config in hidden_proposals(self.case.config):
+            def refresh(roots):
+                store = integration_queue.IntegrationQueueStore(self.root / "queue.sqlite", roots)
+                with patch.object(integration_queue, "_accepted_project_config", return_value=(config, {})), \
+                        patch.object(integration_queue, "_authority", return_value={}), \
+                        patch.object(integration_queue, "_authority_projection", return_value={}):
+                    return store._refresh_project_config(provider.NOW)
+            with self.subTest(proposal=name):
+                self.refuses(lambda: refresh([self.case.project]))
+                self.unaffected(lambda: refresh([self.case.project]))
+                refresh([])
+
+    def test_controller_root_without_git_metadata_cannot_hide_the_opt_out(self):
+        from agentic import continuous_controller
+        for name, config in hidden_proposals(self.case.config):
+            def policy():
+                return continuous_controller._controller_owner_policy(config, self.case.project)
+            with self.subTest(proposal=name):
+                self.refuses(policy)
+                self.unaffected(policy, lambda value: self.assertEqual({}, value))
+
+    def test_post_merge_count_gate_cannot_hide_the_opt_out(self):
+        from agentic import closeout, integration_queue, policy
+        for name, config in hidden_proposals(self.case.config):
+            contracts = unittest.mock.Mock()
+            contracts.validate.side_effect = ValidationError("next existing check")
+            def gate():
+                with patch.object(integration_queue, "_accepted_project_config", return_value=(config, {})), \
+                        patch.object(policy, "validate_config"):
+                    return closeout.require_jira_reconciliation_before_counts({},
+                        repository=self.case.project, project_config=config,
+                        contracts=contracts, now=provider.NOW)
+            with self.subTest(proposal=name):
+                self.refuses(gate)
+                with self.accept_unset():
+                    self.refuses(gate, "next existing check")
+
+    def test_production_cycle_root_cannot_hide_the_opt_out(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from agentic import continuous_controller as controller, operating
+        from agentic.canonical import fingerprint
+        from agentic.reporting import policy as reporting_policy
+        from agentic.store import Store
+        called = lambda *a, **k: self.fail("an adapter ran before the policy check")
+        proposals = list(hidden_proposals(self.case.config))
+        ordinary = deepcopy(self.case.config)
+        for name, config in proposals:
+            for planning in (config, ordinary):
+                def cycle():
+                    with patch.object(operating, "validate_snapshot"), patch.object(reporting_policy,
+                            "ReportingPolicy", side_effect=ValidationError("next existing check")):
+                        return controller.production_controller_cycle(
+                            Mock(spec=controller.ContinuousControllerStore),
+                            controller_config=dict.fromkeys(("dispatch_enabled", "auto_dispatch",
+                                "auto_request_critic", "auto_resume_amendments"), False),
+                            now=provider.NOW, inventory_binding={"project_id": "p", "repository_id": "1",
+                                "scope_sha256": "0" * 64},
+                            repository_root=self.case.project, repository_head_sha="a" * 40,
+                            repository_tree_sha="b" * 40, observe_inventory=called, dispatch_ticket=called,
+                            observe_dispatch=called, deliver_status=called, publication_config=config,
+                            observe_host_resources=called, verify_host_observation=called,
+                            project_config_sha256=fingerprint("accepted-project-config", planning),
+                            operating_config_sha256="0" * 64, planning_state_store=Mock(spec=Store),
+                            planning_config=planning, planning_operating_snapshot=SimpleNamespace(
+                                operating_hash="0" * 64),
+                            observe_planning_backlog=called, verify_planning_backlog=called,
+                            observe_planning_events=called, verify_planning_events=called)
+                with self.subTest(proposal=name, planning=planning is config):
+                    self.refuses(cycle)
+                    with self.accept_unset():
+                        self.refuses(cycle, "next existing check")
+
+
+class RealGitPolicyFixture(unittest.TestCase):
+    policy_repository = DistinctOwnerCompatibility.policy_repository
+
+    def setUp(self):
+        self.enterContext(shipped_routing())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.hidden = provider.config()
+        self.hidden["github"]["expected_actor_id"] = 1003
+        self.hidden["merge_gate"].update(trusted_owner_ids=[1001, 1002],
+                                         shared_owner_automation_actor_id=None)
+        self.accepted = deepcopy(self.hidden)
+        self.accepted["github"]["expected_actor_id"] = 1002
+        self.accepted["merge_gate"]["shared_owner_automation_actor_id"] = 1002
+        self.unset = deepcopy(self.accepted)
+        self.unset["merge_gate"]["shared_owner_automation_actor_id"] = None
+        self.on = self.policy_repository(self.accepted, "on")
+        self.off = self.policy_repository(self.unset, "off")
+        previous = os.getcwd()
+        self.addCleanup(os.chdir, previous)
+
+    def git(self, root, *arguments):
+        return subprocess.run(["git", "-C", str(root), *arguments], check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+
+    def callers(self, root):
+        from agentic.provider_identity import github_identity_preflight, jira_binding_plan
+        from agentic.shared_owner_policy import _refuse_hidden_opt_out, accepted_owner_evidence
+        connections = provider.connections()
+        plan = jira_binding_plan(self.hidden, connections, now=provider.NOW)
+        candidate = plan["candidates"][0]
+        confirmation = {"format": "awf-jira-binding-confirmation-1", "decision": "BIND",
+            "candidate_sha256": plan["candidate_sha256"],
+            **{key: candidate[key] for key in ("cloud_id", "site", "project_id", "project_key", "account_id")},
+            "owner_id": 1002, "confirmed_at": provider.NOW,
+            "authentication_evidence": ["urn:awf:fixture:owner-auth"]}
+        return {"guard": lambda: _refuse_hidden_opt_out(self.hidden, root),
+            "evidence": lambda: accepted_owner_evidence(root, self.hidden, 1002),
+            "jira": lambda: jira_binding_plan(self.hidden, connections, confirmation, now=provider.NOW,
+                                              accepted_policy_root=root),
+            "preflight": lambda: github_identity_preflight({**self.hidden, "merge_gate": {}},
+                provider.github_observation(), accepted_policy_root=root)}
+
+    def refused(self, root, *names):
+        for name, call in self.callers(root).items():
+            if not names or name in names:
+                with self.subTest(root=str(root), caller=name):
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        call()
+
+    def accepted_unset_passes(self, root):
+        for name in ("guard", "evidence"):
+            with self.subTest(root=str(root), caller=name, accepted="unset"):
+                self.callers(root)[name]()
+
+
+class KnownRootRealGit(RealGitPolicyFixture):
+    """Real Git decides which spelling or layout of a known root is observable."""
+
+    def test_relative_roots_refuse_for_every_caller(self):
+        os.chdir(self.root)
+        for spelling in ("on", Path("on")):
+            self.refused(spelling)
+        self.accepted_unset_passes(Path("off"))
+
+    def test_every_spelling_of_one_root_refuses(self):
+        (self.on / "sub").mkdir()
+        os.chdir(self.root)
+        absolute = str(self.on)
+        spellings = ["./on", "./on/", "on/../on", "on/sub/..", absolute, absolute + os.sep,
+                     absolute + os.sep + "." + os.sep, os.path.join(absolute, "sub", "..")]
+        if os.name == "nt":
+            import ctypes
+            buffer = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(absolute, buffer, 1024)
+            extended = chr(92) * 2 + "?" + chr(92)
+            drive, tail = os.path.splitdrive(absolute)
+            spellings += [drive + "on", tail, absolute.upper(), absolute.lower(), buffer.value,
+                          extended + absolute, absolute.replace("/", chr(92)) + chr(92)]
+        for spelling in spellings:
+            self.refused(spelling, "guard")
+        self.refused("./on/../on", "evidence")
+        for directory, spelling in ((self.on, "."), (self.on, ""), (self.on / "sub", "..")):
+            os.chdir(directory)
+            self.refused(spelling, "guard")
+        os.chdir(self.off)
+        self.callers(".")["guard"]()
+
+    def test_environment_cannot_hide_an_observable_root(self):
+        os.chdir(self.root)
+        for name, value in (("GIT_DIR", "missing"), ("GIT_WORK_TREE", str(self.root)),
+                ("GIT_CEILING_DIRECTORIES", str(self.root)), ("GIT_OBJECT_DIRECTORY", "missing"),
+                ("GIT_INDEX_FILE", "missing"), ("GIT_CONFIG_GLOBAL", "missing"), ("GIT_NAMESPACE", "other"),
+                ("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"), ("GIT_REPLACE_REF_BASE", "refs/other")):
+            with patch.dict(os.environ, {name: value}):
+                self.refused(self.on, "guard")
+                self.refused("on", "guard")
+
+    def test_repository_layouts_remain_observable(self):
+        os.chdir(self.root)
+        self.git(self.on, "worktree", "add", "-q", "--detach", str(self.root / "linked"),
+                 "refs/remotes/origin/main")
+        for root in (self.root / "linked", Path("linked")):
+            self.refused(root, "guard", "evidence")
+        self.git(self.on, "pack-refs", "--all", "--prune")
+        self.refused("on", "guard", "evidence")
+        self.git(self.on, "config", "filter.fixture.smudge", "fixture")
+        for lock in ("refs/remotes/origin/main.lock", "packed-refs.lock", "index.lock", "config.lock"):
+            target = self.on / ".git" / lock
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"")
+        self.refused(self.on, "guard", "evidence")
+        separate = self.policy_repository(self.accepted, "separate")
+        (separate / ".git").rename(self.root / "separate.git")
+        (separate / ".git").write_text("gitdir: ../separate.git\n", encoding="utf-8")
+        self.refused("separate", "guard", "evidence")
+        shallow = self.policy_repository(self.accepted, "shallow")
+        commit = self.git(shallow, "rev-parse", "refs/remotes/origin/main").decode()
+        (shallow / ".git/shallow").write_text(commit, encoding="ascii")
+        self.refused("shallow", "guard", "evidence")
+
+    def test_unusable_accepted_policy_is_a_documented_unobservable_limit(self):
+        # These pins state the criterion 2 limit; they are not authority.
+        unborn = self.policy_repository(self.accepted, "unobserved", observed=False)
+        headless = self.policy_repository(self.accepted, "headless")
+        self.git(headless, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+        dangling = self.policy_repository(self.accepted, "dangling")
+        self.git(dangling, "update-ref", "-d", "refs/remotes/origin/main")
+        (self.on / "nested").mkdir()
+        for root in (unborn, headless, dangling, self.root / "missing", self.on / "nested"):
+            self.accepted_unset_passes(root)
+
+    def freeze(self, root, config, folder):
+        import importlib.util
+        import test_review_completion as completion_fixture
+        specification = importlib.util.spec_from_file_location(
+            "review_completion_relative_command", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        target = Path(root)
+        (target / ".agentic").mkdir(exist_ok=True)
+        (target / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+        (target / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+        (folder / "worktree").mkdir(parents=True)
+        current = completion_fixture.candidate()
+        current["repository"] = config["github"]["repository"]
+        (folder / "candidate.json").write_bytes(canonical(current))
+        (folder / "reviewers.json").write_bytes(canonical(["a", "b", "c"]))
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        output = io.StringIO()
+        with patch.object(module, "Contracts", return_value=contracts), redirect_stdout(output):
+            module.main(["--state", str(folder / "state.sqlite3"), "--worktree-root",
+                str(folder / "worktree"), "freeze", "--candidate", str(folder / "candidate.json"),
+                "--reviewers", str(folder / "reviewers.json")], default_root=root)
+        return output.getvalue()
+
+    def test_review_freeze_with_a_relative_root_refuses(self):
+        os.chdir(self.root)
+        for index, root in enumerate((Path("on"), Path("./on"), Path("on/../on"))):
+            folder = self.root / f"freeze-{index}"
+            with self.subTest(root=str(root)):
+                with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    self.freeze(root, self.hidden, folder)
+                self.assertFalse((folder / "state.sqlite3").exists())
+        proposal = deepcopy(self.unset)
+        proposal["github"]["expected_actor_id"] = 1003
+        self.assertIn("COLLECTING", self.freeze(Path("off"), proposal, self.root / "freeze-off"))
+
+    def test_relative_roots_refuse_for_gates_lifecycle_and_intake(self):
+        from agentic import gates, lifecycle, authorization
+        os.chdir(self.root)
+        self.hidden["jira"]["enabled"] = False
+        with patch.object(gates, "validate_config", return_value="0" * 64):
+            for root, message in (("on", DIGEST_CHANGED), ("off", "Jira is disabled")):
+                with self.assertRaisesRegex(ValidationError, message):
+                    gates.evaluate(self.hidden, definition(), {}, None, provider.NOW, repository=root)
+        context = {"config": self.hidden, "candidate": {"repository_id": 101, "pr_number": 1}, "runs": {},
+                   "trusted_posting_collectors": {}, "approvals": [{"actor_id": 1002}]}
+        with patch.object(gates, "verified_overcap_approvals", return_value=[]), \
+                patch.object(lifecycle, "validate_round"), \
+                patch.object(lifecycle, "review_decision", return_value={}):
+            lifecycle.review_round_transition(2, 1, accepted_policy_root="off", overcap_approval_context=context)
+            with self.assertRaisesRegex(ValidationError, DIGEST_CHANGED):
+                lifecycle.review_round_transition(2, 1, accepted_policy_root="on", overcap_approval_context=context)
+
+        from agentic.continuous_controller import ContinuousControllerStore
+        store = ContinuousControllerStore(self.root / "controller.sqlite", ["B"],
+                                          worktree_roots=(Path("on"), Path("on")))
+        os.chdir(self.off)
+        self.intake_inputs = lambda setting: DistinctOwnerCompatibility.intake_inputs(self, setting)
+
+        def propose(config):
+            config["github"]["expected_actor_id"] = 1003
+            return config
+        with self.assertRaisesRegex(ValidationError, DIGEST_CHANGED):
+            DistinctOwnerCompatibility.intake_change(self, "null", store=store, propose=propose)
+
+    def test_queue_store_fixes_its_relative_roots_at_construction(self):
+        from agentic import integration_queue
+        os.chdir(self.root)
+        for options in ({"worktree_roots": ["on"]}, {"accepted_policy_root": Path("on")}):
+            store = integration_queue.IntegrationQueueStore(self.root / "queue.sqlite", **options)
+            for directory in (self.root, self.off):
+                os.chdir(directory)
+                with self.subTest(options=str(options), directory=directory.name), \
+                        patch.object(integration_queue, "_accepted_project_config",
+                                     return_value=(self.hidden, {})), \
+                        patch.object(integration_queue, "_authority", return_value={}), \
+                        patch.object(integration_queue, "_authority_projection", return_value={}), \
+                        self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                    store._refresh_project_config(provider.NOW)
+            os.chdir(self.root)
+
+    def test_review_store_checks_its_protected_worktree_roots_before_removal(self):
+        import test_review_completion as completion_fixture
+        os.chdir(self.root)
+        for name, refused in (("on", True), ("off", False), ("missing", False)):
+            for directory in (self.root, self.off):
+                with self.subTest(root=name, directory=directory.name):
+                    case = completion_fixture.ReviewCompletionTests("runTest")
+                    case.setUp()
+                    try:
+                        case.store = review_completion.ReviewCompletionStore(
+                            self.root / f"{name}-{directory.name}.sqlite3", [Path(name)],
+                            authority=case.authority, provider_observer=case.provider_review)
+                        frozen = case.store.freeze(case.current, case.reviewers)
+                        case.freeze_and_dispatch()
+                        new = sorted(case.reviewers)[:-1]
+                        disposition = case.removal_disposition(case.store, frozen, new)
+                        os.chdir(directory)
+                        if refused:
+                            with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                                case.store.freeze(case.current, new, disposition)
+                        else:
+                            self.assertEqual(new, case.store.freeze(
+                                case.current, new, disposition)["required_reviewers"])
+                    finally:
+                        os.chdir(self.root)
+                        case.doCleanups()
+
+
+class PolicyReadInputs(RealGitPolicyFixture):
+    """No file, variable or directory a candidate controls decides the read."""
+
+    def test_proposed_configuration_never_reaches_the_policy_read(self):
+        from agentic import child_process
+        bodies = {"oversized": canonical(self.hidden) + b" " * (1024 * 1024), "malformed": b"{",
+            "execution list": b'{"execution": []}', "execution null": b'{"execution": null}',
+            "not a mapping": b"[]", "not UTF-8": bytes([255, 254]),
+            "invalid strip": b'{"execution": {"child_env_strip_extra": ["GH_TOKEN"]}}',
+            "strips paths": b'{"execution": {"child_env_strip_extra": ["SYSTEMROOT", "WINDIR", "PATHEXT", "GIT_DIR"]}}'}
+        for name, body in bodies.items():
+            path = self.root / "PROPOSED.yaml"
+            path.write_bytes(body)
+            with self.subTest(configuration=name), patch.object(child_process, "_DEFAULT_CONFIG", path):
+                self.refused(self.on, "guard", "evidence" if name == "malformed" else "guard")
+                self.callers(self.off)["guard"]()
+        # Every other child still fails closed on the same file.
+        path.write_bytes(b"{")
+        with patch.object(child_process, "_DEFAULT_CONFIG", path), \
+                self.assertRaises(child_process.ChildEnvironmentError):
+            child_process.child_env()
+
+    def test_installed_freeze_process_ignores_a_padded_proposal(self):
+        import shutil
+        import test_review_completion as completion_fixture
+        shutil.copytree(ROOT / ".agentic", self.on / ".agentic", ignore=shutil.ignore_patterns(
+            "tests", "docs", ".venv", "__pycache__", "examples", "benchmarks"))
+        current = completion_fixture.candidate()
+        current["repository"] = self.hidden["github"]["repository"]
+        (self.root / "candidate.json").write_bytes(canonical(current))
+        (self.root / "reviewers.json").write_bytes(canonical(["a", "b", "c"]))
+        (self.root / "worktree").mkdir()
+        for name, padding in (("plain", b""), ("padded", b" " * (1024 * 1024))):
+            (self.on / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(self.hidden) + padding)
+            with self.subTest(configuration=name):
+                done = subprocess.run([sys.executable, "-B", str(self.on / ".agentic/scripts/workflow.py"),
+                    "review-completion", "--state", str(self.root / (name + ".sqlite3")),
+                    "--worktree-root", str(self.root / "worktree"), "freeze",
+                    "--candidate", str(self.root / "candidate.json"),
+                    "--reviewers", str(self.root / "reviewers.json")],
+                    cwd=self.root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                self.assertNotEqual(0, done.returncode, done.stdout)
+                self.assertIn("accepted policy digest changed", done.stderr)
+                self.assertFalse((self.root / (name + ".sqlite3")).exists())
+
+    def planted(self):
+        """Executable decoys that record a run; none may start or stop the check."""
+        marker = self.root / "planted-ran"
+        names = {"git.exe": b"MZ" + bytes(62), "git.com": b"MZ" + bytes(62),
+            "git.bat": b"@echo x>" + os.fsencode(str(marker)) + b"\r\n",
+            "git.cmd": b"@echo x>" + os.fsencode(str(marker)) + b"\r\n",
+            "git.ps1": b"exit 1\n", "git": b"#!/bin/sh\ntouch '" + os.fsencode(str(marker)) + b"'\n"}
+        return marker, names
+
+    def test_planted_git_in_the_current_directory_is_neither_run_nor_able_to_hide(self):
+        marker, names = self.planted()
+        for name, body in names.items():
+            for place in (self.on, self.root / ("cwd-" + name)):
+                place.mkdir(exist_ok=True)
+                target = place / name
+                target.write_bytes(body)
+                target.chmod(0o755)
+                os.chdir(place)
+                for search in ((None, "1") if name in ("git.exe", "git.bat") else (None,)):
+                    with self.subTest(name=name, place=place.name, search=search), patch.dict(os.environ):
+                        os.environ.pop("NoDefaultCurrentDirectoryInExePath", None)
+                        if search:
+                            os.environ["NoDefaultCurrentDirectoryInExePath"] = search
+                        self.refused(self.on, "guard")
+                        if name == "git.exe":
+                            self.refused(self.on, "evidence")
+                            self.callers(self.off)["guard"]()
+                os.chdir(self.root)
+                target.unlink()
+        self.assertFalse(marker.exists())
+
+    def test_path_entries_a_project_controls_never_supply_git(self):
+        marker, names = self.planted()
+        (self.on / "bin").mkdir()
+        for name, body in names.items():
+            (self.on / "bin" / name).write_bytes(body)
+            (self.on / "bin" / name).chmod(0o755)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / ("git.exe" if os.name == "nt" else "git")).write_bytes(b"not native")
+        os.chdir(self.on)
+        real = os.environ["PATH"]
+        for entry in ("", ".", "bin", os.path.join("..", "on", "bin"), str(self.on / "bin"),
+                      str(self.on), str(self.root / "bin"), str(self.root / "missing")):
+            with self.subTest(entry=entry), patch.dict(os.environ, PATH=entry + os.pathsep + real):
+                self.refused(self.on, "guard")
+        for value in ("", ".BAT;.CMD", ".COM"):
+            with self.subTest(pathext=value), patch.dict(os.environ, PATHEXT=value):
+                self.refused(self.on, "guard")
+        # A protected root supplied beside the project is excluded too.
+        from agentic import git_isolation
+        with patch.object(git_isolation, "_native_executable", return_value=True), \
+                patch.object(git_isolation, "_worker_writable", return_value=False), \
+                patch.dict(os.environ, PATH=str(self.on / "bin")):
+            with git_isolation.independent_policy_read(self.on), self.assertRaises(ValidationError):
+                git_isolation.native_git_executable(self.off)
+            if os.name == "nt":
+                with git_isolation.independent_policy_read():
+                    self.assertEqual(self.on / "bin" / "git.exe",
+                                     Path(git_isolation.native_git_executable(self.off)))
+        self.assertFalse(marker.exists())
+
+    def test_other_git_readers_keep_their_lookup_and_configuration(self):
+        import shutil
+        from agentic import child_process, git_isolation
+        with patch.object(shutil, "which", return_value="git.bat"), \
+                self.assertRaisesRegex(ValidationError, "absolute native executable"):
+            git_isolation.native_git_executable(self.off)
+        malformed = self.root / "malformed.yaml"
+        malformed.write_bytes(b"{")
+        with patch.object(child_process, "_DEFAULT_CONFIG", malformed), \
+                self.assertRaises(child_process.ChildEnvironmentError):
+            git_isolation.isolated_git_environment()
+        with (self.off / ".git/config").open("a", encoding="utf-8") as stream:
+            stream.write('[filter "a=b"]\n\tsmudge = fixture\n')
+        with self.assertRaisesRegex(ValidationError, "cannot be pinned"):
+            git_isolation.run_isolated_git(self.off, ["rev-parse", "--git-dir"], maximum=100,
+                                           timeout=30, label="fixture")
+
+    def test_filter_configuration_cannot_hide_an_observable_root(self):
+        with (self.on / ".git/config").open("a", encoding="utf-8") as stream:
+            stream.write('[filter "a=b"]\n\tsmudge = fixture\n')
+            for index in range(400):
+                stream.write(f'[filter "{"x" * 200}{index}"]\n\tsmudge = fixture\n')
+        self.refused(self.on, "guard", "evidence")
+
+    def test_relative_root_applied_twice_cannot_hide_the_opt_out(self):
+        from agentic import continuous_controller
+        inner = self.on / "on"
+        (inner / ".agentic").mkdir(parents=True)
+        os.chdir(self.root)
+
+        def check(label):
+            with self.subTest(inner=label):
+                self.refused("on")
+                self.refused(Path("on"), "evidence", "jira")
+                for root in ("on", self.on):
+                    with self.assertRaises(ValidationError):
+                        continuous_controller._controller_owner_policy(self.hidden, root)
+        check("directory")
+        self.git(inner, "init", "-q")
+        check("nested repository")
+        self.git(inner, "fetch", "-q", str(self.off), "refs/remotes/origin/main:refs/remotes/origin/main")
+        self.git(inner, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        check("nested forged policy")
+
+    def test_relative_root_cannot_borrow_a_forged_inner_opt_out(self):
+        # A forged inner repository must not supply the accepted setting either.
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        inner = self.off / "off"
+        inner.mkdir()
+        self.git(inner, "init", "-q")
+        self.git(inner, "fetch", "-q", str(self.on), "refs/remotes/origin/main:refs/remotes/origin/main")
+        self.git(inner, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        os.chdir(self.root)
+        for root in ("off", self.off):
+            with self.subTest(root=str(root)), self.assertRaises(ValidationError):
+                accepted_owner_evidence(root, self.accepted, 1002)
+
+    def test_an_untracked_project_inside_an_opted_in_repository_is_unaffected(self):
+        inner = self.on / "vendored"
+        inner.mkdir()
+        self.git(inner, "init", "-q")
+        self.accepted_unset_passes(inner)
+
+    def test_only_the_git_reader_refusal_means_unobservable(self):
+        from agentic import shared_owner_policy
+        guard = shared_owner_policy._refuse_hidden_opt_out
+        with patch.object(shared_owner_policy, "_default_ref", side_effect=ValidationError("unobservable")):
+            guard(self.hidden, self.on)
+        for error in (ValueError, TypeError, OSError, KeyError, RuntimeError, AttributeError):
+            with self.subTest(error=error.__name__), \
+                    patch.object(shared_owner_policy, "_default_ref", side_effect=error("unexpected")), \
+                    self.assertRaisesRegex(ValidationError, "could not be checked"):
+                guard(self.hidden, self.on)
+
+
+class WholeRepositoryRule(RealGitPolicyFixture):
+    """Only a project at its own repository's top level can accept the opt-out."""
+
+    freeze = KnownRootRealGit.freeze
+    RULE = "top level of its own repository"
+
+    def accepted_tree(self, name, entries):
+        """One observed repository whose accepted tree holds exactly these entries."""
+        outer = self.policy_repository(self.unset, name, observed=False)
+        for option in ("core.protectNTFS", "core.ignorecase"):
+            self.git(outer, "config", option, "false")
+        listing = b""
+        for path, body in entries.items():
+            identity = subprocess.run(["git", "-C", str(outer), "hash-object", "-w", "--stdin"],
+                input=canonical(body) if isinstance(body, dict) else body,
+                check=True, capture_output=True).stdout.decode().strip()
+            listing += f"100644 {identity} 0\t{path}".encode() + bytes(1)
+        subprocess.run(["git", "-C", str(outer), "update-index", "-z", "--index-info"], check=True,
+                       input=listing, capture_output=True)
+        tree = self.git(outer, "write-tree").decode().strip()
+        commit = self.git(outer, "-c", "user.name=Fixture", "-c", "user.email=owner@example.invalid",
+                          "commit-tree", tree, "-m", "fixture").decode().strip()
+        self.git(outer, "update-ref", "refs/remotes/origin/main", commit)
+        self.git(outer, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        return outer
+
+    def project(self, directory, config):
+        return {directory + "/.agentic/PROJECT_CONFIG.yaml": config,
+                directory + "/.agentic/workflow.yaml": definition()}
+
+    def results(self, root):
+        from agentic import continuous_controller
+        callers = dict(self.callers(root),
+            controller=lambda: continuous_controller._controller_owner_policy(self.hidden, root))
+        results = {}
+        for name, call in callers.items():
+            try:
+                results[name] = ("RETURNED", repr(call()))
+            except ValidationError as exc:
+                results[name] = ("REFUSED", str(exc))
+        return results
+
+    def set_refused(self, root):
+        from agentic import continuous_controller, policy
+        from agentic.configuration import inspect_config
+        from agentic.shared_owner_policy import accepted_owner_evidence, observe_accepted_owner_policy
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        for name, call in {
+                "evidence": lambda: accepted_owner_evidence(root, self.accepted, 1002),
+                "observation": lambda: observe_accepted_owner_policy(root, self.accepted, definition(), contracts,
+                    policy_sha256=policy.policy_hash(self.accepted, definition())),
+                "validation": lambda: policy.validate_config(self.accepted, definition(), contracts,
+                                                             accepted_policy_root=root),
+                "controller": lambda: continuous_controller._controller_owner_policy(self.accepted, root)}.items():
+            with self.subTest(root=str(root), consumer=name), self.assertRaisesRegex(ValidationError, self.RULE):
+                call()
+        report = inspect_config(self.accepted, definition(), contracts, project_root=root)
+        self.assertEqual("REJECTED", report["status"])
+        self.assertIn(self.RULE, " ".join(item["reason"] for item in report["unresolved"]))
+        self.assertEqual("ACCEPTED", inspect_config(self.unset, definition(), contracts,
+                                                    project_root=root)["status"])
+
+    def set_accepted(self, root):
+        from agentic.configuration import inspect_config
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        self.assertTrue(accepted_owner_evidence(root, self.accepted, 1002)["shared_owner_automation_account"])
+        self.assertEqual("ACCEPTED", inspect_config(self.accepted, definition(),
+            Contracts(ROOT / ".agentic/schemas"), project_root=root)["status"])
+
+    def test_a_subfolder_project_refuses_set_and_treats_accepted_set_as_null(self):
+        results = []
+        for state, config in (("set", self.accepted), ("unset", self.unset)):
+            outer = self.accepted_tree("sub-" + state, self.project("proj", config))
+            (outer / "proj").mkdir()
+            self.set_refused(outer / "proj")
+            results.append(self.results(outer / "proj"))
+        self.assertEqual(*results)
+        self.assertEqual("RETURNED", results[0]["guard"][0])
+        self.assertIn("COLLECTING", self.freeze(outer / "proj", self.hidden, self.root / "freeze"))
+
+    def test_a_case_only_rename_of_an_unset_subfolder_changes_nothing(self):
+        outer = self.accepted_tree("case", self.project("Apps/Foo", self.unset))
+        (outer / "Apps/foo").mkdir(parents=True)
+        self.accepted_unset_passes(outer / "Apps/foo")
+        self.assertIn("COLLECTING", self.freeze(outer / "Apps/foo", self.hidden, self.root / "freeze"))
+
+    def test_bare_and_nested_repositories_never_supply_a_set_opt_out(self):
+        import shutil
+        outer = self.accepted_tree("outer", self.project("proj", self.unset))
+        for kind in ("nested", "submodule file", "bare", "bare configured", "bare common", "bare below"):
+            inner = outer / kind.replace(" ", "-")
+            inner.mkdir()
+            if kind == "nested":
+                shutil.copytree(self.on / ".git", inner / ".git")
+            elif kind == "submodule file":
+                shutil.copytree(self.on / ".git", outer / ".git/modules/inner")
+                (inner / ".git").write_text("gitdir: ../.git/modules/inner\n", encoding="utf-8")
+            else:
+                shutil.copytree(self.on / ".git", inner, dirs_exist_ok=True)
+                self.git(inner, "--git-dir", str(inner), "config", "core.bare",
+                         "false" if kind == "bare configured" else "true")
+                if kind == "bare common":
+                    common = self.root / "common"
+                    common.mkdir()
+                    for name in ("objects", "refs"):
+                        shutil.move(inner / name, common / name)
+                    shutil.copy(inner / "config", common / "config")
+                    (inner / "commondir").write_text("../../common\n", encoding="utf-8")
+                elif kind == "bare below":
+                    inner = inner / "project"
+                    inner.mkdir()
+            self.set_refused(inner)
+        alone = self.root / "alone"
+        shutil.copytree(self.on / ".git", alone)
+        self.git(alone, "--git-dir", str(alone), "config", "core.bare", "true")
+        self.set_refused(alone)
+
+    def test_linked_worktrees_keep_working_and_stay_protected(self):
+        self.set_accepted(self.on)
+        self.git(self.on, "worktree", "add", "-q", "--detach", str(self.root / "linked"), "refs/remotes/origin/main")
+        inside = self.on / ".claude/worktrees/inside"
+        self.git(self.on, "worktree", "add", "-q", "--detach", str(inside), "refs/remotes/origin/main")
+        for root in (self.root / "linked", inside):
+            self.set_accepted(root)
+            self.refused(root, "guard", "evidence")
+        from agentic.shared_owner_policy import _enclosing_checkouts
+        self.assertEqual((self.on,), _enclosing_checkouts(inside))  # Their PATH entries never supply Git.
+        self.assertEqual((), _enclosing_checkouts(self.on))
+        # A copied worktree pointer inside the checkout is not that worktree.
+        copied = self.on / "copied"
+        copied.mkdir()
+        (copied / ".git").write_bytes((inside / ".git").read_bytes())
+        self.set_refused(copied)
+
+    def test_tracked_files_cannot_turn_a_whole_repository_into_a_subfolder(self):
+        import shutil
+        from agentic.shared_owner_policy import _whole_repository
+        shutil.copytree(self.off / ".git", self.on, dirs_exist_ok=True)
+        (self.on / "commondir").write_text("elsewhere\n", encoding="utf-8")
+        self.assertTrue(_whole_repository(self.on))
+        self.refused(self.on, "guard", "evidence")
+
+    def test_links_at_agentic_components_cannot_hide_the_opt_out(self):
+        cases = {"whole": (".agentic", "moved/.agentic"), "renamed": (".agentic", "moved/deep/policy"),
+                 "scripts": (".agentic/scripts", "moved/deep/scripts"), "library": (".agentic/lib", "moved/deep/lib")}
+        for label, (link, target) in cases.items():
+            for state, config in (("set", self.accepted), ("unset", self.unset)):
+                root = self.policy_repository(config, f"link-{label}-{state}")
+                (root / target).mkdir(parents=True)
+                (root / link).parent.mkdir(exist_ok=True)
+                if os.name == "nt":
+                    import _winapi
+                    _winapi.CreateJunction(str(root / target), str(root / link))
+                else:
+                    os.symlink(os.path.relpath(root / target, (root / link).parent), root / link,
+                               target_is_directory=True)
+                # Where a resolved script path places the project root.
+                resolved = (root / link).resolve()
+                apparent = resolved.parents[link.count("/")]
+                with self.subTest(case=label, accepted=state):
+                    if state == "set":
+                        self.refused(apparent, "guard", "evidence", "jira")
+                        self.refused(root, "guard")
+                    else:
+                        self.callers(apparent)["guard"]()
+                    self.set_refused(apparent) if apparent != root else None
+                if os.name == "nt":
+                    os.rmdir(root / link)
+
+    def link(self, path, target):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(target), str(path))
+            # Remove the junction itself before the fixture removes its target.
+            self.addCleanup(lambda: os.rmdir(path) if os.path.lexists(path) else None)
+        else:
+            os.symlink(os.path.relpath(target, path.parent), path, target_is_directory=True)
+
+    def own_git_target(self, root, kind):
+        """A committed submodule, or an untracked clone, with its own unset accepted policy."""
+        import shutil
+        target = root / "deep/target"
+        target.mkdir(parents=True)
+        if kind == "submodule":
+            shutil.copytree(self.off / ".git", root / ".git/modules/target")
+            (target / ".git").write_text("gitdir: ../../.git/modules/target\n", encoding="utf-8")
+        else:
+            shutil.copytree(self.off / ".git", target / ".git")
+        return target
+
+    def test_links_into_a_repository_of_their_own_cannot_hide_the_opt_out(self):
+        for kind in ("submodule", "nested clone"):
+            for link in (".agentic", ".agentic/scripts", ".agentic/lib"):
+                for state, config in (("set", self.accepted), ("unset", self.unset)):
+                    name = f"{kind}-{link}-{state}".replace("/", "-").replace(" ", "-").replace(".", "")
+                    root = self.policy_repository(config, name)
+                    target = self.own_git_target(root, kind)
+                    self.callers(target)["guard"]()  # Nothing links here yet.
+                    (target / link).mkdir(parents=True)
+                    self.link(root / link, target / link)
+                    with self.subTest(kind=kind, link=link, accepted=state):
+                        if state == "set":
+                            self.refused(target, "guard", "evidence", "jira")
+                            self.refused(root, "guard")
+                        else:
+                            self.callers(target)["guard"]()
+                        if link == ".agentic":
+                            self.set_refused(target)
+
+    def install(self, root, config):
+        import shutil
+        for name in ("lib", "scripts", "schemas"):
+            shutil.copytree(ROOT / ".agentic" / name, root / ".agentic" / name,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        (root / ".agentic/workflow.yaml").write_bytes(canonical(definition()))
+        (root / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(config))
+
+    def test_linked_scripts_cannot_hide_the_opt_out_wherever_they_resolve(self):
+        import shutil
+        import test_review_completion as completion_fixture
+        current = completion_fixture.candidate()
+        current["repository"] = self.hidden["github"]["repository"]
+        (self.root / "candidate.json").write_bytes(canonical(current))
+        (self.root / "reviewers.json").write_bytes(canonical(["a", "b", "c"]))
+        (self.root / "worktree").mkdir()
+        for kind in ("submodule", "no git", "other checkout"):
+            for link in (".agentic", ".agentic/scripts"):
+                for state, config in (("set", self.accepted), ("unset", self.unset)):
+                    if state == "unset" and kind != "submodule":
+                        continue
+                    name = f"run-{kind}-{link}-{state}".replace("/", "-").replace(" ", "-").replace(".", "")
+                    root = self.policy_repository(config, name)
+                    if kind == "submodule":
+                        target = self.own_git_target(root, kind)
+                    elif kind == "no git":
+                        target = self.root / (name + "-outside")
+                        target.mkdir()
+                    else:
+                        target = self.policy_repository(self.unset, name + "-other") / "sub"
+                        target.mkdir()
+                    self.install(target, self.hidden)
+                    if link != ".agentic":
+                        shutil.copytree(target / ".agentic/lib", root / ".agentic/lib")
+                    self.link(root / link, target / link)
+                    state_file = self.root / (name + ".sqlite3")
+                    done = subprocess.run([sys.executable, "-B", str(root / ".agentic/scripts/review_completion.py"),
+                        "--state", str(state_file), "--worktree-root", str(self.root / "worktree"), "freeze",
+                        "--candidate", str(self.root / "candidate.json"),
+                        "--reviewers", str(self.root / "reviewers.json")],
+                        cwd=self.root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                    with self.subTest(kind=kind, link=link, accepted=state):
+                        if state == "unset":
+                            self.assertEqual(0, done.returncode, done.stderr)
+                        else:
+                            self.assertNotEqual(0, done.returncode, done.stdout)
+                            self.assertIn("accepted policy digest changed", done.stderr)
+                            self.assertFalse(state_file.exists())
+
+    def test_a_full_reviewer_removal_through_a_linked_submodule_refuses(self):
+        import importlib.util
+        from types import SimpleNamespace
+        import test_review_completion as completion_fixture
+        from agentic.canonical import fingerprint
+        specification = importlib.util.spec_from_file_location(
+            "review_completion_linked_command", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        helper = completion_fixture.ReviewCompletionTests("runTest")
+        for state, config in (("unset", self.unset), ("set", self.accepted)):
+            root = self.policy_repository(config, "removal-" + state)
+            target = self.own_git_target(root, "submodule")
+            self.install(target, self.hidden)
+            folder = self.root / ("removal-state-" + state)
+            (folder / "worktree").mkdir(parents=True)
+            helper.current = completion_fixture.candidate()
+            helper.current["repository"] = self.hidden["github"]["repository"]
+            for name, value in (("candidate", helper.current), ("reviewers", ["a", "b", "c"])):
+                (folder / (name + ".json")).write_bytes(canonical(value))
+
+            def run(*arguments):
+                output = io.StringIO()
+                with patch.object(module, "Contracts", return_value=Contracts(ROOT / ".agentic/schemas")),                         redirect_stdout(output):
+                    module.main(["--state", str(folder / "state.sqlite3"), "--worktree-root",
+                        str(folder / "worktree"), "freeze", "--candidate", str(folder / "candidate.json"),
+                        "--reviewers", str(folder / "reviewers.json"), *arguments], default_root=target,
+                        observer_factory=lambda *_: helper.provider_review)
+                return json.loads(output.getvalue())
+
+            old = run()  # The target's own cycle, before anything links to it.
+            self.link(root / ".agentic", target / ".agentic")
+            store = review_completion.ReviewCompletionStore(folder / "state.sqlite3", [folder / "worktree"])
+            store.dispatch("c", helper.current, ["a", "b", "c"])
+            disposition = helper.removal_disposition(SimpleNamespace(
+                authority=review_completion.review_authority_from_config(self.hidden)), old, ["a", "b"])
+            disposition["record"].update(owner_actor_id=1002, provider_identity={
+                key: self.hidden["github"][key] for key in ("host", "repository", "repository_id")})
+            disposition["record_sha256"] = fingerprint("reviewer-removal-disposition", disposition["record"])
+            (folder / "reviewers.json").write_bytes(canonical(["a", "b"]))
+            (folder / "removal.json").write_bytes(canonical(disposition))
+
+            def remove():
+                return run("--reviewer-removal-disposition", str(folder / "removal.json"),
+                           "--reviewer-removal-artifact-id", "91")
+            with self.subTest(accepted=state):
+                if state == "set":
+                    with self.assertRaisesRegex(ValidationError, "accepted policy digest changed"):
+                        remove()
+                    self.assertEqual([], store.reviewer_set_audit())
+                else:
+                    remove()
+                    self.assertEqual(1, len(store.reviewer_set_audit()))
+
+    def test_the_invoked_library_path_names_its_project(self):
+        from agentic import shared_owner_policy
+        outside = self.root / "outside"
+        (outside / ".agentic/lib/agentic").mkdir(parents=True)
+        for state, root in (("set", self.on), ("unset", self.off)):
+            self.link(root / ".agentic/lib", outside / ".agentic/lib")
+            for name, value in (("library", {"__file__": str(root / ".agentic/lib/agentic/shared_owner_policy.py")}),
+                                ("unrelated", {"__file__": str(root / "lib/agentic/shared_owner_policy.py")})):
+                with self.subTest(accepted=state, entry=name), \
+                        patch.multiple(shared_owner_policy, **value):
+                    if state == "set" and name == "library":
+                        self.refused(outside, "guard")
+                    else:
+                        self.callers(outside)["guard"]()
+
+    def test_a_git_file_naming_the_enclosing_directory_is_not_a_worktree(self):
+        inside = self.on / "sub"
+        inside.mkdir()
+        (inside / ".git").write_text("gitdir: ../.git\n", encoding="utf-8")
+        self.set_refused(inside)
+        separate = self.policy_repository(self.accepted, "separate")
+        (separate / ".git").rename(self.root / "separate.git")
+        (separate / ".git").write_text("gitdir: ../separate.git\n", encoding="utf-8")
+        self.set_accepted(separate)
+
+    def test_rules_activation_reports_the_rule_early(self):
+        from agentic import rules_activation
+        outer = self.accepted_tree("activation", self.project("proj", self.unset))
+        (outer / "proj").mkdir()
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        with self.assertRaisesRegex(ValidationError, self.RULE):
+            rules_activation._configuration(self.accepted, definition(), contracts, outer / "proj")
+        rules_activation._configuration(self.unset, definition(), contracts, outer / "proj")
+
+    def test_only_the_exact_accepted_path_is_policy(self):
+        from agentic.shared_owner_policy import accepted_owner_evidence
+        for index, name in enumerate((".Agentic/PROJECT_CONFIG.yaml", ".agentic/project_config.yaml")):
+            other = self.accepted_tree(f"other-{index}", {name: self.accepted})
+            self.accepted_unset_passes(other)
+            with self.assertRaisesRegex(ValidationError, "policy is missing"):
+                accepted_owner_evidence(other, self.accepted, 1002)
+            both = self.accepted_tree(f"both-{index}", {name: self.unset,
+                ".agentic/PROJECT_CONFIG.yaml": self.accepted})
+            self.refused(both, "guard")
+
+    def test_an_absent_path_keeps_its_result(self):
+        outer = self.accepted_tree("absent", self.project("other", self.unset))
+        (outer / "new").mkdir()
+        for root in (outer, outer / "new"):
+            self.accepted_unset_passes(root)
+        (self.on / "proj").mkdir()  # A new subfolder project beside an opted-in one.
+        self.accepted_unset_passes(self.on / "proj")
+
+    def test_malformed_accepted_yaml_is_unusable_and_other_errors_refuse(self):
+        from agentic import shared_owner_policy
+        guard = shared_owner_policy._refuse_hidden_opt_out
+        for index, body in enumerate((b"x: 2026-13-45\n", b"x: 0x_\n", b"x: !!int ''\n", b"x: !!bool maybe\n",
+                                      b"x: !!timestamp later\n", b"? [a]\n: b\n", b"{", bytes([255]))):
+            root = self.accepted_tree(f"yaml-{index}", {".agentic/PROJECT_CONFIG.yaml": body})
+            with self.subTest(body=body):
+                guard(self.hidden, root)
+        for error in (MemoryError, OSError, RuntimeError):
+            with self.subTest(error=error.__name__), \
+                    patch.object(shared_owner_policy, "load_yaml", side_effect=error("unexpected")), \
+                    self.assertRaisesRegex(ValidationError, "could not be checked"):
+                guard(self.hidden, self.off)
+
+    def test_a_root_that_is_no_path_refuses_cleanly(self):
+        from agentic.shared_owner_policy import _refuse_hidden_opt_out
+        for root in (object(), 5, "a" + chr(0) + "b", b"bytes", ["list"]):
+            with self.subTest(root=repr(root)[:20]), \
+                    self.assertRaisesRegex(ValidationError, "could not be checked"):
+                _refuse_hidden_opt_out(self.hidden, root)
 
 
 PARENT_STREAM_RESULTS = dict.fromkeys((False, True),

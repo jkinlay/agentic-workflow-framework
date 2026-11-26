@@ -15,6 +15,7 @@ from agentic.contracts import Contracts
 from agentic.review_completion import (ReviewCompletionStore, review_authority_from_config,
                                        review_authority_binding,
                                        validate_submission_semantics)
+from agentic.shared_owner_policy import _known_root
 from agentic.providers.github_reviewer_removal import github_reviewer_removal_observer
 
 
@@ -50,6 +51,7 @@ def main(argv=None, default_root=ROOT, observer_factory=github_reviewer_removal_
     authority_binding = None
     provider_observer = None
     if args.command == "freeze":
+        default_root = _known_root(default_root)
         candidate = load(args.candidate)
         config = load(default_root / ".agentic/PROJECT_CONFIG.yaml")
         workflow = load(default_root / ".agentic/workflow.yaml")
@@ -57,7 +59,8 @@ def main(argv=None, default_root=ROOT, observer_factory=github_reviewer_removal_
         instructions_path = default_root / "PROJECT_INSTRUCTIONS.md"
         report = inspect_config(
             config, workflow, contracts,
-            instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else None)
+            instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else None,
+            project_root=default_root)
         if report["status"] != "ACCEPTED":
             raise ValueError("Review freeze requires an accepted PROJECT_CONFIG")
         authority = review_authority_from_config(config)

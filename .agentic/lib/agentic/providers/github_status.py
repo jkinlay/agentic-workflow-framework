@@ -491,7 +491,8 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
             config = load_yaml(files[CONFIG])
             instructions = root / 'PROJECT_INSTRUCTIONS.md'
             base_report = inspect_config(config, workflow, Contracts(root / '.agentic/schemas'),
-                                         project_instructions=instructions.read_text(encoding='utf-8') if instructions.is_file() else None)
+                                         project_instructions=instructions.read_text(encoding='utf-8') if instructions.is_file() else None,
+                                         project_root=root)
             if base_report['status'] == 'ACCEPTED':
                 add('PROJECT_CONFIGURATION', 'configuration', 'PASS', 'Project configuration is accepted',
                     'Run workflow.py validate-config after configuration changes')

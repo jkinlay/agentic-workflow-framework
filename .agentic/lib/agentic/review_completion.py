@@ -237,6 +237,8 @@ def review_authority_binding(config, project_root, worktree_roots, candidate, *,
     }
     _require(review_authority_from_config(config, accepted_policy_root=accepted_policy_root) == authority,
              "Shared-owner policy changed before authority binding")
+    if accepted_policy_root is None:
+        _refuse_hidden_owner_policy(config, project_root)
     return value
 
 
@@ -385,7 +387,10 @@ class ReviewCompletionStore:
                  accepted_policy_config=None):
         self.path = protected_state_path(path, worktree_roots)
         from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+        from .shared_owner_policy import _known_root
         self.worktree_roots = tuple(worktree_roots)
+        # Host-protected roots can show a hidden accepted opt-out, never enable one.
+        self._known_policy_roots = tuple(_known_root(root) for root in worktree_roots)
         self.accepted_policy_root = accepted_policy_root
         self.accepted_policy_config = accepted_policy_config
         if authority is not None:
@@ -516,6 +521,7 @@ class ReviewCompletionStore:
         reviewer needs a fresh reviewed owner disposition bound to both sets.
         An uncertain provider submission must be reconciled first.
         """
+        from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, _refuse_hidden_opt_out
         binding = _binding(candidate, reviewers)
         with self.transaction() as db:
             active = db.execute("SELECT c.* FROM active_cycle a JOIN review_cycles c ON c.cycle_id=a.cycle_id WHERE a.singleton=1").fetchone()
@@ -544,6 +550,9 @@ class ReviewCompletionStore:
                         now=now_text(), accepted_policy_root=self.accepted_policy_root,
                         accepted_policy_config=self.accepted_policy_config)
                     self._recheck_authority()
+                    if not OWNER_EVIDENCE_FIELDS.intersection(self.authority):
+                        # Authority without shared evidence proposes no opt-out.
+                        _refuse_hidden_opt_out({}, *self._known_policy_roots)
                     if self.accepted_policy_root is not None:
                         # Policy reads can consume time after the provider read.
                         # Apply the original freshness limits at application too.
