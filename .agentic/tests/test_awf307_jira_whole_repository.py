@@ -141,6 +141,51 @@ class JiraWholeRepositoryTests(unittest.TestCase):
                     self.assertRaisesRegex(ValidationError, 'accepted policy digest changed'):
                 policy._refuse_hidden_jira_opt_out(hidden, apparent)
 
+    def test_unreadable_enclosing_scan_refuses_each_set_accepted_setting_only(self):
+        real = os.scandir
+        for section, setting, guard in (
+                ('merge_gate', policy.SETTING, policy._refuse_hidden_opt_out),
+                ('jira', KEY, policy._refuse_hidden_jira_opt_out)):
+            for state in ('set', 'null', 'absent'):
+                accepted = deepcopy(self.config)
+                accepted['merge_gate'][policy.SETTING] = None
+                accepted['jira'][KEY] = None
+                if state == 'set':
+                    accepted[section][setting] = (1002 if section == 'merge_gate' else 'fixture-controller')
+                elif state == 'absent':
+                    accepted[section].pop(setting)
+                hidden = deepcopy(accepted)
+                hidden[section][setting] = None
+                outer = self.policy_repository(accepted, section + '-' + state)
+                (outer / '.agentic/scripts').mkdir(parents=True)
+                target = outer / 'deep/target'
+                target.mkdir(parents=True)
+                unset = self.policy_repository(hidden, section + '-' + state + '-unset')
+                shutil.copytree(unset / '.git', target / '.git')
+                guard(hidden, target)  # A readable, unlinked enclosing project adds no policy.
+
+                def denied(path='.', refused=os.path.normcase(os.path.realpath(outer / '.agentic'))):
+                    spelled = path if isinstance(path, int) else os.fspath(path)
+                    if isinstance(spelled, str):
+                        spelled = os.path.normcase(os.path.realpath(spelled))
+                        try:
+                            inside = os.path.commonpath((spelled, refused)) == refused
+                        except ValueError:
+                            inside = False
+                        if inside:
+                            raise PermissionError(13, 'Permission denied', str(path))
+                    return real(path)
+
+                with self.subTest(section=section, accepted=state), patch.object(os, 'scandir', denied):
+                    if state == 'set':
+                        with self.assertRaisesRegex(ValidationError, 'could not be read'):
+                            policy._accepted_opt_out(target, section=section, setting=setting)
+                        with self.assertRaisesRegex(ValidationError, 'could not be checked'):
+                            guard(hidden, target)
+                    else:
+                        self.assertIsNone(policy._accepted_opt_out(target, section=section, setting=setting))
+                        self.assertIsNone(guard(hidden, target))
+
     def test_hidden_jira_read_ignores_unusable_proposed_child_configuration(self):
         from agentic import child_process
         config = deepcopy(self.config)

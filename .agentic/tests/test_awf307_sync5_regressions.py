@@ -88,7 +88,7 @@ class JiraAcceptedPolicyTests(unittest.TestCase):
                 with project_policy_scope(store, config), closure_scope(store, config, ISSUE, {}, {}, owned=True):
                     pass
 
-    def test_jira_only_subfolder_observation_keeps_existing_scope(self):
+    def test_jira_only_subfolder_observation_refuses_under_whole_repository_rule(self):
         # Owner decision: 'Yes, cover Jira too'; the set subfolder now refuses.
         sub = self.project / 'application'
         sub.mkdir()
