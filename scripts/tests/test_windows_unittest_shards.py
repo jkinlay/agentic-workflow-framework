@@ -102,11 +102,15 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(before, self.allocation())
 
     def test_measured_november_allocation_preserves_whole_modules(self):
-        # Fixed owners follow the two hosted runs across Python 3.11-3.13.
+        # Fixed owners follow the hosted runs and 26 November O2 measurements.
         expected = {
             '.agentic/tests/test_awf238_migration_identity.py': 4,
             '.agentic/tests/test_awf238_same_version_identity.py': 8,
             '.agentic/tests/test_awf243_review_regressions.py': 1,
+            '.agentic/tests/test_awf307_combined_visibility.py': 2,
+            '.agentic/tests/test_awf307_excluded_refusal_proofs.py': 5,
+            '.agentic/tests/test_awf307_jira_owner_policy.py': 6,
+            '.agentic/tests/test_awf307_jira_whole_repository.py': 2,
             '.agentic/tests/test_awf307_queue_owner_policy.py': 2,
             '.agentic/tests/test_bootstrap_configuration.py': 4,
             '.agentic/tests/test_continuous_controller_planning.py': 4,

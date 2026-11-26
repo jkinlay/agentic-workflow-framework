@@ -55,11 +55,19 @@ UPGRADE_MATRIX_FIRST_HALF = frozenset({
     'test_state_compatibility_is_listed_for_every_adjacent_step',
 })
 SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
-# Rebalanced from module_result timings in two hosted runs on 23 November,
-# across Windows Python 3.11-3.13. Sum each version's slower per-module sample
-# plus its largest measured job overhead: the projected maximum is 44.8 minutes,
-# including the measured incoming workflow-isolation and 1.9.7 qualification
-# modules. Unmeasured incoming modules still require hosted validation.
+# The 23 November hosted Python 3.11-3.13 module model projected 44.8 minutes,
+# before the incoming O2 modules. On 26 November, isolated local Windows 3.13.3
+# runs measured combined_visibility=26.968 s, jira_owner_policy=890.605 s,
+# jira_whole_repository=37.613 s and excluded_refusal_proofs=86.597 s (all
+# test_awf307_*.py). Pin these away from shard 1 onto the lightest PR 315
+# Windows 3.13 shards: 2, 6 and 5. Holding other hosted job costs fixed and
+# transferring those local wall times gives shard 0-8 minutes:
+# 47, >42.6, 31.1, 46, 40, 39.4, 40.8, 46, 46 (previously
+# 47, >60, 30, 46, 40, 38, 26, 46, 46). The timed-out shard is censored;
+# >42.6 is a lower bound, not an upper bound. The maximum remains unknown
+# and at least 47 minutes, so the earlier 44.8-minute target is NOT met.
+# Mixed hosted/local timings do not bound runner variation or other versions;
+# fresh hosted module timings and validation are still required.
 # Keep whole-module ownership, per-suite interpreter isolation, the installed
 # acceptance exclusion and the existing upgrade-matrix halves unchanged.
 HEAVY_MODULE_SHARDS = {
@@ -103,6 +111,10 @@ HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_continuous_controller_planning.py': 4,
     '.agentic/tests/test_awf238_same_version_identity.py': 8,
     '.agentic/tests/test_awf238_migration_identity.py': 4,
+    '.agentic/tests/test_awf307_combined_visibility.py': 2,
+    '.agentic/tests/test_awf307_excluded_refusal_proofs.py': 5,
+    '.agentic/tests/test_awf307_jira_owner_policy.py': 6,
+    '.agentic/tests/test_awf307_jira_whole_repository.py': 2,
 }
 ZERO_TEST_MODULES = frozenset({
     '.agentic/tests/test_awf36_automation_fixtures.py',

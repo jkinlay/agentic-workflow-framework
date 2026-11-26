@@ -831,7 +831,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/release_self_test.py` | `818561228860328189506a488f0af1bb9ccf524a6ba95c16ba4aeccdf4c85c38` |
 | `scripts/run_installed_self_test_shard.py` | `afee6d98210a2858e6af8527c605489d0dafc1b3b8c81075ffa210246781467d` |
 | `scripts/run_publication_pre_controller.py` | `a3432a4a36eb3838e04f614c4293913d5c0d676a284d525b24be6360fd1cd67c` |
-| `scripts/run_windows_unittests.py` | `9b118eec538a7d8d1fcf3594cce90f520b20b7e40bea7ea8282180b2a31c127b` |
+| `scripts/run_windows_unittests.py` | `e5246cad6051acb717c50eab03ed342e355048b509ff843de145de742059e22a` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
 | `scripts/tests/path_mutation_allowlist.json` | `2311c73deff9a22f8b896b5035920680e6ced4558e2ae1f06666c685d87e5d4c` |
@@ -891,7 +891,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_validate_archive_defaults.py` | `c9424940cb2c7f052f9a7744bc146bdea2e9cf345cdb88729d2c17dab01685fa` |
 | `scripts/tests/test_validate_archive_report.py` | `5f80854db7f9fac07b2822ab1ba20cb0bdbf9feb78bec296de92d87ee2337caf` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
-| `scripts/tests/test_windows_unittest_shards.py` | `ad7b44c7e84688897f16bb0dbb0f35107507a238e00e7cacb284caeb84ee9822` |
+| `scripts/tests/test_windows_unittest_shards.py` | `1f0d2d9d9f02c701955d1bd29bfd43cfa13c770ed87e0ded71c6d34d4b05a679` |
 | `scripts/upgrade_release.py` | `97cb3cc237328faa2b1c39fda7e82f7036d58f125fb516dfcc9c30ffb3af1cc8` |
 | `scripts/validate_archive.py` | `595e82a69ba16b3b9a60649f7b4ee7a6d467f119cec177925ba3e410c6281ed2` |
 | `scripts/validate_git_checkout.py` | `d8d9a2e85a611d16bfea7e5f67bc9666885a2b5c112aa6ea3ddad189b38c29bf` |
