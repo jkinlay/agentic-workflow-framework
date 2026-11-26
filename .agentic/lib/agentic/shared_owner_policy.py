@@ -344,7 +344,8 @@ def _invoked_projects(resolved):
     import os
     import sys
     from pathlib import Path
-    for entry, tail in ((sys.argv[0] if sys.argv else "", (".agentic", "scripts")),
+    argv = getattr(sys, "argv", None)
+    for entry, tail in ((argv[0] if argv else "", (".agentic", "scripts")),
                         (__file__, (".agentic", "lib", "agentic"))):
         typed = Path(os.path.abspath(entry))
         if typed.parts[-len(tail) - 1:-1] != tail:
@@ -355,11 +356,17 @@ def _invoked_projects(resolved):
             yield project
 
 
-def _linking_projects(root):
+class _UnreadableScan(ValidationError):
+    """An enclosing project's ``.agentic`` could not be scanned while its accepted setting is set."""
+
+
+def _linking_projects(root, unreadable=None):
     """Enclosing or invoked projects whose own ``.agentic`` files resolve into this root.
 
     A tracked link can resolve a project's scripts, library or configuration into
     a subfolder, submodule or nested checkout; its host still runs that project.
+    An enclosing project whose ``.agentic`` cannot be read may link here, so it is
+    checked too: only its set accepted setting refuses.
     """
     import os
     resolved, _, above = _enclosing(root)
@@ -367,25 +374,31 @@ def _linking_projects(root):
     for outer in (path.resolve() for path in above):
         agentic = outer / ".agentic"
         paths = [agentic, agentic / "PROJECT_CONFIG.yaml", agentic / "lib"]
-        for directory in (agentic / "scripts", agentic / "lib/agentic"):
-            paths.append(directory)
-            try:
-                with os.scandir(directory) as entries:
-                    paths += [directory / entry.name for entry in entries if entry.is_symlink()]
-            except (FileNotFoundError, NotADirectoryError):
-                continue
-        if resolved != agentic and any(resolved in path.resolve().parents for path in paths if path.exists()):
+        try:
+            for directory in (agentic / "scripts", agentic / "lib/agentic"):
+                paths.append(directory)
+                try:
+                    with os.scandir(directory) as entries:
+                        paths += [directory / entry.name for entry in entries if entry.is_symlink()]
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+            if resolved != agentic and any(resolved in path.resolve().parents for path in paths if path.exists()):
+                found[outer] = None
+        except OSError:
             found[outer] = None
+            if unreadable is not None:
+                unreadable.add(outer)
     return tuple(found)
 
 
-def _checked_roots(root):
+def _checked_roots(root, unreadable=None):
     """Choose the roots whose accepted setting could be hidden.
 
     A subfolder project cannot accept the setting, so it has none of its own.
     """
     _, own, above = _enclosing(root)
-    return (*_linking_projects(root), *((root,) if own or not above and _whole_repository(root) else ()))
+    return (*_linking_projects(root, unreadable),
+            *((root,) if own or not above and _whole_repository(root) else ()))
 
 
 def _policy_setting(raw):
@@ -402,7 +415,8 @@ def _accepted_opt_out(root):
 
     Only the closed Git reader's own refusal means unobservable.
     """
-    for checked in _checked_roots(root):
+    unreadable = set()
+    for checked in _checked_roots(root, unreadable):
         for spelling in _root_spellings(checked):
             try:
                 ref, _ = _default_ref(spelling)
@@ -414,6 +428,10 @@ def _accepted_opt_out(root):
                 continue
             if raw is not None:
                 value = _policy_setting(raw)
+                if value is not None and checked in unreadable:
+                    raise _UnreadableScan("Shared-owner accepted policy could not be checked: the .agentic "
+                                          "directory of an enclosing project whose accepted setting is set "
+                                          "could not be read")
                 if value is not None:
                     return value
                 break
@@ -437,6 +455,8 @@ def _refuse_hidden_opt_out(config, *roots):
         try:
             with independent_policy_read(*known):
                 hidden = _accepted_opt_out(root) is not None
+        except _UnreadableScan:
+            raise
         except Exception as exc:
             # An unexpected failure is not an observation that nothing is set.
             raise ValidationError("Shared-owner accepted policy could not be checked") from exc
