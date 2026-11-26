@@ -164,7 +164,7 @@ def validate_publication_project_config(config, contracts):
         _validate_safe_regex(item["pattern"], "Project publication declarations")
 
 
-def inspect_config(config, workflow, contracts, project_instructions=None):
+def inspect_config(config, workflow, contracts, project_instructions=None, project_root=None):
     from .policy import PROTECTED_PATHS, policy_hash, safe_path
     problems, warnings = [], []
     if project_instructions is not None:
@@ -210,7 +210,9 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
                 problems.append(issue(path, reason))
         from .shared_owner_policy import configured_shared_owner_actor_id, SETTING_PATH
         try:
-            configured_shared_owner_actor_id(config)
+            if configured_shared_owner_actor_id(config) is not None and project_root is not None:
+                from .shared_owner_policy import require_whole_repository
+                require_whole_repository(project_root)
         except ValidationError as exc:
             problems.append(issue(SETTING_PATH, str(exc)))
         require(type(config['github']['repository_id']) is int and config['github']['repository_id'] > 0,

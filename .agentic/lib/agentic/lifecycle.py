@@ -403,6 +403,8 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                             runs=owner_cap_context.get("runs"),
                             excluded_contexts=owner_cap_context.get("excluded_contexts", ()),
                             excluded_producers=owner_cap_context.get("excluded_producers", ()))
+        from .shared_owner_policy import _refuse_hidden_opt_out
+        _refuse_hidden_opt_out(cap_config, accepted_policy_root)
         try:
             review_verdict = owner_cap_context["review_verdict"]
         except (KeyError, TypeError) as exc:
@@ -438,10 +440,17 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                 or not isinstance(runs, dict) or not isinstance(collectors, dict)):
             raise ValidationError("Lifecycle requires an authenticated over-cap approval context")
         from .gates import verified_overcap_approvals
+        from .shared_owner_policy import _legacy_owner_root, _refuse_hidden_opt_out
+        supplied_approvals = overcap_approval_context["approvals"]
+        # This excluded path gains no shared-account exception. Its policy root
+        # only lets the default-off overlap detect a hidden accepted opt-out.
         overcap_approvals = verified_overcap_approvals(
-            approval_config, overcap_approval_context["approvals"], candidate,
-            runs, collectors,
+            approval_config, supplied_approvals, candidate, runs, collectors,
+            accepted_policy_root=(_legacy_owner_root(approval_config, accepted_policy_root)
+                                  if supplied_approvals else None),
         )
+        if supplied_approvals:
+            _refuse_hidden_opt_out(approval_config, accepted_policy_root)
         from .policy import parse_overcap_approval
         matching_approvals = []
         for approval in overcap_approvals:

@@ -60,9 +60,10 @@ def safe_path(value):
     return value
 
 
-def inspect_config(config, workflow, contracts, project_instructions=None):
+def inspect_config(config, workflow, contracts, project_instructions=None, project_root=None):
     from .configuration import inspect_config as inspect
-    return inspect(config, workflow, contracts, project_instructions=project_instructions)
+    return inspect(config, workflow, contracts, project_instructions=project_instructions,
+                   project_root=project_root)
 
 
 def validate_config(config, workflow, contracts, *, accepted_policy_root=None, return_report=False):
@@ -89,7 +90,8 @@ def validate_config(config, workflow, contracts, *, accepted_policy_root=None, r
         shared = configured_shared_owner_actor_id(config)
         if shared is None or accepted_policy_root is None:
             trusted_owner_ids(config)
-    if accepted_policy_root is not None and config["github"].get("expected_actor_id") is None:
+    from .shared_owner_policy import configured_shared_owner_actor_id
+    if accepted_policy_root is not None and configured_shared_owner_actor_id(config) is None:
         from .shared_owner_policy import accepted_owner_evidence
         accepted_owner_evidence(accepted_policy_root, config, None)
     elif accepted_policy_root is not None:

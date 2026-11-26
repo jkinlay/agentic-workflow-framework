@@ -152,7 +152,10 @@ def _queue_owner_policy(config, root):
     if (root is None and configured_shared_owner_actor_id(config) is None and
             config.get("github", {}).get("expected_actor_id") is None):
         return {}
-    return _authorization_owner_policy(config, root, identity_optional=True)
+    # The queue projection, like review authority, keeps the legacy owner list
+    # while the opt-out is off. Configuration validation still refuses overlap.
+    return _authorization_owner_policy(config, root, identity_optional=True,
+                                       legacy_unsigned=True)
 
 
 def _recheck_queue_policy(config, root, policy):
@@ -310,8 +313,10 @@ def _owner_instruction(value, action, epic, payload, *, authority, registry, now
     required = {"instruction_id", "owner_actor_id", "producer_id", "source_event_id",
                 "provider_identity", "action", "epic", "payload", "issued_at",
                 "raw_body", "raw_body_sha256"}
-    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
-    annotation_fields = OWNER_EVIDENCE_FIELDS.intersection(value)
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, _legacy_owner_overlap
+    # A default-off overlap has no shared-account evidence to retain.
+    annotation_fields = (set() if _legacy_owner_overlap(project_config)
+                         else OWNER_EVIDENCE_FIELDS.intersection(value))
     if set(value) != required | annotation_fields:
         raise ValidationError("owner instruction fields differ from the closed record shape")
     if not isinstance(authority, dict):
@@ -1470,6 +1475,10 @@ class IntegrationQueueStore:
         self.path = Path(path).resolve()
         self.accepted_policy_root = accepted_policy_root
         worktree_roots = tuple(worktree_roots)
+        # Host-protected roots can show a hidden accepted opt-out, never enable one.
+        from .shared_owner_policy import _known_root
+        self._known_policy_roots = tuple(_known_root(root) for root in (
+            worktree_roots if accepted_policy_root is None else (accepted_policy_root,)))
         if accepted_policy_root is not None:
             from .shared_owner_policy import consumer_policy_root
             self.worktree_roots = worktree_roots
@@ -1547,6 +1556,8 @@ class IntegrationQueueStore:
             self.project_config_observer_registry, now=observed_at,
             return_attestation=True, match_expected=match_expected,
             accepted_policy_root=self.accepted_policy_root)
+        from .shared_owner_policy import _refuse_hidden_opt_out
+        _refuse_hidden_opt_out(accepted, *self._known_policy_roots)
         self.accepted_project_config = accepted
         self.authority = _authority(accepted, accepted_policy_root=self.accepted_policy_root)
         self.authority_projection_sha256 = fingerprint(

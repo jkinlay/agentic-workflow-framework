@@ -527,6 +527,8 @@ def require_jira_reconciliation_before_counts(
         project_config, project_config_selector,
         project_config_observer_registry, now=now, return_attestation=True)
     validate_config(project_config, definition(), contracts)
+    from .shared_owner_policy import _refuse_hidden_opt_out
+    _refuse_hidden_opt_out(project_config, repository)
     contracts.validate("closeout-record", closeout_record)
     if (not isinstance(closeout_selector, dict) or
             set(closeout_selector) != {"producer_id"} or

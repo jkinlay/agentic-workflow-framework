@@ -187,6 +187,7 @@ def _accepted_config(root):
             config, definition(), Contracts(_SCHEMA_DIR),
             project_instructions=(instructions.read_text(encoding="utf-8")
                                   if instructions.is_file() else None),
+            project_root=root,
         )
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
         return None

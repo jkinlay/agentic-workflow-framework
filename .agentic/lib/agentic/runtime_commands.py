@@ -108,6 +108,16 @@ def runtime_backup_warnings(root):
 
 def command_catalog(root, *, platform=None):
     root, interpreter, entry_point = installed_paths(root, platform=platform)
+    from . import ValidationError
+    from .canonical import load
+    from .shared_owner_policy import shared_owner_warnings
+    warnings = runtime_backup_warnings(root)
+    try:
+        warnings.extend(item['code'] + ': ' + item['message'] for item in
+                        shared_owner_warnings(load(root / '.agentic/PROJECT_CONFIG.yaml')))
+    except (ValidationError, OSError, ValueError):
+        # Doctor remains available for missing or invalid configuration.
+        pass
     commands = [
         ("adoption", ["preflight"], 0),
         ("verification", ["verify-installation"], 0),
@@ -126,7 +136,7 @@ def command_catalog(root, *, platform=None):
             "entry_point_exists": entry_point.is_file(),
         },
         "shell": "powershell",
-        "warnings": runtime_backup_warnings(root),
+        "warnings": warnings,
         "commands": [
             {"purpose": purpose,
              "command": powershell_command(interpreter, entry_point, root, arguments),

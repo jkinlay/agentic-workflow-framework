@@ -272,8 +272,17 @@ def main(argv=None, default_root=None):
     handoff_parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown")
     handoff_parser.add_argument("--output", type=Path, help="Also create this new JSON file; never overwrites")
     args = parser.parse_args(argv)
+    diagnostic_warnings = []
     try:
         root = args.root.absolute()
+        if args.command in {'verify-installation', 'verify-authorization', 'validate-config'}:
+            from .shared_owner_policy import shared_owner_warnings
+            try:
+                diagnostic_warnings = shared_owner_warnings(load(
+                    getattr(args, 'config', None) or root / '.agentic/PROJECT_CONFIG.yaml'))
+            except (ValidationError, OSError, ValueError):
+                # Reporting cannot replace the command's existing diagnostics.
+                pass
         if args.command == 'reporting-status':
             from .operating import read_operating
             from .reporting.observations import inspect_reporting
@@ -455,11 +464,15 @@ def main(argv=None, default_root=None):
                 workflow = load(root / ".agentic/workflow.yaml")
                 if args.command == "jira":
                     from .provider_identity import jira_binding_plan
+                    from .shared_owner_policy import _legacy_owner_root, _refuse_hidden_opt_out
                     config_path = args.config or root / ".agentic/PROJECT_CONFIG.yaml"
                     config = load(config_path)
                     confirmation = load(args.confirmation) if args.confirmation else None
                     output = jira_binding_plan(config, load(args.connections), confirmation,
-                                               now=now_text())
+                                               now=now_text(),
+                                               accepted_policy_root=_legacy_owner_root(config, root))
+                    if confirmation is not None:
+                        _refuse_hidden_opt_out(config, root)
                     if args.output:
                         if confirmation is None or output["status"] != "CONFIRMED":
                             raise ValidationError("--output requires an exact owner-confirmed binding")
@@ -482,7 +495,8 @@ def main(argv=None, default_root=None):
                     instructions = root / "PROJECT_INSTRUCTIONS.md"
                     before_instructions = instructions.read_bytes() if instructions.is_file() else None
                     output = inspect_config(config, workflow, contracts, project_instructions=(
-                        before_instructions.decode("utf-8") if before_instructions is not None else None))
+                        before_instructions.decode("utf-8") if before_instructions is not None else None),
+                        project_root=root)
                     from .operating_status import with_operating
                     output = with_operating(root, config, output)
                     after_instructions = instructions.read_bytes() if instructions.is_file() else None
@@ -538,6 +552,8 @@ def main(argv=None, default_root=None):
                         disposition, args.type, config, head_sha=args.head,
                         authorization_request_id=args.request_id,
                     )
+                    from .shared_owner_policy import _refuse_hidden_opt_out
+                    _refuse_hidden_opt_out(config, root)
                 elif args.command == "validate-record":
                     value = load(args.file)
                     contracts.validate(args.type, value)
@@ -560,6 +576,8 @@ def main(argv=None, default_root=None):
                         head = value.get("head_sha") or args.head or "-"
                         output["owner_record"] = verify_owner_record(value, args.type, config, contracts, now_text(), head_sha=head,
                                                                      binding=value["binding"])
+                        from .shared_owner_policy import _refuse_hidden_opt_out
+                        _refuse_hidden_opt_out(config, root)
                         output["producer_run_verified"] = False
                         output["binding_cross_checked"] = False
                 elif args.command == "validate-closeout":
@@ -583,6 +601,8 @@ def main(argv=None, default_root=None):
                     from .authorization import verify_owner_record
                     verify_owner_record(disposition, "review-cap-disposition", config, contracts, now_text(), head_sha=args.head,
                                         binding=trusted_binding)
+                    from .shared_owner_policy import _refuse_hidden_opt_out
+                    _refuse_hidden_opt_out(config, root)
                     from .gates import verify_disposition_review_binding
                     from .policy import policy_hash
                     output_binding = verify_disposition_review_binding(
@@ -642,8 +662,13 @@ def main(argv=None, default_root=None):
                     config = load(args.config)
                     validate_config(config, workflow, contracts)
                     output = verify_record(load(args.record), load(args.request), load(args.gate), config, contracts, args.now or now_text())
+                    from .shared_owner_policy import _refuse_hidden_opt_out
+                    _refuse_hidden_opt_out(config, root)
                 else:
                     raise ValidationError("Unsupported command")
+        if diagnostic_warnings:
+            warnings = output.setdefault('warnings', [])
+            warnings.extend(item for item in diagnostic_warnings if item not in warnings)
         emit_json(output)
         return 0
     except (ValidationError, OSError, ValueError, KeyError) as exc:
@@ -657,5 +682,7 @@ def main(argv=None, default_root=None):
         else:
             output = {"status": "REJECTED", "reason": render_bounded_diagnostic(
                 str(exc), code="DIAGNOSTIC_INVALID"), "execution_authority": False}
+        if diagnostic_warnings:
+            output['warnings'] = diagnostic_warnings
         emit_json(output, stream=sys.stderr)
         return 2

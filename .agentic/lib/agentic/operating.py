@@ -1563,7 +1563,8 @@ def _local_state(root, governance):
         verify_installed(root)
         with Tree(root) as tree:
             workflow = load_yaml(tree.read(".agentic/workflow.yaml", maximum=MAX_BYTES))
-        return "CONFIGURED" if inspect_config(governance, workflow, Contracts(Path(root) / ".agentic/schemas"))["status"] == "ACCEPTED" else "INSTALLED_UNCONFIGURED"
+        return "CONFIGURED" if inspect_config(governance, workflow, Contracts(Path(root) / ".agentic/schemas"),
+                                              project_root=root)["status"] == "ACCEPTED" else "INSTALLED_UNCONFIGURED"
     except (ValidationError, OSError, ValueError):
         return "UNVERIFIED"
 

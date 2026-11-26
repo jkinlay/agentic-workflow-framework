@@ -10,8 +10,8 @@ from .providers import github
 OWNER_OUTCOMES = frozenset({"PENDING", "DECLINED", "APPLIED"})
 
 
-def _configuration(config, workflow, contracts):
-    report = inspect_config(config, workflow, contracts)
+def _configuration(config, workflow, contracts, project_root=None):
+    report = inspect_config(config, workflow, contracts, project_root=project_root)
     if report["status"] != "ACCEPTED":
         details = "; ".join(item["path"] + ": " + item["reason"]
                             for item in report["unresolved"])
@@ -86,9 +86,9 @@ def _observation_issue(observation, repository, repository_id, default_branch, n
 
 def activation_rules_decision(config, workflow, contracts, *, before_observation,
                               post_observation=None, owner_outcome="PENDING",
-                              review_app_id=None, now):
+                              review_app_id=None, now, project_root=None):
     """Return AC46/AC58 decision evidence without making a provider request."""
-    config_report, github_config, merge_method = _configuration(config, workflow, contracts)
+    config_report, github_config, merge_method = _configuration(config, workflow, contracts, project_root)
     if owner_outcome not in OWNER_OUTCOMES:
         raise ValidationError("owner_outcome must be PENDING, DECLINED, or APPLIED")
     repository = github.repository_name(github_config["repository"])

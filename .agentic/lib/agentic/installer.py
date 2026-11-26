@@ -2908,7 +2908,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                         "reconcile reviewed PROJECT_CONFIG.yaml before upgrading; no files changed")
             # Upgrade is a migration, not adoption/discovery. Keep the migrated
             # text verbatim, including comments, formatting and rejected choices.
-            inspection = inspect_config(existing, load_yaml(content[".agentic/workflow.yaml"]), Contracts(source / ".agentic/schemas"))
+            inspection = inspect_config(existing, load_yaml(content[".agentic/workflow.yaml"]), Contracts(source / ".agentic/schemas"),
+                    project_root=destination)
             # Older policy can lack newly required settings. Retain its REJECTED
             # result rather than filling those settings. Missing validation
             # commands or project identity require owner repair before upgrading.
@@ -2922,7 +2923,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 requested=propose_operating_capacity, dry_run=dry_run)
             planned[CONFIG] = existing_config if cfg == existing else json_bytes(cfg)
             if cfg != existing:
-                inspection = inspect_config(cfg, load_yaml(content['.agentic/workflow.yaml']), Contracts(source / '.agentic/schemas'))
+                inspection = inspect_config(cfg, load_yaml(content['.agentic/workflow.yaml']), Contracts(source / '.agentic/schemas'),
+                    project_root=destination)
             configuration_report = {**inspection, 'discovery': {
                 'project_id': existing['project']['id'], 'warnings': [], 'observations': [],
                 'test_commands_executed': False, 'execution_authority': False}}
@@ -2934,7 +2936,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         cfg, governance_proposal = operating_capacity_proposal(cfg, existing=existing_config is not None,
             requested=propose_operating_capacity, dry_run=dry_run)
         planned[CONFIG] = existing_config if existing == cfg else json_bytes(cfg)
-        inspection = inspect_config(cfg, load_yaml(content[".agentic/workflow.yaml"]), Contracts(source / ".agentic/schemas"))
+        inspection = inspect_config(cfg, load_yaml(content[".agentic/workflow.yaml"]), Contracts(source / ".agentic/schemas"),
+                    project_root=destination)
         configuration_report = {**inspection, "discovery": result}
     if mode == "install" and overrides and not configure:
         cfg = load_yaml(planned[CONFIG])

@@ -481,6 +481,32 @@
       },
       "minItems": 1,
       "uniqueItems": true
+    },
+    "owner_policy_warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "path": {
+            "const": "$.merge_gate.shared_owner_automation_actor_id"
+          },
+          "code": {
+            "const": "SHARED_OWNER_AUTOMATION_ACCOUNT"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "minItems": 1,
+      "maxItems": 1
     }
   },
   "allOf": [

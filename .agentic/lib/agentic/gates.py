@@ -312,7 +312,10 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import (verify_owner_record, _authorization_owner_policy,
                                 _recheck_authorization_policy)
-    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    legacy_unsigned = (isinstance(bundle, dict) and not bundle.get("finding_dispositions")
+                       and bundle.get("cap_disposition") is None)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True,
+                                          legacy_unsigned=legacy_unsigned)
               if accepted_policy_root is not None else {})
     head = bundle["candidate"]["head_sha"]
     dispositions, comments, request_ids, review_records = [], set(), set(), []
@@ -397,7 +400,8 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
             candidate=bundle["candidate"],
         )
     if accepted_policy_root is not None:
-        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True,
+                                      legacy_unsigned=legacy_unsigned)
     return dispositions, cap
 
 
@@ -602,6 +606,18 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
     from .authorization import (_authorization_owner_policy, _retained_authorization_policy,
                                 _recheck_authorization_policy)
     from .shared_owner_policy import configured_shared_owner_actor_id
+    from .shared_owner_policy import (_detach_legacy_record, _distinct_legacy_signer,
+                                      _legacy_owner_overlap, _require_detached_unchanged)
+    # Only the well-formed default-off overlap is detached: every signer is
+    # checked, authenticated and returned from bytes a policy read cannot
+    # replace. Other modes keep the caller's records and validation order.
+    supplied, approvals = approvals, _detach_legacy_record(config, approvals)
+    legacy_signer = None
+    if (_legacy_owner_overlap(config) and isinstance(approvals, (list, tuple)) and approvals
+            and all(isinstance(approval, dict)
+                    and _distinct_legacy_signer(config, approval.get("actor_id"))
+                    for approval in approvals)):
+        legacy_signer = approvals[0]["actor_id"]
     # Legacy profile-only observations remain ordinary offline evidence. They
     # cannot enable an opt-out; configured numeric overlap still uses the
     # unchanged public separation validator through authorization's path.
@@ -609,7 +625,9 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
                     and config.get("github", {}).get("expected_actor_id") is None)
     if profile_only:
         configured_shared_owner_actor_id(config)
-    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True,
+                                          legacy_signer=legacy_signer,
+                                          legacy_unsigned=not approvals)
               if not profile_only and (approvals or accepted_policy_root is not None) else {})
     configured_collectors = set(config["merge_gate"].get(
         "production_posting_collector_ids", []))
@@ -682,7 +700,10 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
         if config.get("github", {}).get("expected_actor_id") is not None:
             _authorization_owner_policy(config, None)
     elif approvals or accepted_policy_root is not None:
-        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
+        _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True,
+                                      legacy_signer=legacy_signer,
+                                      legacy_unsigned=not approvals)
+        _require_detached_unchanged(supplied, approvals)
     return verified
 
 
@@ -712,6 +733,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                                 _recheck_authorization_policy)
     policy = (_authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
               if accepted_policy_root is not None else {})
+    # A rootless evaluation still names its host repository; it can only refuse.
+    from .shared_owner_policy import _refuse_hidden_opt_out
+    if accepted_policy_root is None:
+        _refuse_hidden_opt_out(config, repository)
     if config["jira"].get("enabled", True) is False:
         raise ValidationError("Jira is disabled; this Jira evidence evaluator requires Jira scope. Continue provisional local planning through the native host.")
     if not config["merge_gate"]["trusted_owner_ids"]:

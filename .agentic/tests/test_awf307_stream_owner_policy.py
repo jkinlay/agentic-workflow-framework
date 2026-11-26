@@ -186,14 +186,36 @@ class StreamOwnerPolicyTests(unittest.TestCase):
                 with self.policy_reads(), self.assertRaises(ValidationError):
                     self.plan()
 
-    def test_null_overlap_keeps_separation_refusal(self):
+    def test_null_overlap_refuses_only_the_automation_account(self):
         self.config["merge_gate"][KEY] = None
-        for who in (1001, 1002):
-            with self.subTest(who=who):
-                self.directive["who"] = self.directive["owner_source"]["actor_id"] = who
-                with self.assertRaisesRegex(ValidationError,
-                                           "The configured automation actor must not be a trusted owner"):
-                    self.plan(rooted=False)
+        with self.subTest(who=1001):
+            self.directive["who"] = self.directive["owner_source"]["actor_id"] = 1001
+            result = self.plan(rooted=False)
+            self.assertEqual([{
+                "assignment_id": "b941d8308549daf8bd9f1938c6f46d1d12cf5b33439560bc7e02546050c10b1a",
+                "intake_assignment_id": "7f3cd430-468a-5b42-a07a-2f23078b1318",
+                "kind": "owner_reassignment", "new": "B", "old": "C",
+                "owner_source_sha256": "4f691a7e83ab5c39c3c0f56560b3997d5f782dcccf5aaed897aeedf38cfa9d8c",
+                "previous_assignment_id": "7f3cd430-468a-5b42-a07a-2f23078b1318",
+                "previous_stream_assignment_id":
+                    "09ac8dea77a4c2b5183add5d5998a098db0dc1643da3fd84aba6a3009aeab5cb",
+                "source_id": "github_pr_comment:48", "ticket_id": "DEMO-31", "when": NOW,
+                "who": 1001, "why": "Synthetic owner stream decision"}, {
+                "assignment_id": "4c1a143c68af23ae72c4acce2e3cc00af96b1cbc6e076403555fae3baa06f5d2",
+                "kind": "automatic_rebalance", "new": "C", "old": "B",
+                "previous_assignment_id":
+                    "b941d8308549daf8bd9f1938c6f46d1d12cf5b33439560bc7e02546050c10b1a",
+                "source_id": None, "ticket_id": "DEMO-21", "when": NOW, "who": "awf",
+                "why": "automatic re-balance after Jira inventory refresh"}],
+                result["stream_assignment_history"])
+            # The digest binds the complete parent plan, retained events included.
+            self.assertEqual("934b786230df96b82d27f1029d488f24ed68c6328432eeeb70ca8eb5dd8e87d3",
+                             sha256(canonical(result)))
+        with self.subTest(who=1002):
+            self.directive["who"] = self.directive["owner_source"]["actor_id"] = 1002
+            with self.assertRaisesRegex(ValidationError,
+                                       "The configured automation actor must not be a trusted owner"):
+                self.plan(rooted=False)
 
     def test_distinct_owner_is_not_mislabelled_as_shared(self):
         self.directive["who"] = 1001
@@ -225,7 +247,8 @@ class StreamOwnerPolicyTests(unittest.TestCase):
                 self.accepted = deepcopy(self.config)
                 self.blobs[".agentic/PROJECT_CONFIG.yaml"] = canonical(self.accepted)
                 with self.policy_reads(), self.assertRaisesRegex(
-                        ValidationError, "inventory.*accepted.*repository"):
+                        ValidationError, "^Existing plan belongs to a different project/schema$"
+                        if shared is None else "inventory.*accepted.*repository"):
                     self.plan()
 
     def test_null_proposal_cannot_hide_default_branch_shared_policy(self):
@@ -239,14 +262,27 @@ class StreamOwnerPolicyTests(unittest.TestCase):
                         ValidationError, "accepted policy digest changed"):
                     self.plan()
 
-    def test_real_inventory_needs_policy_even_when_proposed_setting_is_null(self):
+    def test_real_inventory_null_setting_preserves_legacy_owner_reassignment(self):
         self.config["merge_gate"][KEY] = None
         self.config["github"]["expected_actor_id"] = 1003
         self.value["inventory"]["source"] = "jira_snapshot"
         self.raw = canonical(self.value)
         self.before = plan_inventory(self.raw, sha256(self.raw), NOW)
-        with self.assertRaisesRegex(ValidationError, "accepted default-branch policy observation"):
-            self.plan(rooted=False)
+        result = self.plan(rooted=False)
+        self.assertEqual(result["tickets"]["DEMO-31"]["stream"], "B")
+        self.assertEqual(self.owner_event(result), {
+            "ticket_id": "DEMO-31", "who": 1002, "when": NOW,
+            "why": "Synthetic owner stream decision", "old": "C", "new": "B",
+            "kind": "owner_reassignment",
+            "previous_assignment_id": "7f3cd430-468a-5b42-a07a-2f23078b1318",
+            "source_id": "github_pr_comment:48",
+            "intake_assignment_id": "7f3cd430-468a-5b42-a07a-2f23078b1318",
+            "previous_stream_assignment_id": "d9e1c964fbee8076aa4b60993d7ec7bda46909664afbc821b4db683df452dfb7",
+            "owner_source_sha256": "4f691a7e83ab5c39c3c0f56560b3997d5f782dcccf5aaed897aeedf38cfa9d8c",
+            "assignment_id": "bf380e916d40eac849899fc9be3487c5fac9080d80e7f8446ee4deacf511f38e",
+        })
+        retained = self.plan(previous=result, directives=[], rooted=False)
+        self.assertEqual(retained["stream_assignment_history"], result["stream_assignment_history"])
 
     def test_project_writer_refuses_hidden_setting_without_changing_plan(self):
         options = dict(allow_synthetic=True, governance=self.config,

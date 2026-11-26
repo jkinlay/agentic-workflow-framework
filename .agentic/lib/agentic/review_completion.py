@@ -180,7 +180,10 @@ def review_authority_from_config(config, *, accepted_policy_root=None):
     profile_only = github.get("expected_actor_id") is None
     if profile_only:
         configured_shared_owner_actor_id(config)
-    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True)
+    # This projection signs nothing. With the opt-out off it returns the whole
+    # reviewed owner list, as it did before; an accepted opt-out stays visible.
+    policy = _authorization_owner_policy(config, accepted_policy_root, identity_optional=True,
+                                         legacy_unsigned=True)
     value = {
         "trusted_owner_ids": tuple(sorted(owners)),
         "provider_identity": {
@@ -190,7 +193,8 @@ def review_authority_from_config(config, *, accepted_policy_root=None):
         },
         **policy,
     }
-    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True)
+    _recheck_authorization_policy(config, accepted_policy_root, policy, identity_optional=True,
+                                  legacy_unsigned=True)
     return value
 
 
@@ -216,7 +220,10 @@ def review_authority_binding(config, project_root, worktree_roots, candidate, *,
     if accepted_policy_root is not None:
         _require(resolved(accepted_policy_root) == resolved(project_root),
                  "Reviewer-removal policy root differs from the protected project root")
-    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+    from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, _refuse_hidden_owner_policy
+    # A rootless binding still names its protected project root.
+    if accepted_policy_root is None:
+        _refuse_hidden_owner_policy(config, project_root)
     policy = {key: authority[key] for key in OWNER_EVIDENCE_FIELDS if key in authority}
     value = {
         "schema_version": 1,
@@ -230,6 +237,8 @@ def review_authority_binding(config, project_root, worktree_roots, candidate, *,
     }
     _require(review_authority_from_config(config, accepted_policy_root=accepted_policy_root) == authority,
              "Shared-owner policy changed before authority binding")
+    if accepted_policy_root is None:
+        _refuse_hidden_owner_policy(config, project_root)
     return value
 
 
@@ -331,6 +340,9 @@ def _reviewer_removal_disposition(value, *, active, binding, authority,
     })
     _require(fingerprint("reviewer-removal-disposition", record) == record_hash,
              "Provider observer mutated the reviewer removal disposition")
+    # Rooted policy reads follow; retain only the record and review checked here.
+    from .shared_owner_policy import _detach_legacy_record
+    record, review = _detach_legacy_record(accepted_policy_config, (record, review))
     review_fields = {
         "status", "artifact_id", "record_sha256", "disposition_id", "old_cycle_id",
         "tuple_sha256", "old_reviewer_set_sha256", "new_reviewer_set_sha256",
@@ -375,7 +387,10 @@ class ReviewCompletionStore:
                  accepted_policy_config=None):
         self.path = protected_state_path(path, worktree_roots)
         from .shared_owner_policy import OWNER_EVIDENCE_FIELDS
+        from .shared_owner_policy import _known_root
         self.worktree_roots = tuple(worktree_roots)
+        # Host-protected roots can show a hidden accepted opt-out, never enable one.
+        self._known_policy_roots = tuple(_known_root(root) for root in worktree_roots)
         self.accepted_policy_root = accepted_policy_root
         self.accepted_policy_config = accepted_policy_config
         if authority is not None:
@@ -506,6 +521,7 @@ class ReviewCompletionStore:
         reviewer needs a fresh reviewed owner disposition bound to both sets.
         An uncertain provider submission must be reconciled first.
         """
+        from .shared_owner_policy import OWNER_EVIDENCE_FIELDS, _refuse_hidden_opt_out
         binding = _binding(candidate, reviewers)
         with self.transaction() as db:
             active = db.execute("SELECT c.* FROM active_cycle a JOIN review_cycles c ON c.cycle_id=a.cycle_id WHERE a.singleton=1").fetchone()
@@ -534,6 +550,9 @@ class ReviewCompletionStore:
                         now=now_text(), accepted_policy_root=self.accepted_policy_root,
                         accepted_policy_config=self.accepted_policy_config)
                     self._recheck_authority()
+                    if not OWNER_EVIDENCE_FIELDS.intersection(self.authority):
+                        # Authority without shared evidence proposes no opt-out.
+                        _refuse_hidden_opt_out({}, *self._known_policy_roots)
                     if self.accepted_policy_root is not None:
                         # Policy reads can consume time after the provider read.
                         # Apply the original freshness limits at application too.

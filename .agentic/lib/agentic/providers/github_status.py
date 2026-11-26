@@ -491,7 +491,8 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
             config = load_yaml(files[CONFIG])
             instructions = root / 'PROJECT_INSTRUCTIONS.md'
             base_report = inspect_config(config, workflow, Contracts(root / '.agentic/schemas'),
-                                         project_instructions=instructions.read_text(encoding='utf-8') if instructions.is_file() else None)
+                                         project_instructions=instructions.read_text(encoding='utf-8') if instructions.is_file() else None,
+                                         project_root=root)
             if base_report['status'] == 'ACCEPTED':
                 add('PROJECT_CONFIGURATION', 'configuration', 'PASS', 'Project configuration is accepted',
                     'Run workflow.py validate-config after configuration changes')
@@ -738,6 +739,15 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
     if missing_runtime:
         result['next_command'] = result['next_action']
     result['warnings'] = runtime_backup_warnings(root)
+    from ..shared_owner_policy import shared_owner_warnings
+    try:
+        with Tree(root) as tree:
+            warning_config = load_yaml(tree.read(CONFIG))
+        result['warnings'].extend(item['code'] + ': ' + item['message']
+                                  for item in shared_owner_warnings(warning_config))
+    except (ValidationError, OSError, ValueError, KeyError, TypeError, UnicodeError):
+        # Keep diagnostics available when integrity or configuration refuses.
+        pass
     result['activation'] = activation_summary(result)
     return result
 

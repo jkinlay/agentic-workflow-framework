@@ -57,7 +57,8 @@ def main(argv=None):
             post_observation=(pinned_observation(args.post_observation,
                               args.expected_post_observation_sha256)
                               if args.post_observation else None),
-            owner_outcome=args.owner_outcome, review_app_id=args.review_app_id, now=args.now)
+            owner_outcome=args.owner_outcome, review_app_id=args.review_app_id, now=args.now,
+            project_root=ROOT)
         contracts.validate("rules-activation-decision", value)
         print(json.dumps(value, indent=2, ensure_ascii=True, sort_keys=True))
         return 0 if value["status"] == "RULES_OBSERVED" else 2

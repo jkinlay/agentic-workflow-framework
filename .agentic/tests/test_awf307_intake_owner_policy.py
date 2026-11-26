@@ -153,17 +153,25 @@ class IntakeOwnerPolicyTests(unittest.TestCase):
                 with self.policy_reads(), self.assertRaises(ValidationError):
                     self.change()
 
-    def test_rootless_hidden_and_absent_setting_cannot_enable_owner_authority(self):
+    def test_rootless_null_and_absent_setting_preserve_legacy_owner_authority(self):
         self.config["github"]["expected_actor_id"] = 1003
         self.config["merge_gate"][KEY] = None
         before = deepcopy(self.state)
         for present in (True, False):
+            self.state = deepcopy(before)
             if not present:
                 self.config["merge_gate"].pop(KEY)
-            with self.subTest(present=present), self.assertRaisesRegex(
-                    ValidationError, "accepted default-branch policy observation"):
-                self.change(rooted=False)
-            self.assertEqual(before, self.state)
+            with self.subTest(present=present):
+                result = self.change(rooted=False)
+                self.assertEqual(result, self.state["tier_assignments"]["AWF-100"])
+                self.assertEqual(before["tier_assignments"]["AWF-100"],
+                                 self.state["tier_assignment_history"]["AWF-100"][0])
+                self.assertEqual(1002, result["change_audit"]["who"])
+                self.assertEqual({"tier": 3, "round_cap": 3}, result["change_audit"]["new"])
+                self.assertNotEqual(before, self.state)
+                self.assertEqual(result["assignment_sha256"],
+                                 self.state["pr_assignments"]["48"]["assignment_sha256"])
+                self.assertNotIn("shared_owner_automation_account", result["change_audit"])
 
     def test_missing_unobserved_and_changed_policy_refuse(self):
         for path in tuple(self.blobs):
