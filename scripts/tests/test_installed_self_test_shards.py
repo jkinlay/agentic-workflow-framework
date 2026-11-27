@@ -101,7 +101,7 @@ class SelectionTests(unittest.TestCase):
     def test_candidate_plan_covers_manifest_once_and_preserves_allocation(self):
         plan = planner.build_plan(ROOT)
         source = planner.source
-        allocation = source.allocate(source.inventory(ROOT))['.agentic/tests']
+        allocation = planner.allocate_installed(source.inventory(ROOT))['.agentic/tests']
         self.assertEqual({str(n): allocation[n] for n in range(9)}, plan['shards'])
         self.assertEqual(plan, installed.validate_selection(planner.encode(plan),
             hashlib.sha256(planner.encode(plan)).hexdigest(), plan['inventory'], plan['source_manifest_sha256']))

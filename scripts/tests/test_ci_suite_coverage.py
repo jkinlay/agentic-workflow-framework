@@ -153,8 +153,9 @@ class CiSuiteCoverageTests(unittest.TestCase):
             self.assertEqual(jobs['checks']['steps'][:5], job['steps'][start:start + 5])
             for step in job['steps']:
                 self.assertNotIn('continue-on-error', step)
-        for job_id in ('linux_unittests', 'linux_installed_self_test'):
-            self.assertEqual({'python-version': versions, 'shard': list(runner_shards())},
+        for job_id, shards in (('linux_unittests', list(runner_shards())),
+                               ('linux_installed_self_test', list(range(9)))):
+            self.assertEqual({'python-version': versions, 'shard': shards},
                              jobs[job_id]['strategy']['matrix'])
         installed = jobs['linux_installed_self_test']
         self.assertEqual(27, len(versions) * len(installed['strategy']['matrix']['shard']))

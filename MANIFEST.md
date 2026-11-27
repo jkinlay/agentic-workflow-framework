@@ -93,7 +93,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/examples/status-report.json` | `f29307d27985e040a9d4dc017cba0789a35199d4dfcf424844c9e78c83149b8c` |
 | `.agentic/examples/stream-input.json` | `37097f3c73d5de9941dbd049fa29c7e9f659b7fb02b882b2978916f7d3c9cc33` |
 | `.agentic/examples/unconfigured-project.yaml` | `69b50df647d980e4de85ef87cd2517ed220c81d557e1508415576cd3238b6b23` |
-| `.agentic/examples/workflow-content-binding-project.yaml` | `7ed2e1c774948ddaefd85b32ac8ff6ee55ef1b9939bd2905ad9b6bcdb9a7bed1` |
+| `.agentic/examples/workflow-content-binding-project.yaml` | `d867a97887b8c022fcd66c985125bd46f42a74504b9177ce8864d26b207dd36f` |
 | `.agentic/launch-surfaces.json` | `10a85af93c9b5e224b30e37232cc6e30e265e10e54dd46f74db739293ce86e8b` |
 | `.agentic/lib/agentic/__init__.py` | `88b32f93f1bb5d80292b4996f85a8bd2c4b6f56defc8673bef0306876395034e` |
 | `.agentic/lib/agentic/activation.py` | `ebb73dee3a03be049b46cb11787c77ace16965e938bb2fc371e07851ad00deb7` |
@@ -667,7 +667,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `12b23d685554569302fe6352e4d00f07fe7105a8bad5c8ab32d9687e2fcd6355` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `73f1a10ff3bb2638ee472ebb6be836936c69b3f61fedb845e7092e7a650bb0d9` |
+| `.github/workflows/ci.yml` | `8838f5107f00d9c3744f11bfcbbfb07cf4b2e8cfd2e4dbf28093aa55ba2f7714` |
 | `.github/workflows/manifest-check.yml` | `3384a4a4ccb9b96471fccc65d110294726fb7e9bd85802aeccd3efd8ce905776` |
 | `ADR-DESIGN-FIRST-TRIAL.md` | `6702007630ee25d4e8cc64b9913ee0b86e7eaf03ecf8dba0632e124bbe179e16` |
 | `ADR-LANE-MODEL-ROUTING.md` | `c713ee7cb72d5d504674bdd5cfaf7437a9cbb122f738ab49dbac3e70f79bff52` |
@@ -816,7 +816,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/installed_self_test_capture.py` | `c35833c908ee91d32221c15e3e21137689e8502093ec58f287c6fc481d6ab8b5` |
 | `scripts/installed_self_test_fixture.py` | `7a09a0814d132679e08ac364d31c841f6a32e75479438b59f89a0459e7b45b9e` |
 | `scripts/manifest_merge_driver.py` | `00916ad023ac7c79572cb6d0b9608f99bedbe1e131be6d30772a451cd697e1b9` |
-| `scripts/plan_installed_self_test.py` | `728590c2a95384308c0b64df733dedfcf5beabe68772eeb20e05ea6f6e37ec68` |
+| `scripts/plan_installed_self_test.py` | `d0e7a262f62ce7e38c78c1718078d33f50c0ec946de629df6bb394b4fb9d7334` |
 | `scripts/probe_installed_self_test_isolation.py` | `fdc7fb23cd563a8984b1f01ba70d756f809b6a776258aa0ac0daf6de55997fd6` |
 | `scripts/prompt_templates/amendment.md` | `99fdf23206b59af9dc6cfcc4386afba5f2576263836878281f9aa4b7918fbec3` |
 | `scripts/prompt_templates/controller.md` | `427be50652b5d69c82d762b12513f50725290862d51b3b023e5f523f26c1d809` |
@@ -832,7 +832,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/release_self_test.py` | `818561228860328189506a488f0af1bb9ccf524a6ba95c16ba4aeccdf4c85c38` |
 | `scripts/run_installed_self_test_shard.py` | `afee6d98210a2858e6af8527c605489d0dafc1b3b8c81075ffa210246781467d` |
 | `scripts/run_publication_pre_controller.py` | `71ed4ece8273dd199f5605aa52cb0837fdbfc681733a5ef31fcd6aedc80ef593` |
-| `scripts/run_windows_unittests.py` | `89f3854043257577f23e10f7bf5f777df16c2521f9ae3b44b0f7e14734b79d5b` |
+| `scripts/run_windows_unittests.py` | `cd8f24c1ad9a216af89a316d6f06376c7e74ead06cac22dad674bc1e377ad30d` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
 | `scripts/tests/path_mutation_allowlist.json` | `2311c73deff9a22f8b896b5035920680e6ced4558e2ae1f06666c685d87e5d4c` |
@@ -851,7 +851,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_awf36_controller_config_generation.py` | `88eb3278e8ea5fad54ef58dadf6fc4821c0f2efb78e64d772bb8fda8bf6f345f` |
 | `scripts/tests/test_awf88_resource_ceilings.py` | `593dbb5275cc7f5291836fce74b43a53dd7d0048d5e1e5de616128c28a9616e7` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `c86bd0de0e061de0fe8e9801e4dd5bf1ab1cd6a01c73e78a577ce6dc0ca602ae` |
-| `scripts/tests/test_ci_suite_coverage.py` | `f4325d8643204ecf92703923a1c884a71a94e8263dcf00c32ff7ef1dd13b2fe9` |
+| `scripts/tests/test_ci_suite_coverage.py` | `23d90897946a0bb4a64ab351eeffda4fbc82ef8ece43fe59e2e105a6d77b76f6` |
 | `scripts/tests/test_ci_windows_final_candidate.py` | `bd0f50e1ca432f8ba910db61c680d4b7259dd17dddb1e151379b836fea47203f` |
 | `scripts/tests/test_cli_failure_paths.py` | `60fa00c32750cc958885bbfc26f4b53b3e18bda8fa61752b5498a4ee8c1d1da8` |
 | `scripts/tests/test_fresh_bootstrap.py` | `b771b24f25dd5a2212d33296240d751e3d569479842a99af50f96f00e8a696a2` |
@@ -868,7 +868,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_installed_platform_rulings.py` | `7b93760b01f530629147626f8f1a15456d82f1ddca1361e5af7ea265d5f8cdbd` |
 | `scripts/tests/test_installed_root_boundaries.py` | `daafe53fcfaf9ac1296206db763655ecf4ec6a654fe1e742c69a86e54f8bba48` |
 | `scripts/tests/test_installed_self_test.py` | `1230335d7a9ee8dd1b49e29231b15496275aeed4a33b81df7f4c6483529684e6` |
-| `scripts/tests/test_installed_self_test_shards.py` | `e1bae09a347dad14e2924ec747949d5261b535cc4b2ca6c7fed0e5160d742d6a` |
+| `scripts/tests/test_installed_self_test_shards.py` | `61d9e38c7a3f4071009fa171c10db8f334ff3d348386e0cd260f2ec53cae21d1` |
 | `scripts/tests/test_installed_shard_review_regressions.py` | `edf6f618242cebe45484047d49e583a6d7fe40b48e8c8e07caf815c2428d71c6` |
 | `scripts/tests/test_linux_installed_self_test_shards.py` | `92b899791c0919781b828db6418b32ccec1d1d483cac197fdbfbeb43753862c5` |
 | `scripts/tests/test_manifest_conflicts.py` | `22156e2b07c769f00a8144dca5a2d3a66932150717cd90cde3c7e7ef96519475` |
@@ -892,7 +892,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_validate_archive_defaults.py` | `c9424940cb2c7f052f9a7744bc146bdea2e9cf345cdb88729d2c17dab01685fa` |
 | `scripts/tests/test_validate_archive_report.py` | `5f80854db7f9fac07b2822ab1ba20cb0bdbf9feb78bec296de92d87ee2337caf` |
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
-| `scripts/tests/test_windows_unittest_shards.py` | `8655966bf9344eb9e36c43ffc4078ed62ab66df3bb9e90d6bb16c8dd0af47569` |
+| `scripts/tests/test_windows_unittest_shards.py` | `ae1b8dd141f050395bf880fb772f52170eb39f4d680ef489b2f0ff6a2dfa72bf` |
 | `scripts/upgrade_release.py` | `97cb3cc237328faa2b1c39fda7e82f7036d58f125fb516dfcc9c30ffb3af1cc8` |
 | `scripts/validate_archive.py` | `595e82a69ba16b3b9a60649f7b4ee7a6d467f119cec177925ba3e410c6281ed2` |
 | `scripts/validate_git_checkout.py` | `d8d9a2e85a611d16bfea7e5f67bc9666885a2b5c112aa6ea3ddad189b38c29bf` |
