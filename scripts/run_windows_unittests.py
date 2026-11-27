@@ -55,19 +55,18 @@ UPGRADE_MATRIX_FIRST_HALF = frozenset({
     'test_state_compatibility_is_listed_for_every_adjacent_step',
 })
 SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
-# The 23 November hosted Python 3.11-3.13 module model projected 44.8 minutes,
-# before the incoming O2 modules. On 26 November, isolated local Windows 3.13.3
-# runs measured combined_visibility=26.968 s, jira_owner_policy=890.605 s,
-# jira_whole_repository=37.613 s and excluded_refusal_proofs=86.597 s (all
-# test_awf307_*.py). Pin these away from shard 1 onto the lightest PR 315
-# Windows 3.13 shards: 2, 6 and 5. Holding other hosted job costs fixed and
-# transferring those local wall times gives shard 0-8 minutes:
-# 47, >42.6, 31.1, 46, 40, 39.4, 40.8, 46, 46 (previously
-# 47, >60, 30, 46, 40, 38, 26, 46, 46). The timed-out shard is censored;
-# >42.6 is a lower bound, not an upper bound. The maximum remains unknown
-# and at least 47 minutes, so the earlier 44.8-minute target is NOT met.
-# Mixed hosted/local timings do not bound runner variation or other versions;
-# fresh hosted module timings and validation are still required.
+# Hosted Python 3.11/3.13 shard 6 hit the 60-minute limit on PR 315.
+# The supplied parent-head local Windows totals for shards 0-8 were seconds:
+# 2445, 2088, 2608, 2352, 2515, 2176, 3307, 2489, 2640.
+# On 27 November, isolated Windows 3.13.3 runs measured second_look=150.485 s,
+# reporting_e13_regressions=206.439 s and ac42_e2e=448.278 s. Move these
+# whole modules from shard 6 to 5, 3 and 1, removing 805.202 s locally.
+# Also move awf238_pre_f3=109.655 s and awf244_controller_wiring=213.199 s
+# from shard 2 to 1 and 5, removing another 322.854 s from that shard.
+# Holding all other supplied local costs fixed projects shard 0-8 seconds:
+# 2445, 2646, 2285, 2558, 2515, 2540, 2502, 2489, 2640 (rounded).
+# These estimates do not bound runner variation or other Python versions;
+# fresh hosted validation is still required.
 # Keep whole-module ownership, per-suite interpreter isolation, the installed
 # acceptance exclusion and the existing upgrade-matrix halves unchanged.
 # R315r1-F01 production-count coverage measured alone on local Windows 3.13.3:
@@ -83,20 +82,21 @@ HEAVY_MODULE_SHARDS = {
     '.agentic/tests/test_upgrade_195.py': 3,
     '.agentic/tests/test_upgrade_journal.py': 0,
     '.agentic/tests/test_windows_diagnostics.py': 5,
-    'scripts/tests/test_ac42_e2e.py': 6,
+    'scripts/tests/test_ac42_e2e.py': 1,
     'scripts/tests/test_adoptable_source.py': 1,
     'scripts/tests/test_fresh_bootstrap.py': 7,
     'scripts/tests/test_publish_release.py': 4,
     'scripts/tests/test_self_test_review.py': 3,
     '.agentic/tests/test_awf238_owner_boundary.py': 8,
-    '.agentic/tests/test_awf238_pre_f3.py': 2,
-    '.agentic/tests/test_awf238_second_look.py': 6,
+    '.agentic/tests/test_awf238_pre_f3.py': 1,
+    '.agentic/tests/test_awf238_second_look.py': 5,
+    '.agentic/tests/test_awf244_controller_wiring.py': 5,
     '.agentic/tests/test_awf244_window_regressions.py': 8,
     '.agentic/tests/test_reporting_boundary.py': 2,
     '.agentic/tests/test_reporting_e10_regressions.py': 3,
     '.agentic/tests/test_reporting_e11_regressions.py': 8,
     '.agentic/tests/test_reporting_e12_regressions.py': 1,
-    '.agentic/tests/test_reporting_e13_regressions.py': 6,
+    '.agentic/tests/test_reporting_e13_regressions.py': 3,
     '.agentic/tests/test_reporting_e16_regressions.py': 6,
     '.agentic/tests/test_reporting_e3_regressions.py': 1,
     '.agentic/tests/test_reporting_e6_regressions.py': 0,

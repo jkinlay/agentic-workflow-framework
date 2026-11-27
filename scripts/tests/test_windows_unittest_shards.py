@@ -139,6 +139,26 @@ class ShardTests(unittest.TestCase):
         self.assertEqual([2], [shard for shard, paths in allocation[ROOTS[0]].items() if path in paths])
         runner.guard(self.root, allocation)
 
+    def test_measured_timeout_rebalance_preserves_whole_modules(self):
+        expected = {
+            '.agentic/tests/test_awf238_pre_f3.py': 1,
+            '.agentic/tests/test_awf238_second_look.py': 5,
+            '.agentic/tests/test_awf244_controller_wiring.py': 5,
+            '.agentic/tests/test_reporting_e13_regressions.py': 3,
+            'scripts/tests/test_ac42_e2e.py': 1,
+        }
+        for path in expected:
+            suite, name = path.rsplit('/', 1)
+            self.write(suite, name, PASSING)
+        allocation = self.allocation()
+        for path, shard in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(shard, runner.HEAVY_MODULE_SHARDS.get(path))
+                suite = path.rsplit('/', 1)[0]
+                self.assertEqual([shard], [index for index, paths in allocation[suite].items()
+                                           if path in paths])
+        runner.guard(self.root, allocation)
+
     def test_budget_pr_regressions_replace_removed_terminal_module_without_losing_guard(self):
         removed = ROOTS[0] + '/test_awf242_owner_admission.py'
         replacement = self.write(ROOTS[0], 'test_awf242_settings_pr.py', PASSING)
