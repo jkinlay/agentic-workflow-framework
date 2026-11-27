@@ -465,7 +465,7 @@
     ".agentic/tests/test_awf307_gates_owner_policy.py": "38fda6c5a23a52ee01ccb410ea2ef2bd7e4f7f6e4c9b959cd810989a557faad4",
     ".agentic/tests/test_awf307_intake_owner_policy.py": "f7e02a4d04ecd3aaef8d0e4078a85fd6324fd578c1871e4ae301f90f77e7b326",
     ".agentic/tests/test_awf307_jira_owner_policy.py": "6fd9180a54735f8d2c5b4b9ba17af317e995a7ccf97ac5c11f3ef41fa16668c4",
-    ".agentic/tests/test_awf307_jira_production_counts.py": "7aef84faaf3bee50f0031cea96b8602402deb5527b15297c6e83986b3a6a9901",
+    ".agentic/tests/test_awf307_jira_production_counts.py": "0ccaaeb452a5cf7f6b592e04f6b1b92d3d4c996ea8cf6215d1b3d289d7e05100",
     ".agentic/tests/test_awf307_jira_visibility.py": "122ab290777ecd8e762145e783a7abebc86483a73d104430175387e8032f6e34",
     ".agentic/tests/test_awf307_jira_whole_repository.py": "d1e60821781e1cee39a418ba17f96f868821e2cc9633c82b82b4ad495b07bb6a",
     ".agentic/tests/test_awf307_null_owner_identity.py": "ee1b1d3e0a7fbb2836bd492329f09208ee040d4586941304a2ec428404097a20",

@@ -3,12 +3,13 @@ from contextlib import contextmanager, ExitStack
 from copy import deepcopy
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import threading
 import unittest
 from unittest.mock import patch
 
-import source_only
+import source_only  # noqa: F401
 from test_awf307_jira_owner_policy import JiraFixture, ROOT, NOW, ISSUE, controller
 from agentic import ValidationError
 from agentic.canonical import canonical, sha256
@@ -18,7 +19,7 @@ from agentic.policy import policy_hash
 from agentic.lifecycle import definition
 
 
-@unittest.skipIf(source_only.committed_git_tuple(ROOT) is None, source_only.COMMITTED_GIT_REASON)
+@unittest.skipUnless(shutil.which('git'), 'Git executable unavailable')
 class ProductionCountsTests(JiraFixture):
     def setUp(self):
         super().setUp()
