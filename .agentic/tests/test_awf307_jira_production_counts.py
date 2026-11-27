@@ -22,12 +22,24 @@ from agentic.lifecycle import definition
 class ProductionCountsTests(JiraFixture):
     def setUp(self):
         super().setUp()
-        # Own the repository metadata read by isolated closeout Git plumbing.
-        # Borrow immutable objects only; never commit or change source refs.
+        # Build the complete closeout history in a disposable repository.
+        import os
         self.project = self.outer / 'repository'
-        subprocess.run(['git', 'clone', '--shared', '--no-checkout', '--quiet',
-                        str(ROOT), str(self.project)], check=True, capture_output=True,
-                       timeout=120)
+        self.project.mkdir()
+        environment = dict(os.environ, GIT_AUTHOR_NAME='Fixture owner',
+            GIT_AUTHOR_EMAIL='owner@example.invalid', GIT_COMMITTER_NAME='Fixture owner',
+            GIT_COMMITTER_EMAIL='owner@example.invalid')
+        def fixture_git(*arguments, raw=None):
+            return subprocess.run(['git', '-C', str(self.project), *arguments], input=raw,
+                check=True, capture_output=True, timeout=120, env=environment).stdout.strip()
+        fixture_git('init', '-q')
+        base_tree = fixture_git('mktree', raw=b'')
+        base = fixture_git('commit-tree', base_tree.decode(), raw=b'Synthetic base\n')
+        blob = fixture_git('hash-object', '-w', '--stdin', raw=b'Synthetic closeout fixture\n')
+        tree = fixture_git('mktree', raw=b'100644 blob ' + blob + b'\tAGENTS.md\n')
+        head = fixture_git('commit-tree', tree.decode(), '-p', base.decode(),
+            raw=b'Synthetic reviewed change\n')
+        fixture_git('update-ref', 'HEAD', head.decode())
         self.store = controller.ContinuousControllerStore(self.outer / 'counts.sqlite', ['A'],
             worktree_roots=[self.project])
         self.binding = {'project_id': self.config['project']['id'], 'repository_id': 101,
