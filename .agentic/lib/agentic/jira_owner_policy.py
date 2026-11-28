@@ -170,7 +170,41 @@ def _journal(store, config, issue):
                     'identity': loads(pin['value'])['identity'], 'mutation_attempted': False}
                     and row['operation_json'] is None,
                     'Held Jira intent lacks proof that no write was attempted')
-            if record['to_status_id'] == config['jira']['status_map']['done']:
+            # The immutable event records the semantic target, and to_status_id
+            # records its concrete target under the policy used at creation.
+            # Today's status mapping cannot reclassify a historical Done write.
+            from .lifecycle import JIRA_WRITES
+            target = record.get('to_status_id')
+            _require(record.get('lifecycle_event') in JIRA_WRITES
+                and isinstance(target, str) and target.strip() and target == target.strip(),
+                'Shared Jira controller intent cannot establish its recorded target')
+            target_key = JIRA_WRITES[record['lifecycle_event']]
+            target_pin = db.execute('SELECT value FROM controller_meta WHERE key=?',
+                ('jira-target-policy:' + row['operation_id'],)).fetchone()
+            target_policy = loads(target_pin['value']) if target_pin is not None else None
+            is_done = target_key == 'done'
+            if target_pin is not None:
+                _require(isinstance(target_policy, dict) and set(target_policy) == {
+                    'operation_id', 'intent_sha256', 'target_key', 'target_status_id', 'done_status_id',
+                    'target_policy_sha256'}
+                    and target_policy['operation_id'] == row['operation_id']
+                    and target_policy['intent_sha256'] == row['intent_sha256']
+                    and target_policy['target_key'] == target_key
+                    and target_policy['target_status_id'] == target
+                    and isinstance(target_policy['done_status_id'], str)
+                    and target_policy['done_status_id'].strip()
+                    and target_policy['done_status_id'] == target_policy['done_status_id'].strip()
+                    and target_policy['target_policy_sha256'] == fingerprint('controller-jira-target-policy',
+                        {key: value for key, value in target_policy.items() if key != 'target_policy_sha256'}),
+                    'Shared Jira controller target policy is corrupt')
+                is_done = is_done or target == target_policy['done_status_id']
+            else:
+                # Legacy Done events establish their own semantic target. A
+                # completed non-Done event without its write policy cannot rule
+                # out a target that was also mapped to Done. Never backfill it.
+                _require(is_done or row['status'] != 'SUCCEEDED',
+                    'Shared Jira controller history cannot establish its historical target policy')
+            if is_done:
                 _require(row['status'] == 'HELD',
                          'Shared Jira closure has a Done intent whose attempt status is not proven unsent')
             # Read every retained receipt, including successful non-Done writes.
@@ -194,7 +228,7 @@ def _journal(store, config, issue):
                         and timestamp(record['created_at']) <= timestamp(operation.get('observed_at'))
                             <= timestamp(observation['observed_at']),
                         'Shared Jira successful operation has corrupt attempt history')
-            result.append({'table': table, **row, 'identity': loads(pin['value'])})
+            result.append({'table': table, **row, 'identity': loads(pin['value']), 'target_policy': target_policy})
     return fingerprint('shared-jira-controller-history', {'issue_id': issue, 'operations': result,
                        'assignment_history': state.get('tier_assignment_history', {}).get(issue, [])})
 

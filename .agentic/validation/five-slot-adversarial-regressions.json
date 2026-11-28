@@ -1711,6 +1711,15 @@
       "regression_id": "AWF307-R315r1-F01-COUNT-CONTEXT",
       "source_finding_id": "R315r1-F01",
       "test_id": "ProductionCountsTests.test_shared_closure_counts_through_real_adapter_and_closeout"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_awf307_historical_done.py",
+      "name": "Historical Done attempts keep shared Jira closure uncounted after mapping changes",
+      "permanent": true,
+      "regression_id": "AWF307-R315r2-F01-HISTORICAL-DONE",
+      "source_finding_id": "R315r2-F01",
+      "test_id": "HistoricalDoneTests.test_retained_closure_count_gate_refuses_old_done_attempts"
     }
   ]
 }

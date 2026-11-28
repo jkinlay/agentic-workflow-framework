@@ -35,6 +35,7 @@ import test_awf243_operator_recovery  # noqa: E402
 import test_awf266_runtime  # noqa: E402
 import test_awf266_round1  # noqa: E402
 import test_awf307_jira_production_counts  # noqa: E402
+import test_awf307_historical_done  # noqa: E402
 import test_path_mutation_guard  # noqa: E402
 
 
@@ -43,6 +44,7 @@ INVENTORY_MODULES = {
     ".agentic/tests/test_awf243_review_regressions.py": test_awf243_review_regressions,
     ".agentic/tests/test_awf266_runtime.py": test_awf266_runtime,
     ".agentic/tests/test_awf307_jira_production_counts.py": test_awf307_jira_production_counts,
+    ".agentic/tests/test_awf307_historical_done.py": test_awf307_historical_done,
     ".agentic/tests/test_bootstrap_configuration.py": test_bootstrap_configuration,
     ".agentic/tests/test_continuous_controller.py": test_continuous_controller,
     ".agentic/tests/test_five_slot_acceleration.py": test_five_slot_acceleration,

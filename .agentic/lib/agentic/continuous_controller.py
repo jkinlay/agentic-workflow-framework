@@ -2011,7 +2011,7 @@ class ContinuousControllerStore:
 				db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?", (now, row['dispatch_id']))
 				self._record_dispatch_unknown(db, row['dispatch_id'], loads(row['payload_json']), now)
 
-	def prepare_jira_operation(self, record, now, *, identity=None):
+	def prepare_jira_operation(self, record, now, *, identity=None, target_config=None):
 		timestamp(now)
 		from .canonical import fingerprint
 		_require(isinstance(record, dict) and isinstance(record.get('operation_id'), str) and isinstance(record.get('binding'), dict) and isinstance(record['binding'].get('issue_id'), str), 'Jira operation intent is malformed')
@@ -2028,6 +2028,8 @@ class ContinuousControllerStore:
 			else:
 				_require(prior['intent_sha256'] == intent_sha256, 'Jira operation identity collided with a different durable intent')
 			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+			if target_config is not None and row['status'] == 'PENDING' and row['operation_json'] is None and row['readback_json'] is None:
+				_pin_jira_target_policy(db, target_config, loads(row['record_json']), intent_sha256)
 			return dict(row) | {'record': loads(row['record_json'])}
 
 	def begin_jira_operation(self, operation_id, now):
@@ -2310,6 +2312,37 @@ def _jira_operation_identity(config, record):
 def _pin_jira_identity(db, operation_id, intent_sha256, identity):
 	value = {'operation_id': operation_id, 'intent_sha256': intent_sha256, 'identity': identity}
 	db.execute('INSERT INTO controller_meta VALUES(?,?)', ('jira-identity:' + operation_id, canonical(value).decode()))
+
+
+def _pin_jira_target_policy(db, config, record, intent_sha256):
+	"""Retain target semantics before a write, never infer them on completed replay."""
+	from .canonical import fingerprint
+	from .lifecycle import JIRA_WRITES
+	key = JIRA_WRITES.get(record['lifecycle_event'])
+	target = record.get('to_status_id')
+	done = config['jira']['status_map']['done']
+	_require(key is not None and target == config['jira']['status_map'][key]
+		and all(isinstance(value, str) and value.strip() and value == value.strip() for value in (target, done)),
+		'Jira intent cannot establish its target under the write policy')
+	value = {'operation_id': record['operation_id'], 'intent_sha256': intent_sha256,
+		'target_key': key, 'target_status_id': target, 'done_status_id': done}
+	value['target_policy_sha256'] = fingerprint('controller-jira-target-policy', value)
+	# A retry can only preserve the original policy classification. Completed,
+	# attempted and unknown operations are never backfilled from today's policy.
+	db.execute('INSERT OR IGNORE INTO controller_meta VALUES(?,?)',
+		('jira-target-policy:' + record['operation_id'], canonical(value).decode()))
+	retained = loads(db.execute('SELECT value FROM controller_meta WHERE key=?',
+		('jira-target-policy:' + record['operation_id'],)).fetchone()['value'])
+	_require(isinstance(retained, dict) and set(retained) == set(value)
+		and {key: item for key, item in retained.items() if key not in {'done_status_id', 'target_policy_sha256'}} ==
+			{key: item for key, item in value.items() if key not in {'done_status_id', 'target_policy_sha256'}}
+		and isinstance(retained['done_status_id'], str) and retained['done_status_id'].strip()
+		and retained['done_status_id'] == retained['done_status_id'].strip()
+		and retained['target_policy_sha256'] == fingerprint('controller-jira-target-policy',
+			{key: item for key, item in retained.items() if key != 'target_policy_sha256'}),
+		'Retained Jira target policy is corrupt')
+	_require((retained['done_status_id'] == target) == (done == target),
+		'Jira target policy changed before retry; reissue the pending lifecycle intent')
 
 
 def _jira_adoption_identity(config, record, now, operator):
@@ -3150,6 +3183,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 				db.execute('INSERT INTO controller_batch_jira_operation VALUES(?,?,?,?,?,?,NULL,NULL,?)',
 					(record['operation_id'], record['binding']['issue_id'], 'JIRA_RECONCILED', intent, 'PENDING', canonical(record).decode(), now))
 				_pin_jira_identity(db, record['operation_id'], intent, _jira_operation_identity(config, record))
+				_pin_jira_target_policy(db, config, record, intent)
 			else:
 				stored = loads(row['record_json'])
 				# Recognize the shipped legacy provider-key spelling for replay,
@@ -4651,7 +4685,7 @@ def _production_jira_lifecycle(store, *, config, contract, event, facts, binding
 	if key is None:
 		return {'planned': False, 'reason': target, 'writes_stopped': False, 'current_observation': current, 'execution_authority': False}
 	record = transition_record(binding, event, current['status_id'], target, transition_id, jira_provider=provider, merge_result_id=merge_result_id, producer_id=producer_id, run_id=run_id, now=now, evidence=evidence)
-	intent = store.prepare_jira_operation(record, now, identity=_jira_operation_identity(config, record))
+	intent = store.prepare_jira_operation(record, now, identity=_jira_operation_identity(config, record), target_config=config)
 	record = intent['record']
 	if intent['status'] == 'SUCCEEDED':
 		return {'planned': False, 'reason': 'Durable Jira operation already succeeded', 'operation_id': record['operation_id'], 'current_observation': current, 'execution_authority': False}
