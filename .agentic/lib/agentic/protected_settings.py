@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 from . import ValidationError
-from .budgeting import fresh_settings, validate_settings
+from .budgeting import fresh_settings, new_project_settings, validate_settings
 from .operating_calendar import fresh_calendar, validate_calendar
 from .canonical import canonical, load_yaml
 from .reporting.settings import effective_reporting
@@ -36,11 +36,19 @@ def load_operating_yaml(raw):
         raise ValidationError('OPERATING_CONFIG.yaml: Invalid operating YAML: duplicate keys, malformed YAML or unsupported values; problem: ' + kind + '; correct the file') from None
 
 
+def _baseline(name, value, defaults):
+    # Recognize only the complete explicit new-project baseline. Absent,
+    # partial and custom values retain the existing policy/fallback path.
+    if name == 'budgeting' and value == new_project_settings():
+        return new_project_settings()
+    return defaults()
+
+
 def _nondefault(working):
     for name, defaults, normalize in PROTECTED_DOMAINS:
         if name in working:
             try:
-                if canonical(normalize(working[name])) != canonical(normalize(defaults())):
+                if canonical(normalize(working[name])) != canonical(normalize(_baseline(name, working[name], defaults))):
                     return True
             except ValidationError:
                 # Invalid working bytes cannot mask valid accepted policy. They
@@ -256,7 +264,7 @@ def resolve_protected(root, governance, working):
             if raw is None:
                 for name, defaults, normalize in PROTECTED_DOMAINS:
                     if name in value:
-                        value[name] = defaults()
+                        value[name] = _baseline(name, value[name], defaults)
                 source = 'fresh defaults' if 'budgeting' in value else 'legacy retained'
                 sources = {name: 'fresh defaults' if name in value else 'legacy retained'
                            for name, _, _ in PROTECTED_DOMAINS}

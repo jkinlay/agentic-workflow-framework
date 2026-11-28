@@ -52,6 +52,12 @@ ROUTING_SOURCE = '.agentic/defaults/routing.yaml'
 _SUBPROCESS_RUN = subprocess.run
 
 
+def _retain_usage_tail(tree, log_name, usage):
+    """Record an unmeasured transport without retaining its completed prefix."""
+    if usage['actual_tokens'] is None:
+        tree.write(log_name + '.usage-incomplete.json', canonical(usage), authority='transaction')
+
+
 def _terminal_agent_call(method):
     """Seal a launch only after its outermost caller validates the result.
 
@@ -438,6 +444,17 @@ class HostDriver:
         require(len(matches) == 1, 'Budget execution lineage is missing or ambiguous')
         return matches[0]
 
+    def configure_token_limiter(self, factory):
+        require(callable(factory), 'Trusted token limiter factory required')
+        self._token_limiter_factory = factory
+
+    def bind_budget_reservation(self, admission):
+        from .codex_subprocess_limiter import enrolled_limiter
+        args, cwd = self._budget_launch
+        limiter = enrolled_limiter(self, admission['binding'], cwd)
+        require(limiter is not None, 'BUDGET_NOT_READY: trusted_host_enrollment unavailable')
+        return limiter.reserve(admission['binding'], admission['reservation'])
+
     def observe_budget_admission(self, binding, selected):
         from ..budgeting import subprocess_budget_request
         self.observe_enrollment(binding)
@@ -450,6 +467,14 @@ class HostDriver:
         request['worker_context_ids'] = sorted({row['context_id'] for row in contexts})
         if contexts:
             request['worker_run_id'] = contexts[-1]['run_id']
+        if getattr(self, '_token_limiter_factory', None) is not None:
+            from .codex_subprocess_limiter import enrolled_limiter
+            args, cwd = self._budget_launch
+            try:
+                limiter = enrolled_limiter(self, binding, cwd)
+                return limiter.admission(binding, selected, request, argv=args, cwd=cwd)
+            except (ValidationError, OSError):
+                pass  # Enforced admission refuses; accounting-only stays available.
         return {'request': request, 'capabilities': {'models': {
             selected['model']: [selected['reasoning_effort']]}}, 'limits_enforced': False}
 
@@ -511,20 +536,53 @@ class HostDriver:
             contexts.append(dict(context_id=context, run_id=run.name))
         return contexts
 
+    def _observe_usage_tail(self, log, raw, *, stream_complete=True):
+        """Keep rejected stdout's counters in memory, never its raw contents."""
+        from ..budgeting import codex_jsonl_usage
+        usage = codex_jsonl_usage(raw, stream_complete=stream_complete)
+        if usage['actual_tokens'] is None:
+            if not hasattr(self, '_incomplete_codex_usage'):
+                self._incomplete_codex_usage = {}
+            self._incomplete_codex_usage[os.path.abspath(log)] = usage
+        return usage
+
     def observe_budget_outcome(self, admission, observation):
-        from ..budgeting import codex_usage, subprocess_budget_outcome
+        from ..budgeting import codex_jsonl_usage, subprocess_budget_outcome
+        from ..token_limiter import token_count
         binding = admission['binding']
         self.observe_enrollment(binding)
         run = self._budget_execution(binding)
         with Tree(run) as tree:
             raw = tree.read('codex.jsonl', maximum=CODEX_LOG_LIMIT) if tree.inspect('codex.jsonl') is not None else b''
-        events = [loads(line) for line in raw.decode('utf-8').splitlines() if line.strip()]
+            usage = codex_jsonl_usage(raw)
+            cached = getattr(self, '_incomplete_codex_usage', {}).get(os.path.abspath(run / 'codex.jsonl'))
+            if cached is not None:
+                usage = dict(actual_tokens=None,
+                    lower_bound_tokens=max(usage['lower_bound_tokens'], cached['lower_bound_tokens']))
+            marker = 'codex.jsonl.usage-incomplete.json'
+            if tree.inspect(marker) is not None:
+                incomplete = loads(tree.read(marker, maximum=16384).decode('utf-8'))
+                require(isinstance(incomplete, dict)
+                    and set(incomplete) == {'actual_tokens', 'lower_bound_tokens'}
+                    and incomplete['actual_tokens'] is None and token_count(incomplete['lower_bound_tokens']),
+                    'Invalid incomplete telemetry observation')
+                usage = dict(actual_tokens=None,
+                    lower_bound_tokens=max(usage['lower_bound_tokens'], incomplete['lower_bound_tokens']))
         success = observation.get('success', True)
         session = self._terminal_context(run / 'codex.jsonl')
         require(not success or session is not None, 'Successful execution lacks observed context')
         require(observation['session_id'] == session, 'Review usage differs from observed thread')
+        actual_tokens = usage['actual_tokens']
+        if admission.get('limiter_plan'):
+            from .codex_subprocess_limiter import enrolled_limiter
+            cwd = self.critic if binding['role'] in ('critic', 'specialist') else self.worker
+            limiter = enrolled_limiter(self, binding, cwd)
+            require(limiter is not None, 'BUDGET_NOT_READY: trusted_host_enrollment unavailable')
+            limited = limiter.complete(admission['limiter_plan'], actual_tokens=actual_tokens,
+                lower_bound_tokens=usage['lower_bound_tokens'], success=success)
+            actual_tokens = limited['actual_tokens']
         return subprocess_budget_outcome(binding, admission['reservation'], session_id=session,
-            actual_tokens=codex_usage(events), success=success,
+            actual_tokens=actual_tokens, success=success,
             failure_kind=observation.get('failure_kind', 'unknown'))
 
     def configure_budgeting(self, context, *, ticket_id=None):
@@ -878,6 +936,9 @@ class HostDriver:
             env['PYTHONDONTWRITEBYTECODE'] = '1'
         env['GIT_TERMINAL_PROMPT'] = '0'
         command = [str(executable_path), *args]
+        budgeting = getattr(self, 'budgeting', None)
+        accounting = (name == 'codex' and budgeting is not None
+                      and budgeting.settings['accounting_enabled'])
         policies = {
             'git': GIT_RUNNER_POLICY,
             'gh': HOST_PROVIDER_RUNNER_POLICY,
@@ -922,15 +983,25 @@ class HostDriver:
                 except BaseException as exc:
                     if log:
                         raw = bytes(streamed['stdout'])
-                        # A killed write can leave a partial final event. It
-                        # proves no usage; retain all preceding complete events.
-                        if raw and not raw.endswith(b'\n'):
+                        # Preserve the pre-accounting retention path exactly.
+                        # A killed write may leave an unfinished final record.
+                        if not accounting and raw and not raw.endswith(b'\n'):
                             raw = raw[:raw.rfind(b'\n') + 1]
                         with Tree(Path(log).parent) as tree:
-                            retain_codex_log(tree, Path(log).name, raw,
-                                bytes(streamed['stderr']), maximum=CODEX_LOG_LIMIT,
-                                credentials=credential_values,
-                                paths=(self.root, self.worker, self.critic, self.state))
+                            stream_complete = isinstance(exc, ValidationError) and str(exc).startswith(
+                                ('SUBPROCESS_CANCELLED:', 'SUBPROCESS_TIMEOUT:'))
+                            if accounting:
+                                usage = self._observe_usage_tail(log, raw,
+                                    stream_complete=stream_complete)
+                            if accounting and not stream_complete:
+                                _retain_usage_tail(tree, Path(log).name, usage)
+                            else:
+                                # Accounting keeps an unfinished tail visible;
+                                # OFF retains the historical trimmed prefix.
+                                retain_codex_log(tree, Path(log).name, raw,
+                                    bytes(streamed['stderr']), maximum=CODEX_LOG_LIMIT,
+                                    credentials=credential_values,
+                                    paths=(self.root, self.worker, self.critic, self.state))
                     if (name == 'gh'
                             and str(exc).startswith('SUBPROCESS_STDOUT_LIMIT:')):
                         raise ValidationError(
@@ -974,11 +1045,16 @@ class HostDriver:
         if log:
             log_path = Path(os.path.abspath(log))
             with Tree(log_path.parent) as tree:
-                retain_codex_log(
-                    tree, log_path.name, result.stdout, result.stderr,
-                    maximum=CODEX_LOG_LIMIT, credentials=credential_values,
-                    paths=(self.root, self.worker, self.critic, self.state),
-                )
+                try:
+                    retain_codex_log(
+                        tree, log_path.name, result.stdout, result.stderr,
+                        maximum=CODEX_LOG_LIMIT, credentials=credential_values,
+                        paths=(self.root, self.worker, self.critic, self.state),
+                    )
+                except ValidationError:
+                    if accounting:
+                        self._observe_usage_tail(log_path, result.stdout, stream_complete=False)
+                    raise
             if result.returncode != 0:
                 raise _HostCommandFailure(f'HOST_COMMAND_FAILED: {name} failed; inspect retained run log',
                                           failure_kind='cancelled' if result.returncode < 0 else 'unknown')
@@ -1785,7 +1861,15 @@ class HostDriver:
             return None
 
     def _launch_agent(self, role, run, args, prompt, *, enrolled=True, first_draft_run=None):
+        launch_directory = args[args.index('--cd') + 1] if '--cd' in args else self.root
+        self._budget_launch = (list(args), launch_directory)
         admission, binding = self._agent_admission(role, run, enrolled=enrolled)
+        if admission is not None and admission.get('limiter_plan'):
+            from .codex_subprocess_limiter import enrolled_limiter
+            limiter = enrolled_limiter(self, binding, launch_directory)
+            require(limiter is not None and limiter.command == (self.c['executables']['codex']['path'],),
+                    'Budget launch executable changed')
+            args = limiter.launch(admission['limiter_plan'], argv=list(args), cwd=launch_directory)
         if binding is not None:
             if role in ('critic', 'specialist'):
                 self.budgeting.operations.worker_contexts(binding)

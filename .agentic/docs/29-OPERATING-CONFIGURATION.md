@@ -60,8 +60,8 @@ Commit `.agentic-state/operating/changes/` with settings. Bootstrap preserves ou
 Publish flushed journal/append-only audit without replacement; preserve conflicts and inspected journal SHA-256.
 Protected changes use Git history and a PR, never local recovery authority.
 
-Generated `OPERATING_CONFIG.yaml`: accounting/enforcement OFF; dormant limits
-4000000/ticket, 1000000000/project lifetime. Absent fields retain legacy policy; manual budget adoption. Accounting OFF disables enforcement; limits enable
+New projects: accounting/enforcement ON, enforcement_mode `pre_run`; 6,000,000,000/ticket, 600,000,000,000/project.
+Existing projects unchanged; absence retains legacy policy; manual adoption. Accounting OFF disables enforcement; limits enable
 neither switch. No Epic budget overrides.
 
 Ask in AWF Codex chat to check switches, limits, source/commit and differences.

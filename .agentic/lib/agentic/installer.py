@@ -3143,7 +3143,10 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         if applicability["status"] == "NOT_APPLICABLE":
             operating_plan = {"files": {}, "actions": [], "inspection": applicability}
         else:
-            fresh_defaults = ".agentic/defaults/OPERATING_CONFIG.yaml"
+            fresh_defaults = ".agentic/defaults/NEW_PROJECT_OPERATING_CONFIG.yaml"
+            if fresh_defaults not in content:
+                # Preserve the existing baseline for older/minimal sources.
+                fresh_defaults = ".agentic/defaults/OPERATING_CONFIG.yaml"
             initial_operating = (load_yaml(content[fresh_defaults])
                                  if mode == "install" and existing_config is None and fresh_defaults in content else None)
             operating_plan = plan_initialize_operating(destination, governance, initial_operating=initial_operating)

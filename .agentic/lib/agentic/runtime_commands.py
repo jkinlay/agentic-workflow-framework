@@ -121,6 +121,18 @@ def command_catalog(root, *, platform=None):
         # Doctor remains available for missing or invalid configuration.
         pass
     warnings.extend(item for item in warning_lines(jira_owner_warnings(root)) if item not in warnings)
+    try:
+        from .operating import inspect_operating
+        operating = inspect_operating(root, load(root / '.agentic/PROJECT_CONFIG.yaml'))
+        budget = operating.get('budgeting', {})
+        if operating['status'] == 'ACCEPTED' and 'accounting_enabled' in budget:
+            warnings.append('Budgeting (effective): accounting=' + ('ON' if budget['accounting_enabled'] else 'OFF') +
+                '; enforcement=' + ('ON' if budget['enforcement_enabled'] else 'OFF') +
+                '; mode=' + budget.get('enforcement_mode', 'strict') +
+                '; per ticket=' + format(budget['max_tokens_per_ticket'], ',') +
+                '; project lifetime=' + format(budget['max_tokens_per_project'], ','))
+    except (ValidationError, OSError, ValueError):
+        pass  # Validation/status retain configuration refusals; doctor stays available.
     commands = [
         ("adoption", ["preflight"], 0),
         ("verification", ["verify-installation"], 0),
