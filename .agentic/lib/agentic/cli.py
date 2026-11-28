@@ -272,10 +272,12 @@ def main(argv=None, default_root=None):
     handoff_parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown")
     handoff_parser.add_argument("--output", type=Path, help="Also create this new JSON file; never overwrites")
     args = parser.parse_args(argv)
+    from .jira_owner_visibility import jira_owner_warnings, with_jira_owner_warnings
     diagnostic_warnings = []
+    visibility = []
     try:
         root = args.root.absolute()
-        if args.command in {'verify-installation', 'verify-authorization', 'validate-config'}:
+        if args.command in {'verify-installation', 'verify-authorization', 'validate-config', 'doctor'}:
             from .shared_owner_policy import shared_owner_warnings
             try:
                 diagnostic_warnings = shared_owner_warnings(load(
@@ -283,6 +285,7 @@ def main(argv=None, default_root=None):
             except (ValidationError, OSError, ValueError):
                 # Reporting cannot replace the command's existing diagnostics.
                 pass
+            visibility = jira_owner_warnings(root, config_path=getattr(args, 'config', None))
         if args.command == 'reporting-status':
             from .operating import read_operating
             from .reporting.observations import inspect_reporting
@@ -301,6 +304,7 @@ def main(argv=None, default_root=None):
             snapshot = build_snapshot(root)
             if args.command == "doctor":
                 output = compare_snapshot(load(args.handoff), snapshot)
+                output = with_jira_owner_warnings(output, diagnostic_warnings + visibility)
                 print(json.dumps(output, indent=2, ensure_ascii=False))
                 return {"MATCH": 0, "DRIFT": 2}.get(output["status"], 1)
             if args.output:
@@ -405,7 +409,8 @@ def main(argv=None, default_root=None):
                 if errors:
                     raise ValidationError("digest finding rejected: " + errors[0].message)
             body = render(state, audience=args.audience, gate=value.get("gate"), findings=value.get("findings", []),
-                          validation=value.get("validation"), reviewer=value.get("reviewer"), ci=value.get("ci"))
+                          validation=value.get("validation"), reviewer=value.get("reviewer"), ci=value.get("ci"),
+                          accepted_policy_root=root)
             print(body, end="")
             emit_json({"digest_sha256": digest_sha256(body), "event_type": "evidence_comment", "execution_authority": False}, stream=sys.stderr)
             return 0
@@ -504,10 +509,12 @@ def main(argv=None, default_root=None):
                             before_config, before_workflow, before_instructions):
                         output.update(status="UNOBSERVED", diagnostic={"classification": "CONCURRENT_CHANGE",
                             "path": ".agentic configuration paths"}, execution_authority=False)
+                        output = with_jira_owner_warnings(output, visibility)
                         print(json.dumps(output, indent=2, ensure_ascii=False))
                         return 2
                     output.update(configuration_valid_for="adoption", policy_hash=output['policy_sha256'])
                     if output['status'] == 'REJECTED':
+                        output = with_jira_owner_warnings(output, visibility)
                         emit_json(output)
                         return 2
                     if args.require_enablement:
@@ -669,6 +676,7 @@ def main(argv=None, default_root=None):
         if diagnostic_warnings:
             warnings = output.setdefault('warnings', [])
             warnings.extend(item for item in diagnostic_warnings if item not in warnings)
+        output = with_jira_owner_warnings(output, visibility)
         emit_json(output)
         return 0
     except (ValidationError, OSError, ValueError, KeyError) as exc:
@@ -684,5 +692,6 @@ def main(argv=None, default_root=None):
                 str(exc), code="DIAGNOSTIC_INVALID"), "execution_authority": False}
         if diagnostic_warnings:
             output['warnings'] = diagnostic_warnings
+        output = with_jira_owner_warnings(output, visibility)
         emit_json(output, stream=sys.stderr)
         return 2

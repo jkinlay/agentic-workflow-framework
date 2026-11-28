@@ -410,6 +410,14 @@
         "next_command": {
           "type": "string",
           "minLength": 1
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
         }
       }
     },

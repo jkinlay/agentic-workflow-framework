@@ -1003,8 +1003,11 @@ class ContinuousControllerStore:
 			append_plan_record(state_store, result['record'])
 		return result
 
-	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False, migrate_streams=False):
+	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False, migrate_streams=False, accepted_policy_root=None):
 		self.worktree_roots = tuple((Path(root).resolve(strict=False) for root in worktree_roots))
+		if accepted_policy_root is not None:
+			from .shared_owner_policy import consumer_policy_root
+			self.accepted_policy_root = consumer_policy_root(root=Path(accepted_policy_root).resolve(), store=self)
 		self.path = protected_state_path(path, self.worktree_roots)
 		_require(isinstance(stream_ids, (list, tuple)) and stream_ids and (len(stream_ids) == len(set(stream_ids))) and all((isinstance(item, str) and item.strip() for item in stream_ids)), 'Configured stream identities must be unique nonempty strings')
 		_require(type(cadence_seconds) is int and cadence_seconds > 0, 'Status cadence must be positive seconds')
@@ -1703,17 +1706,44 @@ class ContinuousControllerStore:
 			return self._snapshot(db)
 
 	def digest(self, now, *, calendar=None, owner_config=None, accepted_policy_root=None):
+		from .canonical import fingerprint
 		current = timestamp(now)
+		root = accepted_policy_root or getattr(self, 'accepted_policy_root', None)
+		if root is None and len(self.worktree_roots) == 1:
+			root = self.worktree_roots[0]
 		warnings = []
 		from .shared_owner_policy import configured_shared_owner_actor_id
 		if owner_config is not None and configured_shared_owner_actor_id(owner_config) is not None:
-			evidence = _controller_owner_evidence(owner_config, owner_config.get("github", {}).get("expected_actor_id"), accepted_policy_root)
+			evidence = _controller_owner_evidence(owner_config, owner_config.get("github", {}).get("expected_actor_id"), root)
 			if evidence:
 				warnings = evidence["accepted_owner_policy"]["warnings"]
+		from .jira_owner_visibility import CODE as JIRA_WARNING_CODE, jira_owner_warnings
+		jira_warnings = jira_owner_warnings(root, owner_config)
+		if jira_warnings:
+			warnings = [item for item in warnings if item['code'] != JIRA_WARNING_CODE]
+		warnings += jira_warnings
 		with self.transaction() as db:
-			pending = db.execute("SELECT payload_json FROM controller_outbox WHERE acknowledged_at IS NULL AND kind<>'REPORT' ORDER BY rowid LIMIT 1").fetchone()
+			pending = db.execute("SELECT * FROM controller_outbox WHERE acknowledged_at IS NULL AND kind NOT IN ('REPORT','SUPERSEDED') ORDER BY rowid LIMIT 1").fetchone()
 			if pending is not None:
-				return loads(pending['payload_json'])
+				body = loads(pending['payload_json'])
+				missing = [item for item in warnings if item not in body.get('owner_policy_warnings', [])]
+				if missing:
+					# Retain the old immutable delivery and issue a newly bound
+					# snapshot. Never rewrite a delivery already seen by a host.
+					prior_id = body.pop('delivery_id')
+					# The status snapshot remains historical. Only the owner policy
+					# observation is current; never relabel old stream facts as new.
+					body['supersedes_delivery_id'] = prior_id
+					if jira_warnings:
+						body['jira_owner_policy_observed_at'] = now
+					if any(item['code'] == 'SHARED_OWNER_AUTOMATION_ACCOUNT' for item in missing):
+						body['owner_policy_observed_at'] = now
+					body['owner_policy_warnings'] = deepcopy(warnings)
+					delivery_id = fingerprint('controller-status-digest', {'revision': pending['revision'], **body})
+					body['delivery_id'] = delivery_id
+					db.execute("UPDATE controller_outbox SET kind='SUPERSEDED' WHERE delivery_id=?", (prior_id,))
+					db.execute('INSERT INTO controller_outbox VALUES(?,?,?,?,?,NULL)', (delivery_id, body['kind'], pending['revision'], body['observed_at'], canonical(body).decode()))
+				return body
 			revision = int(self._meta(db, 'revision'))
 			last_revision = int(self._meta(db, 'last_digest_revision'))
 			last_regular = self._meta(db, 'last_regular_digest')
@@ -1753,12 +1783,19 @@ class ContinuousControllerStore:
 			if row['acknowledged_at'] is not None:
 				return loads(row['payload_json'])
 			_require(timestamp(delivered_at) >= timestamp(row['observed_at']), 'Digest acknowledgement predates its observation')
+			payload = loads(row['payload_json'])
+			if isinstance(payload, dict) and 'jira_owner_policy_observed_at' in payload:
+				_require(timestamp(delivered_at) >= timestamp(payload['jira_owner_policy_observed_at']),
+					'Digest acknowledgement predates its Jira policy warning observation')
+			if isinstance(payload, dict) and 'owner_policy_observed_at' in payload:
+				_require(timestamp(delivered_at) >= timestamp(payload['owner_policy_observed_at']),
+					'Digest acknowledgement predates its owner policy warning observation')
 			db.execute('UPDATE controller_outbox SET acknowledged_at=? WHERE delivery_id=?', (delivered_at, delivery_id))
 			prior_revision = int(self._meta(db, 'last_digest_revision'))
 			db.execute("UPDATE controller_meta SET value=? WHERE key='last_digest_revision'", (str(max(prior_revision, row['revision'])),))
 			if row['kind'] == 'REGULAR':
 				db.execute("UPDATE controller_meta SET value=? WHERE key='last_regular_digest'", (row['observed_at'],))
-			return loads(row['payload_json'])
+			return payload
 
 	@staticmethod
 	def _create_dispatch_intents(db, now):
@@ -1974,7 +2011,7 @@ class ContinuousControllerStore:
 				db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?", (now, row['dispatch_id']))
 				self._record_dispatch_unknown(db, row['dispatch_id'], loads(row['payload_json']), now)
 
-	def prepare_jira_operation(self, record, now, *, identity=None):
+	def prepare_jira_operation(self, record, now, *, identity=None, target_config=None):
 		timestamp(now)
 		from .canonical import fingerprint
 		_require(isinstance(record, dict) and isinstance(record.get('operation_id'), str) and isinstance(record.get('binding'), dict) and isinstance(record['binding'].get('issue_id'), str), 'Jira operation intent is malformed')
@@ -1991,6 +2028,8 @@ class ContinuousControllerStore:
 			else:
 				_require(prior['intent_sha256'] == intent_sha256, 'Jira operation identity collided with a different durable intent')
 			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+			if target_config is not None and row['status'] == 'PENDING' and row['operation_json'] is None and row['readback_json'] is None:
+				_pin_jira_target_policy(db, target_config, loads(row['record_json']), intent_sha256)
 			return dict(row) | {'record': loads(row['record_json'])}
 
 	def begin_jira_operation(self, operation_id, now):
@@ -2130,7 +2169,7 @@ def production_batch_closeout(store, *, config, request, coordinator,
 	def guarded_write(record):
 		require_jira_write_identity(config, observe_provider_identity())
 		_require_canonical_issue(record['binding']['issue_id'], observe_issue_identity=observe_issue_identity, now=now)
-		policy = _observe_jira_write_policy(config, record['binding']['issue_id'], observe_issue_policy, now)
+		policy = _observe_jira_write_policy(config, record['binding']['issue_id'], observe_issue_policy, now, store=store)
 		_require(policy['issue_type'] == 'LEAF', 'Epics are never transitioned')
 		from .jira_lifecycle import owner_closure_required
 		_require(not owner_closure_required(config, policy['snapshot']), 'Owner closure is required before the Done write')
@@ -2273,6 +2312,37 @@ def _jira_operation_identity(config, record):
 def _pin_jira_identity(db, operation_id, intent_sha256, identity):
 	value = {'operation_id': operation_id, 'intent_sha256': intent_sha256, 'identity': identity}
 	db.execute('INSERT INTO controller_meta VALUES(?,?)', ('jira-identity:' + operation_id, canonical(value).decode()))
+
+
+def _pin_jira_target_policy(db, config, record, intent_sha256):
+	"""Retain target semantics before a write, never infer them on completed replay."""
+	from .canonical import fingerprint
+	from .lifecycle import JIRA_WRITES
+	key = JIRA_WRITES.get(record['lifecycle_event'])
+	target = record.get('to_status_id')
+	done = config['jira']['status_map']['done']
+	_require(key is not None and target == config['jira']['status_map'][key]
+		and all(isinstance(value, str) and value.strip() and value == value.strip() for value in (target, done)),
+		'Jira intent cannot establish its target under the write policy')
+	value = {'operation_id': record['operation_id'], 'intent_sha256': intent_sha256,
+		'target_key': key, 'target_status_id': target, 'done_status_id': done}
+	value['target_policy_sha256'] = fingerprint('controller-jira-target-policy', value)
+	# A retry can only preserve the original policy classification. Completed,
+	# attempted and unknown operations are never backfilled from today's policy.
+	db.execute('INSERT OR IGNORE INTO controller_meta VALUES(?,?)',
+		('jira-target-policy:' + record['operation_id'], canonical(value).decode()))
+	retained = loads(db.execute('SELECT value FROM controller_meta WHERE key=?',
+		('jira-target-policy:' + record['operation_id'],)).fetchone()['value'])
+	_require(isinstance(retained, dict) and set(retained) == set(value)
+		and {key: item for key, item in retained.items() if key not in {'done_status_id', 'target_policy_sha256'}} ==
+			{key: item for key, item in value.items() if key not in {'done_status_id', 'target_policy_sha256'}}
+		and isinstance(retained['done_status_id'], str) and retained['done_status_id'].strip()
+		and retained['done_status_id'] == retained['done_status_id'].strip()
+		and retained['target_policy_sha256'] == fingerprint('controller-jira-target-policy',
+			{key: item for key, item in retained.items() if key != 'target_policy_sha256'}),
+		'Retained Jira target policy is corrupt')
+	_require((retained['done_status_id'] == target) == (done == target),
+		'Jira target policy changed before retry; reissue the pending lifecycle intent')
 
 
 def _jira_adoption_identity(config, record, now, operator):
@@ -2507,12 +2577,30 @@ def jira_reconciliation_binding_matches(retained, current):
 		{key: value for key, value in current.items() if key != 'policy_hash'})
 
 
-def validate_jira_owner_closure(value, request, *, now):
+def validate_jira_owner_closure(value, request, *, now, store=None, config=None):
 	"""An observed Jira closure is evidence, never merge or mutation authorization."""
+	shared = _validate_jira_owner_closure_shape(value, request, now=now)
+	if store is not None and config is not None:
+		from .jira_owner_policy import refuse_hidden_policy
+		refuse_hidden_policy(store, config)
+	if shared:
+		from .jira_owner_policy import context_available, retained_scope, validate
+		if not context_available() and store is not None and config is not None:
+			with retained_scope(store, config, value):
+				validate(value['owner_closure'])
+		else:
+			validate(value['owner_closure'])
+	return value
+
+
+def _validate_jira_owner_closure_shape(value, request, *, now):
+	"""Common binding checks; shared annotations alone confer no authority."""
 	_require(isinstance(value, dict) and set(value) == {'record', 'owner_closure'}, 'Malformed observed owner closure')
 	record, proof = value['record'], value['owner_closure']
+	from .jira_owner_policy import FIELD
+	shared = isinstance(proof, dict) and FIELD in proof
 	_require(isinstance(proof, dict) and set(proof) == {'issue_id', 'jira_provider', 'status', 'from_status',
-		'actor', 'history_id', 'transition_at', 'observed_at'}, 'Malformed actor-bound owner closure')
+		'actor', 'history_id', 'transition_at', 'observed_at'} | ({FIELD} if shared else set()), 'Malformed actor-bound owner closure')
 	provider = request['provider_identity']
 	_require(record['record_id'] == request['transition_record_id']
 		and jira_reconciliation_binding_matches(record['binding'], request['binding'])
@@ -2522,13 +2610,21 @@ def validate_jira_owner_closure(value, request, *, now):
 		and record['lifecycle_event'] == 'JIRA_RECONCILED' and record['status'] == 'SUCCEEDED'
 		and record['to_status_id'] == proof['status'] == request['expected_status_id']
 		and record['from_status_id'] == proof['from_status'] != proof['status']
-		and isinstance(proof['actor'], str) and proof['actor'].strip() and proof['actor'] != provider['controller_actor_id']
+		and isinstance(proof['actor'], str) and proof['actor'].strip()
+		and (proof['actor'] != provider['controller_actor_id'] or shared)
 		and isinstance(proof['history_id'], str) and re.fullmatch('[0-9]+', proof['history_id']) is not None
 		and record['read_back'] == {'observed_status': proof['status'], 'observed_actor': proof['actor'], 'observed_at': proof['observed_at']}
 		and timestamp(proof['transition_at']) <= timestamp(proof['observed_at']) <= timestamp(now)
 		and timestamp(record['created_at']) <= timestamp(proof['observed_at']),
 		'Owner closure lacks matching actor-bound Done transition evidence')
-	return value
+	return shared
+
+
+def _validate_jira_owner_history(value, request, *, now):
+	"""Read protected past evidence without accepting it as current closure."""
+	if _validate_jira_owner_closure_shape(value, request, now=now):
+		from .jira_owner_policy import validate_history
+		validate_history(value['owner_closure'])
 
 
 def retained_jira_owner_closure(store, config, request):
@@ -2545,39 +2641,54 @@ def retained_jira_owner_closure(store, config, request):
 
 
 def _observe_owner_jira_closeout(store, config, *, binding, provider, producer_id, run_id, now,
-		evidence, transition_id, merge_result_id, facts, read_current_status):
+		evidence, transition_id, merge_result_id, facts, read_current_status, contract, policy):
 	from .jira_lifecycle import transition_record, apply_read_back, EVENT_GUARDS
 	reason = 'owner_closure_required: owner closes in Jira; then run jira-lifecycle JIRA_RECONCILED to observe actor-bound Done evidence'
 	try:
 		_require(all(facts.get(key) is True for key in EVENT_GUARDS['JIRA_RECONCILED']), 'JIRA_RECONCILED requires verified merge and closeout guards')
 		with _batch_jira_ownership(store, issue_id=binding['issue_id']) as owned:
 			_require(owned, 'Jira issue has a live owner')
-			_recover_jira_ticket(store, config=config, issue=binding['issue_id'], provider=provider, now=now)
-			current = read_current_status({'issue_id': binding['issue_id'], 'jira_provider': provider,
-				'owner_closure_status_id': config['jira']['status_map']['done']})
-			proof = current.get('owner_closure')
-			_require(isinstance(proof, dict), 'Status alone cannot prove owner closure; actor-bound transition evidence is unavailable')
-			record = transition_record(binding, 'JIRA_RECONCILED', proof['from_status'], config['jira']['status_map']['done'],
-				transition_id, jira_provider=provider, merge_result_id=merge_result_id, producer_id=producer_id,
-				run_id=run_id, now=now, evidence=[*evidence, 'urn:awf:jira-owner-closure:' + proof['history_id'] + ':' + proof['observed_at']])
-			record = apply_read_back(record, proof['status'], proof['actor'], proof['observed_at'])['record']
-			value = {'record': record, 'owner_closure': proof}
-			validate_jira_owner_closure(value, {'transition_record_id': record['record_id'], 'binding': binding,
-				'issue_id': binding['issue_id'], 'provider_identity': provider, 'expected_status_id': config['jira']['status_map']['done']}, now=proof['observed_at'])
-			with store.transaction() as db:
-				key = 'jira-owner-closure:' + record['record_id']
-				identity = _jira_operation_identity(config, record)
-				prior = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
-				if prior is None:
-					db.execute('INSERT INTO controller_meta VALUES(?,?)', (key, canonical({**value, 'identity': identity}).decode()))
-				else:
-					old = loads(prior['value'])
-					_require(old.pop('identity', None) == identity, 'Owner closure invariant identity changed')
-					_require(all(old['owner_closure'][key] == proof[key] for key in proof if key != 'observed_at'), 'Owner closure observation changed; retain the original evidence')
-					value = old
-		return {'planned': False, **value, 'writes_stopped': False, 'execution_authority': False}
+			from .jira_owner_policy import closure_scope
+			with closure_scope(store, config, binding['issue_id'], contract, policy, owned=True):
+				return _retain_owner_jira_closeout(store, config, binding=binding, provider=provider,
+					producer_id=producer_id, run_id=run_id, now=now, evidence=evidence,
+					transition_id=transition_id, merge_result_id=merge_result_id,
+					read_current_status=read_current_status)
 	except Exception as exc:
 		return {'planned': False, 'status': 'HELD', 'reason': reason + '; ' + str(exc), 'writes_stopped': False, 'execution_authority': False}
+
+
+def _retain_owner_jira_closeout(store, config, *, binding, provider, producer_id, run_id, now,
+		evidence, transition_id, merge_result_id, read_current_status):
+	from .jira_lifecycle import transition_record, apply_read_back
+	# Called only under the issue lock and, when enabled, accepted-policy scope.
+	_recover_jira_ticket(store, config=config, issue=binding['issue_id'], provider=provider, now=now)
+	current = read_current_status({'issue_id': binding['issue_id'], 'jira_provider': provider,
+		'owner_closure_status_id': config['jira']['status_map']['done']})
+	proof = current.get('owner_closure')
+	_require(isinstance(proof, dict), 'Status alone cannot prove owner closure; actor-bound transition evidence is unavailable')
+	record = transition_record(binding, 'JIRA_RECONCILED', proof['from_status'], config['jira']['status_map']['done'],
+		transition_id, jira_provider=provider, merge_result_id=merge_result_id, producer_id=producer_id,
+		run_id=run_id, now=now, evidence=[*evidence, 'urn:awf:jira-owner-closure:' + proof['history_id'] + ':' + proof['observed_at']])
+	record = apply_read_back(record, proof['status'], proof['actor'], proof['observed_at'])['record']
+	value = {'record': record, 'owner_closure': proof}
+	validate_jira_owner_closure(value, {'transition_record_id': record['record_id'], 'binding': binding,
+		'issue_id': binding['issue_id'], 'provider_identity': provider, 'expected_status_id': config['jira']['status_map']['done']}, now=proof['observed_at'])
+	with store.transaction() as db:
+		key = 'jira-owner-closure:' + record['record_id']
+		from .jira_owner_policy import FIELD, recheck
+		if FIELD in proof:
+			recheck()
+		identity = _jira_operation_identity(config, record)
+		prior = db.execute('SELECT value FROM controller_meta WHERE key=?', (key,)).fetchone()
+		if prior is None:
+			db.execute('INSERT INTO controller_meta VALUES(?,?)', (key, canonical({**value, 'identity': identity}).decode()))
+		else:
+			old = loads(prior['value'])
+			_require(old.pop('identity', None) == identity, 'Owner closure invariant identity changed')
+			_require(all(old['owner_closure'][key] == proof[key] for key in proof if key != 'observed_at'), 'Owner closure observation changed; retain the original evidence')
+			value = old
+	return {'planned': False, **value, 'writes_stopped': False, 'execution_authority': False}
 
 
 def _stop_unattempted_jira(store, operation_id, now, *, retryable=False):
@@ -2823,7 +2934,7 @@ def require_jira_binding_identity(store, config, binding, observe_jira_operation
 			('project_id', 'project_id'), ('project_key', 'project_key'), ('controller_actor_id', 'account_id'))}}
 			and identity == _jira_operation_identity(config, record),
 			'Owner closure history belongs to a different project/repository/issue binding or provider/controller actor')
-		validate_jira_owner_closure({key: item for key, item in value.items() if key != 'identity'},
+		_validate_jira_owner_history({key: item for key, item in value.items() if key != 'identity'},
 			{'transition_record_id': record['record_id'], 'binding': record['binding'], 'issue_id': issue,
 				'provider_identity': identity['jira_provider'], 'expected_status_id': record['to_status_id']},
 			now=value['owner_closure']['observed_at'])
@@ -2995,8 +3106,10 @@ def production_batch_jira_reconciliation(store, *, config, role, batch, observed
 	arguments.update(validated)
 	for member in validated['batch']['constituents']:
 		_require_canonical_issue(member['binding']['issue_id'], observe_issue_identity=observe_issue_identity, now=now)
-	with _batch_jira_ownership(store) as ownership:
-		return _production_batch_jira_reconciliation(store, **arguments, ownership=ownership)
+	from .jira_owner_policy import project_policy_scope
+	with project_policy_scope(store, config):
+		with _batch_jira_ownership(store) as ownership:
+			return _production_batch_jira_reconciliation(store, **arguments, ownership=ownership)
 
 
 def _production_batch_jira_reconciliation(store, *, config, role, batch, observed_merge, now,
@@ -3070,6 +3183,7 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 				db.execute('INSERT INTO controller_batch_jira_operation VALUES(?,?,?,?,?,?,NULL,NULL,?)',
 					(record['operation_id'], record['binding']['issue_id'], 'JIRA_RECONCILED', intent, 'PENDING', canonical(record).decode(), now))
 				_pin_jira_identity(db, record['operation_id'], intent, _jira_operation_identity(config, record))
+				_pin_jira_target_policy(db, config, record, intent)
 			else:
 				stored = loads(row['record_json'])
 				# Recognize the shipped legacy provider-key spelling for replay,
@@ -3221,6 +3335,12 @@ def _production_batch_jira_reconciliation(store, *, config, role, batch, observe
 						{'merge_confirmed': True, 'closeout_valid': True})
 				if key is None:
 					with store.transaction() as db:
+						from .shared_owner_policy import configured_shared_jira_actor_id
+						if configured_shared_jira_actor_id(config) is not None:
+							db.execute('INSERT INTO controller_meta VALUES(?,?)',
+								('jira-held-before-write:' + operation_id, canonical({
+									'operation_id': operation_id, 'intent_sha256': row['intent_sha256'],
+									'identity': _jira_operation_identity(config, record), 'mutation_attempted': False}).decode()))
 						db.execute("UPDATE controller_batch_jira_operation SET status='HELD',readback_json=?,updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical({'reason': reason}).decode(), now, operation_id))
 					continue
 				observation = read_current_status(deepcopy(record['binding']))
@@ -3303,28 +3423,33 @@ def _post_merge_jira_receipt(store, config, issue, now, count_gate, *, observe_p
 	require_jira_binding_identity(store, config, closeout_binding)
 	with _batch_jira_ownership(store, issue_id=issue) as owned:
 		_require(owned, 'Post-merge Jira issue is owned by another operation')
-		policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
+		policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now, store=store)
 		_require(policy['issue_type'] == 'LEAF', 'Epics are never reconciled')
 		owner_request = {'issue_id': issue, 'binding': closeout_binding, 'provider_identity': provider,
 			'transition_record_id': count_gate.get('closeout_record', {}).get('jira_transition_record_id'),
 			'expected_status_id': config['jira']['status_map']['done']}
 		owner = retained_jira_owner_closure(store, config, owner_request)
 		if owner is not None:
-			_recover_jira_ticket(store, config=config, issue=issue, provider=provider, now=now)
-			validate_jira_owner_closure(owner, owner_request, now=now)
-			current = read_current_status({'issue_id': issue, 'jira_provider': deepcopy(provider),
-				'owner_closure_status_id': config['jira']['status_map']['done']})
-			live_proof = current.pop('owner_closure', None)
-			_jira_status_observation(current, issue, provider, timestamp(now))
-			_require(isinstance(live_proof, dict) and
-				{key: value for key, value in live_proof.items() if key != 'observed_at'} ==
-				{key: value for key, value in owner['owner_closure'].items() if key != 'observed_at'},
-				'Owner closure differs from the latest actor-bound Jira transition; owner closes in Jira')
-			_require(current['status_id'] == config['jira']['status_map']['done'], 'Owner closure is no longer Done; owner closes in Jira')
-			proof, record = owner['owner_closure'], owner['record']
-			return {'ticket': issue, 'issue_id': issue, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'],
-				'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': record['operation_id'],
-				'before_status_id': proof['from_status'], 'after_status_id': proof['status'], 'observed_at': current['observed_at']}
+			from .jira_owner_policy import FIELD, retained_scope
+			if FIELD in owner['owner_closure']:
+				_require(owner_closure_required(config, policy['snapshot']),
+					'Shared Jira closure no longer has an owner-closure keyword on a leaf ticket')
+			with retained_scope(store, config, owner, owned=True):
+				_recover_jira_ticket(store, config=config, issue=issue, provider=provider, now=now)
+				validate_jira_owner_closure(owner, owner_request, now=now)
+				current = read_current_status({'issue_id': issue, 'jira_provider': deepcopy(provider),
+					'owner_closure_status_id': config['jira']['status_map']['done']})
+				live_proof = current.pop('owner_closure', None)
+				_jira_status_observation(current, issue, provider, timestamp(now))
+				_require(isinstance(live_proof, dict) and
+					{key: value for key, value in live_proof.items() if key != 'observed_at'} ==
+					{key: value for key, value in owner['owner_closure'].items() if key != 'observed_at'},
+					'Owner closure differs from the latest actor-bound Jira transition; owner closes in Jira')
+				_require(current['status_id'] == config['jira']['status_map']['done'], 'Owner closure is no longer Done; owner closes in Jira')
+				proof, record = owner['owner_closure'], owner['record']
+				return {'ticket': issue, 'issue_id': issue, 'cloud_id': provider['cloud_id'], 'project_id': provider['project_id'],
+					'actor_id': provider['controller_actor_id'], 'status': 'RECONCILED', 'operation_id': record['operation_id'],
+					'before_status_id': proof['from_status'], 'after_status_id': proof['status'], 'observed_at': current['observed_at']}
 		_require(not owner_closure_required(config, policy['snapshot']), 'owner_closure_required: owner closes in Jira; then run jira-lifecycle JIRA_RECONCILED')
 		_recover_jira_ticket(store, config=config, issue=issue, provider=provider, now=now)
 		rows = store.jira_operations(issue)
@@ -3396,7 +3521,7 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
 		# Name an owner hold even when closeout has no reconciliation record yet.
 		if callable(observe_issue_policy):
 			from .jira_lifecycle import owner_closure_required
-			policy = _observe_jira_write_policy(config, merged_ticket, observe_issue_policy, observed_at)
+			policy = _observe_jira_write_policy(config, merged_ticket, observe_issue_policy, observed_at, store=store)
 			transition_id = count_gate.get('closeout_record', {}).get('jira_transition_record_id')
 			with store.connection() as db:
 				owner = db.execute('SELECT 1 FROM controller_meta WHERE key=?', ('jira-owner-closure:' + str(transition_id),)).fetchone()
@@ -4336,7 +4461,7 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		# Newly stuck/exhausted reviews alert through the existing immediate status
 		# port, even with periodic reports OFF. They never block work or reporting.
 		if review_batching.get('owner_alerts'):
-			alert = store.digest(post_provider_time(), calendar=calendar)
+			alert = store.digest(post_provider_time(), calendar=calendar, owner_config=publication_config, accepted_policy_root=policy_root)
 			if alert is not None:
 				try:
 					receipt = deliver_status(alert)
@@ -4369,12 +4494,14 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity=
 		finish_periodic_observations()
 
 
-def _observe_jira_write_policy(config, issue, observer, now):
+def _observe_jira_write_policy(config, issue, observer, now, *, store=None):
 	"""Obtain fresh canonical scope evidence from the reviewed adapter."""
 	from .canonical import fresh
 	from .jira_lifecycle import require_jira_issue_scope
 	_require(callable(observer), 'Jira scope observer is unavailable')
-	value = deepcopy(observer(issue))
+	from .jira_owner_policy import project_policy_scope
+	with project_policy_scope(store, config):
+		value = deepcopy(observer(issue))
 	_require(isinstance(value, dict) and set(value) == {'issue_key', 'issue_type', 'snapshot', 'observed_at'} and
 		value['issue_key'] == issue and value['issue_type'] in {'LEAF', 'EPIC'},
 		'Jira scope observation differs from the canonical issue')
@@ -4412,6 +4539,39 @@ def _jira_lifecycle_binding_identity(binding, config):
 
 
 def production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None, observe_issue_policy=None, observe_jira_operation_identity=None, read_assignment=None):
+	"""Keep accepted project reads bound through the instrumented operation."""
+	arguments = {
+		'store': store,
+		'config': config,
+		'contract': contract,
+		'event': event,
+		'facts': facts,
+		'binding': binding,
+		'issue_type': issue_type,
+		'state': state,
+		'producer_id': producer_id,
+		'run_id': run_id,
+		'now': now,
+		'evidence': evidence,
+		'transition_id': transition_id,
+		'read_current_status': read_current_status,
+		'write_transition': write_transition,
+		'read_transition': read_transition,
+		'observe_provider_identity': observe_provider_identity,
+		'merge_result_id': merge_result_id,
+		'observe_issue_identity': observe_issue_identity,
+		'observe_issue_policy': observe_issue_policy,
+		'observe_jira_operation_identity': observe_jira_operation_identity,
+		'read_assignment': read_assignment,
+	}
+	if config.get('jira', {}).get('enabled', True) is False:
+		return _production_jira_lifecycle(**arguments)
+	from .jira_owner_policy import project_policy_scope
+	with project_policy_scope(store, config):
+		return _production_jira_lifecycle(**arguments)
+
+
+def _production_jira_lifecycle(store, *, config, contract, event, facts, binding, issue_type, state, producer_id, run_id, now, evidence, transition_id, read_current_status, write_transition, read_transition, observe_provider_identity=None, merge_result_id=None, observe_issue_identity=None, observe_issue_policy=None, observe_jira_operation_identity=None, read_assignment=None):
 	_require(isinstance(store, ContinuousControllerStore), 'Jira lifecycle production needs the protected controller store')
 	config = deepcopy(config)
 	_require(all((callable(adapter) for adapter in (read_current_status, write_transition, read_transition))), 'Jira lifecycle read/write/readback adapters must be callable')
@@ -4442,7 +4602,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 		return {'planned': False, 'status': 'IDENTITY_UNOBSERVED', 'reason': 'Jira provider identity observation failed: ' + type(exc).__name__, 'expected_identity': expected, 'observed_identity': None, 'issue_lookups': 0, 'writes_stopped': True, 'reads_allowed': True, 'execution_authority': False}
 	_require_canonical_issue(issue, observe_issue_identity=observe_issue_identity, now=now)
 	try:
-		policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
+		policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now, store=store)
 		_require(policy['issue_type'] == issue_type, 'Jira issue type differs from its observed policy')
 	except Exception as exc:
 		return {'planned': False, 'status': 'SCOPE_REFUSED', 'reason': str(exc), 'writes_stopped': True, 'execution_authority': False}
@@ -4458,6 +4618,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	except Exception as exc:
 		return {'planned': False, 'status': 'NOT_ATTEMPTED', 'reason': f'Jira pre-write observation failed: {type(exc).__name__}', 'writes_stopped': True, 'execution_authority': False}
 	from .jira_lifecycle import planned_write, transition_record, apply_read_back, owner_closure_required
+	owner_closure_contract = deepcopy(contract)
 	contract = deepcopy(contract)
 	contract['owner_closure_required'] = bool(contract.get('owner_closure_required')) or owner_closure_required(config, policy['snapshot'])
 	durable = store.jira_operations(issue)
@@ -4466,7 +4627,14 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	def owner_closeout():
 		return _observe_owner_jira_closeout(store, config, binding=binding, provider=provider, producer_id=producer_id,
 			run_id=run_id, now=now, evidence=evidence, transition_id=transition_id, merge_result_id=merge_result_id,
-			facts=facts, read_current_status=read_current_status)
+			facts=facts, read_current_status=read_current_status, contract=owner_closure_contract, policy=policy)
+	from .shared_owner_policy import configured_shared_jira_actor_id
+	if (event == 'JIRA_RECONCILED' and issue_type == 'LEAF' and contract['owner_closure_required']
+			and current['status_id'] == config['jira']['status_map']['done']
+			and configured_shared_jira_actor_id(config) is not None):
+		# Shared-account admission inspects the original journal before recovery
+		# can turn an attempted/unknown Done operation into a successful receipt.
+		return owner_closeout()
 	for row, table in _jira_ticket_operations(store, issue):
 		if _jira_operator_resolution(store, config, row) is not None and row['event'] == event:
 			if event == 'JIRA_RECONCILED' and issue_type == 'LEAF' and current['status_id'] == config['jira']['status_map']['done']:
@@ -4517,7 +4685,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 	if key is None:
 		return {'planned': False, 'reason': target, 'writes_stopped': False, 'current_observation': current, 'execution_authority': False}
 	record = transition_record(binding, event, current['status_id'], target, transition_id, jira_provider=provider, merge_result_id=merge_result_id, producer_id=producer_id, run_id=run_id, now=now, evidence=evidence)
-	intent = store.prepare_jira_operation(record, now, identity=_jira_operation_identity(config, record))
+	intent = store.prepare_jira_operation(record, now, identity=_jira_operation_identity(config, record), target_config=config)
 	record = intent['record']
 	if intent['status'] == 'SUCCEEDED':
 		return {'planned': False, 'reason': 'Durable Jira operation already succeeded', 'operation_id': record['operation_id'], 'current_observation': current, 'execution_authority': False}
@@ -4554,7 +4722,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 				_stop_unattempted_jira(store, record['operation_id'], now)
 				return {'planned': False, 'reason': 'Jira issue is owned or durably stopped; no write attempted', 'writes_stopped': True, 'operation_id': record['operation_id'], 'execution_authority': False}
 			try:
-				policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now)
+				policy = _observe_jira_write_policy(config, issue, observe_issue_policy, now, store=store)
 				_require(policy['issue_type'] == issue_type, 'Jira issue type changed before the write')
 				_require(event != 'JIRA_RECONCILED' or not owner_closure_required(config, policy['snapshot']),
 					'owner_closure_required: ticket stays In Review until an owner-closure record arrives')

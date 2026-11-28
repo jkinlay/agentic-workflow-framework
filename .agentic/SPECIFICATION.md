@@ -54,4 +54,4 @@ Live Codex review, scheduling and secret-repository pushes require observed rule
 
 Continue authorized work; report results/constraints/next actions. Finish on completion, cancellation or no authorized step; name the required event. See [native coordination](docs/24-STREAM-STARTUP.md), [routing](docs/27-MODEL-ROUTING.md) and [scheduled review](docs/22-AUTOMATED-REVIEW-LOOP.md).
 
-Candidate-only shared-account bindings/refusals and deferred Jira: [inventory](docs/SHARED-OWNER-PATHS.md).
+Opt-outs default null: [GitHub](docs/SHARED-OWNER-PATHS.md), [Jira](docs/SHARED-JIRA-OWNER-POLICY.md). Account-level assurance; prefer separate accounts.

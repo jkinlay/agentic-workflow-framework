@@ -133,6 +133,7 @@ def config(example=True, routing_policy=None, *, fresh_defaults=False):
             "provider_project_id": "fixture-project" if example else None,
             "project_key": "EX" if example else None,
             "controller_actor_id": "fixture-controller" if example else None,
+            "shared_owner_controller_actor_id": None,
             "scope": {"allow_entire_project": False, "selector_mode": "all", "included_epics": [], "labels_any": ["awf-fixture"] if example else [], "components_any": [], "additional_jql": "", "ownership_required": True},
             "status_map": {"backlog": "Backlog", "ready": "Ready", "in_progress": "In Progress", "in_review": "In Review", "done": "Done"},
             "lifecycle_writes": {"in_progress": True, "in_review": True, "done": True},

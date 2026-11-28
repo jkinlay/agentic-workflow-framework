@@ -32,7 +32,7 @@ Release 1.9.5 adds `merge_gate.trusted_owner_ids` after #154; earlier injected t
 
 Separate publication/collection bot/App credentials stay in the host secret store, never worktrees/records. With the setting unset, the configured bot must be absent from `trusted_owner_ids`; ambiguity refuses. Owner credentials stay human-held; automation never uses or impersonates the owner account.
 
-Unmerged GitHub candidate bindings/refusals: [exact inventory](SHARED-OWNER-PATHS.md). Jira opt-out remains unavailable O2.
+Both opt-outs default null: [GitHub](SHARED-OWNER-PATHS.md), [accepted-policy Jira requirements](SHARED-JIRA-OWNER-POLICY.md). Prefer separate accounts.
 
 ## Closure standard
 

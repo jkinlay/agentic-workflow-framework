@@ -208,13 +208,23 @@ def inspect_config(config, workflow, contracts, project_instructions=None, proje
         def require(condition, path, reason):
             if not condition:
                 problems.append(issue(path, reason))
-        from .shared_owner_policy import configured_shared_owner_actor_id, SETTING_PATH
-        try:
-            if configured_shared_owner_actor_id(config) is not None and project_root is not None:
-                from .shared_owner_policy import require_whole_repository
-                require_whole_repository(project_root)
-        except ValidationError as exc:
-            problems.append(issue(SETTING_PATH, str(exc)))
+        from .shared_owner_policy import (configured_shared_owner_actor_id, SETTING_PATH,
+                                         configured_shared_jira_actor_id, JIRA_SETTING_PATH)
+        for validator, setting_path in ((configured_shared_owner_actor_id, SETTING_PATH),
+                                        (configured_shared_jira_actor_id, JIRA_SETTING_PATH)):
+            try:
+                validator(config)
+            except ValidationError as exc:
+                problems.append(issue(setting_path, str(exc)))
+        for validator, setting_path in ((configured_shared_owner_actor_id, SETTING_PATH),
+                                        (configured_shared_jira_actor_id, JIRA_SETTING_PATH)):
+            try:
+                if validator(config) is not None and project_root is not None:
+                    from .shared_owner_policy import require_whole_repository
+                    require_whole_repository(project_root, setting_path=setting_path)
+            except ValidationError as exc:
+                if not any(item['path'] == setting_path for item in problems):
+                    problems.append(issue(setting_path, str(exc)))
         require(type(config['github']['repository_id']) is int and config['github']['repository_id'] > 0,
                 '$.github.repository_id', 'numeric repository identity is unresolved')
         if not isinstance(workflow, dict):

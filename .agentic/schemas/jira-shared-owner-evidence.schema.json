@@ -1,0 +1,212 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "shared_owner_controller_account",
+    "owner_policy_sha256",
+    "accepted_owner_policy",
+    "controller_history_sha256",
+    "owner_closure_required",
+    "snapshot",
+    "history",
+    "provider_updated_at"
+  ],
+  "properties": {
+    "shared_owner_controller_account": {
+      "const": true
+    },
+    "owner_policy_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "accepted_owner_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "shared_owner_automation_actor_id",
+        "policy_sha256",
+        "config_sha256",
+        "workflow_sha256",
+        "default_branch_ref",
+        "default_branch_commit",
+        "warnings",
+        "execution_authority",
+        "shared_owner_controller_actor_id"
+      ],
+      "properties": {
+        "status": {
+          "const": "OBSERVED"
+        },
+        "shared_owner_automation_actor_id": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "config_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "workflow_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "default_branch_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^refs/remotes/origin/.+$"
+        },
+        "default_branch_commit": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "code",
+                  "message"
+                ],
+                "properties": {
+                  "path": {
+                    "const": "$.merge_gate.shared_owner_automation_actor_id"
+                  },
+                  "code": {
+                    "const": "SHARED_OWNER_AUTOMATION_ACCOUNT"
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "code",
+                  "message"
+                ],
+                "properties": {
+                  "path": {
+                    "const": "$.jira.shared_owner_controller_actor_id"
+                  },
+                  "code": {
+                    "const": "SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT"
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 2
+        },
+        "execution_authority": {
+          "const": false
+        },
+        "shared_owner_controller_actor_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:(?:\\s|\\S)*\\S)?$"
+        }
+      }
+    },
+    "controller_history_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "owner_closure_required": {
+      "const": true
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issue_id",
+        "project_key",
+        "summary",
+        "epic_ids",
+        "labels",
+        "component_ids"
+      ],
+      "properties": {
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 0
+        },
+        "epic_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "component_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      }
+    },
+    "history": {
+      "type": "object"
+    },
+    "provider_updated_at": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:jira-shared-owner-evidence",
+  "title": "Agentic Workflow 1.2 \u2014 jira-shared-owner-evidence"
+}

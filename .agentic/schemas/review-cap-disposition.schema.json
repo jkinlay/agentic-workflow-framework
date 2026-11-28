@@ -303,31 +303,61 @@
         "warnings": {
           "type": "array",
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "path",
-              "code",
-              "message"
-            ],
-            "properties": {
-              "path": {
-                "const": "$.merge_gate.shared_owner_automation_actor_id"
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "code",
+                  "message"
+                ],
+                "properties": {
+                  "path": {
+                    "const": "$.merge_gate.shared_owner_automation_actor_id"
+                  },
+                  "code": {
+                    "const": "SHARED_OWNER_AUTOMATION_ACCOUNT"
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
               },
-              "code": {
-                "const": "SHARED_OWNER_AUTOMATION_ACCOUNT"
-              },
-              "message": {
-                "type": "string",
-                "minLength": 1
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "code",
+                  "message"
+                ],
+                "properties": {
+                  "path": {
+                    "const": "$.jira.shared_owner_controller_actor_id"
+                  },
+                  "code": {
+                    "const": "SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT"
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
               }
-            }
+            ]
           },
           "minItems": 1,
-          "maxItems": 1
+          "maxItems": 2
         },
         "execution_authority": {
           "const": false
+        },
+        "shared_owner_controller_actor_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:(?:\\s|\\S)*\\S)?$"
         }
       }
     }

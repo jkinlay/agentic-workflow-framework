@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Run one of nine deterministic Windows unittest shards.
+"""Run one of twelve deterministic Windows unittest shards.
 
 From the repository root: python -B scripts/run_windows_unittests.py --shard 0
 Add --list to guard all allocations and print this shard without importing tests.
 Paths are repository-relative POSIX strings. Measured heavy modules have fixed
 owners in HEAVY_MODULE_SHARDS; every other module uses the unsigned big-endian
-SHA-256 of its UTF-8 path modulo nine. Adding a path cannot move existing paths.
+SHA-256 of its UTF-8 path modulo twelve. Adding a path cannot move existing paths.
 Each shard's paths are sorted by Unicode code point. The single module in
 SPLIT_MODULES is the only exception to whole-module
 sharding: it is selected in both of its shards, and each of them runs a fixed,
@@ -32,7 +32,7 @@ import unittest
 SUITES = ('.agentic/tests', 'scripts/tests', 'global/awf/tests',
           'global/awf-portable/tests')
 EXPLICIT_TOP = frozenset(SUITES[:2])
-SHARDS = (0, 1, 2, 3, 4, 5, 6, 7, 8)
+SHARDS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 # test_upgrade_matrix exceeded the Windows job budget on Python 3.13.
 # It is the only module split by test
 # method: shard 1 runs UPGRADE_MATRIX_FIRST_HALF and shard 8 runs the rest
@@ -55,54 +55,95 @@ UPGRADE_MATRIX_FIRST_HALF = frozenset({
     'test_state_compatibility_is_listed_for_every_adjacent_step',
 })
 SPLIT_MODULES = {UPGRADE_MATRIX: ((1, 8), UPGRADE_MATRIX_FIRST_HALF)}
-# Rebalanced from module_result timings in two hosted runs on 23 November,
-# across Windows Python 3.11-3.13. Sum each version's slower per-module sample
-# plus its largest measured job overhead: the projected maximum is 44.8 minutes,
-# including the measured incoming workflow-isolation and 1.9.7 qualification
-# modules. Unmeasured incoming modules still require hosted validation.
-# Keep whole-module ownership, per-suite interpreter isolation, the installed
-# acceptance exclusion and the existing upgrade-matrix halves unchanged.
+# Twelve unit shards budget the slowest observed Windows 3.11 module time;
+# where unavailable, use 1.45 times the slowest measured other-version time.
+# Retain the upgrade-matrix halves above and conservatively budget their newer
+# 3.12 measurements separately (1042 * 1.45 and 1185 * 1.45 seconds).
+# Include the 27 November 3.11 run: E10 709.859 s, provision-runtime
+# 297.407 s, E4 202.828 s; retain any larger earlier/scaled observation.
+# Estimated 3.11 seconds for shards 0-11, rounded upward:
+# 2350, 2351, 2351, 2348, 2366, 2351, 2347, 2348, 2359, 2347, 2358, 2348.
+# No shard has two measured modules/halves over 500 seconds. Jira owner policy
+# and E16 have separate owners. Whole-module hashing covers all unpinned paths.
+# These estimates are planning evidence; fresh hosted validation remains needed
+# because runner load and Python versions vary. The 60-minute limit is unchanged.
+# Installed/release self-tests retain their own fixed nine-shard allocation in
+# plan_installed_self_test.py; changes here must not move installed selections.
 HEAVY_MODULE_SHARDS = {
-    '.agentic/tests/test_adoption_status.py': 0,
-    '.agentic/tests/test_awf242_settings_pr.py': 2,
-    '.agentic/tests/test_awf243_review_regressions.py': 1,
-    '.agentic/tests/test_bootstrap_configuration.py': 4,
-    '.agentic/tests/test_host_process.py': 5,
-    '.agentic/tests/test_reference_controller_adapter_install.py': 7,
-    '.agentic/tests/test_upgrade_195.py': 3,
-    '.agentic/tests/test_upgrade_journal.py': 0,
-    '.agentic/tests/test_windows_diagnostics.py': 5,
-    'scripts/tests/test_ac42_e2e.py': 6,
-    'scripts/tests/test_adoptable_source.py': 1,
-    'scripts/tests/test_fresh_bootstrap.py': 7,
-    'scripts/tests/test_publish_release.py': 4,
-    'scripts/tests/test_self_test_review.py': 3,
-    '.agentic/tests/test_awf238_owner_boundary.py': 8,
-    '.agentic/tests/test_awf238_pre_f3.py': 2,
-    '.agentic/tests/test_awf238_second_look.py': 6,
-    '.agentic/tests/test_awf244_window_regressions.py': 8,
+    '.agentic/tests/test_adoption_status.py': 5,
+    '.agentic/tests/test_awf117_provenance_gate.py': 6,
+    '.agentic/tests/test_awf238_migration_identity.py': 7,
+    '.agentic/tests/test_awf238_owner_boundary.py': 2,
+    '.agentic/tests/test_awf238_pre_f3.py': 9,
+    '.agentic/tests/test_awf238_pre_review.py': 10,
+    '.agentic/tests/test_awf238_retained_adoption.py': 5,
+    '.agentic/tests/test_awf238_same_version_identity.py': 9,
+    '.agentic/tests/test_awf238_second_look.py': 1,
+    '.agentic/tests/test_awf238_third_look.py': 5,
+    '.agentic/tests/test_awf242_pre_a10.py': 0,
+    '.agentic/tests/test_awf242_pre_a4.py': 10,
+    '.agentic/tests/test_awf242_settings_pr.py': 1,
+    '.agentic/tests/test_awf242_settings_second_look.py': 2,
+    '.agentic/tests/test_awf243_operator_recovery.py': 11,
+    '.agentic/tests/test_awf243_review_regressions.py': 4,
+    '.agentic/tests/test_awf244_controller_wiring.py': 8,
+    '.agentic/tests/test_awf244_policy_rules.py': 11,
+    '.agentic/tests/test_awf244_recovery.py': 8,
+    '.agentic/tests/test_awf244_settings_pr.py': 6,
+    '.agentic/tests/test_awf244_window_regressions.py': 11,
+    '.agentic/tests/test_awf307_authorization_owner_policy.py': 4,
+    '.agentic/tests/test_awf307_combined_visibility.py': 10,
+    '.agentic/tests/test_awf307_controller_owner_policy.py': 3,
+    '.agentic/tests/test_awf307_excluded_refusal_proofs.py': 4,
+    '.agentic/tests/test_awf307_gates_owner_policy.py': 6,
+    '.agentic/tests/test_awf307_jira_owner_policy.py': 10,
+    '.agentic/tests/test_awf307_jira_production_counts.py': 1,
+    '.agentic/tests/test_awf307_jira_whole_repository.py': 8,
+    '.agentic/tests/test_awf307_o1c_regressions.py': 11,
+    '.agentic/tests/test_awf307_queue_owner_policy.py': 2,
+    '.agentic/tests/test_awf307_review_completion_owner_policy.py': 7,
+    '.agentic/tests/test_bootstrap_configuration.py': 9,
+    '.agentic/tests/test_continuous_controller_planning.py': 3,
+    '.agentic/tests/test_controller_switches_195.py': 9,
+    '.agentic/tests/test_five_slot_acceleration.py': 7,
+    '.agentic/tests/test_host_process.py': 6,
+    '.agentic/tests/test_integration_queue.py': 4,
+    '.agentic/tests/test_module_import_isolation.py': 5,
+    '.agentic/tests/test_provenance.py': 11,
+    '.agentic/tests/test_provision_runtime.py': 0,
+    '.agentic/tests/test_publication.py': 6,
+    '.agentic/tests/test_reference_controller_adapter_install.py': 0,
     '.agentic/tests/test_reporting_boundary.py': 2,
     '.agentic/tests/test_reporting_e10_regressions.py': 3,
-    '.agentic/tests/test_reporting_e11_regressions.py': 8,
-    '.agentic/tests/test_reporting_e12_regressions.py': 1,
-    '.agentic/tests/test_reporting_e13_regressions.py': 6,
-    '.agentic/tests/test_reporting_e16_regressions.py': 6,
+    '.agentic/tests/test_reporting_e11_regressions.py': 3,
+    '.agentic/tests/test_reporting_e12_regressions.py': 7,
+    '.agentic/tests/test_reporting_e13_regressions.py': 1,
+    '.agentic/tests/test_reporting_e16_regressions.py': 5,
+    '.agentic/tests/test_reporting_e17_regressions.py': 6,
     '.agentic/tests/test_reporting_e3_regressions.py': 1,
-    '.agentic/tests/test_reporting_e6_regressions.py': 0,
+    '.agentic/tests/test_reporting_e4_regressions.py': 7,
+    '.agentic/tests/test_reporting_e6_regressions.py': 9,
     '.agentic/tests/test_reporting_e7_regressions.py': 3,
-    '.agentic/tests/test_reporting_e9_regressions.py': 5,
-    '.agentic/tests/test_reporting_owner_admission.py': 4,
-    '.agentic/tests/test_reporting_wiring.py': 2,
+    '.agentic/tests/test_reporting_e9_regressions.py': 4,
+    '.agentic/tests/test_reporting_owner_admission.py': 2,
+    '.agentic/tests/test_reporting_policy_review.py': 10,
+    '.agentic/tests/test_reporting_settings_pr.py': 5,
+    '.agentic/tests/test_reporting_timing.py': 7,
+    '.agentic/tests/test_reporting_wiring.py': 10,
+    '.agentic/tests/test_review_first_draft194.py': 0,
+    '.agentic/tests/test_upgrade_195.py': 2,
     '.agentic/tests/test_upgrade_195_preservation.py': 0,
-    '.agentic/tests/test_upgrade_195_recovery.py': 7,
-    '.agentic/tests/test_upgrade_196_budgeting.py': 4,
-    'scripts/tests/test_installed_adopter_configuration.py': 3,
-    '.agentic/tests/test_reporting_e17_regressions.py': 5,
-    '.agentic/tests/test_awf307_queue_owner_policy.py': 2,
-    '.agentic/tests/test_reporting_timing.py': 1,
-    '.agentic/tests/test_continuous_controller_planning.py': 4,
-    '.agentic/tests/test_awf238_same_version_identity.py': 8,
-    '.agentic/tests/test_awf238_migration_identity.py': 4,
+    '.agentic/tests/test_upgrade_195_recovery.py': 4,
+    '.agentic/tests/test_upgrade_196_budgeting.py': 0,
+    '.agentic/tests/test_upgrade_journal.py': 11,
+    '.agentic/tests/test_windows_diagnostics.py': 0,
+    'scripts/tests/test_ac42_e2e.py': 10,
+    'scripts/tests/test_adoptable_source.py': 8,
+    'scripts/tests/test_fresh_bootstrap.py': 4,
+    'scripts/tests/test_installed_adopter_configuration.py': 9,
+    'scripts/tests/test_publish_release.py': 2,
+    'scripts/tests/test_self_test_review.py': 9,
+    'scripts/tests/test_upgrade_197_qualification.py': 3,
 }
 ZERO_TEST_MODULES = frozenset({
     '.agentic/tests/test_awf36_automation_fixtures.py',

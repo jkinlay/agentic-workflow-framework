@@ -15,6 +15,7 @@
     "provider_project_id": "fixture-project",
     "project_key": "EX",
     "controller_actor_id": "fixture-controller",
+    "shared_owner_controller_actor_id": null,
     "scope": {
       "allow_entire_project": false,
       "selector_mode": "all",

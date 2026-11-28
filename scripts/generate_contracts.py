@@ -691,9 +691,14 @@ def catalog(*, include_ticket_plan=True):
              "then": {"properties": {"streams": {"contains": {"properties": {"state": {"not": const("COMPLETE")}}}}}}}])
     controller_status_digest["required"].remove("unresolved_dispatches")
     controller_status_digest["required"].remove("review_batching")
-    controller_status_digest["properties"]["owner_policy_warnings"] = arr(obj({
-        "path": const("$.merge_gate.shared_owner_automation_actor_id"),
-        "code": const("SHARED_OWNER_AUTOMATION_ACCOUNT"), "message": text()}), 1, maxItems=1)
+    controller_status_digest['properties']['owner_policy_warnings'] = arr({'oneOf': [
+        obj({'path': const('$.merge_gate.shared_owner_automation_actor_id'),
+             'code': const('SHARED_OWNER_AUTOMATION_ACCOUNT'), 'message': text()}),
+        obj({'path': const('$.jira.shared_owner_controller_actor_id'),
+             'code': const('SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT'), 'message': text()})]}, 1, maxItems=3)
+    controller_status_digest['properties']['supersedes_delivery_id'] = DIGEST
+    controller_status_digest['properties']['jira_owner_policy_observed_at'] = TIME
+    controller_status_digest['properties']['owner_policy_observed_at'] = TIME
     schemas["controller-status-digest"] = controller_status_digest
     count_or_unobserved = {"oneOf": [integer(), const("UNOBSERVED")]}
     schemas["jira-progress"] = obj({"schema_version": const(3), "merged_ticket": text(), "scope": text(),
@@ -956,11 +961,28 @@ def catalog(*, include_ticket_plan=True):
             "policy_sha256": DIGEST, "config_sha256": DIGEST, "workflow_sha256": DIGEST,
             "default_branch_ref": text(pattern="^refs/remotes/origin/.+$"),
             "default_branch_commit": OBJECT_ID,
-            "warnings": arr(obj({"path": const("$.merge_gate.shared_owner_automation_actor_id"),
-                "code": const("SHARED_OWNER_AUTOMATION_ACCOUNT"), "message": text()}), 1, maxItems=1),
+            "warnings": arr({"oneOf": [
+                obj({"path": const("$.merge_gate.shared_owner_automation_actor_id"),
+                     "code": const("SHARED_OWNER_AUTOMATION_ACCOUNT"), "message": text()}),
+                obj({"path": const("$.jira.shared_owner_controller_actor_id"),
+                     "code": const("SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT"), "message": text()})]}, 1, maxItems=2),
             "execution_authority": FALSE,
         }),
     }
+    owner_policy_annotation["accepted_owner_policy"]["properties"]["shared_owner_controller_actor_id"] = text(pattern=r"^\S(?:(?:\s|\S)*\S)?$")
+    jira_owner_policy = copy.deepcopy(owner_policy_annotation['accepted_owner_policy'])
+    jira_owner_policy['properties']['shared_owner_automation_actor_id'] = nullable(integer(1))
+    jira_owner_policy['required'].append('shared_owner_controller_actor_id')
+    schemas['jira-shared-owner-evidence'] = obj({
+        'shared_owner_controller_account': TRUE, 'owner_policy_sha256': DIGEST,
+        'accepted_owner_policy': jira_owner_policy, 'controller_history_sha256': DIGEST,
+        'owner_closure_required': TRUE,
+        'snapshot': obj({'issue_id': text(), 'project_key': text(), 'summary': text(0),
+                         'epic_ids': STRINGS, 'labels': STRINGS, 'component_ids': STRINGS}),
+        # Raw provider bytes are bounded and interpreted by the existing Jira
+        # history rules and independent controller revalidation, not by schema.
+        'history': {'type': 'object'}, 'provider_updated_at': text(),
+    })
     for name in ("owner-authorization", "review-cap-disposition", "finding-disposition",
                  "tier-reassignment", "owner-closure", "review-verdict", "final-gate"):
         schemas[name]["properties"].update(copy.deepcopy(owner_policy_annotation))
@@ -1016,6 +1038,7 @@ def catalog(*, include_ticket_plan=True):
                 "branch_publication", "pr_creation", "independent_review", "jira_read", "jira_write", "merge_execution"]}),
             "activation": obj({"blockers": arr(activation_check), "next_command": text()}),
             "execution_authority": FALSE}}
+    schemas["activation-status"]["properties"]["activation"]["properties"]["warnings"] = arr(text())
     schemas["evidence-bundle"] = obj({"schema_version": const(3), "candidate": ref("candidate"),
         "snapshot": ref("jira-snapshot"), "contract": ref("ticket-contract"), "dispatch": ref("work-dispatch"),
         "worker": ref("worker-result"), "critic": ref("critic-review"), "specialists": arr(ref("specialist-review")),
@@ -1046,6 +1069,7 @@ def catalog(*, include_ticket_plan=True):
         "project": obj({"id": UUID, "name": text(), "short_name": text()}),
         "jira": obj({"cloud_id": text(), "site": text(format="uri"), "provider_project_id": text(),
           "project_key": text(pattern="^[A-Z][A-Z0-9]*$"), "controller_actor_id": text(),
+          "shared_owner_controller_actor_id": nullable(text(pattern=r"^\S(?:(?:\s|\S)*\S)?$")),
           "scope": obj({"allow_entire_project": BOOL, "selector_mode": enum("all", "any"),
               "included_epics": STRINGS, "labels_any": STRINGS, "components_any": STRINGS,
               "additional_jql": const(""), "ownership_required": TRUE}),
@@ -1121,6 +1145,7 @@ def catalog(*, include_ticket_plan=True):
     github["required"] = [key for key in github["required"]
                           if key not in {"expected_actor_id", "expected_actor_login", "auth_profile"}]
     jira["properties"]["enabled"] = BOOL
+    jira["required"].remove("shared_owner_controller_actor_id")
     for key in ("cloud_id", "provider_project_id", "controller_actor_id"):
         jira["properties"][key] = {"anyOf": [text(), {"type": "null"}]}
     jira["properties"]["site"] = {"anyOf": [text(format="uri"), {"type": "null"}]}

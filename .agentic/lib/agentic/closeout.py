@@ -6,6 +6,7 @@ through Git plumbing; an absent object fails closed and is named.
 """
 from __future__ import annotations
 from copy import deepcopy
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -502,7 +503,8 @@ def require_jira_reconciliation_before_counts(
         closeout_record, *, repository, project_config, contracts,
         project_config_selector=None, project_config_observer_registry=None,
         closeout_selector=None, closeout_observer_registry=None,
-        jira_reconciliation_selector=None, jira_observer_registry=None, now=None):
+        jira_reconciliation_selector=None, jira_observer_registry=None, now=None,
+        jira_owner_closure_scope=None):
     """Gate post-merge counts on the controller's observed Jira reconciliation.
 
     This is deliberately a pure hook: it neither writes Jira nor increments a
@@ -643,7 +645,13 @@ def require_jira_reconciliation_before_counts(
         read_back = record["read_back"]
         owner_actor = None
         if "owner_closure" in observed:
-            validate_jira_owner_closure(observed, request, now=now)
+            # Only trusted runtime wiring supplies a scope, after the registered
+            # provider observation and receipt have been authenticated above.
+            # Without it the shared-account validator still refuses context.
+            scope = (jira_owner_closure_scope(observed)
+                     if jira_owner_closure_scope is not None else nullcontext())
+            with scope:
+                validate_jira_owner_closure(observed, request, now=now)
             if timestamp(observed["owner_closure"]["transition_at"]) < timestamp(merge_observed_at):
                 raise ValidationError("Owner Done transition predates the authenticated merge")
             owner_actor = observed["owner_closure"]["actor"]

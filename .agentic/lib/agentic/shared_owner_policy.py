@@ -15,6 +15,8 @@ from .git_isolation import independent_policy_read
 
 SETTING = "shared_owner_automation_actor_id"
 SETTING_PATH = "$.merge_gate." + SETTING
+JIRA_SETTING = "shared_owner_controller_actor_id"
+JIRA_SETTING_PATH = "$.jira." + JIRA_SETTING
 OWNER_EVIDENCE_FIELDS = frozenset({"shared_owner_automation_account",
                                    "owner_policy_sha256", "accepted_owner_policy"})
 
@@ -63,7 +65,7 @@ def validate_retained_owner_evidence(record, actor_id):
                      "default_branch_ref", "default_branch_commit", "warnings", "execution_authority"}
     import re
     if (evidence["shared_owner_automation_account"] is not True or not isinstance(policy, dict)
-            or set(policy) != policy_fields or policy["status"] != "OBSERVED"
+            or set(policy) not in (policy_fields, policy_fields | {JIRA_SETTING}) or policy["status"] != "OBSERVED"
             or type(actor_id) is not int or type(policy[SETTING]) is not int or policy[SETTING] != actor_id
             or policy["execution_authority"] is not False
             or evidence["owner_policy_sha256"] != policy["policy_sha256"]
@@ -73,7 +75,10 @@ def validate_retained_owner_evidence(record, actor_id):
             or not policy["default_branch_ref"].startswith("refs/remotes/origin/")
             or not isinstance(policy["default_branch_commit"], str)
             or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", policy["default_branch_commit"]) is None
-            or policy["warnings"] != shared_owner_warnings({"merge_gate": {SETTING: actor_id}})):
+            or (JIRA_SETTING in policy and (not isinstance(policy[JIRA_SETTING], str)
+                or not policy[JIRA_SETTING].strip() or policy[JIRA_SETTING] != policy[JIRA_SETTING].strip()))
+            or policy["warnings"] != shared_owner_warnings({"merge_gate": {SETTING: actor_id},
+                                                          "jira": {JIRA_SETTING: policy.get(JIRA_SETTING)}})):
         raise ValidationError("Shared-owner retained evidence is malformed or differs from its policy digest")
     return evidence
 
@@ -96,14 +101,34 @@ def configured_shared_owner_actor_id(config):
     return actor
 
 
+def configured_shared_jira_actor_id(config):
+    """Validate a proposed Jira account; configuration is not authority."""
+    jira = config.get("jira", {})
+    actor = jira.get(JIRA_SETTING)
+    if actor is None:
+        return None
+    # Match provider_identity._text, which validates Jira controller identities.
+    if not isinstance(actor, str) or not actor.strip() or actor != actor.strip():
+        raise ValidationError(JIRA_SETTING_PATH + ": expected a non-empty canonical Jira account string or null")
+    if actor != jira.get("controller_actor_id"):
+        raise ValidationError(JIRA_SETTING_PATH + ": must equal jira.controller_actor_id exactly")
+    return actor
+
+
 def shared_owner_warnings(config):
     """Report a proposed account even if other fields prevent acceptance."""
     gate = config.get("merge_gate") if isinstance(config, dict) else None
     actor = gate.get(SETTING) if isinstance(gate, dict) else None
-    if type(actor) is not int or not 1 <= actor <= 9007199254740991:
-        return []
-    return [{"path": SETTING_PATH, "code": "SHARED_OWNER_AUTOMATION_ACCOUNT",
-             "message": f"Configured shared owner/automation account {actor}: records identify an account, not a person. This report grants no owner authority; each consumer requires accepted default-branch policy."}]
+    warnings = []
+    if type(actor) is int and 1 <= actor <= 9007199254740991:
+        warnings.append({"path": SETTING_PATH, "code": "SHARED_OWNER_AUTOMATION_ACCOUNT",
+             "message": f"Configured shared owner/automation account {actor}: records identify an account, not a person. This report grants no owner authority; each consumer requires accepted default-branch policy."})
+    jira = config.get("jira") if isinstance(config, dict) else None
+    actor = jira.get(JIRA_SETTING) if isinstance(jira, dict) else None
+    if isinstance(actor, str) and actor.strip():
+        warnings.append({"path": JIRA_SETTING_PATH, "code": "SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT",
+            "message": f"Configured shared owner/controller Jira account {actor}: closure identifies an account, not a person. Retained controller history rules out only its instrumented operations; accepted default-branch policy is required."})
+    return warnings
 
 
 def _has_git_metadata(root):
@@ -328,10 +353,10 @@ def _whole_repository(root):
     return common is not None or not bare(resolved)
 
 
-def require_whole_repository(root):
+def require_whole_repository(root, *, setting_path=SETTING_PATH):
     """Refuse a set opt-out, or its authority, anywhere else."""
     if not _whole_repository(root):
-        raise ValidationError(SETTING_PATH + ": allowed only when the project root is the top level of its "
+        raise ValidationError(setting_path + ": allowed only when the project root is the top level of its "
                               "own repository, not a subfolder, bare or nested repository")
 
 
@@ -401,16 +426,16 @@ def _checked_roots(root, unreadable=None):
             *((root,) if own or not above and _whole_repository(root) else ()))
 
 
-def _policy_setting(raw):
+def _policy_setting(raw, section="merge_gate", setting=SETTING):
     try:
         accepted = load_yaml(raw)
     except (ValidationError, ArithmeticError, AttributeError, LookupError, TypeError, ValueError):
         return None  # Malformed accepted bytes are no usable policy.
-    gate = accepted.get("merge_gate") if isinstance(accepted, dict) else None
-    return gate.get(SETTING) if isinstance(gate, dict) else None
+    gate = accepted.get(section) if isinstance(accepted, dict) else None
+    return gate.get(setting) if isinstance(gate, dict) else None
 
 
-def _accepted_opt_out(root):
+def _accepted_opt_out(root, *, section="merge_gate", setting=SETTING):
     """Read only the accepted setting; an unobservable policy stays unknown.
 
     Only the closed Git reader's own refusal means unobservable.
@@ -427,7 +452,7 @@ def _accepted_opt_out(root):
             except ValidationError:
                 continue
             if raw is not None:
-                value = _policy_setting(raw)
+                value = _policy_setting(raw, section, setting)
                 if value is not None and checked in unreadable:
                     raise _UnreadableScan("Shared-owner accepted policy could not be checked: the .agentic "
                                           "directory of an enclosing project whose accepted setting is set "
@@ -462,6 +487,32 @@ def _refuse_hidden_opt_out(config, *roots):
             raise ValidationError("Shared-owner accepted policy could not be checked") from exc
         if hidden:
             raise ValidationError("Shared-owner accepted policy digest changed")
+
+
+def _refuse_hidden_jira_opt_out(config, *roots):
+    """Use the common root rule and independent reader for Jira as well.
+
+    A set proposal refuses outside a whole repository, even before a consumer's
+    ineligible/distinct-owner return. Unset proposals gain no Git prerequisite;
+    only an observable accepted setting at a checked root can refuse them.
+    """
+    try:
+        shared = configured_shared_jira_actor_id(config)
+    except (ValidationError, AttributeError, TypeError):
+        shared = None
+    known = [root for root in roots if root is not None]
+    if shared is not None:
+        for root in known:
+            require_whole_repository(root, setting_path=JIRA_SETTING_PATH)
+        return
+    for root in known:
+        try:
+            with independent_policy_read(*known):
+                hidden = _accepted_opt_out(root, section="jira", setting=JIRA_SETTING) is not None
+        except Exception as exc:
+            raise ValidationError("Shared Jira accepted policy could not be checked") from exc
+        if hidden:
+            raise ValidationError("Shared Jira accepted policy digest changed")
 
 
 def _refuse_hidden_owner_policy(config, *roots):
@@ -513,8 +564,10 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
     from .policy import policy_hash
 
     root = _known_root(root)
-    if shared_owner_warnings(config):
+    if any(item["code"] == "SHARED_OWNER_AUTOMATION_ACCOUNT" for item in shared_owner_warnings(config)):
         require_whole_repository(root)
+    if any(item["code"] == "SHARED_OWNER_CONTROLLER_JIRA_ACCOUNT" for item in shared_owner_warnings(config)):
+        require_whole_repository(root, setting_path=JIRA_SETTING_PATH)
     ref, _ = _default_ref(root)
     if ref is None:
         raise ValidationError("Shared-owner default branch is unobserved")
@@ -544,6 +597,8 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
         raise ValidationError("Supplied configuration differs from accepted default-branch policy")
     if configured_shared_owner_actor_id(accepted) is not None:
         require_whole_repository(root)
+    if configured_shared_jira_actor_id(accepted) is not None:
+        require_whole_repository(root, setting_path=JIRA_SETTING_PATH)
     github = accepted["github"]
     if ref != "refs/remotes/origin/" + github["base_branch"]:
         raise ValidationError("Shared-owner accepted default-branch identity differs")
@@ -558,7 +613,9 @@ def observe_accepted_owner_policy(root, config, workflow, contracts, *, policy_s
             _git(root, "rev-parse", "--verify", ref + "^{commit}").decode("ascii").strip() != commit
             or _origin_url(root) != origin):
         raise ValidationError("Shared-owner default-branch policy changed during read")
+    jira_actor = configured_shared_jira_actor_id(accepted)
     return {"status": "OBSERVED", SETTING: configured_shared_owner_actor_id(accepted),
+            **({JIRA_SETTING: jira_actor} if jira_actor is not None else {}),
             "policy_sha256": digest, "config_sha256": sha256(raw_config),
             "workflow_sha256": sha256(raw_workflow), "default_branch_ref": ref,
             "default_branch_commit": commit, "warnings": shared_owner_warnings(accepted),

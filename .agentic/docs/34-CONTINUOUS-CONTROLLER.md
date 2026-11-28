@@ -4,9 +4,7 @@
 
 `python .agentic/scripts/workflow.py controller --help`: [preconditions](39-AWF-32-WINDOWS-SMOKE.md).
 
-Do not use `python -B -I .agentic/scripts/workflow.py controller ...` today:
-fails under isolated mode (AWF-207). Invoke without `-I`; `-B` may be
-retained. No fix release is promised.
+`python -B -I .agentic/scripts/workflow.py controller ...` supports isolated dispatch (AWF-311). Host/adapter qualification remains required.
 
 ## Planning recovery
 
@@ -63,7 +61,7 @@ and sorted, hash-matched, at-most-512-KiB critic diffs.
 `EXECUTED` binds fresh post-read UTC, provider Date/ETag heads and matching
 inventory; `UNKNOWN` reads only its retained `COMPLETED` receipt.
 
-Disabled Jira forbids observations. Counts require protected reconciliation/identity/scope/status/pagination evidence. Owner-closure tickets wait: **owner closes in Jira**. Re-run `jira-lifecycle JIRA_RECONCILED`: `read_current_status` validates complete history/latest Done/non-controller actor/provider time; shared owner/controller accounts stay held: indistinguishable actors. [Account exceptions](SHARED-OWNER-PATHS.md). Retain actor/time; recheck history. Status alone cannot close holds; controllers never write Done. `reconcile_merged_ticket` is inert. Require [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
+Disabled Jira forbids observations. Counts require protected reconciliation/identity/scope/status/pagination evidence. Owner-closure tickets wait: **owner closes in Jira**. Re-run `jira-lifecycle JIRA_RECONCILED`: `read_current_status` validates complete history/latest Done/non-controller actor/provider time; shared owner/controller accounts stay held by default; the [accepted-policy exception](SHARED-JIRA-OWNER-POLICY.md) proves only an account and excludes only instrumented controller operations. Retain actor/time; recheck history. Status alone cannot close holds; controllers never write Done. `reconcile_merged_ticket` is inert. Require [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
 Unknown/failed attempts stop tickets; batch failures stop batches. Abandoned closeouts name ticket/operation. Assignment shares admission/locking/protected `store`; `intake_assignment_state` retains receipts/stops/identity. `jira-lifecycle BLOCK` binds `read_assignment(record)` to original ID/digest/issue/provider/labels/controller comment/fresh time. Synchronize intake. Exclusive `recover_jira_operations` uses `read_transition` operation/actor/provider/target evidence. Never replay/infer from status. Batch recovery accepts actor-bound evidence without write receipts. Preserve success/conflict evidence.
 

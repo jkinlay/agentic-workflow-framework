@@ -1,8 +1,8 @@
 # Shared owner account candidate boundary
 
-AWF-307's GitHub slice: keep its setting null until released.
+Keep GitHub's setting null until released.
 The global separation refusal remains.
-Separate owner and automation accounts are recommended wherever possible.
+Prefer separate owner and automation accounts.
 Agents never propose an opt-out without explicit human direction.
 
 Only these nine modules have accepted-default-policy bindings for the named
@@ -104,9 +104,6 @@ audit data but cannot verify overrides without the identity. Signed v1/v2
 override record formats, digests and rendering remain unchanged. Legacy sealing
 alone grants no override authority.
 
-## Jira remains separate
+## Jira owner closure
 
-The Jira opt-out is slice O2 and is not yet available. Shared owner/controller
-closure remains held; controllers never write Done for owner-closure tickets
-or transition Epics. A future controller-history check can rule out only its
-own instrumented operations, not direct writes using the same credentials.
+The [Jira exception](SHARED-JIRA-OWNER-POLICY.md) defaults null. Accepted default-branch policy names one controller account. Closure requires contract plus keyword, complete latest actor-bound Jira history and protected controller history under exclusive issue ownership. Proven-unsent HELD qualifies; attempted/unknown/abandoned/in-flight Done stays held. History excludes only instrumented operations. Prefer separate accounts; controllers never write owner-closure Done or transition Epics.

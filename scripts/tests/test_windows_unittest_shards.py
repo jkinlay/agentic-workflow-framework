@@ -47,7 +47,7 @@ class ShardTests(unittest.TestCase):
     def allocation(self):
         return runner.allocate(runner.inventory(self.root))
 
-    def invoke(self, shard=7, *arguments):
+    def invoke(self, shard=1, *arguments):
         return subprocess.run(
             [sys.executable, '-B', str(SCRIPT), '--root', str(self.root),
              '--shard', str(shard), *arguments],
@@ -63,6 +63,16 @@ class ShardTests(unittest.TestCase):
                     records.append(record)
         return records
 
+    def test_unit_shards_are_twelve_and_cover_new_indices(self):
+        self.assertEqual(tuple(range(12)), runner.SHARDS)
+        for suite in ROOTS:
+            for index in range(100):
+                self.write(suite, f'test_twelve_{index:03}.py', PASSING)
+        allocation = self.allocation()
+        for suite in ROOTS:
+            self.assertTrue(all(allocation[suite][index] for index in (9, 10, 11)))
+        runner.guard(self.root, allocation)
+
     def test_allocation_is_path_hashed_per_suite_and_order_independent(self):
         for suite in ROOTS:
             for name in ('test_z.py', 'test_B.py', 'test_a.py', 'test_c.py'):
@@ -74,9 +84,9 @@ class ShardTests(unittest.TestCase):
         for suite in ROOTS:
             paths = sorted(inventory[suite])
             for shard in runner.SHARDS:
-                expected = [p for p in paths if int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % 9 == shard]
+                expected = [p for p in paths if int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % 12 == shard]
                 self.assertEqual(expected, allocation[suite][shard])
-        self.assertEqual([ROOTS[0] + '/test_awf.py'], allocation[ROOTS[0]][7])
+        self.assertEqual([ROOTS[0] + '/test_awf.py'], allocation[ROOTS[0]][1])
         runner.guard(self.root, allocation)
 
     def test_adding_or_removing_paths_never_moves_existing_modules(self):
@@ -102,20 +112,24 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(before, self.allocation())
 
     def test_measured_november_allocation_preserves_whole_modules(self):
-        # Fixed owners follow the two hosted runs across Python 3.11-3.13.
+        # Fixed owners follow the hosted runs and 26 November O2 measurements.
         expected = {
-            '.agentic/tests/test_awf238_migration_identity.py': 4,
-            '.agentic/tests/test_awf238_same_version_identity.py': 8,
-            '.agentic/tests/test_awf243_review_regressions.py': 1,
+            '.agentic/tests/test_awf238_migration_identity.py': 7,
+            '.agentic/tests/test_awf238_same_version_identity.py': 9,
+            '.agentic/tests/test_awf243_review_regressions.py': 4,
+            '.agentic/tests/test_awf307_combined_visibility.py': 10,
+            '.agentic/tests/test_awf307_excluded_refusal_proofs.py': 4,
+            '.agentic/tests/test_awf307_jira_owner_policy.py': 10,
+            '.agentic/tests/test_awf307_jira_whole_repository.py': 8,
             '.agentic/tests/test_awf307_queue_owner_policy.py': 2,
-            '.agentic/tests/test_bootstrap_configuration.py': 4,
-            '.agentic/tests/test_continuous_controller_planning.py': 4,
+            '.agentic/tests/test_bootstrap_configuration.py': 9,
+            '.agentic/tests/test_continuous_controller_planning.py': 3,
             '.agentic/tests/test_reporting_e10_regressions.py': 3,
-            '.agentic/tests/test_reporting_e11_regressions.py': 8,
-            '.agentic/tests/test_reporting_e16_regressions.py': 6,
-            '.agentic/tests/test_reporting_e17_regressions.py': 5,
-            '.agentic/tests/test_reporting_timing.py': 1,
-            'scripts/tests/test_installed_adopter_configuration.py': 3,
+            '.agentic/tests/test_reporting_e11_regressions.py': 3,
+            '.agentic/tests/test_reporting_e16_regressions.py': 5,
+            '.agentic/tests/test_reporting_e17_regressions.py': 6,
+            '.agentic/tests/test_reporting_timing.py': 7,
+            'scripts/tests/test_installed_adopter_configuration.py': 9,
         }
         for path, shard in expected.items():
             suite, name = path.rsplit("/", 1)
@@ -128,15 +142,42 @@ class ShardTests(unittest.TestCase):
                                        if path in paths], path)
         runner.guard(self.root, allocation)
 
+    def test_production_jira_count_regression_keeps_measured_whole_module_pin(self):
+        path = self.write(ROOTS[0], 'test_awf307_jira_production_counts.py', PASSING)
+        self.assertEqual(1, runner.HEAVY_MODULE_SHARDS[path])
+        allocation = self.allocation()
+        self.assertEqual([1], [shard for shard, paths in allocation[ROOTS[0]].items() if path in paths])
+        runner.guard(self.root, allocation)
+
+    def test_measured_timeout_rebalance_preserves_whole_modules(self):
+        expected = {
+            '.agentic/tests/test_awf238_pre_f3.py': 9,
+            '.agentic/tests/test_awf238_second_look.py': 1,
+            '.agentic/tests/test_awf244_controller_wiring.py': 8,
+            '.agentic/tests/test_reporting_e13_regressions.py': 1,
+            'scripts/tests/test_ac42_e2e.py': 10,
+        }
+        for path in expected:
+            suite, name = path.rsplit('/', 1)
+            self.write(suite, name, PASSING)
+        allocation = self.allocation()
+        for path, shard in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(shard, runner.HEAVY_MODULE_SHARDS.get(path))
+                suite = path.rsplit('/', 1)[0]
+                self.assertEqual([shard], [index for index, paths in allocation[suite].items()
+                                           if path in paths])
+        runner.guard(self.root, allocation)
+
     def test_budget_pr_regressions_replace_removed_terminal_module_without_losing_guard(self):
         removed = ROOTS[0] + '/test_awf242_owner_admission.py'
         replacement = self.write(ROOTS[0], 'test_awf242_settings_pr.py', PASSING)
         self.assertNotIn(removed, runner.HEAVY_MODULE_SHARDS)
-        self.assertEqual(2, runner.HEAVY_MODULE_SHARDS[replacement])
+        self.assertEqual(1, runner.HEAVY_MODULE_SHARDS[replacement])
         allocation = self.allocation()
-        self.assertIn(replacement, allocation[ROOTS[0]][2])
+        self.assertIn(replacement, allocation[ROOTS[0]][1])
         runner.guard(self.root, allocation)
-        allocation[ROOTS[0]][2].remove(replacement)
+        allocation[ROOTS[0]][1].remove(replacement)
         with self.assertRaisesRegex(ValueError, 'missing'):
             runner.guard(self.root, allocation)
 
@@ -145,7 +186,7 @@ class ShardTests(unittest.TestCase):
         outputs = []
         for seed in ('1', '987654'):
             completed = subprocess.run([sys.executable, '-B', str(SCRIPT), '--root', str(self.root),
-                                        '--shard', '7', '--list'], capture_output=True, text=True,
+                                        '--shard', '1', '--list'], capture_output=True, text=True,
                                        env={**os.environ, 'PYTHONHASHSEED': seed})
             self.assertEqual(0, completed.returncode, completed.stderr)
             outputs.append(completed.stdout)
@@ -166,7 +207,7 @@ class ShardTests(unittest.TestCase):
             self.assertEqual(expected_split, [p for p in allocation[suite][8] if p == split])
             for shard in runner.SHARDS:
                 self.assertEqual([p for p in sorted(inventory[suite]) if p != split
-                                  and int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % 9 == shard],
+                                  and int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % 12 == shard],
                                  [p for p in allocation[suite][shard] if p != split])
             self.assertTrue(allocation[suite][6] and allocation[suite][7])
             counts = Counter(path for paths in allocation[suite].values() for path in paths)
@@ -213,6 +254,7 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(first_half, set(halves[0]))
 
     def test_split_shards_run_disjoint_halves_end_to_end(self):
+        (self.root / ROOTS[0] / 'test_awf.py').unlink()
         second = ['test_zz_second_a', 'test_zz_second_b']
         names = sorted(runner.UPGRADE_MATRIX_FIRST_HALF) + second
         source = 'import unittest\nclass UpgradeMatrixTests(unittest.TestCase):\n' + ''.join(
@@ -258,7 +300,7 @@ class ShardTests(unittest.TestCase):
 
     def test_guard_rejects_missing_module(self):
         allocation = self.allocation()
-        allocation[ROOTS[0]][7].clear()
+        allocation[ROOTS[0]][1].clear()
         with self.assertRaisesRegex(ValueError, 'missing'):
             runner.guard(self.root, allocation)
 
@@ -278,7 +320,7 @@ class ShardTests(unittest.TestCase):
                 runner.guard(self.root, allocation)
 
     def test_guard_rejects_invalid_or_absent_shard_indices(self):
-        for invalid in (-1, 9, '0', True):
+        for invalid in (-1, 12, '0', True):
             allocation = self.allocation()
             allocation[ROOTS[0]] = {key: value for key, value in allocation[ROOTS[0]].items() if key != invalid}
             allocation[ROOTS[0]][invalid] = []
@@ -353,7 +395,7 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(len(selected), len(set(selected)))
 
     def test_invalid_cli_shard_fails(self):
-        for shard in (-1, 9):
+        for shard in (-1, 12):
             completed = self.invoke(shard, '--list')
             self.assertNotEqual(0, completed.returncode)
             self.assertIn('invalid choice', completed.stderr)
@@ -370,7 +412,7 @@ class ShardTests(unittest.TestCase):
                        '        self.assertEqual("repository root", project_helper.VALUE)\n'
                        f'        self.assertEqual(Path({str(self.root)!r}).resolve(), Path.cwd().resolve())\n')
         records = []
-        for shard in (7, 8):
+        for shard in (1, 4, 2, 5):
             completed = self.invoke(shard)
             self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
             self.assertEqual('selected', json.loads(completed.stdout.splitlines()[0])['event'])
@@ -425,13 +467,13 @@ def load_tests(loader, tests, pattern):
         for name in ('test_c.py', 'test_d.py', 'test_e.py'):
             self.write(ROOTS[0], name, PASSING)
         self.write(ROOTS[0], 'test_z.py', PASSING.replace('self.assertTrue(True)', 'print("later module ran")'))
-        completed = self.invoke(8)
+        completed = self.invoke(11)
         self.assertNotEqual(0, completed.returncode)
         self.assertIn('first module failed', completed.stderr)
         self.assertIn('later module ran', completed.stdout)
 
     def test_genuine_empty_shard_does_not_fail_or_import_modules(self):
-        completed = self.invoke(2)
+        completed = self.invoke(0)
         self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
         self.assertEqual(4, len(self.events(completed, 'suite_result')))
         self.assertTrue(all(r['executed'] == [] and r['tests_run'] == 0
@@ -504,10 +546,13 @@ def load_tests(loader, tests, pattern):
         for effect in (fake_child, OSError('fixture launch error')):
             with self.subTest(effect=effect), mock.patch.object(runner.subprocess, 'run', side_effect=effect) as child:
                 with mock.patch('sys.stdout', new_callable=io.StringIO), mock.patch('sys.stderr', new_callable=io.StringIO):
-                    self.assertNotEqual(0, runner.main(['--root', str(self.root), '--shard', '7']))
+                    self.assertNotEqual(0, runner.main(['--root', str(self.root), '--shard', '1']))
                 self.assertEqual(4, child.call_count)
 
     def test_allowlisted_empty_helper_is_selected_and_zero_count_is_recorded(self):
+        # Keep the unrelated portable fixture off the helper's new shard.
+        (self.root / ROOTS[3] / 'test_awf.py').unlink()
+        self.write(ROOTS[3], 'test_isolated_fixture.py', PASSING)
         for name in ('test_awf36_automation_fixtures.py', 'test_reporting_fixtures.py'):
             with self.subTest(helper=name):
                 helper = self.write(ROOTS[0], name, 'VALUE = 1\n')

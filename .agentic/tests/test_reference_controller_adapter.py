@@ -1894,11 +1894,11 @@ class ControllerAdapterDocumentationTests(unittest.TestCase):
 
 	def test_doc_workflow_controller_isolated_mode_guidance(self):
 		prose = ' '.join(self.doc.split())
-		self.assertIn('Do not use `python -B -I .agentic/scripts/workflow.py controller', prose)
-		self.assertIn('today', prose)
-		self.assertIn('fails under isolated mode (AWF-207)', prose)
-		self.assertIn('without `-I`; `-B` may be retained', prose)
-		self.assertIn('No fix release is promised', prose)
+		self.assertIn('`python -B -I .agentic/scripts/workflow.py controller ...`', prose)
+		self.assertIn('supports isolated dispatch', prose)
+		self.assertIn('(AWF-311).', prose)
+		self.assertIn('Host/adapter qualification', prose)
+		self.assertIn('remains required.', prose)
 
 	def test_doc_nonterminal_boundary_prohibits_successor_refill(self):
 		section = self.doc.split('## Dispatch state and round boundaries\n', 1)[1].split('\n## ', 1)[0]
