@@ -1079,12 +1079,16 @@ class RoutingLedger:
         validate_policy(policy)
         _, operating_binding = _operating_binding(operating, governance, policy)
         _request(request)
-        from .budgeting import resolve_settings, legacy_reservation_snapshot, BudgetLedger
+        from .budgeting import resolve_settings, legacy_reservation_snapshot, BudgetLedger, pre_run_enabled
         settings = resolve_settings(operating.config if operating is not None else {})
         explicit = 'legacy_behavior' not in settings
-        enrolled = bool(explicit and settings['accounting_enabled'] and budget_registry is not None
-                        and budget_registry.enrolled(budget_binding))
+        pre_run = pre_run_enabled(settings)
+        enrolled = bool(explicit and settings['accounting_enabled'] and (
+            pre_run and budget_binding is not None or budget_registry is not None
+            and budget_registry.enrolled(budget_binding)))
         if enrolled:
+            from .budget_enrollment import validate_binding
+            validate_binding(budget_binding)
             _require(budget_binding['project_id'] == project_id
                      and budget_binding['ticket_id'] == request['ticket_id']
                      and budget_binding['role'] == request['role'], 'Enrollment differs from routing request')
@@ -1189,9 +1193,15 @@ class RoutingLedger:
             and prior_mode['accounting_enabled'] and prior_mode['attributable']]
         ticket_used = len(budget_history) + int(mode is None or
             (mode['accounting_enabled'] and mode['attributable']))
+        diagnostics = {}
         if mode is not None and enforcing:
-            from .budgeting import admit_totals
-            admit_totals(connection, project_id, request['ticket_id'], mode, request['reservation_tokens'])
+            from .budgeting import admit_totals, pre_run_enabled
+            if pre_run_enabled(mode):
+                from .pre_run_budgeting import admit_totals as pre_run_totals
+                diagnostics['budget_diagnostics'] = pre_run_totals(connection, project_id,
+                    request['ticket_id'], mode, request['reservation_tokens'])
+            else:
+                admit_totals(connection, project_id, request['ticket_id'], mode, request['reservation_tokens'])
         for scope, history in (("ticket", ticket_rows), ("project_day", daily_rows)) if mode is None else ():
             budgets = policy["budgets"]
             _require(len(history) + 1 <= budgets["max_runs_per_" + scope], scope + " run budget exhausted")
@@ -1252,7 +1262,8 @@ class RoutingLedger:
                 "run_cap_signal": signal, "disposition_request": disposition,
                 "budget_required": mode is None or bool(mode['accounting_enabled'] and mode['attributable']),
                 "budgeting": mode,
-                "requires_host_limit_enforcement": enforcing}
+                "requires_host_limit_enforcement": enforcing and not (
+                    mode is not None and mode.get('enforcement_mode') == 'pre_run'), **diagnostics}
 
     def summary(self, project_id, ticket_id):
         """Return ticket-wide run and token accounting grouped by recorded role."""
@@ -1474,6 +1485,8 @@ class RoutingLedger:
             mode = request.get('_budgeting')
             accounting = mode is None or (mode['accounting_enabled'] and mode['attributable'])
             enforcing = mode is None or (mode['enforcement_enabled'] and mode['attributable'])
+            if mode is not None and mode.get('enforcement_mode') == 'pre_run':
+                enforcing = False  # Admission estimates are not running-process ceilings.
             if mode is None:
                 _integer(outcome.get('actual_tokens'), 'actual_tokens')
             if accounting and (mode is not None or 'observation_id' in outcome):

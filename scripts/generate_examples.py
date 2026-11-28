@@ -448,20 +448,24 @@ def generate(output_root, source_root=ROOT):
     from agentic.operating import default_operating
     fresh_policy = default_policy(source_root / ".agentic/defaults/routing.yaml")
     fresh_operating = default_operating(fresh_policy, count=12)
-    # Fresh defaults explicitly carry dormant AWF-242 settings. Missing blocks
-    # in upgraded projects continue to mean preservation of legacy behavior.
-    from agentic.budgeting import fresh_settings
+    # Preserve the shared compatibility baseline and existing project choices.
+    # Only the separate fresh-install seed carries the new-project limits.
+    from agentic.budgeting import fresh_settings, new_project_settings
     fresh_operating['budgeting'] = fresh_settings()
     from agentic.operating_calendar import effective_calendar
     fresh_operating['operating_calendar'] = effective_calendar({})
     from agentic.reporting.settings import effective_reporting
     fresh_operating['reporting'] = effective_reporting({})
+    new_project_operating = copy.deepcopy(fresh_operating)
+    new_project_operating['budgeting'] = new_project_settings()
     operating = default_operating(generation_policy)
     operating['reporting'] = effective_reporting({})
     write(output_root / "OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", operating)
     write(output_root / ".agentic/templates/source-config/OPERATING_CONFIG.yaml", fresh_operating)
     write(output_root / ".agentic/defaults/OPERATING_CONFIG.yaml", fresh_operating)
+    write(output_root / ".agentic/defaults/NEW_PROJECT_OPERATING_CONFIG.yaml", new_project_operating)
+    write(output_root / ".agentic/examples/NEW_PROJECT_OPERATING_CONFIG.yaml", new_project_operating)
     write(output_root / ".agentic/workflow.yaml", definition())
     source_config = config(False, fresh_policy, fresh_defaults=True)
     write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)

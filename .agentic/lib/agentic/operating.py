@@ -1011,6 +1011,10 @@ def _selection(path, text):
                 fail('$.' + path, 'Expected a JSON list of ISO weekdays')
         return text
     if path.startswith('budgeting.'):
+        if path == 'budgeting.enforcement_mode':
+            if text not in ('strict', 'pre_run'):
+                fail('$.' + path, 'Expected strict or pre_run')
+            return text
         if path.endswith('_enabled'):
             if text not in {'true', 'false'}:
                 fail('$.' + path, 'Expected true or false')
@@ -1193,7 +1197,7 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             if current_budget is None:
                 fail('$.budgeting', 'Legacy budgeting requires versioned adoption with an explicit budget disposition')
             proposed = transition_settings(current_budget, budget_changes)
-            selected.update({'budgeting.' + k: v for k, v in proposed.items() if v != current_budget[k]})
+            selected.update({'budgeting.' + k: v for k, v in proposed.items() if v != current_budget.get(k)})
         count = selected.get("streams.count", value["streams"]["count"])
         structural_ceiling = configured_lane_ceiling(governance)
         ceiling = operating_ceiling(governance)["effective_ceiling"]
@@ -1524,6 +1528,8 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
                       'EXPLICIT_SHARED_LEDGER_IMPORT_REQUIRED before enabling; owner adoption through a PR adds dormant OFF controls.'])
     else:
         budget = resolve_settings(value)
+        if 'enforcement_mode' in budget:
+            lines.append('Budget enforcement mode: ' + budget['enforcement_mode'])
         lines.extend(['Budgeting (effective):',
                       'Accounting: ' + ('ON' if budget['accounting_enabled'] else 'OFF'),
                       'Enforcement: ' + ('ON' if budget['enforcement_enabled'] else 'OFF'),

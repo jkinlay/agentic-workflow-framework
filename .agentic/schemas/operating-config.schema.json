@@ -180,6 +180,12 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "enforcement_mode": {
+          "enum": [
+            "strict",
+            "pre_run"
+          ]
         }
       },
       "allOf": [

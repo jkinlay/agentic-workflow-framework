@@ -1,6 +1,6 @@
 """AWF-242 modes and enrollment facade over the canonical routing usage ledger.
 
-Fresh setup must explicitly install fresh_settings(). Missing fields in an
+Fresh setup explicitly installs new_project_settings(). Missing fields in an
 existing installation mean legacy behavior, never implicit consent to disable.
 Budget accounting never confers dispatch, security, recovery or merge authority.
 """
@@ -14,12 +14,42 @@ from pathlib import Path
 from .budget_enrollment import ProtectedDatabase, encoded, require, text_id
 
 SETTINGS_KEYS = frozenset({'accounting_enabled', 'enforcement_enabled',
-                           'max_tokens_per_ticket', 'max_tokens_per_project'})
+                           'max_tokens_per_ticket', 'max_tokens_per_project', 'enforcement_mode'})
+REQUIRED_SETTINGS_KEYS = SETTINGS_KEYS - {'enforcement_mode'}
+
+
+def pre_run_enabled(settings):
+    return settings.get('enforcement_enabled', False) and settings.get('enforcement_mode', 'strict') == 'pre_run'
 
 
 def fresh_settings():
     return dict(accounting_enabled=False, enforcement_enabled=False,
                 max_tokens_per_ticket=4_000_000, max_tokens_per_project=1_000_000_000)
+
+
+def new_project_settings():
+    """Explicit provisioning only; never an absent/partial-block fallback."""
+    return dict(accounting_enabled=True, enforcement_enabled=True, enforcement_mode='pre_run',
+                max_tokens_per_ticket=6_000_000_000, max_tokens_per_project=600_000_000_000)
+
+
+def budget_readiness(settings, *, provider='codex'):
+    """Read-only setup diagnostics; reports never qualify or enable a host."""
+    if not settings.get('enforcement_enabled', False):
+        return dict(status='OFF', missing=[], admission_required=False)
+    if pre_run_enabled(settings):
+        return dict(status='ADMISSION_REQUIRED' if provider == 'codex' else 'BUDGET_NOT_READY',
+            reason='PRE_RUN_CHECK_REQUIRED' if provider == 'codex' else 'UNSUPPORTED_PROVIDER',
+            provider=provider, enforcement_mode='pre_run', admission_required=True,
+            missing=['accounted_usage', 'reservation_estimate'] if provider == 'codex' else ['supported_provider'],
+            ticket_headroom_tokens=None, project_headroom_tokens=None,
+            running_run_may_overshoot=True)
+    missing = ['trusted_host_enrollment', 'reservation_estimate', 'qualification_receipt']
+    if provider != 'codex':
+        return dict(status='BUDGET_NOT_READY', reason='UNSUPPORTED_PROVIDER',
+                    provider=provider, missing=['supported_provider'], admission_required=True)
+    return dict(status='BUDGET_NOT_READY', reason='HOST_QUALIFICATION_REQUIRED',
+                provider=provider, missing=missing, admission_required=True)
 
 
 def legacy_settings():
@@ -48,7 +78,10 @@ def resolve_settings(operating, *, fresh=False):
 
 
 def validate_settings(value):
-    require(isinstance(value, dict) and set(value) == SETTINGS_KEYS, 'Explicit complete 1.9.6 budget settings required')
+    require(isinstance(value, dict) and REQUIRED_SETTINGS_KEYS <= set(value) <= SETTINGS_KEYS,
+            'Explicit complete 1.9.6 budget settings required')
+    require(value.get('enforcement_mode', 'strict') in ('strict', 'pre_run'),
+            'Budget enforcement_mode must be strict or pre_run')
     for key in ('accounting_enabled', 'enforcement_enabled'):
         require(type(value[key]) is bool, key + ' must be boolean')
     for key in ('max_tokens_per_ticket', 'max_tokens_per_project'):
@@ -74,22 +107,66 @@ def settings_hash(value):
 def codex_usage(events):
     """Sum completed-turn input/output; cached input is a subset, not extra.
 
-    Missing/malformed usage or no completed turn is UNKNOWN. CLI reports do not
-    authenticate provider billing or establish a token enforcement capability.
+    Missing/malformed usage, an interrupted tail, or no completed turn is
+    UNKNOWN. CLI reports do not authenticate provider billing or establish a
+    token enforcement capability.
     """
-    total, seen = 0, False
+    return codex_usage_observation(events)['actual_tokens']
+
+
+def codex_usage_observation(events, *, stream_complete=True):
+    """Separate completed usage from a diagnostic lower bound on an open tail.
+
+    Process failure is independent of telemetry completeness. Legacy completed
+    events without turn.started remain supported by accounting-only hosts.
+    """
+    total, seen, unfinished, open_turn, unknown = 0, False, False, False, not stream_complete
     for event in events:
-        if not isinstance(event, dict) or event.get('type') != 'turn.completed':
+        if not isinstance(event, dict):
+            unknown = True
             continue
+        kind = event.get('type')
+        if not isinstance(kind, str) or kind not in (
+                'thread.started', 'turn.started', 'turn.completed', 'turn.failed',
+                'item.started', 'item.updated', 'item.completed', 'error'):
+            unknown = True
+            continue
+        if kind == 'turn.failed' or kind == 'error' and unfinished:
+            unknown = True
+        if kind == 'turn.started':
+            unknown |= open_turn
+            open_turn = True
+        if kind in ('turn.started', 'item.started', 'item.updated', 'item.completed'):
+            unfinished = True
+        if kind != 'turn.completed':
+            continue
+        unfinished = False
+        open_turn = False
         seen = True
         usage = event.get('usage')
         if not isinstance(usage, dict) or any(type(usage.get(key)) is not int or usage[key] < 0
                 for key in ('input_tokens', 'output_tokens')):
-            return None
-        total += usage['input_tokens'] + usage['output_tokens']
-        if total > 2**63 - 1:
-            return None
-    return total if seen else None
+            unknown = True
+            continue
+        count = total + usage['input_tokens'] + usage['output_tokens']
+        if count > 2**63 - 1:
+            unknown = True
+        else:
+            total = count
+    return dict(actual_tokens=total if seen and not unfinished and not unknown else None,
+                lower_bound_tokens=total)
+
+
+def codex_jsonl_usage(raw, *, stream_complete=True):
+    """An unparseable final record poisons the total, retaining only counters."""
+    from .canonical import loads
+    def events():
+        for line in raw.splitlines():
+            try:
+                yield loads(line.decode('utf-8', 'strict'))
+            except (ValueError, UnicodeError, TypeError, RecursionError):
+                yield None
+    return codex_usage_observation(events(), stream_complete=stream_complete)
 
 
 def subprocess_budget_outcome(binding, selected, *, session_id, actual_tokens, success,
@@ -221,6 +298,11 @@ class ControllerBudgeting:
                 'Enabled budgeting requires the canonical project ledger')
         self.database = None if path is None else ProtectedDatabase(path, worktree_roots)
         self.registry = None if path is None else EnrollmentRegistry(self.database.path.with_suffix('.enrollment.sqlite'), host, worktree_roots)
+        if pre_run_enabled(self.settings):
+            contexts = getattr(host, '_pre_run_contexts', None)
+            if contexts is None:
+                contexts = host._pre_run_contexts = {}
+            contexts[self.governance['project']['id']] = self
 
     @property
     def operations(self):
@@ -296,15 +378,22 @@ class ControllerBudgeting:
             return None
         binding = validate_binding(binding)
         require(binding['project_id'] == self.governance['project']['id'], 'Budget project identity differs')
+        require(not self.settings['enforcement_enabled'] or 'claude' not in selected.get('model', '').lower(),
+                'BUDGET_NOT_READY: UNSUPPORTED_PROVIDER: Claude token enforcement unavailable')
         observer = getattr(self.host, 'observe_budget_admission', None)
         require(callable(observer), 'Trusted-host budget admission observer unavailable')
         observed = observer(deepcopy(binding), deepcopy(selected))
         require(isinstance(observed, dict) and set(observed) == {'request', 'capabilities', 'limits_enforced'},
                 'Budget admission observation is malformed')
         require(type(observed['limits_enforced']) is bool, 'Host limit capability must be observed')
-        require(not self.settings['enforcement_enabled'] or observed['limits_enforced'],
+        pre_run = pre_run_enabled(self.settings)
+        require(pre_run or not self.settings['enforcement_enabled'] or observed['limits_enforced'],
+                'BUDGET_NOT_READY: qualification_receipt and reservation_estimate required; '
                 'Budget enforcement requires observed host token limits')
         request = deepcopy(observed['request'])
+        if pre_run and request.get('reservation_tokens') is None:
+            from .pre_run_budgeting import conservative_estimate
+            request['reservation_tokens'] = conservative_estimate()
         if binding['role'] in ('critic', 'specialist'):
             contexts = self.operations.worker_contexts(binding)
             request['worker_context_ids'] = sorted(set(request.get('worker_context_ids', [])) |
@@ -318,14 +407,30 @@ class ControllerBudgeting:
                              operating=self.operating, governance=self.governance)
         require(route['status'] == 'ready' and all(route[key] == selected.get(key)
                 for key in ('model', 'reasoning_effort')), 'Budget route differs from the host launch route')
-        self.registry.enroll(binding)
+        if not pre_run:
+            self.registry.enroll(binding)
         reservation = self._ledger().reserve(binding['project_id'], policy, request, observed['capabilities'],
             operating=self.operating, governance=self.governance, budget_registry=self.registry, budget_binding=binding,
             legacy_store=self.legacy_store)
         require(reservation['status'] == 'reserved', 'Budget routing admission refused: ' + str(reservation))
         require(all(reservation[key] == selected.get(key) for key in ('model', 'reasoning_effort')),
                 'Budget recovery route differs from the host launch route')
-        return {'binding': binding, 'reservation': reservation}
+        admission = {'binding': binding, 'reservation': reservation}
+        if pre_run:
+            # This trusted in-process context enables only the admission bridge;
+            # it neither enrolls nor qualifies the strict native limiter.
+            from .pre_run_budgeting import prepare_launch
+            plan = prepare_launch(self, admission)
+            if plan is not None:
+                admission['limiter_plan'] = plan
+            return admission
+        binder = getattr(self.host, 'bind_budget_reservation', None)
+        if self.settings['enforcement_enabled'] and callable(binder):
+            plan = binder(deepcopy(admission))
+            require(isinstance(plan, dict) and plan.get('limits_enforced') is True,
+                    'BUDGET_NOT_READY: reservation limiter binding unavailable')
+            admission['limiter_plan'] = plan
+        return admission
 
     def _recovery_database(self):
         """Open existing protected recovery evidence read-only, never create it."""

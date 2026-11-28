@@ -820,6 +820,22 @@ def preflight(root, *, platform=None, config=None, github_observation=None, jira
                                        execute=resource_executor))
     rows.append(project_lint_scope(root))
     rows.append(route_models_observed(root))
+    # Setup/readiness is warning-only, independently of installation acceptance.
+    try:
+        from .canonical import load_yaml
+        from .budgeting import budget_readiness
+        operating_path = root / 'OPERATING_CONFIG.yaml'
+        if operating_path.is_file():
+            settings = load_yaml(operating_path.read_bytes()).get('budgeting', {})
+            if settings.get('enforcement_enabled'):
+                readiness = budget_readiness(settings)
+                pre_run = readiness.get('enforcement_mode') == 'pre_run'
+                rows.append(row('budget_readiness', 'WARN', readiness['status'] + ': ' +
+                    ', '.join(readiness['missing']) + ('; mode=pre_run; remaining headroom checked at admission' if pre_run else ''),
+                    'Check accounted usage and the positive rough reservation before each Codex run; a running run may overshoot.' if pre_run else
+                    'Enroll a trusted Codex host with an estimate and an independently accepted exact-runtime qualification receipt.'))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass  # Configuration validation reports malformed operating settings.
     rows.extend(_provider_identity_rows(root, config, github_observation, jira_connections))
     if windows:
         longpaths_probe, longpaths = git_config(root, "core.longpaths")

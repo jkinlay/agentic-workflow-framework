@@ -779,6 +779,12 @@ def render_status(report):
     if budgeting.get('disposition') == 'LEGACY_RETAINED':
         lines.append('Budgeting: LEGACY_RETAINED; legacy enforcement UNOBSERVED; ' + budgeting['history_import'] +
                      '; owner adoption prepares dormant OFF controls in OPERATING_CONFIG.yaml through an owner-merged PR; fetch the default branch to apply.')
+    elif 'accounting_enabled' in budgeting:
+        lines.append('Budgeting (effective): accounting=' + ('ON' if budgeting['accounting_enabled'] else 'OFF') +
+            '; enforcement=' + ('ON' if budgeting['enforcement_enabled'] else 'OFF') +
+            '; mode=' + budgeting.get('enforcement_mode', 'strict') +
+            '; per ticket=' + format(budgeting['max_tokens_per_ticket'], ',') +
+            '; project lifetime=' + format(budgeting['max_tokens_per_project'], ','))
     trust = report.get('release_trust') or {}
     if trust.get('basis') == 'trusted_host_installed_awf_skill':
         lines.extend(('Codex home: ' + trust['codex_home'],
